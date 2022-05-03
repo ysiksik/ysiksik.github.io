@@ -209,7 +209,8 @@ kramdown:
 
 # Set your Google Analytics id to receive `pageview` events.
 # To remove Google Anaylics from your page, remove the line below.
-google_analytics:      G-JLYQQ238M2
+google_analytics:      G-LZK2DH7RMZ
+
 
 # Set which comment system to use.
 comments:
@@ -219,7 +220,7 @@ comments:
 
 # Setting a disqus shortname will enable the comment section on
 # pages with `comments: true` in the front matter.
-disqus:                khw11044
+disqus:                siksik
 
 # Before to use utterance, You must install utterance github app.
 # Check below link for detail.
