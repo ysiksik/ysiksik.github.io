@@ -107,8 +107,11 @@ graph LR;
 > ```
 > N=4, M=3
 > ```
+
 > $$4 \times 4 \times 4 = 4^3$$
+
 > $$시간 : O \left(N^M\right) \Rightarrow 7^7 \simeq 82만$$
+
 > $$공간 : O \left(M\right)$$
 
 
@@ -175,8 +178,11 @@ public class baekjoon15649 {
 > ```
 > N=4, M=3
 > ```
+
 > $$4 \times 3 \times 2 = 4!$$
+
 > $$시간 : O \left(\frac{N!}{(N-M)!}\right) \Rightarrow \frac{8!}{0!} = 40,320$$
+
 > $$공간 : O \left(M\right)$$
 
 * ### 1 + B
@@ -242,8 +248,11 @@ public class baekjoon15652 {
 > ```
 > N=4, M=3
 > ```
+
 > $$4 \times 4 \times 4 = 4^3$$
+
 > $$시간 : O \left(N^M\right) \Rightarrow 8^8 \simeq 1677만 아래$$
+
 > $$공간 : O \left(M\right)$$
 
 * ### 2 + B
@@ -307,7 +316,9 @@ public class baekjoon15650 {
 > ```
 > N=4, M=3
 > ```
+
 > $$시간 : O \left(\frac{N!}{M!(N-M)!}\right) \Rightarrow \frac{8!}{4!4!} = 70$$
+
 > $$공간 : O \left(M\right)$$
 
 
@@ -315,13 +326,12 @@ public class baekjoon15650 {
 
 ## 정리
 ---
-
 | 중복 | 순서 | 시간 복잡도 | 공간 복잡도 |
 | -- | -- | -- | -- |
-| YES | YES | $O\left(N^M\right)$ | $O\left(M\right)$ |
-| NO | YES | $O\left(\frac{N!}{(N-M)!}\right)$| $O\left(M\right)$ |
-| YES | NO | $O\left(N^M\right)$ 보다 작음| $O\left(M\right)$ |
-| NO | NO | $O\left(\frac{N!}{M!(N-M)!}\right)$| $O\left(M\right)$ |
+| YES | YES | $$O \left(N^M\right)$$ | $$O \left(M\right)$$ |
+| NO | YES | $$ O \left(\frac{N!}{(N-M)!}\right) $$| $$O \left(M\right)$$ |
+| YES | NO | $$O \left(N^M\right)$$ 보다 작음| $$O \left(M\right)$$ |
+| NO | NO | $$O \left(\frac{N!}{M!(N-M)!}\right)$$| $$O \left(M\right)$$ |
 
 > 완전 탐색 문제 접근 팁
 > > * 고를 수 있는 값의 종류 파악
