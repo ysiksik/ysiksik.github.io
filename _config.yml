@@ -18,7 +18,7 @@ url:                   https://ysiksik.github.io
 lang:                  ko-KR, en-US
 
 # The title of your blog. Used in the sidebar and the browser tab.
-title:                 SIKSIK BLOG
+title:                 SIKSIK 의 개발 여행
 
 # A short description (~150 chars) of the page used for the meta description tag.
 # Can use markdown, but no more than one paragraph (enforced by `>`)
@@ -56,6 +56,12 @@ menu:
     url:               /project/
   - title:             Study
     url:               /study/
+    submenu:
+      - title:  알고리즘
+        url:      /algorithm/
+        submenu:
+          - title:  코딩테스트 369 JAVA
+            url:      /fastCampusCodingTestJava/
   - title:             Blog
     url:               /blog/
     submenu:
@@ -118,7 +124,7 @@ collections:
 # Theme
 # ---------------------------------------------------------------------------------------
 
-#theme: jekyll-theme-hydejack
+theme: jekyll-theme-hydejack
 remote_theme: hydecorp/hydejack@v9.0.5
 
 
@@ -526,4 +532,4 @@ tipue_search:
     tags: []
 
 mermaid:
-  src: '_includes/scripts/mermaid.js'
+  src: '_includes/scripts/mermaid.min.js'
