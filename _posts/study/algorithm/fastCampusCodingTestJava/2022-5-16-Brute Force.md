@@ -326,8 +326,14 @@ public class baekjoon15650 {
 
 ## 정리
 ---
+
+|제목|내용|
+|--|--|
+|1|1|
+|2|10|
+
 | 중복 | 순서 | 시간 복잡도 | 공간 복잡도 |
-| -- | -- | -- | -- |
+| --- | ---| --- | --- |
 | YES | YES | $$O \left(N^M\right)$$ | $$O \left(M\right)$$ |
 | NO | YES | $$ O \left(\frac{N!}{(N-M)!}\right) $$| $$O \left(M\right)$$ |
 | YES | NO | $$O \left(N^M\right)$$ 보다 작음| $$O \left(M\right)$$ |
