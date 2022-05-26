@@ -30,7 +30,7 @@ published: true
 | 중복 | 순서 | 시간 복잡도 | 공간 복잡도 |
 | --- | ---| --- | --- |
 | YES | YES | $$O \left(N^M\right)$$ | $$O \left(M\right)$$ |
-| <mark>NO</mark> | <mark>YES</mark> | <mark>$$ O \left(\frac{N!}{(N-M)!}\right) $$</mark> | <mark>$$O \left(M\right)$$</mark> |
+| <mark>NO</mark> | <mark>YES</mark> | <mark> $$O \left(\frac{N!}{(N-M)!}\right)$$ </mark> | <mark> $$O \left(M\right)$$ </mark> |
 | YES | NO | $$O \left(N^M\right)$$ 보다 작음| $$O \left(M\right)$$ |
 | NO | NO | $$O \left(\frac{N!}{M!(N-M)!}\right)$$| $$O \left(M\right)$$ |
 
@@ -103,27 +103,17 @@ public class baekjoon14888 {
 }
   ~~~
 
-> 시간, 공간 복잡도 계산
-> ```
-> N=4, M=3
-> ```
+* [백준 9663번 - N Queen](https://www.acmicpc.net/problem/9663)
 
-> $$4 \times 4 \times 4 = 4^3$$
+> N 개 중에서 중복을 허용
+> N 개를 순서대로 나열하는 모든 경우 탐색
 
-> $$시간 : O \left(N^M\right) \Rightarrow 7^7 \simeq 82만$$
-
-> $$공간 : O \left(M\right)$$
-
-
-* ### 2 + A
-
-<div class="mermaid">
-graph LR;
-    N개중-->2.중복없이;
-    M개를-->A.순서있게나열;
-</div>
-
-[백준 15649번 - N과 M (1)](https://www.acmicpc.net/problem/15649)
+| 중복 | 순서 | 시간 복잡도 | 공간 복잡도 |
+| --- | ---| --- | --- |
+| <mark>YES</mark> | <mark>YES</mark> | $$O \left(N^M\right)$$ | $$O \left(M\right)$$ |
+| NO | YES | <mark>$$ O \left(\frac{N!}{(N-M)!}\right) $$</mark> | <mark>$$O \left(M\right)$$</mark> |
+| YES | NO | $$O \left(N^M\right)$$ 보다 작음| $$O \left(M\right)$$ |
+| NO | NO | $$O \left(\frac{N!}{M!(N-M)!}\right)$$| $$O \left(M\right)$$ |
 
 ~~~java
 public class baekjoon15649 {
@@ -173,17 +163,6 @@ public class baekjoon15649 {
 
 }
 ~~~
-
-> 시간, 공간 복잡도 계산
-> ```
-> N=4, M=3
-> ```
-
-> $$4 \times 3 \times 2 = 4!$$
-
-> $$시간 : O \left(\frac{N!}{(N-M)!}\right) \Rightarrow \frac{8!}{0!} = 40,320$$
-
-> $$공간 : O \left(M\right)$$
 
 * ### 1 + B
 
