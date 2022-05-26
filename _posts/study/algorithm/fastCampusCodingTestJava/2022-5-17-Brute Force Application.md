@@ -30,7 +30,7 @@ published: true
 | 중복 | 순서 | 시간 복잡도 | 공간 복잡도 |
 | --- | ---| --- | --- |
 | YES | YES | $$O \left(N^M\right)$$ | $$O \left(M\right)$$ |
-| <mark>NO</mark> | <mark>YES</mark> | <mark> $$O \left(\frac{N!}{(N-M)!}\right)$$ </mark> | <mark> $$O \left(M\right)$$ </mark> |
+| <mark>NO</mark> | <mark>YES</mark> | $$O \left(\frac{N!}{(N-M)!}\right)$$ |  $$O \left(M\right)$$  |
 | YES | NO | $$O \left(N^M\right)$$ 보다 작음| $$O \left(M\right)$$ |
 | NO | NO | $$O \left(\frac{N!}{M!(N-M)!}\right)$$| $$O \left(M\right)$$ |
 
@@ -111,55 +111,62 @@ public class baekjoon14888 {
 | 중복 | 순서 | 시간 복잡도 | 공간 복잡도 |
 | --- | ---| --- | --- |
 | <mark>YES</mark> | <mark>YES</mark> | $$O \left(N^M\right)$$ | $$O \left(M\right)$$ |
-| NO | YES | <mark>$$ O \left(\frac{N!}{(N-M)!}\right) $$</mark> | <mark>$$O \left(M\right)$$</mark> |
+| NO | YES | $$ O \left(\frac{N!}{(N-M)!}\right) $$ | $$O \left(M\right)$$ |
 | YES | NO | $$O \left(N^M\right)$$ 보다 작음| $$O \left(M\right)$$ |
 | NO | NO | $$O \left(\frac{N!}{M!(N-M)!}\right)$$| $$O \left(M\right)$$ |
 
 ~~~java
-public class baekjoon15649 {
+public class baekjoon9663 {
 
-    static int N, M;
-    static int[] selected, visited;
-
-    static StringBuilder sb = new StringBuilder();
+    static int N, result = 0;
+    static int[] map;
 
     public static void main(String[] args) throws IOException {
         BufferedReader br = new BufferedReader(new InputStreamReader(System.in));
         StringTokenizer st = new StringTokenizer(br.readLine(), " ");
 
         N = Integer.parseInt(st.nextToken());
-        M = Integer.parseInt(st.nextToken());
-
-        selected = new int[M + 1];
-        visited = new int[N+1];
+        map = new int[N + 1];
 
         dfs(1);
 
-        System.out.println(sb);
-
+        System.out.println(result);
     }
 
 
-    public static void dfs(int k) {
-        if (k == M + 1) {
-            for (int i = 1; i <= M; i++) {
-                sb.append(selected[i]).append(" ");
-            }
-            sb.append("\n");
+    public static void dfs(int x) {
+        if (x == N + 1) {
+            result++;
         } else {
             for (int i = 1; i <= N; i++) {
-                if(visited[i] == 0){
-                    selected[k] = i;
-                    visited[i] = 1;
-                    dfs(k + 1);
-                    selected[k] = 0;
-                    visited[i] = 0;
+
+                if (check(x, i)) {
+                    map[x] = i;
+
+                    dfs(x + 1);
+
+                    map[x] = 0;
                 }
+
             }
         }
 
     }
 
+    public static boolean check(int x, int y) {
+        for (int i = 1; i <= x - 1; i++) {
+            if (y == map[i]) {
+                return false;
+            }
+            if (x - y == i - map[i]) {
+                return false;
+            }
+            if (x + y == i + map[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
 
 }
 ~~~
