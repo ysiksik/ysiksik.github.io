@@ -22,7 +22,12 @@ published: true
 
 ## 연습
 ---
-* ### [백준 14888번 - 연산자 키워넣기](https://www.acmicpc.net/problem/14888)
+### [백준 14888번 - 연산자 키워넣기](https://www.acmicpc.net/problem/14888)
+
+      1. 연산자를 어떻게 끼워 넣어도 항상 -10억보다 크거나 같고, 10억보다 작거나 같다.
+      2. 중간에 계산되는 식의 결과도 항상 -10억보다 크거나 같고, 10억보다 작거나 같다.
+      3. int의 범위 : -21억 ~ 21억 (int 형 변수를 쓰면 됨)
+
 
 > * N-1 개의 카드 중에서 중복 없이(같은 카드는 한 번 사용)
 > * N-1 개를 순서있게 나열
@@ -103,7 +108,7 @@ public class baekjoon14888 {
 }
   ~~~
 
-* ### [백준 9663번 - N Queen](https://www.acmicpc.net/problem/9663)
+### [백준 9663번 - N Queen](https://www.acmicpc.net/problem/9663)
 
 > * N 개 중에서 중복을 허용
 > * N 개를 순서대로 나열하는 모든 경우 탐색
@@ -171,7 +176,7 @@ public class baekjoon9663 {
 }
 ~~~
 
-* ### [백준 1182번 - 부분 수열의 합](https://www.acmicpc.net/problem/1182)
+### [백준 1182번 - 부분 수열의 합](https://www.acmicpc.net/problem/1182)
 
 > * 부분 수열에 포함시키지 않느다.
 > * 부분 수열에 포함시킨다
