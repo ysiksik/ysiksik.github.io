@@ -171,158 +171,62 @@ public class baekjoon9663 {
 }
 ~~~
 
-* ### 1 + B
+* [백준 1182번 - 부분 수열의 합](https://www.acmicpc.net/problem/1182)
 
-<div class="mermaid">
-graph LR;
-    N개중-->1.중복허용;
-    M개를-->B.고르기;
-</div>
-
-[백준 15652번 - N과 M (4)](https://www.acmicpc.net/problem/15652)
-
-~~~java
-public class baekjoon15652 {
-
-    static int N, M;
-    static int[] selected;
-
-    static StringBuilder sb = new StringBuilder();
-
-    public static void main(String[] args) throws IOException {
-        BufferedReader br = new BufferedReader(new InputStreamReader(System.in));
-        StringTokenizer st = new StringTokenizer(br.readLine(), " ");
-
-        N = Integer.parseInt(st.nextToken());
-        M = Integer.parseInt(st.nextToken());
-
-        selected = new int[M + 1];
-
-        dfs(1);
-
-        System.out.println(sb);
-
-    }
-
-
-    public static void dfs(int k) {
-        if(k == M+1){
-            for(int i = 1; i <= M; i++){
-                sb.append(selected[i]).append(" ");
-            }
-            sb.append("\n");
-        }else{
-            int start = selected[k-1];
-            if(start == 0) start = 1;
-            for(int i = start; i <= N; i++){
-                selected[k] = i;
-
-                dfs(k+1);
-
-                selected[k] = 0;
-
-            }
-        }
-
-    }
-
-
-}
-~~~
-
-> 시간, 공간 복잡도 계산
-> ```
-> N=4, M=3
-> ```
-
-> $$4 \times 4 \times 4 = 4^3$$
-
-> $$시간 : O \left(N^M\right) \Rightarrow 8^8 \simeq 1677만 아래$$
-
-> $$공간 : O \left(M\right)$$
-
-* ### 2 + B
-
-<div class="mermaid">
-graph LR;
-    N개중-->2.중복없이;
-    M개를-->B.고르기;
-</div>
-
-[백준 15650번 - N과 M (2)](https://www.acmicpc.net/problem/15650)
-
-~~~java
-public class baekjoon15650 {
-
-    static int N, M;
-    static int[] selected;
-
-    static StringBuilder sb = new StringBuilder();
-
-    public static void main(String[] args) throws IOException {
-        BufferedReader br = new BufferedReader(new InputStreamReader(System.in));
-        StringTokenizer st = new StringTokenizer(br.readLine(), " ");
-
-        N = Integer.parseInt(st.nextToken());
-        M = Integer.parseInt(st.nextToken());
-
-        selected = new int[M + 1];
-
-        dfs(1);
-
-        System.out.println(sb);
-
-    }
-
-
-    public static void dfs(int k) {
-        if (k == M + 1) {
-            for (int i = 1; i <= M; i++) {
-                sb.append(selected[i]).append(" ");
-            }
-            sb.append("\n");
-        } else {
-            for (int i = selected[k - 1] + 1; i <= N; i++) {
-                selected[k] = i;
-
-                dfs(k + 1);
-
-                selected[k] = 0;
-
-            }
-        }
-
-    }
-
-
-}
-~~~
-
-> 시간, 공간 복잡도 계산
-> ```
-> N=4, M=3
-> ```
-
-> $$시간 : O \left(\frac{N!}{M!(N-M)!}\right) \Rightarrow \frac{8!}{4!4!} = 70$$
-
-> $$공간 : O \left(M\right)$$
-
-
-***
-
-## 정리
----
+> 부분 수열에 포함시키지 않느다.
+> 부분 수열에 포함시킨다
 
 | 중복 | 순서 | 시간 복잡도 | 공간 복잡도 |
 | --- | ---| --- | --- |
-| YES | YES | $$O \left(N^M\right)$$ | $$O \left(M\right)$$ |
-| NO | YES | $$ O \left(\frac{N!}{(N-M)!}\right) $$| $$O \left(M\right)$$ |
+| <mark>YES</mark> | <mark>YES</mark> | $$O \left(N^M\right)$$ | $$O \left(M\right)$$ |
+| NO | YES | $$ O \left(\frac{N!}{(N-M)!}\right) $$ | $$O \left(M\right)$$ |
 | YES | NO | $$O \left(N^M\right)$$ 보다 작음| $$O \left(M\right)$$ |
 | NO | NO | $$O \left(\frac{N!}{M!(N-M)!}\right)$$| $$O \left(M\right)$$ |
 
-> 완전 탐색 문제 접근 팁
-> > * 고를 수 있는 값의 종류 파악
-> > * 중복 허용 여부
-> > * 순서가 중요 한지
+~~~java
+public class baekjoon1182 {
 
-***
+    static int N, S, result = 0;
+    static int[] arr;
+
+    public static void main(String[] args) throws IOException {
+        BufferedReader br = new BufferedReader(new InputStreamReader(System.in));
+        StringTokenizer st = new StringTokenizer(br.readLine(), " ");
+
+        N = Integer.parseInt(st.nextToken());
+        S = Integer.parseInt(st.nextToken());
+
+        arr = new int[N + 1];
+
+        st = new StringTokenizer(br.readLine(), " ");
+
+        for (int i = 1; i <= N; i++) {
+            arr[i] = Integer.parseInt(st.nextToken());
+        }
+
+        dfs(1, 0);
+
+        if (S == 0) {
+            result--;
+        }
+
+        System.out.println(result);
+
+    }
+
+
+    public static void dfs(int k, int value) {
+
+        if (k == N + 1) {
+            if (S == value) result++;
+        } else {
+
+            dfs(k + 1, value + arr[k]);
+
+            dfs(k + 1, value);
+
+        }
+
+    }
+}
+~~~
