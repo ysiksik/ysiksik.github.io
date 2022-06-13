@@ -183,7 +183,7 @@ public class baekjoon9663 {
 ~~~
 ***
 
-### [백준 1182번 - 부분 수열의 합](https://www.acmicpc.net/problem/1182)
+## [백준 1182번 - 부분 수열의 합](https://www.acmicpc.net/problem/1182)
 ---
     1. 부분 수열 : 수열의 일부 항을 선택해서 원래 순서대로 나열
     2. 진부분 수열 : 아무것도 안 고르는 경우는 뺀 부분 수열
