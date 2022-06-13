@@ -38,6 +38,44 @@ graph LR
     M개를-->A.순서있게나열
     M개를-->B.고르기
 ```
+
+@startmermaid
+graph LR
+    A-->B
+@endmermaid
+
+<div class="mermaid" markdown="0" >
+    graph TD 
+    A[Client] -->|tcp_123| B(Load Balancer) 
+    B -->|tcp_456| C[Server1] 
+    B -->|tcp_456| D[Server2]
+</div>
+
+graph TD
+A[Client] -->|tcp_123| B(Load Balancer)
+B -->|tcp_456| C[Server1] 
+B -->|tcp_456| D[Server2]
+
+<pre><code class="language-mermaid">
+graph LR
+    A-->B
+</code></pre>
+
+<pre><code class="mermaid">
+graph LR
+    A-->B
+</code></pre>
+
+<div class="mermaid">
+graph LR
+    A-->B
+</div>
+
+<div class="language-mermaid">
+graph LR
+    A-->B
+</div>
+
 <br>
 
 ## 연습
@@ -253,7 +291,13 @@ public class baekjoon15652 {
 
 * ### 2 + B
 
-<div class="mermaid">
+<div class="mermaid" markdown="0" >
+graph LR;
+    N개중-->2.중복없이;
+    M개를-->B.고르기;
+</div>
+
+<div class="mermaid!" >
 graph LR;
     N개중-->2.중복없이;
     M개를-->B.고르기;
