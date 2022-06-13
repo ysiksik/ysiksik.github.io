@@ -20,7 +20,7 @@ published: true
 
 ## [백준 14888번 - 연산자 키워넣기](https://www.acmicpc.net/problem/14888)
 
-* * *
+---
 
       1. 연산자를 어떻게 끼워 넣어도 항상 -10억보다 크거나 같고, 10억보다 작거나 같다.
       2. 중간에 계산되는 식의 결과도 항상 -10억보다 크거나 같고, 10억보다 작거나 같다.
@@ -109,11 +109,11 @@ public class baekjoon14888 {
 }
 ```
 
-* * *
+***
 
 ## [백준 9663번 - N Queen](https://www.acmicpc.net/problem/9663)
 
-* * *
+---
 
     1. N의 최댓값 14 일 때 21억을 넘는지 모름.
     2. int로 정해 놓고 N을 14로 입력하고 확인하거나
@@ -188,11 +188,11 @@ public class baekjoon9663 {
 }
 ```
 
-* * *
+***
 
 ## [백준 1182번 - 부분 수열의 합](https://www.acmicpc.net/problem/1182)
 
-* * *
+---
 
     1. 부분 수열 : 수열의 일부 항을 선택해서 원래 순서대로 나열
     2. 진부분 수열 : 아무것도 안 고르는 경우는 뺀 부분 수열
@@ -261,11 +261,11 @@ public class baekjoon1182 {
 }
 ```
 
-* * *
+***
 
 ## [백준 1759번 - 암호 만들기](https://www.acmicpc.net/problem/1759)
 
-* * *
+---
 
 ```java
 public class baekjoon1759 {
@@ -345,7 +345,7 @@ public class baekjoon1759 {
 
 ## [백준 15663번 - N과 M (9)](https://www.acmicpc.net/problem/15663)
 
-* * *
+---
 
 ```java
 public class baekjoon1759 {
@@ -421,4 +421,4 @@ public class baekjoon1759 {
 }
 ```
 
-* * *
+***
