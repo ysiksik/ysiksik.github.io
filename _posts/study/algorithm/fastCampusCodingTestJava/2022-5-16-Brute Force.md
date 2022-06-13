@@ -33,13 +33,6 @@ published: true
 
 ## 코딩 테스트에 나오는 완전 탐색 종류
 
-```mermaid!
-graph LR;
-    A-->B;
-    A-->C;
-    B-->D;
-    C-->D;
-```
 ---
 <div class="language-mermaid">
 graph LR
