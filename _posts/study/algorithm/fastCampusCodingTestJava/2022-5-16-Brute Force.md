@@ -31,7 +31,7 @@ published: true
 <br>
 
 ## 코딩 테스트에 나오는 완전 탐색 종류
-```mermaid! 
+```mermaid
 graph LR
     N개중-->1.중복허용
     N개중-->2.중복없이
@@ -44,11 +44,11 @@ graph LR
 ---
 * ### 1 + A
 
-<div class="mermaid">
+```mermaid
 graph LR;
     N개중-->1.중복허용;
     M개를-->A.순서있게나열;
-</div>
+```
 
  [백준 15651번 - N과 M (3)](https://www.acmicpc.net/problem/15651)
 
@@ -113,11 +113,11 @@ graph LR;
 
 * ### 2 + A
 
-<div class="mermaid">
+```mermaid 
 graph LR;
     N개중-->2.중복없이;
     M개를-->A.순서있게나열;
-</div>
+```
 
 [백준 15649번 - N과 M (1)](https://www.acmicpc.net/problem/15649)
 
