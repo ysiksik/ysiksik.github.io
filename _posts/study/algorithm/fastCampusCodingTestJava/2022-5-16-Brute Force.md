@@ -6,7 +6,7 @@ date: '2022-5-16 11:45:51 +0900'
 categories:
     - study
     - algorithm
-    - fastCampusCodingTestJava
+    - fastcampus-codingtest-java
 comments: true
 published: true
 ---
@@ -30,9 +30,18 @@ published: true
 ***
 <br>
 
+
 ## 코딩 테스트에 나오는 완전 탐색 종류
+
+```mermaid!
+graph LR;
+    A-->B;
+    A-->C;
+    B-->D;
+    C-->D;
+```
 ---
-<div class="mermaid">
+<div class="language-mermaid">
 graph LR
     N개중-->1.중복허용
     N개중-->2.중복없이

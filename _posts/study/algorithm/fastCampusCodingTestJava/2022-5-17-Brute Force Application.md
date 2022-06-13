@@ -6,7 +6,7 @@ date: '2022-5-17 11:45:51 +0900'
 categories:
     - study
     - algorithm
-    - fastCampusCodingTestJava
+    - fastcampus-codingtest-java
 comments: true
 published: true
 ---

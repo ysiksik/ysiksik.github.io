@@ -61,7 +61,7 @@ menu:
         url:      /algorithm/
         submenu:
           - title:  코딩테스트 369 JAVA
-            url:      /fastCampusCodingTestJava/
+            url:      /fastcampus-codingtest-java/
   - title:             Blog
     url:               /blog/
     submenu:
