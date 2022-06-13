@@ -39,13 +39,13 @@ graph LR;
 </div>
 
 ---
-<!-- <div class="language-mermaid">
-graph LR
-    N개중-->1.중복허용
-    N개중-->2.중복없이
-    M개를-->A.순서있게나열
-    M개를-->B.고르기
-</div> -->
+<div class="language-mermaid">
+graph LR;
+    N개중-->1.중복허용;
+    N개중-->2.중복없이;
+    M개를-->A.순서있게나열;
+    M개를-->B.고르기;
+</div> 
 ***
 <br>
 
