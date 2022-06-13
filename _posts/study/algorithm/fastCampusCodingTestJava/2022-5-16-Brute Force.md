@@ -33,14 +33,19 @@ published: true
 
 ## 코딩 테스트에 나오는 완전 탐색 종류
 
----
 <div class="language-mermaid">
+graph LR;
+    a-->b;
+</div>
+
+---
+<!-- <div class="language-mermaid">
 graph LR
     N개중-->1.중복허용
     N개중-->2.중복없이
     M개를-->A.순서있게나열
     M개를-->B.고르기
-</div>
+</div> -->
 ***
 <br>
 
