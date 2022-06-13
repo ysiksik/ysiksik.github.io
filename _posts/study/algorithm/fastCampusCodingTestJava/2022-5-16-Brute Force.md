@@ -31,7 +31,6 @@ published: true
 <br>
 
 ## 코딩 테스트에 나오는 완전 탐색 종류
----
 ```mermaid!
 graph LR;
     N개중-->1.중복허용;
