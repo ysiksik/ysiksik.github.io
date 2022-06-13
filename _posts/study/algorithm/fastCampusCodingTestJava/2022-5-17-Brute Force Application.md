@@ -72,11 +72,14 @@ public class baekjoon14888 {
     }
 
 
+    // order[1...N-1] 에 연산자들이 순서대로 저장될 것이다.
     public static void dfs(int k, int value) {
         if (N == k) {
+            // 완성된 식에 맞게 계산을 해서 정답에 갱신하는 작업
             MAX = Math.max(value, MAX);
             MIN = Math.min(value, MIN);
         } else {
+            // k 번째 연산자는 무엇을 선택할 것인가?
             for (int i = 1; i <= 4; i++) {
                 if (operatorNum[i] >= 1) {
                     operatorNum[i]--;
@@ -88,6 +91,7 @@ public class baekjoon14888 {
 
     }
 
+    // 피연산자 2개와 연산자가 주어졌을 때 계산해주는 함수
     public static int calculation(int first, int operator, int second) {
         switch (operator) {
             case 1:
@@ -228,7 +232,7 @@ public class baekjoon1182 {
         }
 
         dfs(1, 0);
-
+        // ans 가 정말 "진 부분집합"만 다루는 지 확인하기
         if (S == 0) {
             result--;
         }
@@ -237,15 +241,18 @@ public class baekjoon1182 {
 
     }
 
-
+    // k번째 원소를 포함시킬 지 정하는 함수
+    // value:= k-1 번째 원소까지 골라진 원소들의 합
     public static void dfs(int k, int value) {
 
-        if (k == N + 1) {
+        if (k == N + 1) { // 부분 수열을 하나 완성 시킨 상태
+            // value 가 S 랑 같은 지 확인하기
             if (S == value) result++;
         } else {
-
+            // k 번째 원소를 포함시킬 지 결정하고 재귀호출해주기
+            // Include
             dfs(k + 1, value + arr[k]);
-
+            // Not Include
             dfs(k + 1, value);
 
         }
