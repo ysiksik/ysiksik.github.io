@@ -7,8 +7,6 @@ categories:
     - study
     - algorithm
     - fastCampusCodingTestJava
-tags:
-    - paper
 comments: true
 published: true
 ---
