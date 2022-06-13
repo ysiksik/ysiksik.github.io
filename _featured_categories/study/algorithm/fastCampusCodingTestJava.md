@@ -1,6 +1,8 @@
 ---
 layout: post
-category: algorithm
+category: 
+    - study
+    - algorithm
 bigtitle: 한 번에 끝내는 코딩테스트 369 JAVA편
 description: >
   한 번에 끝내는 코딩테스트 369 JAVA편 공부 내용 기록
