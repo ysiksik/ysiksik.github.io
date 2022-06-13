@@ -417,7 +417,7 @@ jekyll-spaceship:
     css:
       class: mermaid
     syntax:
-      code: 'mermaid!'
+      code: 'mermaid'
       custom: ['@startmermaid', '@endmermaid']
     config:
       theme: default
