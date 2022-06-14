@@ -8,7 +8,9 @@ categories:
     - algorithm
     - fastcampus-codingtest-java
 comments: true
-published: true
+tags: fastcampusAlgorithm
+# related_posts:
+#     - _posts/study/algorithm/fastCampusCodingTestJava/2022-5-17-Brute Force Application.md
 ---
 
 # [Part3 Ch02 알고리즘] 01.완전 탐색 (Brute Force)
@@ -39,7 +41,7 @@ graph LR;
     N개중-->2.중복없이;
     M개를-->A.순서있게나열;
     M개를-->B.고르기;
-</div> 
+</div>
 ***
 <br>
 

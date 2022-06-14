@@ -1,17 +1,18 @@
 ---
 layout: post
 bigtitle: '알고리즘 유형별 문제풀이'
-subtitle: 02.완전 탐색 (Brute Force) 응용편
+subtitle: 01.완전 탐색 (Brute Force) 응용편
 date: '2022-5-17 11:45:51 +0900'
 categories:
     - study
     - algorithm
     - fastcampus-codingtest-java
 comments: true
-published: true
+tags: fastcampusAlgorithm
+# related_posts:
 ---
 
-# [Part3 Ch02 알고리즘] 02.완전 탐색 (Brute Force) 응용편
+# [Part3 Ch02 알고리즘] 01.완전 탐색 (Brute Force) 응용편
 
 # 완전 탐색 (Brute Force) 응용편
 * toc

@@ -62,6 +62,8 @@ menu:
         submenu:
           - title:  코딩테스트 369 JAVA
             url:      /fastcampus-codingtest-java/
+      - title:  데이터베이스 모델링
+        url:      /database-modeling/
   - title:             Blog
     url:               /blog/
     submenu:

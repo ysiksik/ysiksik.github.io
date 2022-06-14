@@ -15,5 +15,7 @@ sitemap: true
 ## 카테고리
 
 * [알고리즘]{:.heading.flip-title}
-
+* [데이터베이스-모델링]{:.heading.flip-title}
+  
 [알고리즘]: /algorithm/
+[데이터베이스-모델링]: /database-modeling/

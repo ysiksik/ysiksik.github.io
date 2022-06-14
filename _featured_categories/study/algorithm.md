@@ -1,17 +1,17 @@
 ---
-layout: post
+layout: list
 bigtitle: 알고리즘
 category: study
 slug: algorithm
+menu: true
 submenu: true
 order: 1
 description: >
    알고리즘, 코딩테스트
-addons:
-  - related
-  - comments
 list: true
 sitemap: true
+related_posts:
+  - 
 ---
 # 알고리즘
 
