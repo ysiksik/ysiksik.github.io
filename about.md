@@ -38,7 +38,7 @@ font-weight:bold">
 
 > 연락처: appie6069@naver.com
 
-> Portfolio Site : <a href="https://choyunsik.github.io">https://choyunsik.github.io</a>
+<!-- > Portfolio Site : <a href="https://choyunsik.github.io">https://choyunsik.github.io</a> -->
 
 
 ## 학력 / Education
