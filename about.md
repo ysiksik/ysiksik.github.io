@@ -140,7 +140,7 @@ mobileNet을 이용한 classification으로 버섯을 구별해주는 인공지�
     <div>정보 처리 기사 (2019. 08 취득)<img src= "/assets/img/Certification/6.png"></div>
     <div>네트워크관리사2급 (2018. 12 취득)<img src= "/assets/img/Certification/5.png"></div>
     <div>컴퓨터활용능력 2 급 (2017. 12 취득)<img src= "/assets/img/Certification/4.png"></div>
-    <div><Oracle Certified Java Programmer(OCJP) (2016. 10 취득)<img src= "/assets/img/Certification/3.png"></div>
+    <div>Oracle Certified Java Programmer(OCJP) (2016. 10 취득)<img src= "/assets/img/Certification/3.png"></div>
     <div><img src= "/assets/img/Certification/2.png"></div>
     <div><img src= "/assets/img/Certification/1.png"></div>
 </div>
