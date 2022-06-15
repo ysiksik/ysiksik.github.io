@@ -226,6 +226,7 @@ public class baekjoon11652 {
 >   + $$공간: \quad O\left(N\right)$$  
 
 * __구현__
+  
 ~~~java
 
 public class baekjoon20291 {
