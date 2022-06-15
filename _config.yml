@@ -64,6 +64,8 @@ menu:
             url:      /fastcampus-codingtest-java/
       - title:  데이터베이스 모델링
         url:      /database-modeling/
+      - title:  페이먼츠
+        url:      /payments/
   - title:             Blog
     url:               /blog/
     submenu:

@@ -8,8 +8,6 @@ categories:
     - database-modeling
 tags: databaseModeling
 comments: true
-related_posts:
-    - 
 ---
 
 # BPMN과 EA(Enterprise Architecture)
