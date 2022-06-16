@@ -54,6 +54,8 @@ public class baekjoon1015 {
         @Override
         public int compareTo(NumberIdx o) {
             return this.num - o.num;
+
+            //자바는 Object 원소 정렬이 Tim Sort이고 Tim Sort는 Stable 하기 때문에 NUM이 같으면 IDX 오름차순이 보장이 됨
         }
     }
 
@@ -86,6 +88,8 @@ public class baekjoon1015 {
     }
 }
   ~~~
+
+        자바는 Object 원소 정렬이 Tim Sort이고 Tim Sort는 Stable 하기 때문에 NUM이 같으면 IDX 오름차순이 보장이 된다는 것을 기억하자.
 ***
 
 ## [백준 1181번 - 단어 정렬](https://www.acmicpc.net/problem/1181)
@@ -167,7 +171,10 @@ public class baekjoon1181 {
 >   + $$공간: \quad O\left(N\right)$$  
 
 
-* __구현__
++ __구현__
+  + HashMap을 이용하면 더 쉽게 풀 수 있지만 정렬의 특성을 이용해서 풀이해 봄
+  + 같은 정보는 인접해 있다는 특성을 이용해서 풀이
+  
 ~~~java
 public class baekjoon11652 {
 
@@ -208,6 +215,8 @@ public class baekjoon11652 {
     }
 }
 ~~~
+
+        
 ***
 
 ## [백준 20291번 - 파일정리](https://www.acmicpc.net/problem/20291)
@@ -295,7 +304,8 @@ public class baekjoon20291 {
 
 
 
-* __구현__
++ __구현__
+    + 각 원소마다, 가장 가까운 원소는 자신의 양옆 중에 있다는 특성을 이용해서 풀이
 
 ~~~java
 
