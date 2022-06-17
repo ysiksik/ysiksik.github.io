@@ -56,3 +56,9 @@ graph TD;
     > + 비즈니스 프로세스 모델링(BPM)은 업무 분석 단계에서 비즈니스 요구사항드을 정리하고, 이를 개발프로세스에서 사용할 수 있도록 정의하는 것
   + BPMN(Business Process Modeling and Notation)
     > + OMG에서 주관하는 비즈니스 프로세스를 모델링 하기위한 국제 표준 표기법
+
+## BPMN 모델 예제
+* EX1
+  ![예제1](/assets/img/database-modeling/BPMN.png)
+* EX2  
+  ![예제2](/assets/img/database-modeling/BPMN2.png)

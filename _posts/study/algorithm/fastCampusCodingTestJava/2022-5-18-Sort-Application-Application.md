@@ -90,6 +90,7 @@ public class baekjoon1015 {
   ~~~
 
         자바는 Object 원소 정렬이 Tim Sort이고 Tim Sort는 Stable 하기 때문에 NUM이 같으면 IDX 오름차순이 보장이 된다는 것을 기억하자.
+        
 ***
 
 ## [백준 1181번 - 단어 정렬](https://www.acmicpc.net/problem/1181)
