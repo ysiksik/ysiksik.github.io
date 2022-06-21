@@ -274,8 +274,8 @@ comments: true
 
 ## ER/Studio Business Architect 사용 방법
 
-## 구인 광고 프로세스 작성하기
+### 구인 광고 프로세스 작성하기
 ![예제](/assets/img/database-modeling/StudioBusinessArchitect1.png)
 
-## 협업 모델 프로세스 작성하기
+### 협업 모델 프로세스 작성하기
 ![예제](/assets/img/database-modeling/StudioBusinessArchitect2.png)
