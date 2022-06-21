@@ -229,3 +229,53 @@ comments: true
 
 ![예제](/assets/img/database-modeling/Task.png)
 > 추상 작업을 제외한 다른 작업들은 아이콘으로 표시되는데 이러한 아이콘의 유형들은 향후 프로세스 엔진을 이용한 프로세스 자동화의 관점을 반영한다.
+
+## 예외 처리(Exception Handling)
+
+### 방해 중간 이벤트(Interrunpting Intermediate Events)
+> + 방해 중간 이벤트는 기존 프로세스의 흐름을 중단 시키며, 액티비티의 가장자리에 위치하게 된다
+> + ![예제](/assets/img/database-modeling/InterrunptingIntermediateEvents1.png)
+
+### 비방해 중간 이벤트(Non-Interrupting Intermedeiate Events)
+> + 비 방해 이벤트는 기존 프로세스의 흐름을 중단 시키지 않으며, 동그라미가 쉬라인으로 표시된다
+> + ![예제](/assets/img/database-modeling/InterrunptingIntermediateEvents2.png)
+
+### 오류 중간 이벤트(Error Intermediate Event)
+> + 오류(Error) 발생으로 인한 예외처리를 해야 하는 경우 오류 중간 이벤트가 사용될수 있으며, 플래시 기호를 사용한다
+> + ![예제](/assets/img/database-modeling/ErrorIntermediateEvent.png)
+>   + 오류 이벤트는 당연히 방해 이벤트 이다
+
+## 보상(Compensation) 프로세스
+
+### 트랜잭션
+> + 트랜젝션은 일반적으로 완성된 작업의 처리 단위를 말하는데 작업 내에 정의된 일들이 모두 처리가되거나 처리되지 않아야 한다(ALL or Nothing)
+> + ![예제](/assets/img/database-modeling/Compensation1.png)
+
+### 보상 프로세스
+![예제](/assets/img/database-modeling/Compensation2.png)
+> + 보상 프로세스는 트랜잭션 없이도 모델링 될 수 있다.
+> + 현재 보상 프로세스를 트랜잭션으로 하지 않은 이유는 봇아 프로세스가 발생하더라도 전체 프로세스를 되돌리지 않도록 하기 위함이다
+> + 거절을 만나면 보상 프로세스가 진행되어 비행기 예약과 호텔 예약 전체가 취소된다.
+> + '비행기 예약 취소' 보상 액티비티만 실행된다
+
+## 프로세스 안의 데이터 객체(Data Object)
+
+### 데이터 플로우 모델링
+> + 프로세스가 수행될 때 데이터, 정보, 파일, 문서 등이 만들어지거나 사용되며, 이를 표현하고자 하는 것이 바로 데이터 플로우 모델링이다
+> + 시퀀스 플로우는 액티비티간에 데이터 전송을 동반하게 되며, 메시지 플로우 또한 데이터 상호 교환이 주된 목적이다
+> + 프로세스 안의 모든 액티비티들은 언제든지 풀 안에 정의된 몬든 데이터들에 대해 접근할 수 있어야 한다
+> + ![예제](/assets/img/database-modeling/DataObject1.png)
+
+### 다중 데이터 객체
+![예제](/assets/img/database-modeling/DataObject2.png)
+> + 데이터 목록이나 집합에 대한 모델링을 할 때 다중 데이터 객체를 통해서 표현
+> + 다중 데이터 객체는 다중 인스턴스 액티비처럼 3개의 수직 선으로 표시된다
+> + 위 그림의 내용은 여러 명의 지원자들에 대한 지원서를 수신해서 지원서를 검토한 후 몇 개의 적합한 지원서를 고른 다음 그 중에서 한 명의 지원자에 대한 지원서를 선택하는 내용이다
+
+## ER/Studio Business Architect 사용 방법
+
+## 구인 광고 프로세스 작성하기
+![예제](/assets/img/database-modeling/StudioBusinessArchitect1.png)
+
+## 협업 모델 프로세스 작성하기
+![예제](/assets/img/database-modeling/StudioBusinessArchitect2.png)
