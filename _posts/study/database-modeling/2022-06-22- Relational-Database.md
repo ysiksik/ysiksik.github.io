@@ -42,7 +42,7 @@ comments: true
 > + 데이터베이스 모델링이란 ? 현실 세계의 업무적인 프로세서를 물리적으로 데이터베이스화 하기 위한 과정
 > + 실체와 관계를 중심으로 체계적으로 표현하고 문서화하는 기법
 > + 정보 시스템의 중심을 데이터의 관점에서 접근하는 데이터 중심의 분석 방법
-> + ![예제](/assets/img/database-modeling/데이터베이스-모델링-소개.png)
+> + ![예제](/assets/img/database-modeling/DatabaseModelingIntroduction.png)
 
 ### 데이터 베이스 모델링 단계 BPMN 을 모를때의 방식
 
@@ -81,4 +81,4 @@ comments: true
 > + 실체 무결성
 > + 도메인 무결성
 > + 사용장 정의 무결성
-> + ![예제](/assets/img/database-modeling/데이터-무결성.png)
+> + ![예제](/assets/img/database-modeling/DataIntegrity.png)

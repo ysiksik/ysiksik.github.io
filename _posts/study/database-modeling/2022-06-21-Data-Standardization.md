@@ -50,17 +50,17 @@ comments: true
 
 ### 정보 요구사항 생명주기
 > + 생명주기 모형을 반복적으로 수행하여 사용자 정보 요구 사항이 정보시스템에 누락 없이 반영되어야 한다
-> + ![예제](/assets/img/database-modeling/정보-요구사항-생명주기.png)
+> + ![예제](/assets/img/database-modeling/InformationRequirementsIifecycle.png)
 
 ## 데이터 표준화
 
 ### 데이터 표준화란?
 > + 데이터 표준화는 시스템 별로 산재해있는데 데이터 정보 요소에 대한 명칭, 정의, 형식, 규칙에 대한 원칙을 수립하여 이를 전사적으로 적용하는 것
 > + 데이터 품질을 확보하기 위해서는 데이터 표준화가 필수적이다.
-> + ![예제](/assets/img/database-modeling/데이터-표준화.png)
+> + ![예제](/assets/img/database-modeling/DataStandardization.png)
 
 ### 데이터 표준화 구성요소
-> + ![예제](/assets/img/database-modeling/데이터-표준화-구성요소.png)
+> + ![예제](/assets/img/database-modeling/DataStandardizationComponents.png)
 > + 전사적인 데이터 표준화를 추진하기 위해 수립해야 할 표준화 구성요소는 데이터 표준, 데이터 관리 조직, 데이터 표준화 절차 이다
 
 ### 데이터 표준이란?
