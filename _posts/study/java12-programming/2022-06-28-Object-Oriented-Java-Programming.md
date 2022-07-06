@@ -163,7 +163,7 @@ public class ArrayCopy {
 > + protected 같은 패키지 내부와 상속관계의 클래스만 접근할 수 있고, 그 외 클래스에서 접근할 수 없음
 
 
-+ 클래스 내부에서 사용할 변수나 메서드는 private 선언해서 외부에서 접근하지 못하도록 하는 것을 객체 지향에서는 "정보 은닉(information hiding)"이라고 함 
++ 클래스 내부에서 사용할 변수나 메서드는 private 선언해서 외부에서 접근하지 못하도록 하는 것을 객체 지향에서는 "정보 은닉(information hiding)"이라고 함
   + 모든 변수를 private으로 선언해야 하는 것은 아니지만 필요한 경우에는 private으로 선언하여 오류를 막을 수 있음
 
 ## static
@@ -175,7 +175,7 @@ public class ArrayCopy {
   + static 변수는 인스턴스보다 먼저 생성
   + 클래스에 속해 한 번만 생성되는 변수이고 이를 여러 인스턴스가 공유, 이러한 이유로 static 변수를 클래스에 기반한 변수라고 해서 클래스 변수라고도 함
   + static 변수를 위한 메소드는 static 메소드 또는 클래스 메소드 라고 함
-  
+
 + static 변수의 유효 범위
   + 프로그램 실행 시 메모리에 프로그램에 상주하게 되는데, 프로그램 영역 중 데이터 영역에 있음.
   + 데이터 영역에는 상수나 문자열 , static 변수가 생성
@@ -190,8 +190,8 @@ public class ArrayCopy {
 
 + 싱글톤 패턴(singleton patten)
   + 프로그램 구현 시 인스턴스 하나만 생성하는 디자인 패턴
-  
-## 상속 
+
+## 상속
 
 + 하위클래스가 생성될 때는 상위 클래스의 생성자가 먼저 호출되는데, 그래서 하위클래스가 상위클래스의 변수와 메소드를 사용할 수 있고, 상위 클래스의 자료형으로 형변환이 가능해짐 , 반대로 하위클래스의 자료형으로 상위클래스의 인스턴스는 생성은 불가능
 
@@ -284,3 +284,379 @@ graph TD;
   + 모든 자료를 순회할려면 key값을 먼저 가져와서 key 값에 해당하는 value를 찾아야함
   + hashMap.keySet()메소드를 호출하면 모든 key값이 Set 객체로 반환
   + 반환된 set()객체에 interator()메소드를 호출하면 key를 순회할 수 있는 interator가 반환
+
+
+## 내부 클래스
+
++ 내부 클래스는 클래스 내부에 선언한 클래스
+  + 이 클래스와 외부 클래스가 밀접한 관련이 있거나 그 밖의 다른 클래스와 협력할 일이 없는 경우 내부 클래스로 선언해서 사용
++ 인스턴스 내부 클래스
+  + 인스턴스 변수를 선언할 때와 같은 위치에 선언
+  + 외부 클래스 내부에서만 생성하여 사용하는 객체를 선언할 때 사용
+  + 외부 클래스가 먼저 생성되어야 사용 가능, 인스턴스 내부 클래스의 메소드는 외부 클래스의 메소드가 호출될때 사용가능
+  + 인스턴스 내부 클래스에서 정적 변수, 메소드 선언 불가
++ 정적 내부 클래스
+  + 인스턴스 내부 클래스처럼 외부 클래스의 멤버변수와 같은 위치에 정의하며 static 예약어를 함께 사용
+  + 내부 클래스가 외부 클래스 생성과 무관하게 사용할 수 있어야 하고 정적 변수도 사용할 수 있어야 한다면 정적 내부 클래스를 사용
+  + 정적 내부 클래스의 일반 메소드 :  외부 클래스의 인스턴스 변수 사용 불가
+  + 정적 내부 클래스의 static 메소드 :  외부 클래스의 인스턴스 변수 사용 불가, 내부 정적 클래스의 인스턴스 변수 사용 불가
+  + 정적 메서드에서는 인스턴스 변수를 사용할 수 없습니다. 따라서 정적 내부 클래스에서도 외부 클래스의 인스턴스 변수는 사용할 수 없습니다.
+  + 정벅 내부 클래스에서 사용하는 메서드가 정적메서드인 경우, 외부 클래스와 정적 내부 클래스에 선언되 변수 중 정적 변수만 사용 할 수 있습니다.
++ 지역 내부 클래스
+  + 지역 변수처럼 메서드 내부에 클래스를 정의하여 사용
+  + 메서드 안에서만 사용가능
++ 익명클래스
+  + 익명클래스는 클래스 이름을 사용하지 않는 클래스
+  + 지역 내부 클래스와 동일한 방법으로 사용
+
+## 스레드(Thread)
+
++ 프로세스(process)
+  + 운영체제에서는 실행중인 하나의 애플리케이션을 프로세스라고 함
+  + 사요자가 애플리케이션을 실행하면 운영체제로부터 실행에 필요한 메모리를 할당 받아 애플리케이션의 코드를 실행하는데 이것이 프로세스 이다.
++ 스레드(Thread)
+  + 사전적 의미로 한 가닥의 실이라는 뜻
+  + 한 가지 작업을 실행하기 위해 순차적으로 실행할 코드를 실처럼 이어놓았다고 해서 유래된 이름
+  + 하나의 스레드는 하나의 코드 실행 흐름이기 때문에 한 프로세스 내에 스레드가 2개라면 2개의 코드 실행 흐름이 생긴다는 의미
+  + 자바의 모든 애플리케이션은 메인 스레드(main thread)가 main() 메소드를 실행하면서 시작
+  + 메소드의 첫 코드부터 아래로 순차적으로 실행하고, 마지막 코드를 실행하거나 return문을 만나면 실행이 종료
+
+## Lambda Expression
+
++ 람다(Lambda)란?
+  + 람다 미적분학 학계에서 개발할 시스템에서 유래
+  + 메소드에게 전달할 수 있는 익명 클래스를 함수로 단순화 시킨것
+  + 객체를 기반으로 하는 자바에서 함수형 프로그래밍(functional programming) 방식을 자바 8부터 지원
+  + 자바에서 제공하는 함수형 프로그래밍 방식을 람다식(Lambda expression)이라고 함
++ 람다의 특징
+  + 익명
+    + 보통의 메소드와 달리 이름이 없다
+  + 함수
+    + 특정 클래스에 종속되지 않아 함수라 부른다
+  + 전달
+    + 람다 표현식을 메서드의 인자로 전달하거나 변수로 저장할 수 잇다.
+  + 간결성
+    + 익명 클래스처럼 자질구레한 코드를 구현할 필요가 없다
++ 람다의 적용
+
+  ~~~java
+  // 람다 적용 전
+  int add(int x, int y){
+    return x + y;
+  }
+
+  // 람다 적용 후
+  (int x, int y)--> {return x + y;}
+  ~~~
+
++ 람다의 구성
+  ~~~java
+  //람다 파라미터, 화살표, 람다 바디
+  (int x, int y)   -->   {return x + y;}
+  ~~~
+
+  + 람다 파라미터
+    + 메소드의 파라미터
+  + 화살표(->)
+    + 람다의 파라미터 리스트와 바디를 구분
+  + 람다 바디
+    + 람다의 반환값에 해당하는 표현식
+
++ Java 8에서 유효한 다섯가지 람다 표현
+  + String 파라미터 하나를 가지며 int 를 반환
+    + 람다 표현식에는 return이 함축되어 있으므로 return을 명시적으로 상요하지 않아도 됨
+
+    ~~~java
+    (String s) -> s.length()
+    ~~~
+
+  + Employees 형식의 파라미터 하나를 가지며 boolean을 반환
+
+    ~~~java
+    (Employees emp) -> emp.getSalary() > 5000
+    ~~~
+
+  + int 형식의 파라미터 두개를 가지며 리턴 값이 없다
+    + 람다 표현식을 여러 행의 문장을 포함할 수 있다.
+
+    ~~~java
+    (int x, int y) -> {
+      System.out.println("Result : ");
+      System.out.println(x+y);
+    }
+    ~~~
+
+  + 파라미터가 없으며 int를 반환
+
+    ~~~java
+    () -> 42
+    ~~~
+
+  + Employees 형식의 파라미터 두개를 가지며 int를 반환
+
+    ~~~java
+    (Employees emp1, Employees emp2) -> emp1.getSalary() emp2.getSalary()
+    ~~~
+
+  + 함수형 인터페이스
+    + 람다식을 구현하기 위해 인터페이스를 먼저 만들고, 인터페이스에 람다식으로 구현할 메소드를 선언
+    + 하나의 메소드를 구현하여 인터페이스형 변수에 대입하기 때문에 두 개 이상의 함수를 가져서는 안됨
+    + 람다식은 __오직 하나의 메소드만 선언한 인터페이스를 구현__ 할 수 있다.
+    + 람다식은 이름이 없는 익명함수로 구현하기 때문에 인터페이스에 메소드를 여러 개 추가하게 된다면. 어떤 메소드를 구현한 것인지 알 수 가 없음 따라서 오직 하나의 메서드만 선언한 인터페이스를 구현할 수 있다.
+    + 실수로 다른 메소드를 추가한 경우 오류 메시지가 나타날 수 있도록 애노테이션을 추가 하도록 해야함.
+      + @FunctionalInterface 람다식으로 구현한 인터페이스에 다른 메소드를 추가하지 않기 위해 사용
+        + 반드시 써야하는 것은 아니지만, 함수형 인터페이스 임을 명시할 수 있어 실수로가도 발생할 오류를 방지 할 수 있다
+    + 람다식으로 메소드를 구현 한 뒤 호출하면 시스템 내부에서는 익명 클래스가 생성되고 이를 통해 익명 객체가 생성됨
+    + 람다식이 대입된 변수를 사용하여 람다식 구현부를 호출할 수 잇음
+    + 람다식을 변수에 대입하여 매개변수로 전달이 가능, 자료형은 인터페이스형
+    + 함수의 반환형을 인터페이스형으로 하면 구현한 람다식 반환이 가능
+    + 함수의 구현부를 변수에 대입하고, 매개변수로 전달하고, 함수의 반환값으로 사용하는 것이 함수형 프로그래밍의 특징 중 하나
+  
+## Stream 활용
+
++ 스트림
+  + 여러 자료의 처리에 대한 기능을 구현해 놓은 클래스
+  + 스트림을 활용하면 배열, 컬렉션 등의 자료를 일괄성 있게 처리할 수 있다
+  + 자료에 따라 기능 구현하는 것이 아니라, 처리해야하는 자료가 무엇인지와 상관없이 같은 방식으로 메소드 호출이 가능
+    + 자료의 추상화라고도 함
++ 스트림 연산
+  + 중간연산
+    + filter() : 조건을 넣고 그 조건에 맞는 참인 경우만 추출하는 경우 사용
+    
+    ~~~java
+    //스트림 생성,   중간 연산,                  최종 연산
+    sList.stream().filter(s -> s.length() >= 5).forEach(s-> System.out.println(s));
+    ~~~ 
+
+    + map() : 클래스가 가진 자료 중 이름만 출력하는 경우에 사용
+    
+    ~~~java
+    //스트림 생성,         중간 연산,             최종 연산
+    customerList.stream().map(c -> c.getName()).forEach(s-> System.out.println(s));
+    ~~~  
+  
+  + 최종연산
+    + 스트림의 자료를 소모하며 연산하기 때문에 최종 연산이 수행되고 나면 해당 스트림은 더 사용할 수 없다.
+    + 최종연산은 결과를 만드는데 주로 상용
+    + forEach() : 요소를 하나씩 꺼내는 기능
+    + count(), sum() : 배열 요소의 합계를 구하거나 개수를 출력하는 등의 연산을 수행
+    + reduce() : 내부적으로 스트림 요소를 하나씩 소모하면서 프로그래머가 직접 작성하는 기능
+      + T reduce(T identify, BinaryOperator<T> accumulator)
+      + T identify는 초기값을 의미, 그 뒤에 매개변수는 수행해야 할 기능
+      + BinaryOperator 인터페이스는 두 매개변수로 람다식을 구현하며 이 람다식이 각 요소가 수행해야 할 기능이 됨
+      + 모든 요소의 합을 구할 때, 두 번째 매개변수에 람다식을 직접 쓰는 경우
+      
+      ~~~java
+      //                   초기값,전달 되는 요소, 각 요소가 수행해야 할 기능
+      Arrays.stream(arr).reduce(0, (a,b) -> a + b);
+      ~~~ 
+
+      + 초기값은 0이고, 스트림 요소가 매개 변수로 전달되면서 합을 구함
+      + 내부적으로는 반복문이 호출되면서 람다식에 해당하는 부분이 리스트 요소만큼 호출됨
+      + 따라서 reduce() 메소드에 어떤 람다식이 전달되는냐에 따라 다양한 연산 수행이 가능한 최종연산
+  
+  + 자료의 대상과 관계없이 동일한 연산을 수행
+    + 배열이나 컬렉션에 저장된 자료를 가지고 수행할 수 있는 연산은 여러 가지가 있다
+    + 스트림은 컬렉션의 여러 자료 구조에 대해 이런한 작업을 일관성 있게 처리 할 수 있는 메소드를 제공
+  + 한 번 생성하고 사용한 스트림은 재사용할 수 없다
+    + 어떤 자료에 대한 스트림을 생성하고 이 스트림에 메소드를 호출하여 연사을 수행햇다면 해당 스트림을 다시 다른 연산에 사용할 수 없다.
+    + 스트림 생성 후 해당 요소를 출력했을 때 '소모 된다'고 이야기 한다
+    + 소모된 요소는 재사용 불가
+  + 스트림의 연산은 기존 자료를 변경하지 않는다
+    + 스트림을 생성하여 여러 연산을 수행한다고 해서 기존 배열이나 컬렉션이 변경되지 않는다
+    + 스트림 연산을 위해 사용하는 메모리 공간이 별도로 존재, 기존 자료에는 영향 없음
+  + 스트림의 연산은 중간 연산과 최종 연산이 있다
+    + 스트림의 중간 연산은 여러 개가 적용될 수 있다.
+    + 최종 연산은 맨 마지막에 한 번 적용 된다.
+    + 만약 중간 연산이 여러 개 호출 됬었더라도 최종 연산이 호출되어야 스트림의 중간 연산이 모두 적용 된다.
+  
+## 자바 입출력
+
++ 자바에서 모든 입출력은 Stream을 통해 이루어짐
++ 스트림이란 네트워크에서 유래된 용어로 자료 흐름이 물의 흐름과 같다느 의미에서 사용
++ 바이트 단위 스트림 : 그림, 동영상, 음악 파일 등 바이트 단위로 읽고 쓰는 스트림
++ 문자 단위 스트림 : 2byte로 처리되는 문자를 처리하기 위한 스트림
++ 기반 스트림 : 자료를 직접 읽거나 쓰는 기능을 제공하는 스트림
++ 보조 스트림 : 자료를 직접 읽거나 쓰는 기능은 없이 다른 스트림에 부가 기능을 제공하는 스트림
++ 표준 입출력 클래스
+  + 자바는 미리 정의해 둔 화면에 출력하고 입력 받는 표준 입출력 클래스가 있다.
+  + System.out 이 표준 출력 객체이다.
+  + 표준 입출력을 위한 System 클래스
+  
+  | 자료형 | 변수 이름 | 설명 | 
+  | ----- | --------- | --- |
+  | static PrintStream | out | 표준 출력 스트림(static 변수) |
+  | static InputStream | in | 표준 입력 스트림(static 변수) |
+  | static OutputStream | err | 표준 오류 출력 스트림(static 변수) |
+
+  + System.in 
+    + System.in은 바이트 단위로 읽어 들이는 InputStream이므로 1바이트만 읽는다.
+    + 읽어 드린 1바이트를 출력하면 문자에 대한 값(아스키값)을 출력한다, 그래서 문자로 변환하여 출력한다.
++ Scanner 
+  + Scanner 클래스는 java.util 패키지에 있는 입력 클래스
+  + Scanner 클래스는 문자 외에 다른 자료형도 읽을 수 있다
+  + System.in으로 입력받는 것보다 다양한 매소드를 활용할 수 있다.
+  + Scanner 클래스
+    
+  | 생성자 | 설명 |
+  | ----- | --------- |
+  | Scanner(File source) | 파일을 매개변수로 받아 Scanner를 생성 |
+  | Scanner(InputStream source) | 바이트 스트림을 매개변수로 받아 Scanner를 생성 |
+  | Scanner(String source) | String을 매개변수로 받아 Scanner를 생성 |
+
+  + 표준 입력 System.in을 사용하면 바이트 단위 자료만 처리할 수있어 한글 같은 경우 보조 스트림을 추가로 사용해야하는데, Scanner는 다양한 자료형을 입력할 수 있어 많이 활용한다.
++ InputStream
+  + InputStream은 바이트 단위로 읽는 스트림 중 최상위 스트림
+  + InputStream은 추상 메소드를 포함한 추상 클래스로서 하위 스트림 클래스가 상속 받아 각 클래스 역할에 맞게 추상메소드 기능을 구현한다.
+  + InputStream 하위 클래스
+
+  | 스트림 클래스 | 설명 |
+  | ----------- | ---- |
+  | FileInputStream | 파일에서 바이트 단위로 자료를 읽음 |
+  | ByteArrayInputStream | Byte배열 메모리에서 바이트 단위로 자료를 읽음 |
+  | FilterInputStream | 기반 스트림에서 자료를 읽을 때 추가 기능르 제공하는 보조 스트림의 상위 클래스 |
+
+  + InputStream 제공 메서드 
+  
+  | 메서드 | 설명 |
+  | ----- | --- |
+  | int read() | 입력 스트림으로부터 한 바이트의 자료를 읽고, 읽은 자료의 바이트 수 반환 읽어 들일 자료가 없는 경우 정수 -1 반환 |
+  | int read(byte b[]) | 입력 스트림으로부터 b[] 크기의 자료를 b[]에 읽고, 읽은 자료의 바이트 수 반환   |
+  | int read(byte b[], int off, int len) | 입력 스트림으로부터 b[]크기의 자료를 b[]의 off변수 위치부터 저장하여 len 만큼 읽고, 읽은 자료의 바이트수 반환 |
+  | void close() | 입력 스트림과 연결된 대상 리소스 닫음 |
+
++ FileInputStream
+  + FileInputStream은 파일에서 바이트 단위로 자료를 읽어 들일때 사용하는 스트림 클래스
+  + FileInputStream(String name) - name을 매개변수로 받아 입력 스트림 생성
+  + FileInputStream(File f) - File 클래스 정보를 매개변수로 받아 입력 스트림 생성
++ OutputStream
+  + OutputStream은 바이트 단위로 쓰는 스트림 중 최상위 스트림
+  + 자료의 출력 대상에 따라 다른 스트림을 제공한다
+  + OutputStream 하위 클래스
+  
+  | 스트림 클래스 | 설명 |
+  | ----------- | ---- |
+  | FileOutputStream | 파일에서 바이트 단위로 자료를 씀 |
+  | ByteArrayOutputStream | Byte 배열 메모리에서 바이트 단위로 자료를 씀 |
+  | FilterOutputStream | 기반 스트림에서 자료를 쓸 때 추가 기능을 제공하는 보조 스트림의 최상위 클래스 |
+  
+  + OutputStream 제공 메서드
+  
+  | 메서드 | 설명 |
+  | ----- | --- |
+  | int write() | 한 바이트 출력 |
+  | int write(byte b[]) | b[] 배열에 있는 자료를 출력 |
+  | int write(byte b[], int off, int len) | b[] 배열에 있는 자료의 off 위치부터 len 개수 만큼 자료를 출력 |
+  | void flush() | 출력을 위해 잠시 자료가 머무르는 출력 버퍼를 강제로 비워 자료를 출력 |
+  | void close() | 출력 스트림과 연결된 리소스 닫음, 출력 버퍼가 비워짐 |
+  
++ FileOutputStream
+  + FileOutputStream은 파일에서 바이트 단위로 자료를 출력하기 위해 사용하는 스트림
+  + 생성자 매개변수로 전달 된 파일이 없으면 파일을 새로 생성한다
+  + FileOutputStream 생성자
+  
+  | 생성자 | 설명 |
+  | ----- | --------- |
+  | FileOutputStream(String name) | 파일 이름 name을 매개변수로 받아 출력 스트림 생성 |
+  | FileOutputStream(String name, Boolean append) | 파일 이름 name을 매개변수로 받아 출력 스트림 생성, append 값이 true 이면 파일 스트림을 닫고 다시 생성할 때 파일 끝에 이어서 씀, 디폴트는 false |
+  | FileOutputStream(File f) | File 클래스 정보를 매개변수로 받아 출력 스트림 생성 |
+  | FileOutputStream(File f, boolean append) | File 클래스 정보를 매개변수로 받아 출력 스트림 생성, append 값이 true 이면 파일 스트림을 닫고 다시 생성할 때 파일 끝에 이어서 씀, 디폴트는 false |
+
++ Reader
+  + Reader는 문자 단위로 읽는 스트림 중 최상위 스트림으로 다음 하위 클래스를 주로 사용
+  + Reader 하위 클래스
+    + FileReader - 파일에서 문자 단위로 읽는 스트림 클래스
+    + InputStreamReader - 바이트 단위로 읽은 자료를 문자로 변환해 주는 보조 스트림 클래스
+    + BufferedReader - 문자로 읽을 때 배열을 제공하여 한꺼번에 읽을 수 있는 기능을 제공해 주는 보조 스트림
+  + Reader 제공 메서드
+    + int read() - 파일로부터 한 문자를 읽고, 읽은 값을 반환
+    + int read(char[] buf) - 파일로부터 buf 배열에 저장된 문자들을 읽음
+    + int read(char[] buf, int off, int len) - 파일로부터 buf 배열의 off 위치에서부터 len 개수만큼 문자를 읽음
+    + void close() - 스트림과 연결된 파일 리소스를 닫음
++ FileReader
+  + FileReader는 FileInputStream과 마찬가지로 읽으려는 파일이 없으면 FileNotFountException 발생
+  + FileReader(String name) - name을 매개변수로 받아 입력 스트림 생성
+  + FileReader(File f) - File 클래스 정보를 매개변수로 받아 입력 스트림 생성
++ Writer
+  + Writer는 문자 단위로 출력하는 스트림 중 최상위 스트림으로 다음 하위 클래스를 주로 사용
+  + Writer 하위 클래스
+    + FileWriter - 파일에서 문자 단위로 출력하는 스트림 클래스
+    + OutputStreamWriter - 파일에 바이트 단위로 출력한 자료를 문자로 변환해주는 보조 스트림
+    + BufferedWriter - 문자로 출력할 때 배열을 제공하여 한꺼번에 출력할 수 있는 기능을 제공해 주는 보조 스트림
+  + Writer 제공 메소드
+    + void write(int c) - 한 문자 출력
+    + void write(char[] buf) - buf 배열에 저장된 문자들을 출력
+    + void write(char[] buf, int off, int len) - buf 배열에서 off 위치에서 len 개수만큼의 문자들을 출력
+    + void write(String str) - str 문자열을 출력
+    + void write(String str, int off, int len) - str 문자열에서 off 위치에서 len 개수만큼의 문자들을 출력
+    + void flush - 파일에 출력하기 전에 자료가 있는 공간을 비워 출력
+    + void close - 파일과 연결된 스트림을 닫음. 출력 버퍼도 비워짐
++ FileWriter
+  + FileWriter는 FileOutputStream과 마찬가지로 생성자 매개변수로 전달 된 파일이 없으면 파일을 새로 생성
+  + FileWriter 생성자
+    + FileWriter(String name) - 파일 이름 name을 매개변수로 받아 출력 스트림 생성
+    + FileWriter(String name, boolean append) - 파일 이름 name을 매개변수로 받아 출력 스트림 생성. append를 true이면 파일 스트림을 닫고 다시 생성할 때 파일 끝에 이어서 씀, 디폴트는 false
+    + FileWriter(File f) - File 클래스 정보를 매개변수로 받아 출력 스트림 생성
+    + FileWriter(File f, boolean append) - File 클래스 정보를 매개변수로 받아 출력 스트림 생성. append를 true이면 파일 스트림을 닫고 다시 생성할 때 파일 끝에 이어서 씀, 디폴트는 false
++ 보조 스트림
+  + 보조 스트림은 말 그대로 보조 기능을 추가하는 스트림 
+  + Wrapper 스트림이라고도 함
+  + 생성자 매개변수로 다른 스트림을 받게 되면 자신이 감싸고 있는 스트림이 읽거나 쓰는 기능을 수행할 때 보조 기능을 추가 한다.
+  + FilterInputStream / FilterOutputStream - 보조 스트림의 상위 클래스
+    + protected FilterInputStream(InputStream in) - 생성자 매개변수로 InputStream을 받음
+    + public FilterOutputStream(OutputStream out) - 생성자 매개변수로 OutputStream을 받음
++ InputStreamReader
+  + InputStreamReader의 모든 생성자는 InputStream -바이트 단위로 읽어 드리는 스트림 - 을 매개변수로 받음
+  + 생성자에서 매개변수로 받은 InputStream이 자료를 읽으면 InputStreamReader가 읽은 바이트 자료를 문자로 변환해 준다
++ Buffered스트림
+  + Buffered스트림은 내부적으로 8,192바이트 크기의 배열을 가지고 있다.
+  + 이미 생성된 스트림에 배열 기능을 추가해 더 빠르게 입출력을 실행할 수 있는 버퍼링 기능을 제공한다.
+  + 한 바이트나 한 문자 단위로 처리할 때보다 훨씬 빠르게 처리할 수 있다.
+  + 스트림을 생성할 때 매개변수로 받은 스트림을 버퍼링하여 처리하는 기능을 제공한다.
+  + Bufferd 스트림 클래스
+    + BufferdInputStream - 바이트 단위로 읽은 스트림에 버퍼링 기능을 제공
+    + BufferdOutputStream - 바이트 단위로 쓸 스트림에 버퍼링 기능을 제공
+    + BufferdReader - 문자 단위로 읽은 스트림에 버퍼링 기능을 제공
+    + BufferdWriter - 문자 단위로 쓸 스트림에 버퍼링 기능을 제공
+  + BufferdInputStream 생성자
+    + BufferdInputStream(InputStream in) - InputStream 클래스를 생성자의 매개변수로 받아 BufferedInputStream 클래스를 생성한다.
+    + BufferdInputStream(InputStream in, int size) - InputStream 클래스와 버퍼크기를 생성자의 매개변수로 받아 BufferedInputStream를 생성한다.
++ DataInputStream과 DataOutputStream
+  + DataInputStream과 DataOutputStream은 메모리에 저장된 상태 그대로 읽고 쓴다, 그래서 자료형의 크기가 그대로 보존 된다
+  + DataInputStream/ DataOutputStream 생성자
+    + DataInputStream(InputStream in) - InputStream 클래스를 생성자의 매개변수로 받아 DataInputStream 클래스를 생성한다.
+    + DataOutputStream(OutputStream out) - OutputStream 클래스를 생성자의 매개변수로 받아 DataOutputStream 클래스를 생성한다.
+  + DataInputStream 메소드
+    + byte readByte() - 1바이트를 읽어서 반환한다.
+    + Boolean readBoolean() - 읽은 자료가 1이 아니면 true, 0이면 false를 반환한다.
+    + char readChar() - 한문자를 읽어서 반환한다.
+    + short readShort() - 2바이트를 읽어서 정수 값 반환한다.
+    + int readInt() - 4바이트를 읽어서 정수 값 반환한다.
+    + long readLong() - 8바이트를 읽어서 정수 값 반환한다.
+    + float readFloat() - 4바이트를 읽어서 실수 값 반환한다.
+    + double readDouble() - 8바이트를 읽어서 실수 값 반환한다.
+    + String readUTF() - 수정된 UTF-8 인코딩 기반으로 읽어서 반환한다.
+  + DataOutputStream 메소드
+    + void writeByte(byte b) - 1바이트를 쓴다.
+    + void writeBoolean(boolean v) - 정수 값을 쓴다.
+    + void writeChar(char v) - 2바이트를 쓴다.
+    + void writeShort(short v) - 2바이트를 쓴다.
+    + void writeInt(int v) - 4바이트를 쓴다.
+    + void writeLong(long v) - 8바이트를 쓴다.
+    + void writeFloat(float v) - 4바이트를 쓴다.
+    + void writeDouble(double v) - 8바이트를 쓴다.
+    + void writeUTF(String str) - 수정된 UTF-8 인코딩 기반으로 쓴다.
++ File
+  + File클래스는 파일 개념을 추상화한 클래스
+  + 파일에 대한 입출력은 스트림을 사용하고 수행한다.
+  + File클래스는 파일 자체의 경로나 정보를 알 수 있고, 파일을 생성할 수 있다.
+  + File 생성자
+    + File(String pathname) - 파일의 경로를 매개변수로 받아 File 클래스를 생성한다.
++ RandomAccessFile
+  + 입출력 클래스 중 유일하게 파일 입출력을 동시에 할 수 있는 클래스
+  + 지금까지의 스트림은 처음부터 차례로 자료를 읽었지만 RandomAccessFile은 임의의 위치(파일 포인터)로 이동하여 자료를 읽을 수 있다.
+  + RandomAccessFile 생성자
+    + RandomAccessFile(String file, String mode) - 입출력 할 파일 이름을 문자열로 받고, 입출력 mode를 매개변수로 받음 mode에 읽기전용 'r'과 일고 쓰기인 'rw' 사용 가능
+    + RandomAccessFile(File file, String mode) - 입출력 할 File 클래스의 객체를 매개변수로 받고, 입출력 mode를 매개변수로 받음 mode에 읽기전용 'r'과 일고 쓰기인 'rw' 사용 가능
+  
+  
