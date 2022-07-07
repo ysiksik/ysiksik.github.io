@@ -68,6 +68,8 @@ menu:
         url:      /payments/
       - title:  Java12 프로그래밍
         url:      /java12-programming/
+      - title: Spring Boot 기반 REST API 개발
+        url:      /springBoot-REST-API/
   - title:             Blog
     url:               /blog/
     submenu:
