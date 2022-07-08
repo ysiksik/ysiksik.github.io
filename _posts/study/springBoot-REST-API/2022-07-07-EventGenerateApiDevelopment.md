@@ -20,7 +20,7 @@ comments: true
 ## Lombok 이란?
 + 자바에서 Model(DTO, VO, Entity) Object 를 작성할 때, 멤버필드(프로퍼티)에 대한 Getter/Settter,ToString과 멤버 필드에 주입하는 생성자 등 반복적으로 만드는 코드들을 어노테이션(@)을 통해 줄여주는 라이브러리이다.
 + 동작원리
-  + Lombok annotation이 부여된 Java Source를 컴파일 할 때 등록된 Lombok processor가 어노테이션을 확인하고, 그에 맞는 메서드를 자동으로 생성하여 bytecode로 변환시켜 준다.
+  + Lombok annotation이 부여된 Java Source를 컴파일 할 때 등록된 Lombok processor가 어노테이션을 확인하고, 그에 맞는 메서드를 자동으로 생성하여 byte code로 변환시켜 준다.
 + 단점
   + 협업 모든 이원이 lombok을 설치해야하고, 추가적인 어노테이션을 사용 할 경우 소스코드 분석이 어려울 수도 잇다.
 
