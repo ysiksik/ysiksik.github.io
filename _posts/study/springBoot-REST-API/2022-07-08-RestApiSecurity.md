@@ -161,5 +161,151 @@ HttpServletRequest에서 꺼내온 사용자 아이디와 패스워드를 진짜
   + Refresh Token
     + 클라이언트가 같은 access token을 오래 사용하면 결국에 해킹에 노출될 위험이 높아진다. 그래서 OAuth 2.0에서는 refresh token 이라는 개념을 도입했다.
     + 인증 토큰(access token)의 만료기간을 가능한 짧게 하고 만료가 되면 refresh token으로 access token을 새로 갱신하는 방법이다.
-+ Authorization Server 추가
-  + 
++ Authorization Server
+  + OAuth의 목표 : "인증 토큰을 발행하고, 발행된 인증 토큰을 사용하여 API를 호출하는 것"
+  + 중요한 두가지 어노테이션 : @EnableAuthorizationServer 와 @EnableResourceServer
+    + @EnableAuthorizationServer는 토큰을 발행하고, 발행된 토큰을 검증하는 역활
+    + @EnableResourceServer는 발행된 토큰을 사용해 API를 호출할 때 권한을 검증하는 필터 같은 역할
+  
+    ~~~java
+    @Configuration
+    @EnableAuthorizationServer
+    public class AuthServerConfig extends AuthorizationServerConfigurerAdapter {
+    @Autowired
+    PasswordEncoder passwordEncoder;
+    
+        // OAuth2 인증 서버 보안(Password) 정보를 설정
+        @Override
+        public void configure(AuthorizationServerSecurityConfigurer security)
+                throws Exception {
+            security.passwordEncoder(passwordEncoder);
+        }
+    }    
+    ~~~
+    + configure(ClientDetailsServiceConfigurer clients) 메서드 : API의 요청 클라이언트 정보
+    + inMemory()는 클라이언트 정보를 메모리에 저장한다. 개발 환경에 적합하다.
+    + withClient()는 client_id 값을 설정한다.
+    + secret()은 client_secret 값을 설정한다.
+    + authorizedGrantTypes()은 grant_type 값을 설정한다. 복수개 저장할 수 있다.
+    + accessTokenValiditySeconds()은 access_token의 만료 시간을 설정한다.
+    + refreshTokenValiditySeconds()은 refresh_token의 만료 시간을 설정한다.
+  
+    ~~~java
+    @Override
+    public void configure(ClientDetailsServiceConfigurer clients) throws Exception {
+      clients.inMemory().withClient("myApp")
+       .authorizedGrantTypes("password", "refresh_token")
+       .scopes("read", "write")
+       .secret(this.passwordEncoder.encode("pass"))
+       .accessTokenValiditySeconds(10 * 60)
+       .refreshTokenValiditySeconds(6 * 10 * 60);
+      }   
+    ~~~
+
+    + Grant Type : Password
+      + Grant Type : 토큰 받아오는 방법
+      + 서비스 오너가 만든 클라이언트에서 사용하는 Grant Type
+      + [https://developer.okta.com/blog/2018/06/29/what-is-the-oauth2-password-grant](https://developer.okta.com/blog/2018/06/29/what-is-the-oauth2-password-grant)
+  + Security Customizing
+    + 클라이언트와 토큰 관리는 Spring Security OAuth 모듈이 담당하지만, 사용자 관리는 Spring Security의 몫이다.
+  
+    ~~~java
+    @Configuration
+    @EnableWebSecurity
+    public class SecurityConfig extends WebSecurityConfigurerAdapter {
+      @Autowired
+      AccountService accountService;
+      @Autowired
+      PasswordEncoder passwordEncoder;
+    }
+    ~~~
+    + TokenStore에 토큰을 저장한다.
+      + org.springframework.security.oauth2.provider.store.InmemoryTokenStore는 Map, Queue 구조의 메모리를 사용하는 저장소 이다.
+    + AuthenticationManager를 노출시키고 싶으면.
+      + WebSecurityConfigurerAdapter.authenticationManagerBean() 메서드를 오버라이드 하고 Bean 으로 등룩 후에 사용 해야 한다.
+      
+    ~~~java
+    @Bean
+    public TokenStore tokenStore() {
+      return new InMemoryTokenStore();
+    }
+    @Bean
+    @Override
+    public AuthenticationManager authenticationManagerBean() throws Exception {
+      return super.authenticationManagerBean();
+    }
+    ~~~
+    + AuthenticationManagerBuiler
+      + AuthenticationManagerBuilder를 통해 인증 객체를 만들 수 있도록 제공하고 있다.
+      
+    ~~~java
+    @Override 
+    protected void configure(AuthenticationManagerBuilder auth) throws Exception {
+     auth.userDetailsService(accountService).passwordEncoder(passwordEncoder); 
+    }
+    ~~~
+    + configure(AuthorizationServerEndpointsConfigurer endpoints) 메서드 : 인증 서버 Endpoint 설정
+    + 인증 정보를 알고 있는 AuthenticationManager를 설정하고, UserDetailsService와 TokenStore를 설정한다.
+
+    ~~~java
+    @Autowired AuthenticationManager authenticationManager;
+    @Autowired 
+    AccountService accountService;
+    @Autowired 
+    TokenStore tokenStore;
+    
+    @Override 
+    public void configure(AuthorizationServerEndpointsConfigurer endpoints)throws Exception {
+            endpoints.authenticationManager(authenticationManager)
+                    .userDetailsService(accountService)
+                    .tokenStore(tokenStore);
+    }
+    ~~~
+    
+  + Resource Server
+    + @EnableResourceServer는 발행된 토큰을 사용해 API를 호출할 때 권한을 검증하는 필터 같은 역할
+    
+    ~~~java
+    @Configuration
+    @EnableResourceServer
+    public class ResourceServerConfig extends ResourceServerConfigurerAdapter {
+      @Override
+      public void configure(ResourceServerSecurityConfigurer resources) throws Exception {
+        resources.resourceId("event");
+      }
+    
+      @Override
+      public void configure(HttpSecurity http) throws Exception {
+        http.anonymous()
+        .and()
+        .authorizeRequests()
+          .mvcMatchers(HttpMethod.GET, "/api/**").permitAll()
+          .anyRequest().authenticated()
+          .and()
+        .exceptionHandling()
+          .accessDeniedHandler(new OAuth2AccessDeniedHandler());
+      }
+    }
+    ~~~
+  
+  + 외부 설정
+    + @ConfigurationProperties 어노테이션을 통한 외부 설정값 주입
+      + @ConfigurationProperties 프로퍼티 파일의 값을 받은 클래스를 하나 생성하여 그클래스를 @Autowired 같은 어노테이션을 통해 자동 주입하는 방법이 type-safe 하며, 유지보수 측면에서 더 좋은 장점을 가진다.
+      + Property 클래스를 작성하면 여러 프로퍼티 묶어서 읽어올 수 있다.
+      + Property 클래스를 Bean으로 등록해서 다른 Bean에 주입할 수 있다.
+      + application.properties 에 똑같은 key값을 가진 property가 많은 경우에 프로퍼티 클래스를 작성 할 수 있다. 
+    + @ConfigurationProperties 어노테이션을 사용하려면 META 정보를 생성 해주는 spring-boot-configuration-processor 의존성 설치 해야한다.
+  + @AuthenticationPrincipal
+    + 로그인한 사용자의 정보를 아규먼트로 받을 수 있다.
+    + @AuthenticationPrincipal 어노테이션을 사용하면 UserDetailsService에서 Return 한 객체를 아규먼트로 직접 받아 사용할 수 있다.
+    + AccountAdapter에 저장된 Account를 가져오기 위해서 accountAdapter.getAccount()를 사용해도 되지만 SPEL(Spring Expression Language)을 사용하여 가져오 올 수 있다.
+      + @AuthenticationPrincipal(expression = "account")
+  + 새로운 @CurrentUser 어노테이션 정의하기
+    + @Target - 어노테이션이 적용할 위치를 결정한다. ( java.lang.annotation.Target )
+    + @Retention - 어떤 시점까지 어노테이션이 영향을 미치는지 결정한다. ( java.lang.annotation.Retention ) 
+    + 현재 인증 정보가 anonymousUser 인 경우에는 null을 보내고 아니면 “account”를 꺼내준다.
+      + @AuthenticationPrincipal(expression = "#this == 'anonymousUser' ? null : account")
+  + @JsonSerialize
+    + 커스텀 Serialize를 지정 할 때 사용한다.
+    + @JsonSerialize 은 엔터티를 마샬링할 때 사용할 사용정 직렬화기를 나타냅니다.
+      

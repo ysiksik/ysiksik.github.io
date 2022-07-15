@@ -154,6 +154,8 @@ mobileNet을 이용한 classification으로 버섯을 구별해주는 인공지�
 ---
 
 <div class="certifi">
+    <div>Spring Cloud로 개발하는 마이크로서비스 어플리케이션(MSA)<img src= "/assets/img/Certificates/15.png"></div>
+    <div>코딩으로 학습하는 GoF의 디자인 패턴<img src= "/assets/img/Certificates/14.png"></div>
     <div>Spring boot를 이용한 RESTful Web Services 개발<img src= "/assets/img/Certificates/13.png"></div>
     <div>더 자바, Java 8<img src= "/assets/img/Certificates/12.png"></div>
     <div>더 자바, 애플리케이션을 테스트하는 다양한 방법<img src= "/assets/img/Certificates/11.png"></div>
@@ -169,6 +171,8 @@ mobileNet을 이용한 classification으로 버섯을 구별해주는 인공지�
     <div>2020.05 ~ 2021.05 데이터베이스 모델링 실무<img src= "/assets/img/Certificates/1.png"></div>
 </div>
 
+- 코딩으로 학습하는 GoF의 디자인 패턴
+- Spring Cloud로 개발하는 마이크로서비스 어플리케이션(MSA)
 - Spring boot를 이용한 RESTful Web Services 개발
 - 더 자바, Java 8
 - 더 자바, 애플리케이션을 테스트하는 다양한 방법
