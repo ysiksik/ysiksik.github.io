@@ -486,7 +486,7 @@ graph TD;
   | 자료형 | 변수 이름 | 설명 | 
   | ----- | --------- | --- |
   | static PrintStream | out | 표준 출력 스트림(static 변수) |
-  | static InputStream | in | 표준 입력 스트림(static 변수) |
+  | static InputStream | in | 표준 입력 스트림(static 변수) |   
   | static OutputStream | err | 표준 오류 출력 스트림(static 변수) |
 
   + System.in 
