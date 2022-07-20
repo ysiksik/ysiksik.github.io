@@ -5,7 +5,7 @@ subtitle: Bad_Request와 Validation
 date: '2022-07-07 00:00:02 +0900'
 categories:
     - study
-    - springBoot-REST-API
+    - springboot-rest-api
 tags: RestAPI
 comments: true
 ---

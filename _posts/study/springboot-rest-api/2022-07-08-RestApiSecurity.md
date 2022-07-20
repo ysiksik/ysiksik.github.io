@@ -5,7 +5,7 @@ subtitle: REST API 보안 적용
 date: '2022-07-08 00:00:00 +0900'
 categories:
     - study
-    - springBoot-REST-API
+    - springboot-rest-api
 tags: RestAPI
 comments: true
 ---

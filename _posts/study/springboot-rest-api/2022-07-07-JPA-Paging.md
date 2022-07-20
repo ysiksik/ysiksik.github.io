@@ -5,7 +5,7 @@ subtitle: JPA 페이징 처리
 date: '2022-07-07 00:00:04 +0900'
 categories:
     - study
-    - springBoot-REST-API
+    - springboot-rest-api
 tags: RestAPI
 comments: true
 ---

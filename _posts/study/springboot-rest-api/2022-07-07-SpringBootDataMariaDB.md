@@ -5,7 +5,7 @@ subtitle: 스프링 부트 데이터(Maria DB 사용)
 date: '2022-07-07 00:00:05 +0900'
 categories:
     - study
-    - springBoot-REST-API
+    - springboot-rest-api
 tags: RestAPI
 comments: true
 ---
