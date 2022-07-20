@@ -26,5 +26,5 @@ hide_description: false
 [데이터베이스-모델링]: /database-modeling/
 [페이먼츠]: /payments/
 [Java12-프로그래밍]: /java12-programming/
-[Spring-Boot-기반-REST-API-개발]: /springBoot-REST-API/
+[Spring-Boot-기반-REST-API-개발]: /springboot-rest-api/
 [Spring-전자정부-프레임워크-기반-SI-실무]: /spring-framework-si/

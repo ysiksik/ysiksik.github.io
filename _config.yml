@@ -69,7 +69,7 @@ menu:
       - title:  Java12 프로그래밍
         url:      /java12-programming/
       - title: Spring Boot 기반 REST API 개발
-        url:      /springBoot-REST-API/
+        url:      /springboot-rest-api/
       - title: Spring 전자정부 프레임워크 기반 SI 실무
         url:      /spring-framework-si/
   - title:             Blog
