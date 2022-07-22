@@ -16,10 +16,7 @@ comments: true
 * toc
 {:toc}
 
-  
-
-## Spring
-### SpringFramework 등장배경
+## SpringFramework 등장배경
   
         EJB를 사용하면 어플리케이션 작성을 쉽게 할 수 있다.
         저수준의 트랜젝션이나 상태관리, 멀티 쓰레딩, 리소스 풀링과 같은 복잡한 저수준의 API 따위를
@@ -55,7 +52,7 @@ comments: true
     + 스프링 프레임워크는 모든 플랫폼에서 사용이 가능하다.
     + 스프링은 웹분야 뿐만이 아니라 어플리케이션등 모든 분야에 적용이 가능한 다양한 라이브러리를 가지고 있다.
       
-### SpringFramework
+## SpringFramework
 + 엔터프라이즈급 애플리케이션을 만들기 위한 모든 기능을 종합적으로 제공하는 경량화 된 솔루션이다.
 + JEE(Java Enterprise Edition)가 제공하는 다수의 기능을 지원하고 있기 때문에, JEE를 대체하는 Framework로 자리잡고 있다.
 + Spring Framework는 JEE가 제공하는 다양한 기능을 제공하는 것 뿐만 아니라, DI(Dependency Injection)나 AOP(Aspect Oriented Programming)등의 기능을 제공한다.
@@ -64,7 +61,7 @@ comments: true
 
       Enterprise System이란 서버에서 동작하며 기업의 업무를 처리해주는 System
     
-### SpringFramework의 구조 
+## SpringFramework의 구조 
 + Spring 삼각형
   + Enterprise Application 개발 시 복잡함을 해결하는 Spring의 핵심
     + POJO(Plain Old Java Object)
@@ -80,7 +77,7 @@ comments: true
       + 관심사의 분리를 통해서 소프트웨어의 모듈성 향상.
       + 공통 모듈을 여러 코드에 쉽게 적용가능.
 
-### SpringFramework의 특징
+## SpringFramework의 특징
 + 경량컨테이너
   + 스프링은 자바객체를 담고 있는 컨테이너이다.
   + 스프링 컨테이너는 이들 자바 객체의 생성과 소멸과 같은 라이프사이클을 관리.
@@ -109,7 +106,7 @@ comments: true
 + 스프링은 다양한 API에 대한 연동을 지원한다.
   + 스프링은 JMS, 메일, 스케쥴링등 엔터프라이즈 어플리케이션 개발에 필요한 다양한 API를 설정파일과 어노테이션을 통해서 손쉽게 사용할 수 있도록 지원하고 있다.
 
-### springFramework Module
+## springFramework Module
 
 ![예제](/assets/img/springFramework/SpringFrameworkModule.jpg)
 
