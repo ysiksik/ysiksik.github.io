@@ -1,7 +1,7 @@
 ---
 layout: post
 bigtitle: 'Spring 전자정부 프레임워크 기반 SI 실무'
-subtitle: Spring & 개발환경
+subtitle: Spring
 date: '2022-07-18 00:00:00 +0900'
 categories:
     - study
@@ -10,9 +10,9 @@ tags: spring
 comments: true
 ---
 
-# Spring & 개발환경
+# Spring
 
-# Spring & 개발환경
+# Spring
 * toc
 {:toc}
 
@@ -104,3 +104,25 @@ comments: true
   + 스프링에서도 객체에 대한 생성과 생명주기를 관리할 수 있는 기능을 제공하고 있는데 이런 이유로 [Spring Container] 또는 [IoC Container]라고 부르기도 한다.
 + 스프링은 트랜잭션 처리를 위한 일관된 방법을 제공한다.
   + JDBC, JTA 또는 컨테이너가 제공하는 트랜잭션을 사용하든, 설장파일을 통해 트랜잭션 관련정보를 입력하기 때문에 트랜잭션 구현에 상관 없이 동일한 코드를 여러 환경에서 사용이 가능하다.
++ 스프링은 영속성과 관련된 다양한 API를 지원한다.
+  + 스프링은 JDBC를 비롯하여 iBatis, MyBatis, Hibernate, JPA등 DB 처리를 위해 널리 사용되는 라이브러리와 연동을 지원하고 있다.
++ 스프링은 다양한 API에 대한 연동을 지원한다.
+  + 스프링은 JMS, 메일, 스케쥴링등 엔터프라이즈 어플리케이션 개발에 필요한 다양한 API를 설정파일과 어노테이션을 통해서 손쉽게 사용할 수 있도록 지원하고 있다.
+
+### springFramework Module
+
+![예제](/assets/img/springFramework/SpringFrameworkModule.jpg)
+
++ Spring Core
+  + Spring Framework의 핵심 기능을 제공 하며, Core 컨테이너의 주요 컴포넌트는 BeanFactory이다.
++ Spring Context
+  + Spring을 컨테이너로 만든 것이 Spring Core의 BeanFactory라면, Spring을 Framwork로 만든 것은 Context module이며, 이 module은 국제화된 메시지, Application 생명주기 이벤트, 유효성 검증 등을 지원함으로써 Beanfactory의 개념을 확장을 한다.
++ Spring AOP
+  + 설정 관리 기능을 통해 AOP 기능을 Spring Framework와 직접 통합 시킨다.
++ Spring DAO
+  + Spring JDBC DAO 추상 레이어는 다른 데이터베이스 벤더들의 예외 핸들링과 오류 메시지를 관리하는 중요한 예외계층을 제공한다.
++ Spring ORM
+  + Spring Framework는 여러 ORM(Object Relational Mapping) Framework에 플러그인 되어, Object Relational 툴 (JDO, Hibernate, iBatis)을 제공한다.
++ Spring Web MVC
+  + Spring Framework는 자체적으로 MVC 프레임워크를 제공하고 있으며, 스프링만 사용해도 MVC기반의 웹 어플리케이션을 어렵지 않게 개발이 가능하다.
+  
