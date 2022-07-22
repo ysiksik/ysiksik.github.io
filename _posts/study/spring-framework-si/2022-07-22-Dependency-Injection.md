@@ -1,8 +1,8 @@
 ---
 layout: post
 bigtitle: 'Spring 전자정부 프레임워크 기반 SI 실무'
-subtitle: IoC & Container
-date: '2022-07-20 00:00:00 +0900'
+subtitle: 의존성 주입(DI, Dependency Injection)
+date: '2022-07-22 00:00:00 +0900'
 categories:
     - study
     - spring-framework-si
@@ -10,15 +10,16 @@ tags: spring
 comments: true
 ---
 
-# IoC & Container
+# 의존성 주입(DI, Dependency Injection)
 
-# IoC & Container
+# 의존성 주입(DI, Dependency Injection)
 * toc
 {:toc}
 
   
-  
+
 ## IoC (Inversion of Control, 제어의 역행)
+### IoC (Inversion of Control, 제어의 역행)
 
 + IoC/DI
 + 객체지향 언어에서 Object간의 연결 관계를 런타임에 결정
@@ -26,7 +27,7 @@ comments: true
 + IoC의 구현 방법 중 하나가 DI(Dependency Injection)
   
 
-## IoC 유형
+### IoC 유형
 
 <div class="language-mermaid">
 graph LR;
@@ -49,7 +50,7 @@ graph LR;
   + Lookup 관련된 코드들이 Object 내에서 사라짐.
   + Setter Injection과 Constructor Injection.
 
-## Container
+### Container
 + Container 란?
   + 객체의 생성, 사용, 소멸에 해당하는 라이프사이클을 담당
   + 라이프사이클을 기본으로 애플리케이션 사용에 필요한 주요 기능을 제공
@@ -85,7 +86,7 @@ graph LR;
     + Spring의 각종 부가 서비스를 추가로 제공
     + Spring이 제공하는 ApplicationContext 구현클래스는 여러가지 종류가 있음.
 
-## BeanFactory & ApplicationContext
+### BeanFactory & ApplicationContext
 
 <div class="language-mermaid">
 graph LR;
@@ -103,7 +104,7 @@ E-->G;
 F-->G;
 </div>
 
-## IoC 개념
+### IoC 개념
   + 객체 제어 방식
     + 기존 : 필요한 위치에서 개발자가 필요한 객체 생성 로직 구현
     + IoC : 객체 생성을 Container에게 위임하여 처리
@@ -165,7 +166,7 @@ F-->G;
     + 각 Service의 LifeCycle을 관리하는 Assembler를 사용
     + Spring Container가 외부 조립기(Assembler)역할을 함. 
 
-## Spring DI 용어
+### Spring DI 용어
 + 빈(Bean)
   + 스프링이 IoC 방식으로 관리하는 오브젝트를 말한다.
   + 스프링이 직접 그 생성과 제어를 담장하는 오브젝트만을 Bean이라고 부른다.
@@ -184,7 +185,7 @@ F-->G;
 + 스프링 프레임워크
   + 스프링 프레임워크는 IoC 컨테이너, ApplicationContext를 포함해서 스프링이 제공하는 모든 기능을 통틀어 말할 때 주로 사용한다.
 
-## Spring Container
+### Spring Container
 
 <div class="language-mermaid">
 graph LR;
