@@ -103,4 +103,106 @@ D-->G;
 E-->G;
 F-->G;
 </div>
-  
+
+### IoC 개념
+  + 객체 제어 방식
+    + 기존 : 필요한 위치에서 개발자가 필요한 객체 생성 로직 구현
+    + IoC : 객체 생성을 Container에게 위임하여 처리
+  + IoC 사용에 따른 장점
+    + 객체간의 결합도를 떨어뜨릴 수 있음 (loose coupling)
+  + 객체간 결합도가 높으면?
+    + 해당 클래스가 유지보수 될 때 그 클래스와 결합된 다른 클래스도 같이 유지보수 되어야 할 가능성이 높음
+  + 객체간 강한 결합
+    + 클래스 호출 방식
+    + 클래스내에 선언과 구현이 모두 되어 있기 때문에 다양한 형태로 변화가 불가능.
+    
+    <div class="language-mermaid">
+    graph LR;
+    Class--생성, 사용, 호출-->A[Class];
+    </div>
+    
+  + 객체간의 강한 결합을 다형성을 통해 결합도를 낮춤 
+    + 인터페이스 호출 방식
+    + 구현클래스 교체가 용이하며 다양한 형태로 변화 가능
+    + 하지만 인터페이스 교체 시 호출클래스도 수정해야함
+
+    <div class="language-mermaid">
+    graph LR;
+    Class--사용-->interface;
+    Class--생성, 호출-->A[Class];
+    A--구현-->interface;
+    </div>
+
+  + 객체간의 강한 결합을 Factory를 통해 결합도를 낮춤
+    + 팩토리 호출 방식
+    + 팩토리방식은 팩토리가 구현클래스를 생성하므로 클래스는 팩토리를 호출
+    + 인터페이스 변경 시 팩토리만 수정하면 됨. 호출 클래스에는 영향을 미치지 않음
+    + 하지만 클래스에 팩토리를 호출하는 소스가 들어가야함. 그것 자체가 팩토리에 의존함을 의미한다.
+      
+    <div class="language-mermaid">
+    graph LR;
+    Class--사용-->interface;
+    Class--호출-->Factory;
+    Factory--생성-->A[Class];
+    A--구현-->interface;
+    </div>
+
+    + 각 Service를 생성하여 반환하는 Factory 사용,
+    + Service를 이용하는 쪽에서는 Interface만 알고 있으면 어떤 구현체가 어떻게 생성되는지에 대해서는 알 필요 없음.
+    + 이 Factory 패턴이 적용된 것이 Container의 기능이며 이 Container의 기능을 제공해 주고자 하는 것이 IoC모둘.
+  + 객체간의 강한 결합을 Assembler를 통해 결함도를 낮춤.
+    + IoC 호출 방식.
+    + 팩토리 패턴의 장점을 더하여 어떠한 것 에도 의존하지 않은 형태가 됨.
+    + 실행시점(Runtime)에 클래스 간의 관계가 형성이 됨.
+
+    <div class="language-mermaid">
+    graph LR;
+    Class--사용-->interface;
+    Class--의존성 주입-->Assembler;
+    Assembler--생성-->A[Class];
+    A--구현-->interface;
+    </div>
+
+    + 각 Service의 LifeCycle을 관리하는 Assembler를 사용
+    + Spring Container가 외부 조립기(Assembler)역할을 함. 
+
+### Spring DI 용어
++ 빈(Bean)
+  + 스프링이 IoC 방식으로 관리하는 오브젝트를 말한다.
+  + 스프링이 직접 그 생성과 제어를 담장하는 오브젝트만을 Bean이라고 부른다.
++ 빈 팩토리(Bean Factory)
+  + 스프링이 IoC를 담당하는 핵심 컨테이너.
+  + Bean을 등록, 생성, 반환하는 기능을 담당.
+  + 일반적으로 BeanFactory를 바로 사용하지 않고 이를 확장한 ApplicationContext를 이용한다.
++ 애플리케이션 컨텍스트(Applicaion Context)
+  + BeanFactroy를 확장한 IoC 컨테이너이다.
+  + Bean을 등록하고 관리하는 기본적인 기능은 BeanFactory와 동일하다.
+  + 스프링이 제공하는 각종 부가 서비스를 추가로 제공한다.
+  + BeanFactory라고 부를 때는 주로 빈의 생성과 제어의 관점에서 이야기하는 것이고, 애플리케이션 컨텍스트라고 할 때는 애플리케이션 지원 기능을 모두 포함해서 이야기하는 것이라고 보면 된다.
++ 설정정보/설정 메타정보(configuration metadata)
+  + 스프링의 설정정보란 ApplicationContext 또는 BeanFactory가 IoC를 적용하기 위해 사용하는 메타정보를 말한다. 이는 구성정보 내지는 형상정보라는 의미이다.
+  + 설정정보는 IoC 컨테이너에 의해 관리되는 Bean 객체를 생성하고 구성할 때 사용됨.
++ 스프링 프레임워크
+  + 스프링 프레임워크는 IoC 컨테이너, ApplicationContext를 포함해서 스프링이 제공하는 모든 기능을 통틀어 말할 때 주로 사용한다.
+
+### Spring Container
+
+<div class="language-mermaid">
+graph LR;
+A[interface WebApplicationContext]-->B[interface ApplicationContext];
+B-->C[interface BeanFactory];
+</div>
+
++ BeanFactory
+  + 빈(Bean) 객체에 대한 생성과 제공을 담당.
+  + 단일 유형의 객체를 생성하는 것이 아니라, 여러 유형의 빈을 생성, 제공.
+  + 객체간의 연관 관계를 설정, 클라이언트의 요청 시 빈을 생성.
+  + 빈의 라이플 사이클을 관리.
++ ApplicationContext
+  + BeanFactory가 제공하는 모든 기능 제공.
+  + 엔터프라이즈에 애플리케이션을 개발하는데 필요한 여러 기능을 추가함.
+  + I18N, 리소르 로딩, 이벤트 발생 및 통지.
+  + 컨테이 생성시 모든 빈 정보를 메모리에 로딩함.
++ WebApplicationContext
+  + 웹 환경에서 사용할 때 필요한 기능이 추가된 애플리케이션 컨텍스트.
+  + 가장 많이 사용하며, 특히 XmlWebApplicationContext를 가장 많이 사용.
