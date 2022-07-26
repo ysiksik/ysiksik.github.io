@@ -196,4 +196,105 @@ comments: true
         + argument : 없거나 대상객체 및 호출되는 메소드에 대한 정보 또는 파라미터에 대한 정보가 필요하다면 JoinPoint 객체를 전달.
         + ![예제](/assets/img/springFramework/aop6.jpg)
         + ![예제](/assets/img/springFramework/aop7.jpg)
-        
+      + before Advice 실행순서
+        + 메소드에서 exception을 발생 시킬 경우 대상 객체의 메소드가 호출 되지 않는다.
+        1. 빈 객체를 사용하는 코드에서 스프링이 생성한 AOP 프록시의 메소드를 호출
+        2. AOP 프록시는 < aop:before >에서 지정한 메소드를 호출
+        3. AOP 프록시는 Aspect 기능 실행 후 실제 빈 객체의 메소드를 호출
+      
+      <div class="language-mermaid">
+      graph LR;
+      client--1 : operation-->A[aop proxy];
+      A--2 : before method-->B[before aspect];
+      A--3 : operation-->C[target bean];
+      </div>
+  
+      + After Throwing Advice
+        + 대상 객체의 method 실행 중 예외가 발생한 경우 실행됨
+        + return type : void
+        + argument : 
+          + 없거나 JoinPoint 객체를 받는다. JoinPoint는 항상 첫 argument로 사용.
+          + 대상 method에서 전달되는 예외객체를 argument로 받을 수 있다.
+          + ![예제](/assets/img/springFramework/aop8.jpg)
+          + ![예제](/assets/img/springFramework/aop9.jpg)
+          + ![예제](/assets/img/springFramework/aop10.jpg)
+        + after Throwing Advice 실행순서.
+          1. 빈 객체를 사용하는 코드에서 스프링이 생성한 AOP 프로시의 메소드를 호출
+          2. AOP 프록시는 실제 빈 객체의 메소드를 호출(exception 발생)
+          3. AOP 프록시는 < aop:after-throwing >에서 지정한 메소드를 호출
+
+      <div class="language-mermaid">
+      graph LR;
+      client--1 : operation-->A[aop proxy];
+      A--2 : operation-->C[target bean];
+      A--3 : after method-->B[after aspect];
+      </div>
+
+      + After Advice
+        + 대상 객체의 method가 정상적으로 실행 되었는지 아니면 exception을 발생 시켯는 지의 여부와 상관 없이 메소드 실행 종료 후 공통 기는 적용
+        + return type : void
+        + argument
+          + 없거나 JoinPoint 객체를 받는다. JoinPoint는 항상 첫 argument로 사용.
+          + ![예제](/assets/img/springFramework/aop11.jpg)
+          + ![예제](/assets/img/springFramework/aop12.jpg)
+        + After Advice 실행 순서
+          1. 빈 객체를 사용하는 코드에서 스프링이 생성한 AOP 프록시의 메소드를 호출
+          2. AOP 프록시는 실제 빈 객체의 메소드를 호출(정상 실행, exception 발생 : java의 finally와 같음)
+          3. AOP 프록시는 < aop : after >에서 지정한 메소드를 호출
+          
+      <div class="language-mermaid">
+      graph LR;
+      client--1 : operation-->A[aop proxy];
+      A--2 : operation-->C[target bean];
+      A--3 : after method-->B[after aspect];
+      </div>
+      
+       + Around Advice
+         + 위의 네가지 Advice를 다 구현 할 수 있는 Advice
+         + return type : void
+         + argument
+           + org.aspectj.lang.ProceedingJoinPoint를 반드시 첫 argument로 지정
+           + ![예제](/assets/img/springFramework/aop13.jpg)
+           + ![예제](/assets/img/springFramework/aop14.jpg)
+         + Around Advice 실행 순서
+           1. 빈 객체를 사용하는 코드에서 스프링이 생성한 AOP 프로시의 메소드를 호출
+           2. AOP 프록시는 < aop:around >에서 지정한 메소드를 호출
+           3. AOP 프록시는 실제 빈 객체의 메소드를 호출
+           4. AOP 프록시는 < aop:around >에서 지정한 메소드를 호출
+
+      <div class="language-mermaid">
+      graph LR;
+      client--1 : operation-->A[aop proxy];
+      A--2 : proceed method 이전 작업-->B[around aspect];
+      A--3 : operation-->C[target bean];
+      A--4 : proceed method 이후 작업-->B[around aspect];
+      </div>
+  
++ JoinPoint Object 구성요소
+  + 대상 객체에 대한 정보를 가지고 있는 객체로 Spring Container로 부터 받는다.
+  + org.aspectj.lang 패키지에 있다.
+  + 반드시 Aspect method의 첫 argument로 와야 한다.
+  + 주요 method
+  
+    | Method                   | 설명                                                      | 
+     |--------------------------|---------------------------------------------------------|
+    | Object getTarget()       | 대상 객체를 리턴                                               |
+    | Object[] getArgs()       | 파라미터로 넘겨진 값들을 배열로 리턴 넘어온 값이 없으면 빈 배열이 리턴                |
+    | Signature getSignature() | 호출 되는 method의 정보, Signature : 호출되는 method에 대한 정보를 가진 객체 |
+    | String getName()         | Method 이름                                               |
+    | String toLongString()    | Method 전체 syntax를 리턴                                    |
+    | String toShortString()   | Method를 축약해서 리턴 - 기본은 Method 이름                         |
++ @Aspect Annotation을 이용한 AOP
+  + @Aspect Annotation을 이용하여 Aspect Class에 직접 Advice 및 Pointcut등을 설정
+  + 설정 파일에 < aop:aspectj-autoproxy/ >를 반드시 추가
+  + Aspect Class를 < bean >으로 등록
+  + 어노테이션(Annotation)
+    + @Aspect : Aspect Class 선언
+    + @Before("pointcut")
+    + @AfterReturning(pointcut="",returning="")
+    + @AfterThrowing(pointcut="",throwing="")
+    + @After("pointcut")
+    + @Around("pointcut")
+  + Around를 제외한 나머지 method들은 첫 argument로 JoinPoint를 가질 수 있다.
+  + Around method는 argument로 ProceedingJoinPoint를 가질 수 있다.
+  + ![예제](/assets/img/springFramework/aop15.jpg)
