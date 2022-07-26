@@ -174,7 +174,26 @@ comments: true
         | bean(*Repository)                                                      | 이름이 'Repository'로 끝나는 모든 빈                           |
         | bean(account/*)                                                        | 이름이 'account/'로 시작되는 모든 빈                            |
   + POJO 기반 Advice Class 작성.
-    + 설정 파일의 advice 관련 태그에 맞게 작성한다.
-    + <bean>으로 등록 하며 < aop:aspect >의 ref 속성으로 참조한다.
-    + 공통 기능 메소도 : advice 관련 태그들의 method 속성의 값이 method 이름이 된다.
+    + Advice 작성
+      + 설정 파일의 advice 관련 태그에 맞게 작성한다.
+      + <bean>으로 등록 하며 < aop:aspect >의 ref 속성으로 참조한다.
+      + 공통 기능 메소도 : advice 관련 태그들의 method 속성의 값이 method 이름이 된다.
+    + Advice 정의 관련 태그
+      + 속성
+        + pointcut : 직접 pointcut을 설정. 호출 할 method의 패턴 지정.
+        + pointcut-ref : < aop:pointcut > 태그의 id명을 넣어 pointcut 지정
+        + method : Aspect bean에서 호출할 method명 지정
+        + ![예제](/assets/img/springFramework/aop5.jpg)
+    + Advice Class
+      + POJO 기반의 Class로 작성
+        + class명이나 method명에 대한 제한은 없다.
+        + method 구문은 호출되는 시점에 따라 달라 질 수 있다.
+        + method의 이름은 advice 태그( < aop:before/ > )에서 method 속성의 값이 method명이 된다.
+    + Advice 종류
+      + before Advice 
+        + 대상 객체의 메소드가 실행되기 전에 실행됨.
+        + return type : 리턴 값을 갖더라도 실제 Advice의 적용과정에서 사용되지 않기 때문에 void를 쓴다.
+        + argument : 없거나 대상객체 및 호출되는 메소드에 대한 정보 또는 파라미터에 대한 정보가 필요하다면 JoinPoint 객체를 전달.
+        + ![예제](/assets/img/springFramework/aop6.jpg)
+        + ![예제](/assets/img/springFramework/aop7.jpg)
         
