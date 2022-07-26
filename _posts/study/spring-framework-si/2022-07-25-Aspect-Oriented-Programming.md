@@ -69,3 +69,112 @@ comments: true
     + 어떤 Advice를 어떤 Pointcut(핵심사항)에 적용시킬 것인지에 대한 설정(Advisor)
     + 즉 Pointcut에 의해서 결정된 타겟의 Joinpoint에 부가기능(Advice)을 삽입하는 과정을 뜻함.
     + Weaving은 AOP의 핵심기능(Target)의 코드에 영향을 주지 않으면서 필요한 부가기능(Advice)을 추가 할 수 있도록 해주는 핵심적인 처리과정
+
+## Spring AOP 특징
++ Spring은 프록시(Proxy) 기반 AOP를 지원
+  + Spring은 Target 객체에 대한 Proxy를 만들어 제공.
+  + Target을 감싸는 Proxy는 실시간(Runtime)에 생성.
+  + Proxy는 Advice를 Target 객체에 적용하면서 생성되는 객체.
++ 프록시(Proxy)가 호출을 가로챈다(Intercept)
+  + Proxy는 Target 객체에 대한 호출을 가로챈 다음 Advice의 부가기능 로직을 수행하고 난 후에 Target의 핵심 기능 로직을 호출한다.(전처리 Advice)
+  + 또는 Target의 핵심 기능 로직 method를 호출한 후에 부가기능(Advice)을 수행하는 경우도 있다.(후처리 Advice)
++ Spring AOP는 method JoinPoint만 지원
+  + Spring은 동적 Proxy를 기반으로 AOP를 구현하므로 method JoinPoint만 지원한다
+  + 즉, 핵심기능(Target)의 method가 호출되는 런타임 시점에만 부가기능(Advice)를 적용할 수 있다.
+  + 반면 AspectJ 같은 고급 AOP framework를 사용하면 객체의 생성, 필드값의 조회와 조작, static method 호출 및 초기화 등의 다양한 작업에 부가기능을 적용할 수 있다.
+
+## Spring AOP 구현
++ AOP 구현방법
+  + POJO Class를 이용한 AOP 구현
+  + Spring AOP를 이용한 AOP 구현
+  + 어노테이션(Annotation)을 이용한 AOP 구현
++ POJO 기반 AOP 구현
+  + XML Schema 확장기법을 통해 설정파일을 작성
+    + XML Schema를 이용한 AOP 설정
+      + aop namespace와 XML shema 추가 
+        + ![예제](/assets/img/springFramework/aop.jpg)
+      + aop namespace를 이용한 설정
+        + ![예제](/assets/img/springFramework/aop2.jpg)
+      + AOP 설정 태그
+      
+        | Tag |              설명               |
+        | :--: | :----------------------------------: |
+        | < aop:config > | aop 설정의 root 태그(weaving들의 묶음) |
+        | < aop:aspect > | Aspect 설정(하나의 weaving에 대한 설정) |
+        | < aop:pointcut > | Pointcut 설정|
+      + Advice 설정 태그
+      
+        | Tag |              설명               |
+        | :--: | :----------------------------------: |
+        | < aop:before > | method 실행 전 실행 될 Advice |
+        | < aop:after-returning > | method가 정상 실행 후 실행 될 Advice |
+        | < aop:after-throwing > | method에서 예외 발생시 실행 될 Advice (catch block) |
+        | < aop:after > | method가 정상 또는 예외 발생에 상관없이 실행 될 Advice (finally block) |
+        | < aop:around > | 모든 시점(실행 전, 후)에서 적용시킬 수 있는 Advice |
+      + < aop:aspect >
+        + 한 개의 Aspect(공통 관심 기능)을 설정
+        + ref 속성을 통해 공통기능을 가지고 있는 bean 연결
+        + id는 이 태그 식별자 설정
+        + 자식 태그로 < aop:pointcut > advice관련 태그가 올 수 있다, 
+        + ![예제](/assets/img/springFramework/aop3.jpg)
+      + < aop:pointcut >
+        + Pointcut(공통 기능이 적용될 곳)을 지정하는 태그
+        + < aop:config >나 < aop:aspect >의 자식 태그
+          + < aop:config > 전역적으로 사용
+          + < aop:aspect > 내부에서 사용
+        + AspectJ 표현식을 통해 pointcut 지정
+        + 속성
+          + id : 식별자로 advice 태그에서 사용됨
+          + expression : pointcut 지정 표현식
+            + 예제 : execution( * com.spring.aop.service.impl.MemberServiceImpl.getMember(..) )
+          + ![예제](/assets/img/springFramework/aop4.jpg)
+       AspectJ 표현식
+        + AspectJ에서 지원하는 패턴 표현식
+        + Spring은 method 호출 관련 명시자만 지원
+        + 명시자 ( 제한자패턴 ? 리턴타입패턴 ? 이름패턴 (파라미터패턴) )
+          + ? : 생략가능
+        + 명시자
+          + execution : 실행시킬 method 패턴을 직접 입력하는 경우.
+          + within : method가 아닌 특정 타입에 속하는 method들을 설정할 경우.
+          + bean : 2.5버전에서 추가됨. 설정파일에 지정된 빈의 이름(name 속성)을 이용해 pointcut 설정 
+        + 표현 : execution( public * a.b..*Service.get*(..) )
+          + 명시자 ( 제한자패턴 ? 리턴타입패턴 ? 이름패턴 (파라미터패턴) )
+        + 제한자 패턴에는 public, protected 또는 생략
+          + '*' : 1개의 모든 값을 표현
+            + argument에서 쓰인 경우 : 1개의 argument
+            + package에서 쓰인 경우 : 1개의 하위 package
+          + .. : 0개 이상의 모든 값을 표현
+            + argument에서 쓰인 경우 : 0개 이상의 argument
+            + package에서 쓰인 경우 : 1개 이상의 하위 package
+          + 위 예 설명
+            + 적용 하려는 method들의 패턴은 public 제한자를 가지며 리턴 타입에는 모든 타입이 올 수 있다. 이름은 a.b로 시작하는 package와 그 하위 패키지에 있는 모든 클래스 중 Service로 끝나는 class중에서 get으로 시작하는 method이며
+            argument는 0개 이상 오며 반환 타입은 상관 없다.
+        + Example
+        
+        | Pointcut                                                               | 선택된 Joinpoints                                       |
+        |------------------------------------------------------|--------------------------------| 
+        | execution(public * *(..))                                              | public 메소드 실행                                        | 
+        | execution(* set*(..))                                                  | 이름이 set으로 시작하는 모든 메소드명 실행                            |
+        | execution(* com.test.serviceAccountService.*(..))                      | AccountSerice 인터페이스의 모든 메소드 실행                       |
+        | execution(* com.test.service.*.*(..))                                  | service 패키지의 모든 메소드 실행                               |
+        | execution(* com.test.service..*.*(..))                                 | service 패키지와 하위 패키지의 모든 메소드 실행                       |
+        | within(com.test.service.*)                                             | service 패키지 내의 모든 결합점                                |
+        | within(com.test.service..*)                                            | service 패키지 및 하위 패키지의 모든 결합점                         |
+        | this(com.test.service.AccountService)                                  | AccountService 인터페이스를 구현하는 프록시 개체의 모든 결합점            |
+        | target(com.test.service.AccountService)                                | AccountService 인터페이스를 구현하는 대상 객체의 모든 결합점             |
+        | args(java.io.Serializable)                                             | 하나의 파라미터를 갖고 전달된 인자가 Serializable인 모든 결합점            |
+        | @target(org.springframework.transaction.annotation.Transactional)      | 대상 객체가 @Transactional 어노테이션을 갖는 모든 결합점               |
+        | @within(org.springframework.transaction.annotation.Transactional)      | 대상 객체가 선언 타입이 @Transactional 어노테이션을 갖는 모든 결합점        | 
+        | @annotation(org.springframework.transaction.annotation.Transactional)  | 실행 메소드가 @Transactional 어노테이션을 갖는 모든 결합점              |
+        | @args(com.test.security.Classified)                                    | 단일 파라미터를 받고 전달된 인자 타입이 @Classified 어노테이션을 갖는 모든 결합점  | 
+        | bean(accountRepository)                                                | "accountRepository"빈                                 |
+        | !bean(accountRepository)                                               | "accountRepository"빈 제외한 모든 빈                        |
+        | bean(*)                                                                | 모든 빈                                                 |
+        | bean(account*)                                                         | 이름이 'account'로 시작되는 모든 빈                             |
+        | bean(*Repository)                                                      | 이름이 'Repository'로 끝나는 모든 빈                           |
+        | bean(account/*)                                                        | 이름이 'account/'로 시작되는 모든 빈                            |
+  + POJO 기반 Advice Class 작성.
+    + 설정 파일의 advice 관련 태그에 맞게 작성한다.
+    + <bean>으로 등록 하며 < aop:aspect >의 ref 속성으로 참조한다.
+    + 공통 기능 메소도 : advice 관련 태그들의 method 속성의 값이 method 이름이 된다.
+        
