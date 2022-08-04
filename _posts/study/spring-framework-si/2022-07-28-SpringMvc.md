@@ -128,3 +128,8 @@ comments: true
   + 자동 지정 유형
     + return type이 Model이나 Map인 경우
     + return type이 void이면서 ServletResponse나 HttpServletResponse 타입의 parameter가 없는 경우
++ View에 전달하는 데이터
+  + @RequestMapping annotation이 적옹된 method의 Map, Model, ModelMap
+  + @RequestMapping method가 return하는 ModelAndView
+  + @ModelAttribute annotation이 적용된 method가 return 한 객체
+  

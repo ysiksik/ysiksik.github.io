@@ -1,6 +1,6 @@
 ---
 layout: about
-image: /assets/img/me.jpg
+image: /assets/img/me.png
 description: >
 hide_description: true
 redirect_from:
