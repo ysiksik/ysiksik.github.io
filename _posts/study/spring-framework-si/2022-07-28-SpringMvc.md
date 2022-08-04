@@ -121,3 +121,10 @@ comments: true
 | View                        | View 객체를 직접 리턴, 해당 View 객체를 이용해서 view를 생성                                                                                                                     |
 | void                        | method가 ServletResponse나 HttpServletResponse 타입의 parameter를 갖는 경우 method가 직접 응답을 처리한다고 가정한다. 그렇지 않을 경우 요청 URL로부터 결정된 View를 보여준다.(RequestToViewNameTranslator) |
 | @ResponseBody Annotation 적용 | method에서 @ResponseBody annotation이 적용된 경우, 리턴 객체를 Http 응답으로 전송한다. HttpMassageConverter를 이용해서 객체를 HTTP 응답 스트림으로 변환한다.                                          | 
+
+## View 지정
++ View 자동 지정
+  + RequestToViewNameTranslator를 이용해서 URL로 부터  view 이름을 지정한다.
+  + 자동 지정 유형
+    + return type이 Model이나 Map인 경우
+    + return type이 void이면서 ServletResponse나 HttpServletResponse 타입의 parameter가 없는 경우
