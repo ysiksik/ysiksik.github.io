@@ -104,3 +104,20 @@ comments: true
 | 커맨드 객체                                                | HTTP 요청 parameter를 저장 한 객체, 기본적으로 클래스 이름을 모델명으로 사용, @ModelAttribute annotation 설정으로 모델명을 설정할 수 있음 |
 | Errors, BindingResult                                 | HTTP 요청 파라미터를 커맨드 객체에 저장한 결과, 커맨드 객체를 위한 파라미터 바로 다음에 위치                                           |
 | SessionStatus                                         | 폼 처리를 완료 했음을 처리하기 위해 사용, @SessionAttributes annotation을 명시한 session속성을 제거하도록 이벤트를 발생 시킨다.         |
+
+
++ Servlet API 사용
+  + HttpSession의 생성을 직접 제어해야 하는 경우
+  + Controller가 Cookie를 생성해야 하는 경우
+  + Servlet API를 선호하는 경우
++ Controller Class에서 method의 return type 종류
+
+| Return Type                 | 설명                                                                                                                                                            |
+|-----------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| ModelAndView                | model정보 및 view 정보를 담고있는 ModelAndView 객체                                                                                                                       |
+| Model                       | view에 전달할 객체 정보를 담고있는 Model을 반환한다. 이때 view 이름은 요청 URL로부터 결정된다.(RequestToViewNameTranslator)                                                                   |
+| Map                         | view에 전달 할 객체 정보를 담고 있는 Map을 반환한다. 이때 view 이름은 요청 URL로부터 결정된다.(RequestToViewNameTranslator)                                                                   |
+| String                      | view 이름을 반환한다                                                                                                                                                 |
+| View                        | View 객체를 직접 리턴, 해당 View 객체를 이용해서 view를 생성                                                                                                                     |
+| void                        | method가 ServletResponse나 HttpServletResponse 타입의 parameter를 갖는 경우 method가 직접 응답을 처리한다고 가정한다. 그렇지 않을 경우 요청 URL로부터 결정된 View를 보여준다.(RequestToViewNameTranslator) |
+| @ResponseBody Annotation 적용 | method에서 @ResponseBody annotation이 적용된 경우, 리턴 객체를 Http 응답으로 전송한다. HttpMassageConverter를 이용해서 객체를 HTTP 응답 스트림으로 변환한다.                                          | 
