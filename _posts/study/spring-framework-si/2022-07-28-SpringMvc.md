@@ -70,9 +70,9 @@ comments: true
   + View
     + Controller의 처리결과를 보여줄 응답화면을 생성
 + Spring MVC 요청 흐름
-![MVC](/assets/img/springFramework/mvc2.png)
++ ![MVC](/assets/img/springFramework/mvc2.png)
 + Spring MVC 실행 순서
-![MVC](/assets/img/springFramework/mvc3.png)
++ ![MVC](/assets/img/springFramework/mvc3.png)
   1. DispatcherServlet이 요청을 수신
      + 단일 Front Controller Servlet
      + 요청을 수신하여 처리를 다른 컴포넌트에 위임
@@ -132,4 +132,86 @@ comments: true
   + @RequestMapping annotation이 적옹된 method의 Map, Model, ModelMap
   + @RequestMapping method가 return하는 ModelAndView
   + @ModelAttribute annotation이 적용된 method가 return 한 객체
-  
+
+## HandlerInterceptor를 통한 요청 가로채기
++ Controller가 요청을 처리하기 전/후 처리
++ 로깅, 모니터링 정보 수집, 접근제어 처리 등의 실제 BusinessLogic과는 불리되어 처리해야 하는 기능들을 넣고 싶을 때 유용하다.
++ Interceptor를 여러개 설정 할 수 있음(순서주의)
+
+## HandlerInterceptor 제공 method
++ boolean preHandle(HttpServletRequest request, HttpServletResponse reponse, Object handler) 
+  + false를 반환하면  request를 바로 종료
++ void postHandle(HttpServletRequest request, HttpServletResponse response, Object handler, ModelAndView modelAndView)
+  + Controller 수행 후 호출
++ void afterCompletion(HttpServletRequest request, HttpServletResponse response, Object handler, Exception ex)
+  + view를 통해 클라이언트에 응답을 전송한 뒤 실행
+  + 예외가 발생하여도 실행
+ 
+## Exception Handling 
++ @RequestMapping 메서드는 모든 타입의 예외를 발생시킬 수 있다.
+  + WebBrowser에는 500 응답코드와 Servlet Contatiner가 출력한 에러 페이지 출력
+  + SpringMVC를 이용해서 원하는 에러 페이지를 보여주고 싶다면 SpringMVC가 제공하는 HandlerExceptionResolver 인터페이스를 사용한다.
+  + SpringMVC가 제공하는 HandlerExceptionResolver 인터페이스의 구현체
+    + AnnotationMethodHandlerExceptionResolver
+      + @ExceptionHandler annotation이 적용된 method를 이용
+    + DefaultHandlerExceptionResolver
+      + 스프링 관련 예외 타입 처리
+    + SimpleMappingExceptionResolver
+      + 예외 타입 별로 뷰 이름을 지정
+    + ResponseStatusExceptionResolver
+      + 예외를 특정 HTTP 응답 상태코드로 전환하여 단순한 500에러가 아닌 의미 있는 HTTP 응답상태를 반환하는 방법
++ @ExceptionHandler 어노테이션을 이용한 예외처리
+  + parameter로 받을 수 있는 type
+    + HttpServletRequest , HttpServletResponse , HttpSession
+    + Locale, InputStream / Reader, OutputStream / Writer
+    + 예외타입
+  + return type
+    + ModelAndView Model, Map, View, String, void
+
+## @RequestBody, @ResponseBody
++ HttpMessageConverter를 이용한 변환 처리
+  + 주요 HttpMessageConverter 구현 Class - AnnotationMethodHandlerAdapter 는 (*) 표시된 클래스를 기본적으로 사용
+
+|               구현클래스                | 설명                                                                                                  |
+|:----------------------------------:|:----------------------------------------------------------------------------------------------------|
+|  ByteArrayHttpMessageConverter(*)  | HTTP 메세지와 byte 배열 사이의 변환을 처리 컨텐츠 타입은 application/octet-stream                                       |
+|   StringHttpMessageConverter(*)    | HTTP 메세지와 String 사이의 변환을 처리 컨텐츠 타입은 text/plain:charset=ISO-8859-1                                   |
+|    FromHttpMessageConverter(*)     | HTML 폼 데이터를 MultiValueMap으로 전달받을때 사용 컨텐츠 타입은  application/x-www-form-urlencoded                     |
+|   SourceHttpMessageConverter(*)    | HTTP 메세지와 javax.xml.transform.Source 사이의 변환을 처리 컨테츠 타입은 application/xml 또는 text/xml                 |
+|   MashallingHttpMessageConverter   | 스프링의 Marshaller와 Unmarshaller을 이용해서 XML HTTP 메시지와 객체 사이의 변환을 처리, 컨텐츠 타입은 application/xml 또는 text/xml|
+| MappingJacksonHttpMessageConverter | Jackson 라이브러리를 이용해서 JSON HTTP 메시지와 객체 사이의 변환 처리 컨테츠 타입은 application/json                            |
+
++ Content-Type과 Accept헤더 기반의 변환처리
+  + @AnnotationMethodHandlerAdapter가 HttpMessageConverter를 이용해서 요청 몸체 데이터를 @RequestBody Annotation이 적용된 자바 객체로 변환 할 때에는 HTTP요청헤더의 Content-Type헤더에 명시된 미디어 타입(MIME)을 지원하는 
+  HttpMessageConverter를 구현체로 사용
+  + @ResponseBody Annotation을 이용해서 리턴하는 객체를 HTTP 메시지의 body로 변환할 때에는 HTTP요청헤더의 Accept 헤더에 명시된 미디어타입을 지원하는 HttpMessageConverter 구현체를 선택 
++ WebSystem 간의 XML, JSON 형식의 Data 를 주고받는 경우
+  + XML, JSON  Java Object (unmarshalling)
+  + Java Object  XML, JSON (marshalling)
+  + RequestBody , ResponseBody Annotation 은 HTTP 메시지 Body 에 Java 객체를 XML 이나 JSON 등의 타입으로 변환하여 담고 , 역으로 변환하는데 사용
+
+        
+    marshalling
+    한 객체 의 메모리에서의 표현방식을 저장 또는 전송에 적합한 다른 데이터 형식으로 변환하는 과정이다
+    또한 이는 데이터를 컴퓨터 프로그램의 서로 다른 부분 간에 혹은 한 프로그램에서 다른 프로그램으로 이동해야 할 때도 사용된다
+    이는 대체로 어떤 한 언어로 작성된 프로그램의 출력 매개변수들을 , 다른 언어로 작성된 프로그램의 입력으로 전달해야 하는 경우에 필요하다
+    마샬링은 직렬화와 유사하며 동일하게 간주되기도 하지만 매개변수를 바이트 스트림으로 변환하는 직렬화와는 차이가 있다
+
+## WebApplication 동작 원리
+
+![MVC](/assets/img/springFramework/mvc4.png)
+
++ 실행순서
+  1. 웹 어플리케이션이 실행되면 Tomcat(WAS)에 의해 web.xml이 loading
+  2. web.xml에 등록되어 있는 ContextLoaderListener (Java Class)가 생성
+     ContextLoaderListener class 는 ServletContextListener interface 를 구현하고 있으며 , ApplicationContext 를 생성하는 역할을 수행
+  3. 생성된 ContextLoaderListener는 root-context.xml을 loading
+  4. root-context.xml에 등록되어 있는 Spring Container가 구동. 이 때 개발자가 작성한 Business Logic에 대한 부분과 Database Logic(DAO), VO 객체들이 생성
+  5. Client로 부터 요청(request)가 들어옴
+  6. DispatcherServlet (Servlet)이 생성 DispatcherServlet 은 FrontController 의 역할을 수행
+     Client로부터 요청 온 메시지를 분석하여 알맞은 PageController 에게 전달하고 응답을 받아 요청에 따른
+     응답을 어떻게 할 지 결정 . 실질적인 작업은 PageController 에서 이루어 진다
+     이러한 클래스들을 HandlerMapping , ViewResolver Class 라고 함
+  7. DispatcherServlet 은 servlet context.xml 을 loading.
+  8. 두번째 Spring Container 가 구동되며 응답에 맞는 PageController 들이 동작 . 이 때 첫번째 Spring Container 가 구동되면서
+     생성된 DAO, VO, ServiceImpl 클래스들과 협업하여 알맞은 작업을 처리
