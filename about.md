@@ -152,7 +152,7 @@ mobileNet을 이용한 classification으로 버섯을 구별해주는 인공지�
 
 ## 수료증 / Certificates
 ---
-스프링 핵심 원리 - 기본편
+
 <div class="certifi">
     <div>스프링 핵심 원리 - 기본편<img src= "/assets/img/Certificates/16.png"></div>
     <div>코딩으로 학습하는 GoF의 디자인 패턴<img src= "/assets/img/Certificates/14.png"></div>
