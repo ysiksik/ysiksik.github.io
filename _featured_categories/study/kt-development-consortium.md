@@ -21,8 +21,10 @@ related_posts:
 * [Java12 프로그래밍]{:.heading.flip-title}
 * [Spring 전자정부 프레임워크 기반 SI 실무]{:.heading.flip-title}
 * [Spring Boot 기반 REST API 개발]{:.heading.flip-title}
+* [실무 적용 SQL 성능 튜닝]{:.heading.flip-title}
 
 [데이터베이스 모델링]: /database-modeling/
 [Java12 프로그래밍]: /java12-programming/
 [Spring 전자정부 프레임워크 기반 SI 실무]: /spring-framework-si/
 [Spring Boot 기반 REST API 개발]: /springboot-rest-api/
+[실무 적용 SQL 성능 튜닝]: /sql-performance-tuning/
