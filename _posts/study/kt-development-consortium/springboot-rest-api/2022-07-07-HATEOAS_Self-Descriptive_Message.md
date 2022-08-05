@@ -5,6 +5,7 @@ subtitle: HATEOAS와 Self-Descriptive Message 적용
 date: '2022-07-07 00:00:03 +0900'
 categories:
     - study
+    - kt-development-consortium
     - springboot-rest-api
 tags: RestAPI
 comments: true

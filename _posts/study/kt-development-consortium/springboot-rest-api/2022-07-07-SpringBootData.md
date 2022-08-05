@@ -5,6 +5,7 @@ subtitle: 스프링 부트 데이터
 date: '2022-07-07 00:00:01 +0900'
 categories:
     - study
+    - kt-development-consortium
     - springboot-rest-api
 tags: RestAPI
 comments: true

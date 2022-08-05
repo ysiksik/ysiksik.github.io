@@ -5,6 +5,7 @@ subtitle: 객체 지향 자바 프로그래밍
 date: '2022-06-28 00:00:00 +0900'
 categories:
     - study
+    - kt-development-consortium
     - java12-programming
 tags: JAVA12
 comments: true

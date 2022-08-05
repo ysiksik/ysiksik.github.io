@@ -5,6 +5,7 @@ subtitle: DW 데이터 모델링
 date: '2022-06-26 00:00:01 +0900'
 categories:
     - study
+    - kt-development-consortium
     - database-modeling
 tags: databaseModeling
 comments: true

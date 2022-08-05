@@ -5,6 +5,7 @@ subtitle: Event 생성 API 개발
 date: '2022-07-07 00:00:00 +0900'
 categories:
     - study
+    - kt-development-consortium
     - springboot-rest-api
 tags: RestAPI
 comments: true

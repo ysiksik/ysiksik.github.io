@@ -5,6 +5,7 @@ subtitle: 논리적 데이터 모델링
 date: '2022-06-24 00:00:00 +0900'
 categories:
     - study
+    - kt-development-consortium
     - database-modeling
 tags: databaseModeling
 comments: true

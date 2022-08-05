@@ -5,6 +5,7 @@ subtitle: 관계형 데이터베이스 소개
 date: '2022-06-22 00:00:00 +0900'
 categories:
     - study
+    - kt-development-consortium
     - database-modeling
 tags: databaseModeling
 comments: true

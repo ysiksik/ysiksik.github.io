@@ -5,6 +5,7 @@ subtitle: 빅데이터 설계 기법
 date: '2022-06-27 00:00:00 +0900'
 categories:
     - study
+    - kt-development-consortium
     - database-modeling
 tags: databaseModeling
 comments: true

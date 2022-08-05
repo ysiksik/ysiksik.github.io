@@ -2,10 +2,10 @@
 layout: list
 bigtitle: KT개발컨소시엄
 category: study
-slug: KT Development Consortium
+slug: kt-development-consortium
 menu: true
 submenu: true
-order: 1
+order: 2
 description: >
     KT개발컨소시엄에서 진행한 학습 내용 기록
 list: true
@@ -17,6 +17,12 @@ related_posts:
 
 ## 카테고리
 
-* [한 번에 끝내는 코딩테스트 369 JAVA편]{:.heading.flip-title}
+* [데이터베이스 모델링]{:.heading.flip-title}
+* [Java12 프로그래밍]{:.heading.flip-title}
+* [Spring 전자정부 프레임워크 기반 SI 실무]{:.heading.flip-title}
+* [Spring Boot 기반 REST API 개발]{:.heading.flip-title}
 
-[한 번에 끝내는 코딩테스트 369 JAVA편]: /fastcampus-codingtest-java/
+[데이터베이스 모델링]: /database-modeling/
+[Java12 프로그래밍]: /java12-programming/
+[Spring 전자정부 프레임워크 기반 SI 실무]: /spring-framework-si/
+[Spring Boot 기반 REST API 개발]: /springboot-rest-api/

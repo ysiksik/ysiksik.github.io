@@ -5,6 +5,7 @@ subtitle: 개념적 데이터 모델링
 date: '2022-06-23 00:00:00 +0900'
 categories:
     - study
+    - kt-development-consortium
     - database-modeling
 tags: databaseModeling
 comments: true
@@ -26,7 +27,7 @@ comments: true
 > + 실체-관계 모델의 장점은 표현력이 풍부하고 직관적이어서 일반적으로 사람의 관점과 유사한 모델을 제공
 >   + ![예제](/assets/img/database-modeling/EntityRelationshipModel.png)
 > + 실체-관계 모델을 통해서 표현된 결과물을 E-R Diagram이라고 한다.
->   + ![예제](/assets/img/database-modeling/E-R Diagram.png)
+>   + ![예제](/assets/img/database-modeling/E-R%20Diagram.png)
 
 
 ## 개념적 데이터 모델링

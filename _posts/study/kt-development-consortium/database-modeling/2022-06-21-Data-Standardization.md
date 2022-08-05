@@ -5,6 +5,7 @@ subtitle: 데이터 표준화
 date: '2022-06-21 00:00:00 +0900'
 categories:
     - study
+    - kt-development-consortium
     - database-modeling
 tags: databaseModeling
 comments: true

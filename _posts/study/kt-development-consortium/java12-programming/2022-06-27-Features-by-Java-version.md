@@ -5,6 +5,7 @@ subtitle: 자바 버전별 기능
 date: '2022-06-27 00:00:00 +0900'
 categories:
     - study
+    - kt-development-consortium
     - java12-programming
 tags: JAVA12
 comments: true

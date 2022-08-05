@@ -5,6 +5,7 @@ subtitle: BPMN 기본 표기법
 date: '2022-06-17 00:00:00 +0900'
 categories:
     - study
+    - kt-development-consortium
     - database-modeling
 tags: databaseModeling
 comments: true

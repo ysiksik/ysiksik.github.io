@@ -62,36 +62,39 @@ menu:
         submenu:
           - title:  코딩테스트 369 JAVA
             url:      /fastcampus-codingtest-java/
-      - title:  데이터베이스 모델링
-        url:      /database-modeling/
-      - title:  페이먼츠
-        url:      /payments/
-      - title:  Java12 프로그래밍
-        url:      /java12-programming/
-      - title: Spring Boot 기반 REST API 개발
-        url:      /springboot-rest-api/
-      - title: Spring 전자정부 프레임워크 기반 SI 실무
-        url:      /spring-framework-si/
-  - title:             Blog
-    url:               /blog/
-    submenu:
-      - title:  GithubPages
-        url:      /githubpages/
-      - title:  Library
-        url:      /library/
-      - title:  ML/DL
-        url:      /mldl/
-      - title:  Class
-        url:      /class/
-      - title:  blog-etc
-        url:      /blog-etc/
-  - title:             Etc
-    url:               /etc/
-    submenu:
-      - title:  Diary
-        url:      /diary/
-      - title:  Travel
-        url:      /travel/
+      - title:   KT개발컨소시엄
+        url:      /kt-development-consortium/
+        submenu:
+          - title:  데이터베이스 모델링
+            url:      /database-modeling/
+          - title:  Java12 프로그래밍
+            url:      /java12-programming/
+          - title:  Spring 전자정부 프레임워크 기반 SI 실무
+            url:      /spring-framework-si/
+          - title:  Spring Boot 기반 REST API 개발
+            url:      /springboot-rest-api/
+      - title: 페이먼츠
+        url: /payments/
+#  - title:             Blog
+#    url:               /blog/
+#    submenu:
+#      - title:  GithubPages
+#        url:      /githubpages/
+#      - title:  Library
+#        url:      /library/
+#      - title:  ML/DL
+#        url:      /mldl/
+#      - title:  Class
+#        url:      /class/
+#      - title:  blog-etc
+#        url:      /blog-etc/
+#  - title:             Etc
+#    url:               /etc/
+#    submenu:
+#      - title:  Diary
+#        url:      /diary/
+#      - title:  Travel
+#        url:      /travel/
 
 # Add links to the footer.
 # Typically you'll want to link to your cookie- or privacy policy (if appliable), etc..

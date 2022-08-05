@@ -5,6 +5,7 @@ subtitle: 의존성 주입(DI, Dependency Injection)
 date: '2022-07-22 00:00:00 +0900'
 categories:
     - study
+    - kt-development-consortium
     - spring-framework-si
 tags: spring
 comments: true

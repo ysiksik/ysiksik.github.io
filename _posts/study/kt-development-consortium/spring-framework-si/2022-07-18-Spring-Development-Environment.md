@@ -5,6 +5,7 @@ subtitle: Spring
 date: '2022-07-18 00:00:00 +0900'
 categories:
     - study
+    - kt-development-consortium
     - spring-framework-si
 tags: spring
 comments: true

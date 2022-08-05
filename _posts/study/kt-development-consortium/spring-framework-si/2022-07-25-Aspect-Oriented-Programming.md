@@ -5,6 +5,7 @@ subtitle: 관점 지향 프로그래밍(AOP, Aspect Oriented Programming)
 date: '2022-07-25 00:00:00 +0900'
 categories:
     - study
+    - kt-development-consortium
     - spring-framework-si
 tags: spring
 comments: true

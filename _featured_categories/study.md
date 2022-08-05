@@ -16,15 +16,7 @@ hide_description: false
 ## 카테고리
 
 * [알고리즘]{:.heading.flip-title}
-* [데이터베이스-모델링]{:.heading.flip-title}
-* [페이먼츠]{:.heading.flip-title}
-* [Java12-프로그래밍]{:.heading.flip-title}
-* [Spring-Boot-기반-REST-API-개발]{:.heading.flip-title}
-* [Spring-전자정부-프레임워크-기반-SI-실무]{:.heading.flip-title}
+* [KT개발컨소시엄]{:.heading.flip-title}
   
 [알고리즘]: /algorithm/
-[데이터베이스-모델링]: /database-modeling/
-[페이먼츠]: /payments/
-[Java12-프로그래밍]: /java12-programming/
-[Spring-Boot-기반-REST-API-개발]: /springboot-rest-api/
-[Spring-전자정부-프레임워크-기반-SI-실무]: /spring-framework-si/
+[KT개발컨소시엄]: /kt-development-consortium/
