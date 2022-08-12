@@ -17,6 +17,8 @@ hide_description: false
 
 * [알고리즘]{:.heading.flip-title}
 * [KT개발컨소시엄]{:.heading.flip-title}
+* [인프런]{:.heading.flip-title}
   
 [알고리즘]: /algorithm/
 [KT개발컨소시엄]: /kt-development-consortium/
+[인프런]: /inflearn/
