@@ -21,6 +21,7 @@ tags: fastcampusAlgorithm
 
 ## 05.그래프와 탐색 (Graph & Search) - 응용편
 
+
 ## [백준 2667번 - 단지번호 붙이기](https://www.acmicpc.net/problem/2667)
 ---
 
