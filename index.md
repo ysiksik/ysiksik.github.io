@@ -1,17 +1,36 @@
 ---
 layout: about
-image: /assets/img/me.png
+image: /assets/img/me/me.png
 description: >
 hide_description: true
 redirect_from:
   -
 ---
 
-# About
+
+# 소개 / About Me
 
 <!--author-->
 
-<br>
+* * *
+
+<center>
+<span style=
+"font-size:170%;
+font-weight:bold">
+SIKSIK
+</span>
+</center>
+
+<center>Java & Spring 백엔드 개발자</center>
+
+<center>프론트 개발 (JavaScript. jQuery, ReactJs, Thymeleaf )</center>
+
+<center>금융보안데이터센터(FSDC) 클라우드 운영 및 관리</center>
+
+
+* toc
+{:toc .large-only}
 
 ## 소개
 ---
@@ -19,7 +38,7 @@ Github pages 블로그를 운영하는 중입니다.💻
 현재 JAVA BACKEND 개발자로 활동 중입니다.✏️✒️
 
 
- 💡__개발자답게 열심히 공부하면서 개발하고 있습니다.__ 💡
+💡__개발자답게 열심히 공부하면서 개발하고 있습니다.__ 💡
 
 제 📚**관심분야**는 다음과 같습니다.
 
@@ -29,10 +48,107 @@ Github pages 블로그를 운영하는 중입니다.💻
 
 ---
 
+## 개인 정보 / Personal Data
+---
+> 1994.10.11 출생
 
+> 연락처: appie6069@naver.com
+
+<!-- > Portfolio Site : <a href="https://choyunsik.github.io">https://choyunsik.github.io</a> -->
+
+
+## 학력 / Education
+---
+> 2017.05 ~ 2018.03 학점은행
+>
+> 멀티미디어학과 졸업
+
+> 2013.03 ~ 2017.02 동원 대학교
+>
+> 스마트 IT 콘텐츠학과 졸업
+
+## 연구 관심 / Research Interest
+---
+* Spring
+    + Spring boot
+    + Spring batch
+    + Spring clouds
+
+* Java
+    + 함수형 인터페이스 , 람다
+    + Stream
+    + Optional
+    + CompletableFuture
+
+* JPA
+
+* QueryDSL
+
+* 정보관리 기술사
+
+## 기술 스택 / Skill Set
+---
+
+
+| 구분 | Skill |
+| -- | -- |
+| Programing Languages | Java(1.8~), JavaScript(ES6), HTML5 |
+| Framework / Library | SpringFramework, ReactJs, Bootstrap, JQuery, Spring Boot, Spring Batch,Thymeleaf, JSP, JPA, QueryDSL|  
+| Server | Tomcat, Nginx |
+| Tooling / DevOps | Git, SVN, JenKins |
+| Environment | Linux, Window |
+| DB | MySQL, PostgreSQL |
+
+
+
+## 프로젝트 / Project
+---
+
+<!-- * **Visual Object Tracking Using Plenoptic Image Sequences**
+
+과학기술정보통신부-한성대 프로젝트 : 학부생 인턴
+
+Lightfield 영상에서의 Siamease Network를 이용한 단일 객체 추적
+
+* **FPV Swlf-driving RC Car**
+
+VR 헤드셋을 통해 FPV 카메라에서 보내는 실시간 영상을 받으며 일반인들에게 조금더 쉽고 안전하게 자율주행을 체험해보는 프로젝트 수행
+
+* **Anti Drone AI Robot using object detection**
+
+SSD를 활용한 드론 탐지프로그램으로 라즈베리파이와 3D프린터를 이용해 만든 로봇이 드론을 인식하고 pan and tilt모터 체계를 이용하여 드론 트래킹
+
+* **AI Mashroom Classificator App**
+
+mobileNet을 이용한 classification으로 버섯을 구별해주는 인공지능 버섯 도감 어플로서 독버섯 채취 및 섭취 방지를 위한 어플 -->
+
+## 수상 / Awards
+---
+
+😊<strong>동원 대학교 교내 캡스톤 경진대회 2016.12</strong>
+
+- 금상
 <br>
+
+😊<strong>일산킨텍스 작품 전시/일산킨텍스 2016.10</strong>
+
+- 입상
 <br>
-<br>
+
+😊<strong>2016 산학협력 선도전문대학(LINC)육성사업 캡스톤디자인 경진대회 2016.10</strong>
+
+- 입상
+
+
+## 경력 사항 / Work Experiences
+---
+
+| 재직 기간 | 회사명 | 부서 및 R&R | 담당업무 |
+| -- | -- | -- | -- |
+| 2021.04 ~ 재직 중 | 립페이 | PG 개발팀 / 대리  | PG 시스템 개발 |
+| 2019.08 ~ 2021.04 | 크레디프 | 개발팀 / 대리 | 웹 개발(ONM, API, BATCH, TEST 검증, 자동 TEST), KT - TOMAS 쿠폰 발급 시스템 |
+| 2018.03 ~ 2019.08 | 코엔코코리아 | 개발팀 / 대리  | 거래소 개발, FSDC 클라우드 운영 및 관리 ,보안 구축 및 관리 |
+| 2017.01 ~ 2018.03  | 솔비텍 | 기술지원 / 사원  | 리포팅툴 기술지원, 유지보수, 개발 |
 
 ## 자격증 / Certification
 ---
@@ -40,7 +156,7 @@ Github pages 블로그를 운영하는 중입니다.💻
     <div>정보 처리 기사 (2019. 08 취득)<img src= "/assets/img/Certification/6.png"></div>
     <div>네트워크관리사2급 (2018. 12 취득)<img src= "/assets/img/Certification/5.png"></div>
     <div>컴퓨터활용능력 2 급 (2017. 12 취득)<img src= "/assets/img/Certification/4.png"></div>
-    <div><Oracle Certified Java Programmer(OCJP) (2016. 10 취득)<img src= "/assets/img/Certification/3.png"></div>
+    <div>Oracle Certified Java Programmer(OCJP) (2016. 10 취득)<img src= "/assets/img/Certification/3.png"></div>
     <div><img src= "/assets/img/Certification/2.png"></div>
     <div><img src= "/assets/img/Certification/1.png"></div>
 </div>
@@ -54,6 +170,7 @@ Github pages 블로그를 운영하는 중입니다.💻
 ---
 
 <div class="certifi">
+    <div>모든 개발자를 위한 HTTP 웹 기본 지식<img src= "/assets/img/Certificates/17.png"></div>
     <div>스프링 핵심 원리 - 기본편<img src= "/assets/img/Certificates/16.png"></div>
     <div>코딩으로 학습하는 GoF의 디자인 패턴<img src= "/assets/img/Certificates/14.png"></div>
     <div>Spring Cloud로 개발하는 마이크로서비스 어플리케이션(MSA)<img src= "/assets/img/Certificates/15.png"></div>
@@ -72,7 +189,7 @@ Github pages 블로그를 운영하는 중입니다.💻
     <div>2020.05 ~ 2021.05 데이터베이스 모델링 실무<img src= "/assets/img/Certificates/1.png"></div>
 </div>
 
-- 스프링 핵심 원리 - 기본편
+- 모든 개발자를 위한 HTTP 웹 기본 지식
 - 코딩으로 학습하는 GoF의 디자인 패턴
 - Spring Cloud로 개발하는 마이크로서비스 어플리케이션(MSA)
 - Spring boot를 이용한 RESTful Web Services 개발
@@ -128,9 +245,3 @@ Github pages 블로그를 운영하는 중입니다.💻
         });
     });
   </script>
-
-<!-- ## 좋아하는 그림
-
-![Luncheon_of_Boating_Party](/assets/img/Luncheon_of_Boating_Party.JPG)
-
-[Google Arts & Culture](https://artsandculture.google.com/asset/luncheon-of-the-boating-party-pierre-auguste-renoir/mgHsTKDNJVzPAg) ©  <b> Pierre-Auguste Renoir</b>. <code>Luncheon of the Boating Party</code>.  _1880-1881_. Oil on canvas -->
