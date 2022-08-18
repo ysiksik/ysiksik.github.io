@@ -48,13 +48,83 @@ comments: true
 + Iterable의 기본 메소드
   + forEach()
   + spliterator()
+    + stream()의 기반
+  
+~~~java
+
+        List<String> test = new ArrayList<>();
+        test.add("test1");
+        test.add("test2");
+        test.add("test3");
+        test.add("test4");
+
+        test.forEach(System.out::println);
+
+~~~
+
+~~~java
+
+        List<String> test = new ArrayList<>();
+        test.add("test1");
+        test.add("test2");
+        test.add("test3");
+        test.add("test4");
+
+        Spliterator<String> spliterator = test.spliterator();
+        Spliterator<String> stringSpliterator = spliterator.trySplit();
+        while (spliterator.tryAdvance(System.out::println));
+        System.out.println("------------------------------");
+        while (stringSpliterator.tryAdvance(System.out::println));
+
+~~~
+
 + Collection의 기본 메소드
   + stream() / parallelStream()
+    + spliterator()를 사용함
   + removeIf(Predicate)
   + spliterator()
+  
+~~~java
+
+        List<String> test = new ArrayList<>();
+        test.add("test1");
+        test.add("test2");
+        test.add("test3");
+        test.add("test4");
+
+
+        test.removeIf(test1 -> test1.equals("test1"));
+        
+~~~
+
 + Comparator의 기본 메소드 및 스태틱 메소드
   + reversed()
   + thenComparing(Comparator)
   + static reverseOrder() / naturalOrder()
   + static nullsFirst() / nullsLast()
   + static comparing()
+
+~~~java
+
+        List<String> test = new ArrayList<>();
+        test.add("test1");
+        test.add("test2");
+        test.add("test3");
+        test.add("test4");
+
+
+        test.sort(String::compareToIgnoreCase);
+
+        Comparator<String> compareToIgnoreCase = String::compareToIgnoreCase;
+        test.sort(compareToIgnoreCase.reversed()); // 역순으로 정렬
+
+        test.sort(compareToIgnoreCase.reversed().thenComparing(compareToIgnoreCase)); // 또 다른 조건으로 정렬을 더하고싶다.
+
+~~~
+
++ 자바 8 이전에는 인터페이스 아래에 추상 클래스를 제공해서 각각의 빈 메서드를 제공했다
+  + 편의성을 위해서
+  + 구현 클래스에서 추상 클래스를 구현해야 하는 문제가 생긴다.
++ 자바 8 이후에는 인터페이스 디폴트 메서드를 사용해서 추상 클래스를 제거했다.
+  + 추상 클래스를 구현하지 않아도 된다.
++ ex : interfase - WebMvcConfigurer , abstract - WebMvcConfigurerAdapter(Deprecated - java8 이후)
