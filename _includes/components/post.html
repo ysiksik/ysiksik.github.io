@@ -54,7 +54,12 @@
       </div>
   </header>
   <div class="markdown-body">
-  {% if no_excerpt %}
+    <ins class="kakao_ad_area" style="display:none;"
+         data-ad-unit    = "DAN-t9o4PPiNZJboUChC"
+         data-ad-width   = "160"
+         data-ad-height  = "600"></ins>
+    <script type="text/javascript" src="//t1.daumcdn.net/kas/static/ba.min.js" async></script>
+    {% if no_excerpt %}
     {{ post.content }}
   {% else %}
     {{ post.excerpt }}
