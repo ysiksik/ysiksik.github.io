@@ -18,6 +18,8 @@ related_posts:
 ## 카테고리
 
 * [더 자바, Java 8]{:.heading.flip-title}
+* [더 자바, 코드를 조작하는 다양한 방법]{:.heading.flip-title}
 
 [더 자바, Java 8]: /the-java8/
+[더 자바, 코드를 조작하는 다양한 방법]: /the-java-code-manipulation/
 

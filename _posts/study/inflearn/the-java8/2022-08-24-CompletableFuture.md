@@ -110,6 +110,11 @@ System.out.println("hello : " + Thread.currentThread().getName());
 
 ~~~
 
+
+### 참고
++ [https://docs.oracle.com/javase/tutorial/essential/concurrency/](https://docs.oracle.com/javase/tutorial/essential/concurrency/)
++ [https://docs.oracle.com/javase/8/docs/api/java/lang/Thread.html#interrupt--](https://docs.oracle.com/javase/8/docs/api/java/lang/Thread.html#interrupt--)
+
 ## Executors
 
 ### 고수준 (High-Level) Concurrency 프로그래밍
@@ -165,6 +170,9 @@ executorService.shutdownNow(); // 당장 종료
 
 ### Fork/Join 프레임워크
 + ExecutorService 의 구현체로 손쉽게 멀티 프로세서를 활용할 수 있게끔 도와준다.
+
+### 참고
++ [https://docs.oracle.com/javase/tutorial/essential/concurrency/executors.html](https://docs.oracle.com/javase/tutorial/essential/concurrency/executors.html)
 
 ## Callable 과 Future
 
@@ -285,9 +293,9 @@ public static void main(String[] args) throws ExecutionException, InterruptedExc
 + 예외 처리용 API 를 제공하지 않는다.
 
 
-### CompletableFuture
+### [CompletableFuture](https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/CompletableFuture.html)
 + Implements Future
-+ Implements Completion Stage
++ Implements [Completion Stage](https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/CompletionStage.html)
   + Completion : 외부에서 완료 시킬수 있다
   + 명시적으로  Executors 안만들어도 된다.
 
@@ -633,4 +641,6 @@ public static void main(String[] args) throws ExecutionException, InterruptedExc
 
 ~~~
 
-
+### 참고
++ [https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/ForkJoinPool.html](https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/ForkJoinPool.html)
++ [https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/CompletableFuture.html](https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/CompletableFuture.html)

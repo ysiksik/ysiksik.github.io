@@ -41,6 +41,10 @@ comments: true
   + private, protected, public 접근제어자를 사용할 수 없다.
   + 생성자가 없어서 생성시에 초기화해주는 작업이 필요한 경운에는 적합하지 않다.
 
+### 참고
++ [https://docs.oracle.com/javase/tutorial/java/IandI/nogrow.html](https://docs.oracle.com/javase/tutorial/java/IandI/nogrow.html)
++ [https://docs.oracle.com/javase/tutorial/java/IandI/defaultmethods.html](https://docs.oracle.com/javase/tutorial/java/IandI/defaultmethods.html)
+
 
 ## 자바 8 API의 기본 메소드와 스태틱 메소드
 + 자바 8 에서 추가한 기본 메소드로 인한 API 변화
@@ -128,3 +132,9 @@ comments: true
 + 자바 8 이후에는 인터페이스 디폴트 메서드를 사용해서 추상 클래스를 제거했다.
   + 추상 클래스를 구현하지 않아도 된다.
 + ex : interfase - WebMvcConfigurer , abstract - WebMvcConfigurerAdapter(Deprecated - java8 이후)
+
+### 참고
++ [https://docs.oracle.com/javase/8/docs/api/java/util/Spliterator.html](https://docs.oracle.com/javase/8/docs/api/java/util/Spliterator.html)
++ [https://docs.oracle.com/javase/8/docs/api/java/lang/Iterable.html](https://docs.oracle.com/javase/8/docs/api/java/lang/Iterable.html)
++ [https://docs.oracle.com/javase/8/docs/api/java/util/Collection.html](https://docs.oracle.com/javase/8/docs/api/java/util/Collection.html)
++ [https://docs.oracle.com/javase/8/docs/api/java/util/Comparator.html](https://docs.oracle.com/javase/8/docs/api/java/util/Comparator.html)

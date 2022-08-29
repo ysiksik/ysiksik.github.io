@@ -80,6 +80,8 @@ menu:
         submenu:
           - title:  더 자바, Java 8
             url:      /the-java8/
+          - title:  더 자바, 코드를 조작하는 다양한 방법
+            url:      /the-java-code-manipulation/
       - title: 페이먼츠
         url: /payments/
         #          - title:  실무 적용 SQL 성능 튜닝

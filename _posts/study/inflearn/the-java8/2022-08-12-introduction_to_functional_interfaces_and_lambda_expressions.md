@@ -221,6 +221,10 @@ System.out.println(plus.apply(2));
 + 익명 클래스 구현체와 달리 __쉐도윙__ 하지 않는다
   + 익명 클래스는 새로 스콥을 만들지만, 람다는 람다를 감싸고 있는 스콥과 같다.
 
+### 참고 
++ [https://docs.oracle.com/javase/tutorial/java/javaOO/nested.html#shadowing](https://docs.oracle.com/javase/tutorial/java/javaOO/nested.html#shadowing)
++ [https://docs.oracle.com/javase/tutorial/java/javaOO/lambdaexpressions.html](https://docs.oracle.com/javase/tutorial/java/javaOO/lambdaexpressions.html)
+
 ## 메소드 레퍼런스
 + 람다가 하는 일이 기존 메소드 또는 생성자를 호출하는 거라면, 메소드 레퍼런스를 사용해서 매우 간결하게 표현할 수 있다.
 
@@ -235,3 +239,6 @@ System.out.println(plus.apply(2));
 
 + 메소드 또는 생성자의 매개변수로 람다의 입력값을 받는다.
 + 리턴값 또는 생성한 객체는 람다의 리턴값이다.
+
+### 참고
++ [https://docs.oracle.com/javase/tutorial/java/javaOO/methodreferences.html](https://docs.oracle.com/javase/tutorial/java/javaOO/methodreferences.html)

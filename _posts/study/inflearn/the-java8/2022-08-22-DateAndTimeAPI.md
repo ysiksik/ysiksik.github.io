@@ -36,7 +36,7 @@ comments: true
 ~~~
 
 ### 자바 8 에서 제공하는 Date-Time API  
-+ JSR-310 스팩의 구현체를 제공한다.
++ [JSR-310](https://jcp.org/en/jsr/detail?id=310) 스팩의 구현체를 제공한다.
 + 디자인 철학
   + Clear(분명한)
     + API의 메서드는 잘 정의되어 있으며 동작이 명확하고 예상됩니다. 예를 들어 null 매개 변수 값으로 Date-Time 메서드를 호출하면 일반적으로 NullPointerException 이 트리거됩니다.
@@ -72,6 +72,11 @@ LocalDate firstBirthday = dateOfBirth.plusYears(1);
 + 타임스탬프는 Istant 를 사용한다.
 + 기간을 표현할 때는 Duration(시간 기반)과 Period(날짜 기반)를 사용할 수 있다.
 + DateTimeFormatter 를 사용해서 일시를 특정한 문자열로 포매팅할 수 있다.
+
+### 참고
++ [https://codeblog.jonskeet.uk/2017/04/23/all-about-java-util-date/](https://codeblog.jonskeet.uk/2017/04/23/all-about-java-util-date/)
++ [https://docs.oracle.com/javase/tutorial/datetime/overview/index.html](https://docs.oracle.com/javase/tutorial/datetime/overview/index.html)
++ [https://docs.oracle.com/javase/tutorial/datetime/iso/overview.html](https://docs.oracle.com/javase/tutorial/datetime/iso/overview.html)
 
 ## Date 와 Time API
 
