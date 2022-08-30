@@ -1,6 +1,6 @@
 ---
 layout: post
-bigtitle: '더 자바, Java 8'
+bigtitle: '더 자바, 코드를 조작하는 다양한 방법'
 subtitle: 바이트코드 조작
 date: '2022-08-29 00:00:00 +0900'
 categories:

@@ -1,6 +1,6 @@
 ---
 layout: post
-bigtitle: '더 자바, Java 8'
+bigtitle: '더 자바, 코드를 조작하는 다양한 방법'
 subtitle: JVM 이해하기
 date: '2022-08-26 00:00:01 +0900'
 categories:
