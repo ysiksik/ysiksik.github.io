@@ -5,7 +5,7 @@ bigtitle: 페이먼츠
 description: >
   PG 업무 공부 내용 정리
 list: true
-order: 4
+order: 5
 menu: true
 submenu: true
 ---

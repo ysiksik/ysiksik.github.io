@@ -70,15 +70,22 @@ Github pages 블로그를 운영하는 중입니다.💻
 ## 연구 관심 / Research Interest
 ---
 * Spring
-    + Spring boot
-    + Spring batch
-    + Spring clouds
+
+[//]: # (    + Spring boot)
+
+[//]: # (    + Spring batch)
+
+[//]: # (    + Spring clouds)
 
 * Java
-    + 함수형 인터페이스 , 람다
-    + Stream
-    + Optional
-    + CompletableFuture
+
+[//]: # (    + 함수형 인터페이스 , 람다)
+
+[//]: # (    + Stream)
+
+[//]: # (    + Optional)
+
+[//]: # (    + CompletableFuture)
 
 * JPA
 
