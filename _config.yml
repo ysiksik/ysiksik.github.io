@@ -52,8 +52,6 @@ author:
 menu:
   - title:             About
     url:               /
-  - title:             Project
-    url:               /project/
   - title:             Study
     url:               /study/
     submenu:
@@ -90,6 +88,8 @@ menu:
         url:    /payments/
         #          - title:  실무 적용 SQL 성능 튜닝
         #            url:      /sql-performance-tuning/
+  - title:             Project
+    url:               /project/
 #  - title:             Blog
 #    url:               /blog/
 #    submenu:

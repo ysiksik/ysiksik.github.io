@@ -345,3 +345,10 @@ u{
   height:140px !important;
 }
 
+.sidebar-sticky {
+  position: relative;
+  z-index: 3;
+  max-width: 21rem;
+  padding: 1.5rem;
+  contain: none !important;
+}

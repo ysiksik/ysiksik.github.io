@@ -5,7 +5,7 @@ bigtitle: Study
 slug: study
 menu: true
 submenu: true
-order: 3
+order: 2
 description: >
    연구, 공부
 sitemap: true
