@@ -11,7 +11,7 @@ comments: true
 ---
 
 # 비녀의 Package Manager
-+ [https://youtu.be/Ds7EjE8Rhjs](https://youtu.be/Ds7EjE8Rhjs)
+[https://youtu.be/Ds7EjE8Rhjs](https://youtu.be/Ds7EjE8Rhjs)
 
 # 비녀의 Package Manager
 * toc

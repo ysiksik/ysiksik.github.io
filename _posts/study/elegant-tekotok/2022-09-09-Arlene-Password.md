@@ -11,7 +11,7 @@ comments: true
 ---
 
 # 알린의 암호
-+ [https://youtu.be/UJDB6e8s1Fg](https://youtu.be/UJDB6e8s1Fg)
+[https://youtu.be/UJDB6e8s1Fg](https://youtu.be/UJDB6e8s1Fg)
 
 # 알린의 암호
 * toc
