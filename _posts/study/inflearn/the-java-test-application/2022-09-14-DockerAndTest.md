@@ -236,3 +236,93 @@ class StudyServiceTest {
 + 전체 흐름
   1. Testcontainer 를 사용해서 컨테이너 생성 
   2. ApplicationContextInitializer 를 구현하여 생성된 컨테이너에서 정보를 추출하여 Environment 에 넣어준다. 
+  3. @ContextConfiguration 을 사용해서 ApplicationContextInitializer 구현체를 등록한다.
+  4. 테스트 코드에서 Environment, @Value, @ConfigurationProperties 등 다양한 방법으로 해당 프로퍼티를 사용한다.
+
+
+~~~java
+
+@SpringBootTest
+@ExtendWith(MockitoExtension.class)
+@ActiveProfiles("test")
+@Testcontainers
+@Slf4j
+@ContextConfiguration(initializers = StudyServiceTest.ContainerPropertyInitializer.class)
+class StudyServiceTest {
+
+    @Mock MemberService memberService;
+
+    @Autowired StudyRepository studyRepository;
+
+    @Value("${container.port}") int port;
+
+    @Container
+    static GenericContainer postgreSQLContainer = new GenericContainer("postgres")
+            .withExposedPorts(5432)
+            .withEnv("POSTGRES_DB", "studytest");
+
+    @BeforeAll
+    static void beforeAll() {
+        Slf4jLogConsumer logConsumer = new Slf4jLogConsumer(log);
+        postgreSQLContainer.followOutput(logConsumer);
+    }
+
+    @BeforeEach
+    void beforeEach() {
+        System.out.println("===========");
+        System.out.println(port);
+        studyRepository.deleteAll();
+    }
+
+    @Test
+    void createNewStudy() {
+        // Given
+        StudyService studyService = new StudyService(memberService, studyRepository);
+        assertNotNull(studyService);
+
+        Member member = new Member();
+        member.setId(1L);
+        member.setEmail("test@email.com");
+
+        Study study = new Study(10, "테스트");
+
+        given(memberService.findById(1L)).willReturn(Optional.of(member));
+
+        // When
+        studyService.createNewStudy(1L, study);
+
+        // Then
+        assertEquals(1L, study.getOwnerId());
+        then(memberService).should(times(1)).notify(study);
+        then(memberService).shouldHaveNoMoreInteractions();
+    }
+
+    @DisplayName("다른 사용자가 볼 수 있도록 스터디를 공개한다.")
+    @Test
+    void openStudy() {
+        // Given
+        StudyService studyService = new StudyService(memberService, studyRepository);
+        Study study = new Study(10, "더 자바, 테스트");
+        assertNull(study.getOpenedDateTime());
+
+        // When
+        studyService.openStudy(study);
+
+        // Then
+        assertEquals(StudyStatus.OPENED, study.getStatus());
+        assertNotNull(study.getOpenedDateTime());
+        then(memberService).should().notify(study);
+    }
+
+    static class ContainerPropertyInitializer implements ApplicationContextInitializer<ConfigurableApplicationContext> {
+
+        @Override
+        public void initialize(ConfigurableApplicationContext context) {
+            TestPropertyValues.of("container.port=" + postgreSQLContainer.getMappedPort(5432))
+                    .applyTo(context.getEnvironment());
+        }
+    }
+
+}
+
+~~~
