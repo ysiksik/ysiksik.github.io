@@ -326,3 +326,120 @@ class StudyServiceTest {
 }
 
 ~~~
+
+## Testcontainers, 도커 Compose 사용하기 1 
++ 테스트에서 (서로 관련있는) 여러 컨테이너를 사용해야 한다면?
++ Docker Compose: [https://docs.docker.com/compose/](https://docs.docker.com/compose/)
+  + 여러 컨테이너를 한번에 띄우고 서로 간의 의존성 및 네트워크 등을 설정할 수 있는 방법
+  + docker-compose up/down
++ Testcontainers 의 docker compose 모듈을 사용할 수 있다.
+  + [https://www.testcontainers.org/modules/docker_compose/](https://www.testcontainers.org/modules/docker_compose/)
++ 대체제 : [https://github.com/palantir/docker-compose-rule](https://github.com/palantir/docker-compose-rule)
+  + 2019 가을 KSUG 발표 자료 참고
+  + [https://bit.ly/2q8S3Qo](https://bit.ly/2q8S3Qo)
+  
+## Testcontainers, 도커 Compose 사용하기 2
++ 도커 Compose 서비스 정보 참조하기
++ 특정 서비스 Expose
+
+~~~java
+
+@Container
+static DockerComposeContainer composeContainer =
+        new DockerComposeContainer(new File("src/test/resources/docker-compose.yml"))
+        .withExposedService("study-db", 5432);
+
+~~~
+
++ Compose 서비스 정보 참조
+
+~~~java
+
+static class ContainerPropertyInitializer implements ApplicationContextInitializer<ConfigurableApplicationContext> {
+
+    @Override
+    public void initialize(ConfigurableApplicationContext context) {
+        TestPropertyValues.of("container.port=" + composeContainer.getServicePort("study-db", 5432))
+                .applyTo(context.getEnvironment());
+    }
+}
+
+~~~
+
+
+~~~java
+
+@SpringBootTest
+@ExtendWith(MockitoExtension.class)
+@ActiveProfiles("test")
+@Testcontainers
+@Slf4j
+@ContextConfiguration(initializers = StudyServiceTest.ContainerPropertyInitializer.class)
+class StudyServiceTest {
+
+    @Mock MemberService memberService;
+
+    @Autowired StudyRepository studyRepository;
+
+    @Value("${container.port}") int port;
+
+    @Container
+    static DockerComposeContainer composeContainer =
+            new DockerComposeContainer(new File("src/test/resources/docker-compose.yml"))
+            .withExposedService("study-db", 5432);
+
+    @Test
+    void createNewStudy() {
+        System.out.println("========");
+        System.out.println(port);
+
+        // Given
+        StudyService studyService = new StudyService(memberService, studyRepository);
+        assertNotNull(studyService);
+
+        Member member = new Member();
+        member.setId(1L);
+        member.setEmail("test@email.com");
+
+        Study study = new Study(10, "테스트");
+
+        given(memberService.findById(1L)).willReturn(Optional.of(member));
+
+        // When
+        studyService.createNewStudy(1L, study);
+
+        // Then
+        assertEquals(1L, study.getOwnerId());
+        then(memberService).should(times(1)).notify(study);
+        then(memberService).shouldHaveNoMoreInteractions();
+    }
+
+    @DisplayName("다른 사용자가 볼 수 있도록 스터디를 공개한다.")
+    @Test
+    void openStudy() {
+        // Given
+        StudyService studyService = new StudyService(memberService, studyRepository);
+        Study study = new Study(10, "더 자바, 테스트");
+        assertNull(study.getOpenedDateTime());
+
+        // When
+        studyService.openStudy(study);
+
+        // Then
+        assertEquals(StudyStatus.OPENED, study.getStatus());
+        assertNotNull(study.getOpenedDateTime());
+        then(memberService).should().notify(study);
+    }
+
+    static class ContainerPropertyInitializer implements ApplicationContextInitializer<ConfigurableApplicationContext> {
+
+        @Override
+        public void initialize(ConfigurableApplicationContext context) {
+            TestPropertyValues.of("container.port=" + composeContainer.getServicePort("study-db", 5432))
+                    .applyTo(context.getEnvironment());
+        }
+    }
+
+}
+
+~~~
