@@ -175,3 +175,307 @@ public class baekjoon11726 {
 
 ~~~
 ***
+
+## [백준 1003번 - 피보나치 함수](https://www.acmicpc.net/problem/1003)
+---
+
+* __구현__
+
+~~~java
+
+public class baekjoon1003 {
+   static long[][] Dy;
+
+   public static void main(String[] args) throws IOException {
+
+      BufferedReader br = new BufferedReader(new InputStreamReader(System.in));
+
+      pro();
+
+      int T = Integer.parseInt(br.readLine());
+
+      while (T-- > 0) {
+
+         int N = Integer.parseInt(br.readLine());
+
+         System.out.println(Dy[N][0] + " " + Dy[N][1]);
+
+      }
+
+   }
+
+   private static void pro() {
+      Dy = new long[40 + 1][2];
+
+      Dy[0][0] = 1;
+      Dy[1][1] = 1;
+
+      for (int i = 2; i <= 40; i++) {
+         Dy[i][0] = Dy[i - 1][0] + Dy[i - 2][0];
+         Dy[i][1] = Dy[i - 1][1] + Dy[i - 2][1];
+      }
+   }
+
+
+}
+
+~~~
+***
+
+## [백준 10870번 - 피보나치 수 5](https://www.acmicpc.net/problem/10870)
+---
+
+* __구현__
+
+~~~java
+
+public class baekjoon10870 {
+
+
+   static int N;
+
+   public static void main(String[] args) throws IOException {
+
+      BufferedReader br = new BufferedReader(new InputStreamReader(System.in));
+
+      N = Integer.parseInt(br.readLine());
+
+      pro();
+
+   }
+
+   private static void pro() {
+      int[] Dy = new int[25];
+
+      Dy[0] = 0;
+      Dy[1] = 1;
+      Dy[2] = 1;
+      Dy[3] = 2;
+
+      for (int i = 4; i <= N; i++) {
+         Dy[i] = Dy[i - 1] + Dy[i - 2];
+      }
+
+      System.out.println(Dy[N]);
+   }
+
+
+}
+
+
+~~~
+***
+
+## [백준 15988번 - 1, 2, 3 더하기 3](https://www.acmicpc.net/problem/15988)
+---
+
+* __구현__
+
+~~~java
+
+public class baekjoon15988 {
+
+
+   static int N;
+   static int[] Dy;
+
+   public static void main(String[] args) throws IOException {
+
+      BufferedReader br = new BufferedReader(new InputStreamReader(System.in));
+
+
+      pro();
+
+      int T = Integer.parseInt(br.readLine());
+
+      while (T-- > 0) {
+         N = Integer.parseInt(br.readLine());
+         System.out.println(Dy[N]);
+      }
+
+
+   }
+
+   private static void pro() {
+      Dy = new int[1000005];
+
+      Dy[1] = 1;
+      Dy[2] = 2;
+      Dy[3] = 4;
+
+      for (int i = 4; i <= 1000000; i++) {
+         Dy[i] = Dy[i - 1];
+         Dy[i] += Dy[i - 2];
+         Dy[i] %= 1000000009;
+         Dy[i] += Dy[i - 3];
+         Dy[i] %= 1000000009;
+      }
+   }
+
+
+}
+
+~~~
+***
+
+## [백준 15991번 - 1, 2, 3 더하기 6](https://www.acmicpc.net/problem/15991)
+---
+
+* __구현__
+
+~~~java
+
+public class baekjoon15991 {
+
+
+   static int[] Dy;
+
+   public static void main(String[] args) throws IOException {
+
+      BufferedReader br = new BufferedReader(new InputStreamReader(System.in));
+
+
+      pro();
+
+      int T = Integer.parseInt(br.readLine());
+
+      while (T-- > 0) {
+         int x = Integer.parseInt(br.readLine());
+
+         int res = 0;
+         for (int mid = 1; mid <= 3; mid++)
+            if (x - mid >= 0 && (x - mid) % 2 == 0) {
+               res += Dy[(x - mid) / 2];
+               res %= 1000000009;
+            }
+
+         if (x % 2 == 0) {
+            res += Dy[x / 2];
+            res %= 1000000009;
+         }
+
+         System.out.println(res);
+      }
+
+
+   }
+
+   private static void pro() {
+      Dy = new int[100005];
+
+      Dy[0] = 1;
+
+      for (int i = 1; i <= 100000; i++) {
+         Dy[i] = Dy[i - 1];
+         if (i - 2 >= 0) Dy[i] += Dy[i - 2];
+         Dy[i] %= 1000000009;
+         if (i - 3 >= 0) Dy[i] += Dy[i - 3];
+         Dy[i] %= 1000000009;
+      }
+   }
+
+
+}
+
+~~~
+***
+
+## [백준 11052번 - 카드 구매하기](https://www.acmicpc.net/problem/11052)
+---
+
+* __구현__
+
+~~~java
+
+public class baekjoon11052 {
+
+
+   static int N;
+   static int[] P, Dy;
+
+   public static void main(String[] args) throws IOException {
+
+      BufferedReader br = new BufferedReader(new InputStreamReader(System.in));
+      N = Integer.parseInt(br.readLine());
+
+      P = new int[N + 1];
+      Dy = new int[N + 1];
+
+      StringTokenizer st = new StringTokenizer(br.readLine(), " ");
+
+      for (int i = 1; i <= N; i++) {
+         P[i] = Integer.parseInt(st.nextToken());
+      }
+
+      for (int i = 1; i <= N; i++) {
+         for (int cnt = 1; cnt <= i; cnt++) {
+            Dy[i] = Math.max(Dy[i], Dy[i - cnt] + P[cnt]);
+         }
+      }
+
+      System.out.println(Dy[N]);
+
+   }
+
+
+}
+
+
+~~~
+***
+
+## [백준 2011번 - 암호 코드](https://www.acmicpc.net/problem/2011)
+---
+
+* __구현__
+
+~~~java
+
+public class baekjoon2011 {
+
+
+   static int N, M = 1000000;
+   static long[] Dy;
+   static String str;
+
+   public static void main(String[] args) throws IOException {
+
+      BufferedReader br = new BufferedReader(new InputStreamReader(System.in));
+
+      str = br.readLine();
+      N = str.length();
+
+      Dy = new long[N];
+
+      if (N == 0 || str.charAt(0) == '0') {
+         System.out.println(0);
+         return;
+      }
+
+      Dy[0] = 1;
+      for (int i = 1; i < N; i++) {
+         if (str.charAt(i) != '0') Dy[i] = Dy[i - 1];
+
+         if (check(str.charAt(i - 1), str.charAt(i))) {
+            if (i >= 2) Dy[i] += Dy[i - 2];
+            else Dy[i] += 1;
+            Dy[i] %= M;
+         }
+      }
+
+      System.out.println(Dy[N - 1]);
+   }
+
+   private static boolean check(char A, char B) {
+      if (A == '0') return false;
+      if (A == '1') return true;
+      if (A >= '3') return false;
+
+      return B <= '6';
+   }
+
+
+}
+
+~~~
+***
