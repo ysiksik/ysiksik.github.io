@@ -177,6 +177,7 @@ mobileNet을 이용한 classification으로 버섯을 구별해주는 인공지�
 ---
 
 <div class="certifi">
+    <div>스프링 MVC 1편 - 백엔드 웹 개발 핵심 기술<img src= "/assets/img/Certificates/18.png"></div>
     <div>모든 개발자를 위한 HTTP 웹 기본 지식<img src= "/assets/img/Certificates/17.png"></div>
     <div>스프링 핵심 원리 - 기본편<img src= "/assets/img/Certificates/16.png"></div>
     <div>코딩으로 학습하는 GoF의 디자인 패턴<img src= "/assets/img/Certificates/14.png"></div>
@@ -196,6 +197,7 @@ mobileNet을 이용한 classification으로 버섯을 구별해주는 인공지�
     <div>2020.05 ~ 2021.05 데이터베이스 모델링 실무<img src= "/assets/img/Certificates/1.png"></div>
 </div>
 
+- 스프링 MVC 1편 - 백엔드 웹 개발 핵심 기술
 - 모든 개발자를 위한 HTTP 웹 기본 지식
 - 코딩으로 학습하는 GoF의 디자인 패턴
 - Spring Cloud로 개발하는 마이크로서비스 어플리케이션(MSA)
