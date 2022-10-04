@@ -82,6 +82,8 @@ menu:
             url:      /the-java-code-manipulation/
           - title:  더 자바, 애플리케이션을 테스트하는 다양한 방법
             url:      /the-java-test-application/
+          - title:  코딩으로 학습하는 GoF의 디자인 패턴
+            url:      /gof-design-pattern/
       - title:    우아한 테코톡
         url:    /elegant-tekotok/
       - title:    페이먼츠
