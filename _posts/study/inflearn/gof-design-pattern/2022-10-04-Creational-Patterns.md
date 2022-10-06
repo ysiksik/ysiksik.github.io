@@ -18,9 +18,9 @@ comments: true
 
 ## 싱글톤 (Singleton) 패턴
 + 인스턴스를 오직 한개만 제공하는 클래스
-+ 시스템 런타임, 환경 세팅에 대한 정보 등, 인스턴스가 여러개 일 때 문제가 생길 수 있는 경우가 있다. __인스턴스를 오직 한개만 만들어 제공하는__ 클래스가 필요하다
-+ ![img.png](/assets/img/gof-design-pattern/Singleton.png)
-+ 권장되는 두 가지는 Holder 를 사용하는 것과, Enum 을 사용하는 것이다.
+  + 시스템 런타임, 환경 세팅에 대한 정보 등, 인스턴스가 여러개 일 때 문제가 생길 수 있는 경우가 있다. __인스턴스를 오직 한개만 만들어 제공하는__ 클래스가 필요하다
+  + ![img.png](/assets/img/gof-design-pattern/Singleton.png)
+  + 권장되는 두 가지는 Holder 를 사용하는 것과, Enum 을 사용하는 것이다.
 
 ### 싱글톤 (Singleton) 패턴 구현 방법 1
 + private 생성자에 static 메소드
@@ -272,8 +272,8 @@ public enum Settings5 {
 
 ## 팩토리 메소드 (Factory method) 패턴
 + 구체적으로 어떤 인스턴스를 만들지는 서브 클래스가 정한다.
-+ 다양한 구현체(Product)가 있고, 그중에서 특정한 구현체를 만들 수 있는 다양한 팩토리(Creator)를 제공할 수 있다.
-+ ![img.png](/assets/img/gof-design-pattern/Factory.png)
+  + 다양한 구현체(Product)가 있고, 그중에서 특정한 구현체를 만들 수 있는 다양한 팩토리(Creator)를 제공할 수 있다.
+  + ![img.png](/assets/img/gof-design-pattern/Factory.png)
 
 ### 팩토리 메소드 (Factory method) 패턴 구현 방법
 + 확장에 열려있고 변경에 닫혀있는 구조로 만들어 보자.
@@ -281,7 +281,7 @@ public enum Settings5 {
 #### 기존
 + Ship.class
 
-  ~~~java
+~~~java
   
   public class Ship {
   
@@ -325,11 +325,11 @@ public enum Settings5 {
       }
   }
   
-  ~~~
+~~~
 
 + ShipFactory.Class
 
-  ~~~java
+~~~java
   
   public class ShipFactory {
   
@@ -377,11 +377,11 @@ public enum Settings5 {
   
   }
   
-  ~~~
+~~~
   
 + Client.Class
 
-  ~~~java
+~~~java
   
   public class Client {
   
@@ -395,13 +395,13 @@ public enum Settings5 {
   
   }
   
-  ~~~
+~~~
   
 #### 변경
 
 + ShipFactory.class
 
-  ~~~java
+~~~java
   
   public interface ShipFactory {
   
@@ -432,11 +432,11 @@ public enum Settings5 {
   
   }
   
-  ~~~
+~~~
   
 + DefaultShipFactory.class
 
-  ~~~java
+~~~java
   
   public abstract class DefaultShipFactory implements ShipFactory {
   
@@ -448,11 +448,11 @@ public enum Settings5 {
   }
   
   
-  ~~~
+~~~
 
 + WhiteshipFactory.class
 
-  ~~~java
+~~~java
   
   public class WhiteshipFactory extends DefaultShipFactory {
   
@@ -463,11 +463,11 @@ public enum Settings5 {
   }
   
   
-  ~~~
+~~~
 
 + Ship.class
 
-  ~~~java
+~~~java
   
   public class Ship {
   
@@ -531,11 +531,11 @@ public enum Settings5 {
       }
   }
   
-  ~~~ 
+~~~ 
   
 + Whiteship.class
 
-  ~~~java
+~~~java
 
   public class Whiteship extends Ship {
   
@@ -546,11 +546,11 @@ public enum Settings5 {
       }
   }
   
-  ~~~
+~~~
   
 + BlackshipFactory.class
 
-  ~~~java
+~~~java
   
   public class BlackshipFactory extends DefaultShipFactory {
       @Override
@@ -559,11 +559,11 @@ public enum Settings5 {
       }
   }
 
-  ~~~
+~~~
   
 + Blackship.class
 
-  ~~~java
+~~~java
   
   public class Blackship extends Ship {
   
@@ -574,11 +574,11 @@ public enum Settings5 {
       }
   }
   
-  ~~~
+~~~
   
 + Client.class
 
-  ~~~java
+~~~java
   
   public class Client {
   
@@ -594,7 +594,7 @@ public enum Settings5 {
   
   }
   
-  ~~~
+~~~
 
 ### 팩토리 메소드 (Factory method) 패턴 복습
 + 구체적으로 어떤 것을 만들지는 서브 클래스가 정한다.
@@ -612,7 +612,7 @@ public enum Settings5 {
   + 매개변수의 값에 따라 또는 메소드에 따라 각기 다른 인스턴스를 리턴하는 단순한 버전의 팩토리 패턴
   + java.lang.Calendar 또는 java.lang.NumberFormat
 
-  ~~~java
+~~~java
   
   public class SimpleFactory {
   
@@ -627,9 +627,9 @@ public enum Settings5 {
       }
   }
   
-  ~~~
+~~~
   
-  ~~~java
+~~~java
   
   public class CalendarExample {
   
@@ -640,12 +640,12 @@ public enum Settings5 {
       }
   }
   
-  ~~~
+~~~
 
 + 스프링 BeanFactory
   + Object 타입의 Product를 만드는 BeanFactory라는 Creator
 
-  ~~~java
+~~~java
   
   public class SpringBeanFactoryExample {
 
@@ -660,5 +660,676 @@ public enum Settings5 {
     }
   }
   
-  ~~~
+~~~
   
+## 추상 팩토리 (Abstract factory) 패턴
++ 서로 관련있는 여러 객체를 만들어주는 인터페이스
+  + 구체적으로 어떤 클래스의 인스턴스를(concrete product)를 사용하는지 감출 수 있다.
+  + ![img.png](/assets/img/gof-design-pattern/Abstract.png)
+
+### 추상 팩토리 (Abstract factory) 구현 방법
++ 클라이언트 코드에서 구체적인 클래스의 의존성을 제거한다.
+
+#### 기존
+
++ Anchor.class
+
+~~~java
+  
+  public interface Anchor {
+      
+  }
+  
+~~~
+
++ WhiteAnchor.class
+
+~~~java
+  
+  public class WhiteAnchor implements Anchor {
+  }
+
+~~~
+
++ Wheel.class
+
+~~~java
+  
+  public interface Wheel {
+      
+  }
+  
+~~~
+
++ WhiteWheel.class
+
+~~~java
+  
+  public class WhiteWheel implements Wheel {
+  }
+  
+~~~
+
++ WhiteshipFactory.java
+
+~~~java
+  
+  public class WhiteshipFactory extends DefaultShipFactory {
+  
+      @Override
+      public Ship createShip() {
+          Ship ship = new Whiteship();
+          ship.setAnchor(new WhiteAnchor());
+          ship.setWheel(new WhiteWheel());
+          return ship;
+      }
+  }
+  
+  
+~~~
+
+
+
+#### 변경
+
+
++ WhiteAnchorPro.class
+
+~~~java
+  
+  public class WhiteAnchorPro implements Anchor{
+      
+  }
+  
+~~~
+
++ WhiteWheelPro.class
+
+~~~java
+  
+  public class WhiteWheelPro implements Wheel {
+  }
+  
+~~~
+
++ ShipPartsFactory.class
+
+~~~java
+  
+  public interface ShipPartsFactory {
+      Anchor createAnchor();
+      Wheel createWheel();
+  }
+  
+~~~
+  
++ WhiteshipPartsFactory.class
+
+~~~java
+  
+  public class WhiteshipPartsFactory implements ShipPartsFactory {
+  
+      @Override
+      public Anchor createAnchor() {
+          return new WhiteAnchor();
+      }
+  
+      @Override
+      public Wheel createWheel() {
+          return new WhiteWheel();
+      }
+  }
+  
+  
+~~~
+
++ WhitePartsProFactory.class
+
+~~~java
+
+public class WhitePartsProFactory implements ShipPartsFactory {
+  @Override
+  public Anchor createAnchor() {
+    return new WhiteAnchorPro();
+  }
+
+  @Override
+  public Wheel createWheel() {
+    return new WhiteWheelPro();
+  }
+}
+
+~~~
+
++ WhiteshipFactory.class
+
+~~~java
+
+public class WhiteshipFactory extends DefaultShipFactory {
+    
+    private ShipPartsFactory shipPartsFactory;
+    
+    public WhiteshipFactory(ShipPartsFactory shipPartsFactory){
+        this.shipPartsFactory = shipPartsFactory;
+    }
+
+    @Override
+    public Ship createShip() {
+      Ship ship = new Whiteship();
+      ship.setAnchor(shipPartsFactory.createAnchor());
+      ship.setWheel(shipPartsFactory.createWheel());
+      return ship;
+    }
+    
+}
+
+~~~
+
++ ShipInventory.class
+
+~~~java
+
+public class ShipInventory {
+
+    public static void main(String[] args) {
+        ShipFactory shipFactory = new WhiteshipFactory(new WhiteshipPartsFactory());
+        Ship ship = shipFactory.createShip();
+        System.out.println(ship.getAnchor().getClass());
+        System.out.println(ship.getWheel().getClass());
+    }
+}
+
+~~~
+
+
+### 추상 팩토리 (Abstract factory) 복습
++ 팩토리 메소드 패턴과 굉장히 흡사한데 무엇이 다른건가.
+  + 모양과 효과는 비슷하지만
+    + 둘 다 구체적인 객체 생성 과정을 추상화한 인터페이스를 제공한다.
+  + 관점이 다르다.
+    + 팩토리 메소드 패턴은 "팩토리를 구현하는 방법 (inheritance)" 에 초점을 둔다.
+    + 추상 팩토리 패턴은 "팩토리를 사용하는 방법 (composition)" 에 초점을 둔다.
+  + 목적이 조금 다르다.
+    + 팩토리 메소드 패턴은 구체적인 객체 생성 과정을 하위 또는 구체적인 클래스로 옮기는 것이 목적.
+    + 추상 팩토리 패턴은 관련 있는 여러 객체를 구체적인 클래스에 의존하지 않고 만들 수 있게 해주는 것이 목적
+
+### 실무에서는 어떻게 쓰이나?
++ 자바 라이브러리
+  + javax.xml.xpath.XPathFactory#newInstance()
+  + javax.xml.transform.TransformerFactory#newInstance()
+  + javax.xml.parsers.DocumentBuilderFactory#newInstance()
+
+~~~java
+
+public class DocumentBuilderFactoryExample {
+
+  public static void main(String[] args) throws ParserConfigurationException, IOException, SAXException {
+      
+      DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+      DocumentBuilder builder = factory.newDocumentBuiler();
+      
+      Document document = builder.parse(new File("src/main/resources/config.xml"));
+      System.out.println(document.getDocumentElement());
+      
+  }
+    
+}
+
+~~~
+
++ 스프링
+  + FactoryBean과 그 구현체
+
+~~~java
+
+public class ShipFactory implements FactoryBean<Ship> {
+    
+    @Override
+    public Ship getObject() throws Exception {
+        Ship ship = Whiteship();
+        ship.setName("whiteship");
+        return ship;
+    }
+
+    @Override
+    public Class<?> getObjectType() {
+      return Ship.class;
+    }
+}
+
+~~~
+
+~~~java
+
+@Configuration
+public class FactoryBeanConfig {
+
+    @Bean
+    public ShipFactory shipFactory() {
+        return new ShipFactory();
+    }
+}
+
+~~~
+
+~~~java
+
+public class FactoryBeanExample {
+
+    public static void main(String[] args) {
+        
+        //xml
+        ApplicationContext applicationContext = new ClassPathXmlApplicationContext("config.xml");
+        Ship whiteship = applicationContext.getBean("whiteship", Ship.class);
+        System.out.println(whiteship.getName());
+
+        //java
+        ApplicationContext applicationContext2 = new AnnotationConfigApplicationContext(FactoryBeanConfig.class);
+        Ship bean = applicationContext2.getBean(Ship.class);
+        System.out.println(bean);
+    }
+}
+
+~~~
+
+## 빌더 (Builder) 패턴
++ 동일한 프로세스를 거쳐 다양한 구성의 인스턴스를 만드는 방법
+  + (복잡한) 객체를 만드는 프로세스를 독립적으로 분리할 수 있다.
+  + ![img.png](/assets/img/gof-design-pattern/Builder.png)
+
+### 빌더 (Builder) 패턴 구현 방법
+
+#### 기존
++ TourPlan.class
+
+~~~java
+
+public class TourPlan {
+
+    private String title;
+
+    private int nights;
+
+    private int days;
+
+    private LocalDate startDate;
+
+    private String whereToStay;
+
+    private List<DetailPlan> plans;
+
+    public TourPlan() {
+    }
+
+    public TourPlan(String title, int nights, int days, LocalDate startDate, String whereToStay, List<DetailPlan> plans) {
+        this.title = title;
+        this.nights = nights;
+        this.days = days;
+        this.startDate = startDate;
+        this.whereToStay = whereToStay;
+        this.plans = plans;
+    }
+
+    @Override
+    public String toString() {
+        return "TourPlan{" +
+                "title='" + title + '\'' +
+                ", nights=" + nights +
+                ", days=" + days +
+                ", startDate=" + startDate +
+                ", whereToStay='" + whereToStay + '\'' +
+                ", plans=" + plans +
+                '}';
+    }
+
+    public String getTitle() {
+        return title;
+    }
+
+    public void setTitle(String title) {
+        this.title = title;
+    }
+
+    public int getNights() {
+        return nights;
+    }
+
+    public void setNights(int nights) {
+        this.nights = nights;
+    }
+
+    public int getDays() {
+        return days;
+    }
+
+    public void setDays(int days) {
+        this.days = days;
+    }
+
+    public LocalDate getStartDate() {
+        return startDate;
+    }
+
+    public void setStartDate(LocalDate startDate) {
+        this.startDate = startDate;
+    }
+
+    public String getWhereToStay() {
+        return whereToStay;
+    }
+
+    public void setWhereToStay(String whereToStay) {
+        this.whereToStay = whereToStay;
+    }
+
+    public List<DetailPlan> getPlans() {
+        return plans;
+    }
+
+    public void setPlans(List<DetailPlan> plans) {
+        this.plans = plans;
+    }
+
+    public void addPlan(int day, String plan) {
+        this.plans.add(new DetailPlan(day, plan));
+    }
+}
+
+~~~
+
++ DetailPlan.class
+
+~~~java
+
+public class DetailPlan {
+
+    private int day;
+
+    private String plan;
+
+    public DetailPlan(int day, String plan) {
+        this.day = day;
+        this.plan = plan;
+    }
+
+    public int getDay() {
+        return day;
+    }
+
+    public void setDay(int day) {
+        this.day = day;
+    }
+
+    public String getPlan() {
+        return plan;
+    }
+
+    public void setPlan(String plan) {
+        this.plan = plan;
+    }
+
+    @Override
+    public String toString() {
+        return "DetailPlan{" +
+                "day=" + day +
+                ", plan='" + plan + '\'' +
+                '}';
+    }
+}
+
+~~~
+
++ App.class
+
+~~~java
+
+public class App {
+
+    public static void main(String[] args) {
+        TourPlan shortTrip = new TourPlan();
+        shortTrip.setTitle("오레곤 롱비치 여행");
+        shortTrip.setStartDate(LocalDate.of(2021, 7, 15));
+
+
+        TourPlan tourPlan = new TourPlan();
+        tourPlan.setTitle("칸쿤 여행");
+        tourPlan.setNights(2);
+        tourPlan.setDays(3);
+        tourPlan.setStartDate(LocalDate.of(2020, 12, 9));
+        tourPlan.setWhereToStay("리조트");
+        tourPlan.addPlan(0, "체크인 이후 짐풀기");
+        tourPlan.addPlan(0, "저녁 식사");
+        tourPlan.addPlan(1, "조식 부페에서 식사");
+        tourPlan.addPlan(1, "해변가 산책");
+        tourPlan.addPlan(1, "점심은 수영장 근처 음식점에서 먹기");
+        tourPlan.addPlan(1, "리조트 수영장에서 놀기");
+        tourPlan.addPlan(1, "저녁은 BBQ 식당에서 스테이크");
+        tourPlan.addPlan(2, "조식 부페에서 식사");
+        tourPlan.addPlan(2, "체크아웃");
+    }
+}
+
+~~~
+
+#### 변경
++ TourPlanBuilder.class
+
+~~~java
+
+public interface TourPlanBuilder {
+
+  TourPlanBuilder nightsAndDays(int nights, int days);
+
+  TourPlanBuilder title(String title);
+
+  TourPlanBuilder startDate(LocalDate localDate);
+
+  TourPlanBuilder whereToStay(String whereToStay);
+
+  TourPlanBuilder addPlan(int day, String plan);
+
+  TourPlan getPlan();
+    
+}
+
+~~~
+
++ DefaultTourBuilder.class
+
+~~~java
+
+public class DefaultTourBuilder implements TourPlanBuilder {
+
+  private String title;
+
+  private int nights;
+
+  private int days;
+
+  private LocalDate startDate;
+
+  private String whereToStay;
+
+  private List<DetailPlan> plans;
+
+  @Override
+  public TourPlanBuilder nightsAndDays(int nights, int days) {
+    this.nights = nights;
+    this.days = days;
+    return this;
+  }
+
+  @Override
+  public TourPlanBuilder title(String title) {
+    this.title = title;
+    return this;
+  }
+
+  @Override
+  public TourPlanBuilder startDate(LocalDate startDate) {
+    this.startDate = startDate;
+    return this;
+  }
+
+  @Override
+  public TourPlanBuilder whereToStay(String whereToStay) {
+    this.whereToStay = whereToStay;
+    return this;
+  }
+
+  @Override
+  public TourPlanBuilder addPlan(int day, String plan) {
+    if (this.plans == null) {
+      this.plans = new ArrayList<>();
+    }
+
+    this.plans.add(new DetailPlan(day, plan));
+    return this;
+  }
+
+  @Override
+  public TourPlan getPlan() {
+    return new TourPlan(title, nights, days, startDate, whereToStay, plans);
+  }
+
+}
+
+~~~
+
++ TourDirector.class
+
+~~~java
+
+public class TourDirector {
+    
+  private TourPlanBuilder tourPlanBuilder;
+
+  public TourDirector(TourPlanBuilder tourPlanBuilder) {
+    this.tourPlanBuilder = tourPlanBuilder;
+  }
+
+  public TourPlan cancunTrip() {
+    return tourPlanBuilder.title("칸쿤 여행")
+            .nightsAndDays(2, 3)
+            .startDate(LocalDate.of(2020, 12, 9))
+            .whereToStay("리조트")
+            .addPlan(0, "체크인하고 짐 풀기")
+            .addPlan(0, "저녁 식사")
+            .getPlan();
+  }
+
+  public TourPlan longBeachTrip() {
+    return tourPlanBuilder.title("롱비치")
+            .startDate(LocalDate.of(2021, 7, 15))
+            .getPlan();
+  }
+  
+}
+
+~~~
+
++ App.class
+
+~~~java
+
+public class App {
+
+    public static void main(String[] args) {
+        TourDirector director = new TourDirector(new DefaultTourBuilder());
+        TourPlan tourPlan = director.cancunTrip();
+        TourPlan tourPlan1 = director.longBeachTrip();
+    }
+}
+
+~~~
+
+
+### 빌더 (Builder) 패턴 구현 복습
++ 장점
+  + 만들기 복잡한 객체를 순차적으로 만들 수 있다.
+  + 복잡한 객체를 만드는 구체적인 과정을 숨길 수 있다.
+  + 동일한 프로세스를 통해 각기 다르게 구성된 객체를 만들 수도 있다.
+  + 불완전한 객체를 사용하지 못하도록 방지할 수 있다.
++ 단점
+  + 원하는 객체를 만들려면 빌더부터 만들어야 한다.
+  + 구조가 복잡해 진다. (트래이드 오프)
+
+### 실무에서 어떻게 쓰이나?
++ 자바 8 Stream.Builder API
+
+~~~java
+
+public class StreamExample {
+
+    public static void main(String[] args) {
+        Stream<String> names = Stream.<String>builder().add("keesun").add("whiteship").build();
+        names.forEach(System.out::println);
+    }
+}
+
+
+~~~
+
++ SpringBuilder
+
+~~~java
+
+public class StringBuilderExample {
+
+    public static void main(String[] args) {
+        StringBuilder stringBuilder = new StringBuilder();
+        String result = stringBuilder.append("whiteship").append("test").toString();
+        System.out.println(result);
+    }
+}
+
+~~~
+
+
++ 롬복의 @Builder
+  + [https://projectlombok.org/features/Builder](https://projectlombok.org/features/Builder)
+
+~~~java
+
+@Builder
+public class LombokExample {
+
+    private String title;
+
+    private int nights;
+
+    private int days;
+
+    public static void main(String[] args) {
+        LombokExample trip = LombokExample.builder()
+                .title("여행")
+                .nights(2)
+                .days(3)
+                .build();
+    }
+
+}
+
+~~~
+
++ 스프링
+  + UriComponentsBuilder
+  + MockMvcWebClientBuilder
+  + …Builder
+
+~~~java
+
+public class SpringExample {
+
+    public static void main(String[] args) {
+        UriComponents howToStudyJava = UriComponentsBuilder.newInstance()
+                .scheme("http")
+                .host("www.whiteship.me")
+                .path("java playlist ep1")
+                .build().encode();
+        System.out.println(howToStudyJava);
+    }
+}
+
+
+~~~
