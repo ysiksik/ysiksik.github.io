@@ -1324,12 +1324,279 @@ public class SpringExample {
     public static void main(String[] args) {
         UriComponents howToStudyJava = UriComponentsBuilder.newInstance()
                 .scheme("http")
-                .host("www.whiteship.me")
+                .host("www.test.ac.kr")
                 .path("java playlist ep1")
                 .build().encode();
         System.out.println(howToStudyJava);
     }
 }
 
+~~~
+
+## 프로토타입 (Prototype) 패턴
++ 기존의 인스턴스를 복제하여 새로운 인스턴스를 만드는 방법
+  + 복제 기능을 갖추고 있는 기존 인스턴스를 프로토타입으로 사용해 새 인스턴스를 만들 수 있다. 
+  + ![img.png](/assets/img/gof-design-pattern/Prototype.png)
+
+### 프로토타입 (Prototype) 패턴 구현 방법
+
+#### 기존
+
++ GithubRepository.class
+
+~~~java
+
+public class GithubRepository {
+
+    private String user;
+
+    private String name;
+
+    public String getUser() {
+        return user;
+    }
+
+    public void setUser(String user) {
+        this.user = user;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public void setName(String name) {
+        this.name = name;
+    }
+}
+
+~~~
+
++ GithubIssue.class
+
+~~~java
+
+public class GithubIssue {
+
+    private int id;
+
+    private String title;
+
+    private GithubRepository repository;
+
+    public GithubIssue(GithubRepository repository) {
+        this.repository = repository;
+    }
+
+    public int getId() {
+        return id;
+    }
+
+    public void setId(int id) {
+        this.id = id;
+    }
+
+    public String getTitle() {
+        return title;
+    }
+
+    public void setTitle(String title) {
+        this.title = title;
+    }
+
+    public GithubRepository getRepository() {
+        return repository;
+    }
+
+    public String getUrl() {
+        return String.format("https://github.com/%s/%s/issues/%d",
+                repository.getUser(),
+                repository.getName(),
+                this.getId());
+    }
+}
+
+~~~
+
++ App.class
+
+~~~java
+
+public class App {
+
+    public static void main(String[] args) {
+        GithubRepository repository = new GithubRepository();
+        repository.setUser("whiteship");
+        repository.setName("live-study");
+
+        GithubIssue githubIssue = new GithubIssue(repository);
+        githubIssue.setId(1);
+        githubIssue.setTitle("1주차 과제: JVM은 무엇이며 자바 코드는 어떻게 실행하는 것인가.");
+
+        String url = githubIssue.getUrl();
+        System.out.println(url);
+    }
+
+}
+
+~~~
+
+#### 변경
+
++ GithubIssue.class
+
+~~~java
+
+public class GithubIssue implements Cloneable {
+
+    private int id;
+
+    private String title;
+
+    private GithubRepository repository;
+
+    public GithubIssue(GithubRepository repository) {
+        this.repository = repository;
+    }
+
+    public int getId() {
+        return id;
+    }
+
+    public void setId(int id) {
+        this.id = id;
+    }
+
+    public String getTitle() {
+        return title;
+    }
+
+    public void setTitle(String title) {
+        this.title = title;
+    }
+
+    public GithubRepository getRepository() {
+        return repository;
+    }
+
+    public String getUrl() {
+        return String.format("https://github.com/%s/%s/issues/%d",
+                repository.getUser(),
+                repository.getName(),
+                this.getId());
+    }
+
+    @Override
+    protected Object clone() throws CloneNotSupportedException {
+        GithubRepository repository = new GithubRepository();
+        repository.setUser(this.repository.getUser());
+        repository.setName(this.repository.getName());
+
+        GithubIssue githubIssue = new GithubIssue(repository);
+        githubIssue.setId(this.id);
+        githubIssue.setTitle(this.title);
+
+        return githubIssue;
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        GithubIssue that = (GithubIssue) o;
+        return id == that.id && Objects.equals(title, that.title) && Objects.equals(repository, that.repository);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(id, title, repository);
+    }
+}
+
+~~~
+
++ App.class
+
+~~~java
+
+public class App {
+
+    public static void main(String[] args) throws CloneNotSupportedException {
+        GithubRepository repository = new GithubRepository();
+        repository.setUser("whiteship");
+        repository.setName("live-study");
+
+        GithubIssue githubIssue = new GithubIssue(repository);
+        githubIssue.setId(1);
+        githubIssue.setTitle("1주차 과제: JVM은 무엇이며 자바 코드는 어떻게 실행하는 것인가.");
+
+        String url = githubIssue.getUrl();
+        System.out.println(url);
+
+        GithubIssue clone = (GithubIssue) githubIssue.clone();
+        System.out.println(clone.getUrl());
+
+        repository.setUser("test");
+      
+        System.out.println(clone != githubIssue);
+        System.out.println(clone.equals(githubIssue));
+        System.out.println(clone.getClass() == githubIssue.getClass());
+        System.out.println(clone.getRepository() == githubIssue.getRepository());
+
+        System.out.println(clone.getUrl());
+    }
+
+}
+
+~~~
+
+### 프로토타입 (Prototype) 패턴 구현 복습
++ 장점
+  + 복잡한 객체를 만드는 과정을 숨길 수 있다.
+  + 기존 객체를 복제하는 과정이 새 인스턴스를 만드는 것보다 비용(시간 또는 메모리)적인 면에서 효율적일 수도 있다.
+  + 추상적인 타입을 리턴할 수 있다.
++ 단점
+  + 복제한 객체를 만드는 과정 자체가 복잡할 수 있다. (특히, 순환 참조가 있는 경우)
+
+### 실무에서 어떻게 쓰이나?
++ 자바 Object 클래스의 clone 메소드와 Cloneable 인터페이스
++ shallow copy와 deep copy
++ ModelMapper
+
+~~~java
+
+public class ModelMapperExample {
+
+    public static void main(String[] args) {
+        GithubRepository repository = new GithubRepository();
+        repository.setUser("whiteship");
+        repository.setName("live-study");
+
+        GithubIssue githubIssue = new GithubIssue(repository);
+        githubIssue.setId(1);
+        githubIssue.setTitle("1주차 과제: JVM은 무엇이며 자바 코드는 어떻게 실행하는 것인가.");
+
+        ModelMapper modelMapper = new ModelMapper();
+        GithubIssueData githubIssueData = modelMapper.map(githubIssue, GithubIssueData.class);
+        System.out.println(githubIssueData);
+    }
+}
+
+~~~
+
+~~~java
+
+public class JavaCollectionExample {
+
+    public static void main(String[] args) {
+        Student keesun = new Student("test");
+        Student whiteship = new Student("whiteship");
+        List<Student> students = new ArrayList<>();
+        students.add(keesun);
+        students.add(whiteship);
+
+        List<Student> clone = new ArrayList<>(students);
+        System.out.println(clone);
+    }
+}
 
 ~~~
