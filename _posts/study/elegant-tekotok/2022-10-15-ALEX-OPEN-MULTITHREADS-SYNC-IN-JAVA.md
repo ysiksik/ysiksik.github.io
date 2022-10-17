@@ -5,7 +5,6 @@ subtitle: 알렉스, 열음의 멀티스레드와 동
 date: '2022-10-15 00:00:00 +0900'
 categories:
     - study
-    - inflearn
     - elegant-tekotok
 comments: true
 ---

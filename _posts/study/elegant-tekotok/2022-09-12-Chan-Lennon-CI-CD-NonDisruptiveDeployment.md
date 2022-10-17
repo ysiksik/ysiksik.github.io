@@ -5,7 +5,6 @@ subtitle: 찬, 레넌의 CI/CD와 무중단 배포
 date: '2022-09-12 00:00:00 +0900'
 categories:
     - study
-    - inflearn
     - elegant-tekotok
 comments: true
 ---

@@ -5,7 +5,6 @@ subtitle: 칙촉의 TCP/UDP
 date: '2022-10-14 00:00:00 +0900'
 categories:
     - study
-    - inflearn
     - elegant-tekotok
 comments: true
 ---

@@ -5,7 +5,6 @@ subtitle: 승팡, 케이의 REST Docs
 date: '2022-09-14 00:00:00 +0900'
 categories:
     - study
-    - inflearn
     - elegant-tekotok
 comments: true
 ---

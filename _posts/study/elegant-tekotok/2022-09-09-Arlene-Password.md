@@ -5,7 +5,6 @@ subtitle: 알린의 암호
 date: '2022-09-09 00:00:00 +0900'
 categories:
     - study
-    - inflearn
     - elegant-tekotok
 comments: true
 ---

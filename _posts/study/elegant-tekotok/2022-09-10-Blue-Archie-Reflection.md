@@ -5,7 +5,6 @@ subtitle: 파랑, 아키의 리플렉션
 date: '2022-09-10 00:00:00 +0900'
 categories:
     - study
-    - inflearn
     - elegant-tekotok
 comments: true
 ---

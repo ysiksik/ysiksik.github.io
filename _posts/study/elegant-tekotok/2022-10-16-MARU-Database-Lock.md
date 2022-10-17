@@ -5,7 +5,6 @@ subtitle: 마루의 데이터베이스 Lock
 date: '2022-10-17 00:00:00 +0900'
 categories:
     - study
-    - inflearn
     - elegant-tekotok
 comments: true
 ---

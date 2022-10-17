@@ -5,7 +5,6 @@ subtitle: 썬의 캐싱
 date: '2022-09-15 00:00:00 +0900'
 categories:
     - study
-    - inflearn
     - elegant-tekotok
 comments: true
 ---

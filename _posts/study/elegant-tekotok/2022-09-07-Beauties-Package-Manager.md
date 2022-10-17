@@ -5,7 +5,6 @@ subtitle: 비녀의 Package Manager
 date: '2022-09-07 00:00:00 +0900'
 categories:
     - study
-    - inflearn
     - elegant-tekotok
 comments: true
 ---

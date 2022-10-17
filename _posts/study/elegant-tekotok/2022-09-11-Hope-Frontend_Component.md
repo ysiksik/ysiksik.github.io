@@ -5,7 +5,6 @@ subtitle: 호프의 프론트엔드에서 컴포넌트
 date: '2022-09-11 00:00:00 +0900'
 categories:
     - study
-    - inflearn
     - elegant-tekotok
 comments: true
 ---
