@@ -175,11 +175,11 @@ public class Settings5 {
 
 }
 
-+ 이 방법은 static final 를 썻는데도 왜 지연 초기화(lazy intialization)라고 볼 수 있는가?
-    + Holder를 통해 객체를 생성하게 되는데, 이렇게 할 경우 getIntance() 가 호출될 때 로딩되기 때문이다.
-        
 
 ~~~
+
++ 이 방법은 static final 를 썻는데도 왜 지연 초기화(lazy intialization)라고 볼 수 있는가?
+  + Holder를 통해 객체를 생성하게 되는데, 이렇게 할 경우 getIntance() 가 호출될 때 로딩되기 때문이다.
 
 ### 싱글톤 (Singleton) 패턴 구현 깨트리는 방법 1
 + 리플렉션을 사용한다면?
