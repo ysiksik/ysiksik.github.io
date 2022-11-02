@@ -646,3 +646,10 @@ public class CommandInSpring {
 }
 
 ~~~
+
+## 인터프리터 (Interpreter) 패턴
+자주 등장하는 문제를 간단한 언어로 정의하고 재사용하는 패턴
++ 반복되는 문제 패턴을 언어 또는 문법으로 정의하고 확장할 수 있다.
+![img.png](/assets/img/gof-design-pattern/Interpreter.png)
+
+## 인터프리터 (Interpreter) 패턴 구현 방법
