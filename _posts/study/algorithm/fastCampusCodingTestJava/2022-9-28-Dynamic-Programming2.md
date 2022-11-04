@@ -255,3 +255,104 @@ public class baekjoon9465 {
 
 ~~~
 ***
+
+## [백준 1309번 - 동물원](https://www.acmicpc.net/problem/1309)
+---
+
+* __구현__
+
+~~~java
+
+public class baekjoon1309 {
+
+
+    static int[][] Dy;
+    static int N;
+
+    static final int MOD = 9901;
+
+    public static void main(String[] args) throws IOException {
+
+        BufferedReader br = new BufferedReader(new InputStreamReader(System.in));
+
+        N = Integer.parseInt(br.readLine());
+
+        Dy = new int[N + 1][3];
+
+
+        Dy[1][0] = Dy[1][1] = Dy[1][2] = 1;
+
+        for (int i = 2; i <= N; i++) {
+
+            Dy[i][0] = (Dy[i - 1][0] + Dy[i - 1][1] + Dy[i - 1][2]) % MOD;
+            Dy[i][1] = (Dy[i - 1][0] + Dy[i - 1][2]) % MOD;
+            Dy[i][2] = (Dy[i - 1][0] + Dy[i - 1][1]) % MOD;
+
+        }
+
+        System.out.println((Dy[N][0] + Dy[N][1] + Dy[N][2]) % MOD);
+
+
+    }
+
+
+}
+}
+
+
+~~~
+***
+
+## [백준 2688번 - 줄어들지 않아](https://www.acmicpc.net/problem/2688)
+---
+
+* __구현__
+
+~~~java
+
+public class baekjoon2688 {
+
+
+    public static void main(String[] args) throws IOException {
+
+
+        long[][] Dy = new long[65][10];
+
+        for (int i = 0; i <= 9; i++) {
+            Dy[1][i] = 1;
+        }
+
+        for (int i = 2; i <= 64; i++) {
+            for (int j = 0; j <= 9; j++) {
+                for (int k = j; k <= 9; k++) {
+                    Dy[i][j] += Dy[i - 1][k];
+                }
+            }
+
+        }
+
+        BufferedReader br = new BufferedReader(new InputStreamReader(System.in));
+
+        int T = Integer.parseInt(br.readLine());
+
+        while (T-- > 0) {
+            int N = Integer.parseInt(br.readLine());
+
+            long sum = 0;
+            for (int i = 0; i <= 9; i++) {
+                sum += Dy[N][i];
+            }
+
+            System.out.println(sum);
+
+        }
+
+
+    }
+
+
+}
+
+
+~~~
+***
