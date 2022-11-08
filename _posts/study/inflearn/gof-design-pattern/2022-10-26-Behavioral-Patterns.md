@@ -653,8 +653,255 @@ public class CommandInSpring {
 ![img.png](/assets/img/gof-design-pattern/Interpreter.png)
 
 ### 인터프리터 (Interpreter) 패턴 구현 방법
-+ 요청을 캡슐화 하여 호출자(invoke)와 수신자(receiver)를 분리하는 패턴
 + ![img.png](/assets/img/gof-design-pattern/Interpreter2.png)
+
+#### 기존
+
++ PostfixNotation.class
+
+~~~java
+
+public class PostfixNotation {
+
+    private final String expression;
+
+    public PostfixNotation(String expression) {
+        this.expression = expression;
+    }
+
+    public static void main(String[] args) {
+        PostfixNotation postfixNotation = new PostfixNotation("123+-");
+        postfixNotation.calculate();
+    }
+
+    private void calculate() {
+        Stack<Integer> numbers = new Stack<>();
+
+        for (char c : this.expression.toCharArray()) {
+            switch (c) {
+                case '+':
+                    numbers.push(numbers.pop() + numbers.pop());
+                    break;
+                case '-':
+                    int right = numbers.pop();
+                    int left = numbers.pop();
+                    numbers.push(left - right);
+                    break;
+                default:
+                    numbers.push(Integer.parseInt(c + ""));
+            }
+        }
+
+        System.out.println(numbers.pop());
+    }
+}
+
+~~~
+
+#### 변경
+__ 방법 1 __  
+
+
++ PostfixParser.class
+
+~~~java
+
+public class PostfixParser {
+
+    public static PostfixExpression parse(String expression) {
+        Stack<PostfixExpression> stack = new Stack<>();
+        for (char c : expression.toCharArray()) {
+            stack.push(getExpression(c, stack));
+        }
+        return stack.pop();
+    }
+
+    private static PostfixExpression getExpression(char c, Stack<PostfixExpression> stack) {
+        switch (c) {
+            case '+':
+                return new PlusExpression(stack.pop(), stack.pop());
+            case '-':
+                PostfixExpression right = stack.pop();
+                PostfixExpression left = stack.pop();
+                return new MinusExpression(left, right);
+            default:
+                return new VariableExpression(c);
+        }
+    }
+}
+
+~~~
+
++ PostfixExpression.class
+
+~~~java
+
+public interface PostfixExpression {
+
+    int interpret(Map<Character, Integer> context);
+
+}
+
+~~~
+
++ VariableExpression.class
+
+~~~java
+
+public class VariableExpression implements PostfixExpression {
+
+    private Character character;
+
+    public VariableExpression(Character character) {
+        this.character = character;
+    }
+
+    @Override
+    public int interpret(Map<Character, Integer> context) {
+        return context.get(this.character);
+    }
+}
+
+~~~
+
+
++ PlusExpression.class
+
+~~~java
+
+public class PlusExpression implements PostfixExpression {
+
+    private PostfixExpression left;
+
+    private PostfixExpression right;
+
+    public PlusExpression(PostfixExpression left, PostfixExpression right) {
+        this.left = left;
+        this.right = right;
+    }
+
+    @Override
+    public int interpret(Map<Character, Integer> context) {
+        return left.interpret(context) + right.interpret(context);
+    }
+}
+
+~~~
+
++ MinusExpression.class
+
+~~~java
+
+public class MinusExpression implements PostfixExpression {
+
+    private PostfixExpression left;
+
+    private PostfixExpression right;
+
+    public MinusExpression(PostfixExpression left, PostfixExpression right) {
+        this.left = left;
+        this.right = right;
+    }
+
+    @Override
+    public int interpret(Map<Character, Integer> context) {
+        return left.interpret(context) - right.interpret(context);
+    }
+}
+
+~~~
+
++ MultiplyExpression.class
+
+~~~java
+
+public class MultiplyExpression implements PostfixExpression{
+
+    private PostfixExpression left, right;
+
+    public MultiplyExpression(PostfixExpression left, PostfixExpression right) {
+        this.left = left;
+        this.right = right;
+    }
+
+    @Override
+    public int interpret(Map<Character, Integer> context) {
+        return left.interpret(context) * right.interpret(context);
+    }
+}
+
+~~~
+
+
++ App.class
+
+~~~java
+
+public class App {
+
+    public static void main(String[] args) {
+        PostfixExpression expression = PostfixParser.parse("xyz+-a+");
+        int result = expression.interpret(Map.of('x', 1, 'y', 2, 'z', 3, 'a', 4));
+        System.out.println(result);
+    }
+}
+
+~~~
+
+__방법2__
+
++ PostfixExpression.class
+
+~~~java
+
+public interface PostfixExpression {
+
+    int interpret(Map<Character, Integer> context);
+
+    static PostfixExpression plus(PostfixExpression left, PostfixExpression right){
+        return context -> left.interpret(context) + right.interpret(context);
+    }
+
+    static PostfixExpression minus(PostfixExpression left, PostfixExpression right){
+        return context -> left.interpret(context) - right.interpret(context);
+    }
+
+    static PostfixExpression variable(Character c){
+        return context -> context.get(c);
+    }
+}
+
+~~~
+
++ PostfixParser.class
+
+~~~java
+
+public class PostfixParser {
+
+    public static PostfixExpression parse(String expression) {
+        Stack<PostfixExpression> stack = new Stack<>();
+        for (char c : expression.toCharArray()) {
+            stack.push(getExpression(c, stack));
+        }
+        return stack.pop();
+    }
+
+    private static PostfixExpression getExpression(char c, Stack<PostfixExpression> stack) {
+        switch (c) {
+            case '+':
+                return PostfixExpression.plus(stack.pop(), stack.pop());
+            case '-':
+                PostfixExpression right = stack.pop();
+                PostfixExpression left = stack.pop();
+                return PostfixExpression.minus(left, right);
+            default:
+                return PostfixExpression.variable(c);
+        }
+    }
+}
+
+~~~
 
 ### 인터프리터 (Interpreter) 패턴 구현 복습
 + 장점
@@ -667,6 +914,53 @@ public class CommandInSpring {
 + 자바
   + 자바 컴파일러 
   + 정규 표현식
+
+~~~java
+
+public class InterpreterInJava {
+
+    public static void main(String[] args) {
+        System.out.println(Pattern.matches(".pr...", "spring"));
+        System.out.println(Pattern.matches("[a-z]{6}", "spring"));
+        System.out.println(Pattern.matches("white[a-z]{4}[0-9]{4}", "whiteship2000"));
+        System.out.println(Pattern.matches("\\d", "1")); // one digit
+        System.out.println(Pattern.matches("\\D", "a")); // one non-digit
+    }
+}
+
+~~~
+
 + 스프링
   + SpEL(스프링 Expression Language)
+
+~~~java
+
+public class InterpreterInSpring {
+
+    public static void main(String[] args) {
+        Book book = new Book("spring");
+
+        ExpressionParser parser = new SpelExpressionParser();
+        Expression expression = parser.parseExpression("title");
+        System.out.println(expression.getValue(book));
+    }
+}
+
+~~~
+
+~~~java
+
+@Service
+public class MyService implements ApplicationRunner {
+
+    @Value("#{2 + 5}")
+    private String value;
+
+    @Override
+    public void run(ApplicationArguments args) throws Exception {
+        System.out.println(value);
+    }
+}
+
+~~~
 
