@@ -18,6 +18,7 @@ hide_description: false
 * [알고리즘]{:.heading.flip-title}
 * [KT개발컨소시엄]{:.heading.flip-title}
 * [인프런]{:.heading.flip-title}
+* [패스트 캠퍼스]{:.heading.flip-title}
 * [우아한 테코톡]{:.heading.flip-title}
 * [페이먼츠]{:.heading.flip-title}
 
@@ -25,5 +26,6 @@ hide_description: false
 [알고리즘]: /algorithm/
 [KT개발컨소시엄]: /kt-development-consortium/
 [인프런]: /inflearn/
+[패스트 캠퍼스]: /fast-campus/
 [우아한 테코톡]: /elegant-tekotok/
 [페이먼츠]: /payments/
