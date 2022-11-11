@@ -1611,3 +1611,1568 @@ public class MementoInJava {
 }
 
 ~~~
+
+## 옵저버 (Observer) 패턴
+다수의 객체가 특정 객체 상태 변화를 감지하고 알림을 받는 패턴.
++ 발행(publish)-구독(subscribe) 패턴을 구현할 수 있다.
++ ![img.png](/assets/img/gof-design-pattern/Observer.png)
+
+### 옵저버 (Observer) 패턴 구현 방법
++ ![img.png](/assets/img/gof-design-pattern/Observer2.png)
+
+#### 기존
+
++ ChatServer.class
+
+~~~java
+
+public class ChatServer {
+
+    private Map<String, List<String>> messages;
+
+    public ChatServer() {
+        this.messages = new HashMap<>();
+    }
+
+
+    public void add(String subject, String message) {
+        if (messages.containsKey(subject)) {
+            messages.get(subject).add(message);
+        } else {
+            List<String> messageList = new ArrayList<>();
+            messageList.add(message);
+            messages.put(subject, messageList);
+        }
+    }
+
+    public List<String> getMessage(String subject) {
+        return messages.get(subject);
+    }
+}
+
+~~~
+
++ User.class
+
+~~~java
+
+public class User {
+
+    private ChatServer chatServer;
+
+    public User(ChatServer chatServer) {
+        this.chatServer = chatServer;
+    }
+
+
+    public void sendMessage(String subject, String message) {
+        chatServer.add(subject, message);
+    }
+
+    public List<String> getMessage(String subject) {
+        return chatServer.getMessage(subject);
+    }
+}
+
+~~~
+
++ Client.class
+
+~~~java
+
+public class Client {
+
+    public static void main(String[] args) {
+        ChatServer chatServer = new ChatServer();
+
+        User user1 = new User(chatServer);
+        user1.sendMessage("디자인패턴", "이번엔 옵저버 패턴입니다.");
+        user1.sendMessage("롤드컵2021", "LCK 화이팅!");
+
+        User user2 = new User(chatServer);
+        System.out.println(user2.getMessage("디자인패턴"));
+
+        user1.sendMessage("디자인패턴", "예제 코드 보는 중..");
+        System.out.println(user2.getMessage("디자인패턴"));
+    }
+}
+
+~~~
+
+#### 변경
+
++ Subscriber.class
+
+~~~java
+
+public interface Subscriber {
+
+    void handleMessage(String message);
+}
+
+~~~
+
++ User.class
+
+~~~java
+
+public class User implements Subscriber {
+
+    private String name;
+
+    public User(String name) {
+        this.name = name;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    @Override
+    public void handleMessage(String message) {
+        System.out.println(message);
+    }
+}
+
+~~~
+
++ ChatServer.class
+
+~~~java
+
+public class ChatServer {
+
+    private Map<String, List<Subscriber>> subscribers = new HashMap<>();
+
+    public void register(String subject, Subscriber subscriber) {
+        if (this.subscribers.containsKey(subject)) {
+            this.subscribers.get(subject).add(subscriber);
+        } else {
+            List<Subscriber> list = new ArrayList<>();
+            list.add(subscriber);
+            this.subscribers.put(subject, list);
+        }
+    }
+
+    public void unregister(String subject, Subscriber subscriber) {
+        if (this.subscribers.containsKey(subject)) {
+            this.subscribers.get(subject).remove(subscriber);
+        }
+    }
+
+    public void sendMessage(User user, String subject, String message) {
+        if (this.subscribers.containsKey(subject)) {
+            String userMessage = user.getName() + ": " + message;
+            this.subscribers.get(subject).forEach(s -> s.handleMessage(userMessage));
+        }
+    }
+
+}
+
+~~~
+
++ Client.class
+
+~~~java
+
+public class Client {
+
+    public static void main(String[] args) {
+        ChatServer chatServer = new ChatServer();
+        User user1 = new User("keesun");
+        User user2 = new User("whiteship");
+
+        chatServer.register("오징어게임", user1);
+        chatServer.register("오징어게임", user2);
+
+        chatServer.register("디자인패턴", user1);
+
+        chatServer.sendMessage(user1, "오징어게임", "아.. 이름이 기억났어.. 일남이야.. 오일남");
+        chatServer.sendMessage(user2, "디자인패턴", "옵저버 패턴으로 만든 채팅");
+
+        chatServer.unregister("디자인패턴", user2);
+
+        chatServer.sendMessage(user2, "디자인패턴", "옵저버 패턴 장, 단점 보는 중");
+    }
+}
+
+~~~
+
+### 옵저버 (Observer) 패턴 구현 복습
++ 장점
+  + 상태를 변경하는 객체(publisher)와 변경을 감지하는 객체(subscribe)의 관계를 느슨하게 유지할 수 있다.
+  + Subject의 상태 변경을 주기적으로 조회하지 않고 자동으로 감지할 수 있다.
+  + 런타임에 옵저버를 추가하거나 제거할 수 있다.
++ 단점
+  + 복잡도가 증가한다.
+  + 다수의 Observer 객체를 등록 이후 해지 않는다면 memory leak이 발생할 수도 있다.
+    + WeakReference 를 활용 방안이 있다., 명시적으로 해지 하는게 최우선이다. 
+
+### 실무에서 어떻게 쓰이나?
++ 자바 
+  + Observable과 Observer (자바 9부터 deprecated)
+  + 자바 9 이후 부터는
+    + PropertyChangeListener, PropertyChangeEvent
+    + Flow API
+  + SAX (Simple API for XML) 라이브러리
+
+~~~java
+
+public class ObserverInJava {
+
+    static class User implements Observer {
+        @Override
+        public void update(Observable o, Object arg) {
+            System.out.println(arg);
+        }
+    }
+
+    static class Subject extends Observable {
+        public void add(String message) {
+            setChanged();
+            notifyObservers(message);
+        }
+    }
+
+    public static void main(String[] args) {
+        Subject subject = new Subject();
+        User user = new User();
+        subject.addObserver(user);
+        subject.add("Hello Java, Observer");
+    }
+
+}
+
+~~~
+
+~~~java
+
+public class PropertyChangeExample {
+
+    static class User implements PropertyChangeListener {
+
+        @Override
+        public void propertyChange(PropertyChangeEvent evt) {
+            System.out.println(evt.getNewValue());
+        }
+    }
+
+    static class Subject {
+        PropertyChangeSupport support = new PropertyChangeSupport(this);
+
+        public void addObserver(PropertyChangeListener observer) {
+            support.addPropertyChangeListener(observer);
+        }
+
+        public void removeObserver(PropertyChangeListener observer) {
+            support.removePropertyChangeListener(observer);
+        }
+
+        public void add(String message) {
+            support.firePropertyChange("eventName", null, message);
+        }
+    }
+
+    public static void main(String[] args) {
+        Subject subject = new Subject();
+        User observer = new User();
+        subject.addObserver(observer);
+        subject.add("자바 PCL 예제 코드");
+        subject.removeObserver(observer);
+        subject.add("이 메시지는 볼 수 없지..");
+    }
+
+}
+
+~~~
+
+~~~java
+
+public class FlowInJava {
+
+    public static void main(String[] args) throws InterruptedException {
+        Flow.Publisher<String> publisher = new SubmissionPublisher<>();
+
+        Flow.Subscriber<String> subscriber = new Flow.Subscriber<String>() {
+
+            private Flow.Subscription subscription;
+
+            @Override
+            public void onSubscribe(Flow.Subscription subscription) {
+                System.out.println("sub!");
+                this.subscription = subscription;
+                this.subscription.request(1);
+            }
+
+            @Override
+            public void onNext(String item) {
+                System.out.println("onNext called");
+                System.out.println(Thread.currentThread().getName());
+                System.out.println(item);
+            }
+
+            @Override
+            public void onError(Throwable throwable) {
+            }
+
+            @Override
+            public void onComplete() {
+                System.out.println("completed");
+            }
+        };
+
+        publisher.subscribe(subscriber);
+
+        ((SubmissionPublisher)publisher).submit("hello java");
+
+        System.out.println("이게 먼저 출력될 수도 있습니다.");
+    }
+}
+
+~~~
+
++ 스프링
+  + ApplicationContext와 ApplicationEvent
+
+~~~java
+
+public class MyEvent {
+
+    private String message;
+
+    public MyEvent(String message) {
+        this.message = message;
+    }
+
+    public String getMessage() {
+        return message;
+    }
+}
+
+~~~
+
+~~~java
+
+@Component
+public class MyEventListener {
+
+    @EventListener(MyEvent.class)
+    public void onApplicationEvent(MyEvent event) {
+        System.out.println(event.getMessage());
+    }
+}
+
+~~~
+
+~~~java
+
+@Component
+public class MyRunner implements ApplicationRunner {
+
+    private ApplicationEventPublisher publisher;
+
+    public MyRunner(ApplicationEventPublisher publisher) {
+        this.publisher = publisher;
+    }
+
+    @Override
+    public void run(ApplicationArguments args) throws Exception {
+        publisher.publishEvent(new MyEvent("hello spring event"));
+    }
+}
+
+~~~
+
+## 상태 (State) 패턴
+객체 내부 상태 변경에 따라 객체의 행동이 달라지는 패턴.
++ 상태에 특화된 행동들을 분리해 낼 수 있으며, 새로운 행동이 추가하더라도 다른 행동에 영향을 주지 않는다.
++ ![img.png](/assets/img/gof-design-pattern/State.png)
+
+### 상태 (State) 패턴 구현 방법
++ ![img.png](/assets/img/gof-design-pattern/State2.png)
+
+#### 기존
+
++ Student.class
+
+~~~java
+
+public class Student {
+
+    private String name;
+
+    public Student(String name) {
+        this.name = name;
+    }
+
+    private List<OnlineCourse> privateCourses = new ArrayList<>();
+
+    public boolean isEnabledForPrivateClass(OnlineCourse onlineCourse) {
+        return privateCourses.contains(onlineCourse);
+    }
+
+    public void addPrivateCourse(OnlineCourse onlineCourse) {
+        this.privateCourses.add(onlineCourse);
+    }
+
+    @Override
+    public String toString() {
+        return "Student{" +
+                "name='" + name + '\'' +
+                '}';
+    }
+}
+
+~~~
+
++ OnlineCourse.class
+
+~~~java
+
+public class OnlineCourse {
+
+    public enum State {
+        DRAFT, PUBLISHED, PRIVATE
+    }
+
+    private State state = State.DRAFT;
+
+    private List<String> reviews = new ArrayList<>();
+
+    private List<Student> students = new ArrayList<>();
+
+    public void addReview(String review, Student student) {
+        if (this.state == State.PUBLISHED) {
+            this.reviews.add(review);
+        } else if (this.state == State.PRIVATE && this.students.contains(student)) {
+            this.reviews.add(review);
+        } else {
+            throw new UnsupportedOperationException("리뷰를 작성할 수 없습니다.");
+        }
+    }
+
+    public void addStudent(Student student) {
+        if (this.state == State.DRAFT || this.state == State.PUBLISHED) {
+            this.students.add(student);
+        } else if (this.state == State.PRIVATE && availableTo(student)) {
+            this.students.add(student);
+        } else {
+            throw new UnsupportedOperationException("학생을 해당 수업에 추가할 수 없습니다.");
+        }
+
+        if (this.students.size() > 1) {
+            this.state = State.PRIVATE;
+        }
+    }
+
+    public void changeState(State newState) {
+        this.state = newState;
+    }
+
+    public State getState() {
+        return state;
+    }
+
+    public List<String> getReviews() {
+        return reviews;
+    }
+
+    public List<Student> getStudents() {
+        return students;
+    }
+
+    private boolean availableTo(Student student) {
+        return student.isEnabledForPrivateClass(this);
+    }
+
+
+}
+
+~~~
+
++ Client.class
+
+~~~java
+
+public class Client {
+
+    public static void main(String[] args) {
+        Student student = new Student("whiteship");
+        OnlineCourse onlineCourse = new OnlineCourse();
+
+        Student test = new Student("test");
+        keesun.addPrivateCourse(onlineCourse);
+
+        onlineCourse.addStudent(student);
+        onlineCourse.changeState(OnlineCourse.State.PRIVATE);
+
+        onlineCourse.addStudent(test);
+
+        onlineCourse.addReview("hello", student);
+
+        System.out.println(onlineCourse.getState());
+        System.out.println(onlineCourse.getStudents());
+        System.out.println(onlineCourse.getReviews());
+    }
+}
+
+~~~
+
+#### 변경
+
++ State.class
+
+~~~java
+
+public interface State {
+
+    void addReview(String review, Student student);
+
+    void addStudent(Student student);
+}
+
+~~~
+
++ Draft.class
+
+~~~java
+
+public class Draft implements State {
+
+    private OnlineCourse onlineCourse;
+
+    public Draft(OnlineCourse onlineCourse) {
+        this.onlineCourse = onlineCourse;
+    }
+
+    @Override
+    public void addReview(String review, Student student) {
+        throw new UnsupportedOperationException("드래프트 상태에서는 리뷰를 남길 수 없습니다.");
+    }
+
+    @Override
+    public void addStudent(Student student) {
+        this.onlineCourse.getStudents().add(student);
+        if (this.onlineCourse.getStudents().size() > 1) {
+            this.onlineCourse.changeState(new Private(this.onlineCourse));
+        }
+    }
+}
+
+~~~
+
++ Private.class
+
+~~~java
+
+public class Private implements State {
+
+    private OnlineCourse onlineCourse;
+
+    public Private(OnlineCourse onlineCourse) {
+        this.onlineCourse = onlineCourse;
+    }
+
+    @Override
+    public void addReview(String review, Student student) {
+        if (this.onlineCourse.getStudents().contains(student)) {
+            this.onlineCourse.getReviews().add(review);
+        } else {
+            throw new UnsupportedOperationException("프라이빗 코스를 수강하는 학생만 리뷰를 남길 수 있습니다.");
+        }
+    }
+
+    @Override
+    public void addStudent(Student student) {
+        if (student.isAvailable(this.onlineCourse)) {
+            this.onlineCourse.getStudents().add(student);
+        } else {
+            throw new UnsupportedOperationException("프라이빛 코스를 수강할 수 없습니다.");
+        }
+    }
+}
+
+~~~
+
++ Published.class
+
+~~~java
+
+public class Published implements State {
+
+    private OnlineCourse onlineCourse;
+
+    public Published(OnlineCourse onlineCourse) {
+        this.onlineCourse = onlineCourse;
+    }
+
+    @Override
+    public void addReview(String review, Student student) {
+        this.onlineCourse.getReviews().add(review);
+    }
+
+    @Override
+    public void addStudent(Student student) {
+        this.onlineCourse.getStudents().add(student);
+    }
+}
+
+~~~
+
++ OnlineCourse.class
+
+~~~java
+
+public class OnlineCourse {
+
+    private State state = new Draft(this);
+
+    private List<Student> students = new ArrayList<>();
+
+    private List<String> reviews = new ArrayList<>();
+
+    public void addStudent(Student student) {
+        this.state.addStudent(student);
+    }
+
+    public void addReview(String review, Student student) {
+        this.state.addReview(review, student);
+    }
+
+    public State getState() {
+        return state;
+    }
+
+    public List<Student> getStudents() {
+        return students;
+    }
+
+    public List<String> getReviews() {
+        return reviews;
+    }
+
+    public void changeState(State state) {
+        this.state = state;
+    }
+}
+
+~~~
+
++ Student.class
+
+~~~java
+
+public class Student {
+
+    private String name;
+
+    public Student(String name) {
+        this.name = name;
+    }
+
+    private Set<OnlineCourse> onlineCourses = new HashSet<>();
+
+    public boolean isAvailable(OnlineCourse onlineCourse) {
+        return onlineCourses.contains(onlineCourse);
+    }
+
+    public void addPrivate(OnlineCourse onlineCourse) {
+        this.onlineCourses.add(onlineCourse);
+    }
+
+    @Override
+    public String toString() {
+        return "Student{" +
+                "name='" + name + '\'' +
+                '}';
+    }
+}
+
+~~~
+
++ Client.class
+
+~~~java
+
+public class Client {
+
+    public static void main(String[] args) {
+        OnlineCourse onlineCourse = new OnlineCourse();
+        Student student = new Student("whiteship");
+        Student test = new Student("test");
+        keesun.addPrivate(onlineCourse);
+
+        onlineCourse.addStudent(student);
+
+        onlineCourse.changeState(new Private(onlineCourse));
+
+        onlineCourse.addReview("hello", student);
+
+        onlineCourse.addStudent(test);
+
+        System.out.println(onlineCourse.getState());
+        System.out.println(onlineCourse.getReviews());
+        System.out.println(onlineCourse.getStudents());
+    }
+}
+
+~~~
+
+### 상태 (State) 패턴 구현 복습
++ 장점
+  + 상태에 따른 동작을 개별 클래스로 옮겨서 관리할 수 있다.
+  + 기존의 특정 상태에 따른 동작을 변경하지 않고 새로운 상태에 다른 동작을 추가할 수 있다.
+  + 코드 복잡도를 줄일 수 있다.
++ 단점 
+  + 복잡도가 증가한다.
+
+## 전략 (Strategy) 패턴
+여러 알고리듬을 캡슐화하고 상호 교환 가능하게 만드는 패턴
++ 컨텍스트에서 사용할 알고리듬을 클라이언트가 선택한다.
++ ![img.png](/assets/img/gof-design-pattern/Strategy.png)
+
+### 전략 (Strategy) 패턴 구현 방법
++ ![img.png](/assets/img/gof-design-pattern/Strategy2.png)
+
+#### 기존
+
++ BlueLightRedLight.class
+
+~~~java
+
+public class BlueLightRedLight {
+
+    private int speed;
+
+    public BlueLightRedLight(int speed) {
+        this.speed = speed;
+    }
+
+    public void blueLight() {
+        if (speed == 1) {
+            System.out.println("무 궁 화    꽃   이");
+        } else if (speed == 2) {
+            System.out.println("무궁화꽃이");
+        } else {
+            System.out.println("무광꼬치");
+        }
+
+    }
+
+    public void redLight() {
+        if (speed == 1) {
+            System.out.println("피 었 습 니  다.");
+        } else if (speed == 2) {
+            System.out.println("피었습니다.");
+        } else {
+            System.out.println("피어씀다");
+        }
+    }
+}
+
+~~~
+
++ Client.class
+
+~~~java
+
+public class Client {
+
+    public static void main(String[] args) {
+        BlueLightRedLight blueLightRedLight = new BlueLightRedLight(3);
+        blueLightRedLight.blueLight();
+        blueLightRedLight.redLight();
+    }
+}
+
+~~~
+
+#### 변경
+
++ Speed.class
+
+~~~java
+
+public interface Speed {
+
+    void blueLight();
+
+    void redLight();
+
+}
+
+~~~
+
++ Normal.class
+
+~~~java
+
+public class Normal implements Speed {
+    @Override
+    public void blueLight() {
+        System.out.println("무 궁 화    꽃   이");
+    }
+
+    @Override
+    public void redLight() {
+        System.out.println("피 었 습 니  다.");
+    }
+}
+
+~~~
+
++ Faster.class
+
+~~~java
+
+public class Faster implements Speed {
+    @Override
+    public void blueLight() {
+        System.out.println("무궁화꽃이");
+    }
+
+    @Override
+    public void redLight() {
+        System.out.println("피었습니다.");
+    }
+}
+
+~~~
+
++ Fastest.class
+
+~~~java
+
+public class Fastest implements Speed{
+    @Override
+    public void blueLight() {
+        System.out.println("무광꼬치");
+    }
+
+    @Override
+    public void redLight() {
+        System.out.println("피어씀다.");
+    }
+}
+
+~~~
+
++ BlueLightRedLight.class
+
+~~~java
+
+public class BlueLightRedLight {
+
+    public void blueLight(Speed speed) {
+        speed.blueLight();
+    }
+
+    public void redLight(Speed speed) {
+        speed.redLight();
+    }
+}
+
+~~~
+
++ Client.class
+
+~~~java
+
+public class Client {
+
+    public static void main(String[] args) {
+        BlueLightRedLight game = new BlueLightRedLight();
+        game.blueLight(new Normal());
+        game.redLight(new Fastest());
+        game.blueLight(new Speed() {
+            @Override
+            public void blueLight() {
+                System.out.println("blue light");
+            }
+
+            @Override
+            public void redLight() {
+                System.out.println("red light");
+            }
+        });
+    }
+}
+
+~~~
+
+
+### 전략 (Strategy) 패턴 구현 복습
++ 장점
+  + 새로운 전략을 추가하더라도 기존 코드를 변경하지 않는다.
+  + 상속 대신 위임을 사용할 수 있다,
+  + 런타임에 전략을 변경할 수 있다.
++ 단점
+  + 복잡도가 증가한다.
+  + 클라이언트 코드가 구체적인 전략을 알아야한다.
+
+### 실무에서 어떻게 쓰이나?
++ 자바 
+  + Comparator
+
+~~~java
+
+public class StrategyInJava {
+
+    public static void main(String[] args) {
+        List<Integer> numbers = new ArrayList<>();
+        numbers.add(10);
+        numbers.add(5);
+
+        System.out.println(numbers);
+
+        Collections.sort(numbers, Comparator.naturalOrder());
+
+        System.out.println(numbers);
+    }
+}
+
+~~~
+
++ 스프링
+  + ApplicationContext
+  + PlatformTransactionManager
+  + 등등, 너무 많다.
+
+~~~java
+
+public class StrategyInSpring {
+
+    public static void main(String[] args) {
+        ApplicationContext applicationContext = new ClassPathXmlApplicationContext();
+        ApplicationContext applicationContext1 = new FileSystemXmlApplicationContext();
+        ApplicationContext applicationContext2 = new AnnotationConfigApplicationContext();
+
+        BeanDefinitionParser parser;
+
+        PlatformTransactionManager platformTransactionManager;
+
+        CacheManager cacheManager;
+    }
+}
+
+~~~
+
+## 템플릿 메소드 (Template method) 패턴
+알고리듬 구조를 서브 클래스가 확장할 수 있도록 템플릿으로 제공하는 방법.
++ 추상 클래스는 템플릿을 제공하고 하위 클래스는 구체적인 알골리듬을 제공한다.
++ ![img.png](/assets/img/gof-design-pattern/Templatemethod.png)
+
+### 템플릿 콜백 (Template-Callback) 패턴
+콜백으로 상속 대신 위임을 사용하는 템플릿 패턴
++ 상속 대신 익명 내부 클래스 또는 람다 표현식을 활용할 수 있다.
++ ![img.png](/assets/img/gof-design-pattern/Template-Callback.png)
+
+### 템플릿 메소드 (Template method) 패턴 구현 방법
++ ![img.png](/assets/img/gof-design-pattern/Templatemethod2.png)
+
+#### 기존
+
++ FileProcessor.class
+
+~~~java
+
+public class FileProcessor {
+
+    private String path;
+    public FileProcessor(String path) {
+        this.path = path;
+    }
+
+    public int process() {
+        try(BufferedReader reader = new BufferedReader(new FileReader(path))) {
+            int result = 0;
+            String line = null;
+            while((line = reader.readLine()) != null) {
+                result += Integer.parseInt(line);
+            }
+            return result;
+        } catch (IOException e) {
+            throw new IllegalArgumentException(path + "에 해당하는 파일이 없습니다.", e);
+        }
+    }
+}
+
+~~~
+
++ MultuplyFileProcessor.class
+
+~~~java
+
+public class MultuplyFileProcessor {
+
+    private String path;
+    public MultuplyFileProcessor(String path) {
+        this.path = path;
+    }
+
+    public int process() {
+        try(BufferedReader reader = new BufferedReader(new FileReader(path))) {
+            int result = 0;
+            String line = null;
+            while((line = reader.readLine()) != null) {
+                result *= Integer.parseInt(line);
+            }
+            return result;
+        } catch (IOException e) {
+            throw new IllegalArgumentException(path + "에 해당하는 파일이 없습니다.", e);
+        }
+    }
+}
+
+~~~
+
++ Client.class
+
+~~~java
+
+public class Client {
+
+    public static void main(String[] args) {
+        FileProcessor fileProcessor = new FileProcessor("number.txt");
+        int result = fileProcessor.process();
+        System.out.println(result);
+    }
+}
+
+~~~
+
+#### 변경
+
+__템플릿 메서드 패턴__
+
++ FileProcessor.class
+
+~~~java
+
+public abstract class FileProcessor {
+
+    private String path;
+    public FileProcessor(String path) {
+        this.path = path;
+    }
+
+    public int process() {
+        try(BufferedReader reader = new BufferedReader(new FileReader(path))) {
+            int result = 0;
+            String line = null;
+            while((line = reader.readLine()) != null) {
+                result = getResult(result, Integer.parseInt(line));
+            }
+            return result;
+        } catch (IOException e) {
+            throw new IllegalArgumentException(path + "에 해당하는 파일이 없습니다.", e);
+        }
+    }
+
+    protected abstract int getResult(int result, int number);
+
+}
+
+~~~
+
++ Multiply.class
+
+~~~java
+
+public class Multiply extends FileProcessor {
+  public Multiply(String path) {
+    super(path);
+  }
+
+  @Override
+  protected int getResult(int result, int number) {
+    return result *= number;
+  }
+
+}
+
+
+~~~
+
+__템플릿 콜백 패턴__
+
++ Operator.class
+
+~~~java
+
+public interface Operator {
+
+    abstract int getResult(int result, int number);
+}
+
+~~~
+
++ FileProcessor.class
+
+~~~java
+
+public class FileProcessor {
+
+    private String path;
+    public FileProcessor(String path) {
+        this.path = path;
+    }
+
+    public final int process(Operator operator) {
+        try(BufferedReader reader = new BufferedReader(new FileReader(path))) {
+            int result = 0;
+            String line = null;
+            while((line = reader.readLine()) != null) {
+                result = operator.getResult(result, Integer.parseInt(line));
+            }
+            return result;
+        } catch (IOException e) {
+            throw new IllegalArgumentException(path + "에 해당하는 파일이 없습니다.", e);
+        }
+    }
+
+}
+
+~~~
+
++ Plus.class
+
+~~~java
+
+public class Plus implements Operator {
+    @Override
+    public int getResult(int result, int number) {
+        return result += number;
+    }
+}
+
+~~~
+
+
++ Client.class
+
+~~~java
+
+public class Client {
+
+    public static void main(String[] args) {
+        FileProcessor fileProcessor = new Multiply("number.txt");
+        int result = fileProcessor.process((sum, number) -> sum += number);
+        System.out.println(result);
+    }
+}
+
+~~~
+
+### 템플릿 메소드 (Template method) 패턴 구현 복습
++ 장점
+  + 템플릿 코드를 재사용하고 중복 코드를 줄일 수 있다.
+  + 템플릿 코드를 변경하지 않고 상속을 받아서 구체적인 알고리듬만 변경할 수 있다.
++ 단점
+  + 리스코프 치환 원칙을 위반할 수도 있다.
+  + 알고리듬 구조가 복잡할 수록 템플릿을 유지하기 어려워진다.
+
+### 실무에서 어떻게 쓰이나?
++ 자바 
+  + HttpServlet
+
+~~~java
+
+public class MyHello extends HttpServlet {
+
+    @Override
+    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
+        super.doGet(req, resp);
+    }
+
+    @Override
+    protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
+        super.doPost(req, resp);
+    }
+}
+
+~~~
+
++ 스프링
+  + 템플릿 메소드 패턴
+    + Configuration
+  + 템플릿 콜백 패턴
+    + JdbcTemplate
+    + RestTemplate
+    + 등등
+
+~~~java
+
+public class TemplateInSpring {
+
+    public static void main(String[] args) {
+        // TODO 템플릿-콜백 패턴
+        // JdbcTemplate
+        JdbcTemplate jdbcTemplate = new JdbcTemplate();
+        jdbcTemplate.execute("insert");
+
+        // RestTemplate
+        RestTemplate restTemplate = new RestTemplate();
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setAccept(Arrays.asList(MediaType.APPLICATION_JSON));
+        headers.set("X-COM-PERSIST", "NO");
+        headers.set("X-COM-LOCATION", "USA");
+
+        HttpEntity<String> entity = new HttpEntity<String>(headers);
+        ResponseEntity<String> responseEntity = restTemplate
+                .exchange("http://localhost:8080/users", HttpMethod.GET, entity, String.class);
+    }
+
+    @Configuration
+    class SecurityConfig extends WebSecurityConfigurerAdapter {
+
+        @Override
+        protected void configure(HttpSecurity http) throws Exception {
+            http.authorizeRequests().anyRequest().permitAll();
+        }
+    }
+}
+
+~~~
+
+## 방문자 (Visitor) 패턴
+기존 코드를 변경하지 않고 새로운 기능을 추가하는 방법
++ 더블 디스패치 (Double Dispatch)를 활용할 수 있다.
++ ![img.png](/assets/img/gof-design-pattern/Visitor.png)
+
+### 방문자 (Visitor) 패턴 구현 방법
+
+#### 기존
+
++ Device.class
+
+~~~java
+
+public interface Device {
+}
+
+~~~
+
++ Phone.class
+
+~~~java
+
+public class Phone implements Device{
+}
+
+~~~
+
++ Watch.class
+
+~~~java
+
+public class Watch implements Device{
+}
+
+~~~
+
++ Shape.class
+
+~~~java
+
+public interface Shape {
+
+    void printTo(Device device);
+
+}
+
+~~~
+
++ Triangle.class
+
+~~~java
+
+public class Triangle implements Shape {
+
+    @Override
+    public void printTo(Device device) {
+        if (device instanceof Phone) {
+            System.out.println("print Triangle to Phone");
+        } else if (device instanceof Watch) {
+            System.out.println("print Triangle to Watch");
+        }
+    }
+
+}
+
+~~~
+
++ Circle.class
+
+~~~java
+
+public class Circle implements Shape {
+  @Override
+  public void printTo(Device device) {
+    if (device instanceof Phone) {
+      System.out.println("print Circle to phone");
+    } else if (device instanceof Watch) {
+      System.out.println("print Circle to watch");
+    }
+  }
+}
+
+~~~
+
++ Client.class
+
+~~~java
+
+public class Client {
+
+    public static void main(String[] args) {
+        Shape rectangle = new Rectangle();
+        Device device = new Phone();
+        rectangle.printTo(device);
+    }
+}
+
+~~~
+
+#### 변경
+
++ Device.class
+
+~~~java
+
+public interface Device {
+    void print(Circle circle);
+
+    void print(Rectangle rectangle);
+
+    void print(Triangle triangle);
+}
+
+~~~
+
++ Pad.class
+
+~~~java
+
+public class Pad implements Device {
+    @Override
+    public void print(Circle circle) {
+        System.out.println("Print Circle to Pad");
+    }
+
+    @Override
+    public void print(Rectangle rectangle) {
+        System.out.println("Print Rectangle to Pad");
+    }
+
+    @Override
+    public void print(Triangle triangle) {
+        System.out.println("Print Triangle to Pad");
+    }
+}
+
+~~~
+
++ Phone.class
+
+~~~java
+
+public class Phone implements Device {
+
+    @Override
+    public void print(Circle circle) {
+        System.out.println("Print Circle to Phone");
+    }
+
+    @Override
+    public void print(Rectangle rectangle) {
+        System.out.println("Print Rectangle to Phone");
+
+    }
+
+    @Override
+    public void print(Triangle triangle) {
+        System.out.println("Print Triangle to Phone");
+    }
+}
+
+~~~
+
++ Watch.class
+
+~~~java
+
+public class Watch implements Device {
+    @Override
+    public void print(Circle circle) {
+        System.out.println("Print Circle to Watch");
+    }
+
+    @Override
+    public void print(Rectangle rectangle) {
+        System.out.println("Print Rectangle to Watch");
+    }
+
+    @Override
+    public void print(Triangle triangle) {
+        System.out.println("Print Triangle to Watch");
+    }
+}
+
+~~~
+
++ Shape.class
+
+~~~java
+
+public interface Shape {
+
+    void accept(Device device);
+
+}
+
+~~~
+
++ Circle.class
+
+~~~java
+
+public class Circle implements Shape {
+
+    @Override
+    public void accept(Device device) {
+        device.print(this);
+    }
+}
+
+~~~
+
++ Triangle.class
+
+~~~java
+
+public class Triangle implements Shape {
+    
+    @Override
+    public void accept(Device device) {
+        device.print(this);
+    }
+}
+
+~~~
+
++ Rectangle.class
+
+~~~java
+
+public class Rectangle implements Shape {
+    
+    @Override
+    public void accept(Device device) {
+        device.print(this);
+    }
+}
+
+~~~
+
++ Client.class
+
+~~~java
+
+public class Client {
+
+    public static void main(String[] args) {
+        Shape rectangle = new Rectangle();
+        Device device = new Pad();
+        rectangle.accept(device);
+    }
+}
+
+~~~
+
+### 방문자 (Visitor) 패턴 구현 복습
++ 장점
+  + 기존 코드를 변경하지 않고 새로운 코드를 추가할 수 있다.
+  + 추가 기능을 한 곳에 모아둘 수 있다.
++ 단점
+  + 복잡하다.
+  + 새로운 Element를 추가하거나 제거할 때 모든 Visitor 코드를 변경해야 한다.
+  
+### 실무에서 어떻게 쓰이나?
++ 자바 
+  + FileVisitor, SimpleFileVisitor
+  + AnnotationValueVisitor
+  + ElementVisitor
+
+~~~java
+
+public class SearchFileVisitor implements FileVisitor<Path> {
+
+    private String fileToSearch;
+    private Path startingDirectory;
+
+    public SearchFileVisitor(String fileToSearch, Path startingDirectory) {
+        this.fileToSearch = fileToSearch;
+        this.startingDirectory = startingDirectory;
+    }
+
+    @Override
+    public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
+        return FileVisitResult.CONTINUE;
+    }
+
+    @Override
+    public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+        if (fileToSearch.equals(file.getFileName().toString())) {
+            System.out.println("found " + file.getFileName());
+            return FileVisitResult.TERMINATE;
+        }
+        return FileVisitResult.CONTINUE;
+    }
+
+    @Override
+    public FileVisitResult visitFileFailed(Path file, IOException exc) throws IOException {
+        exc.printStackTrace(System.out);
+        return FileVisitResult.CONTINUE;
+    }
+
+    @Override
+    public FileVisitResult postVisitDirectory(Path dir, IOException exc) throws IOException {
+        if (Files.isSameFile(startingDirectory, dir)) {
+            System.out.println("search end");
+            return FileVisitResult.TERMINATE;
+        }
+        return FileVisitResult.CONTINUE;
+    }
+}
+
+~~~
+
+~~~java
+
+public class VisitorInJava {
+
+    public static void main(String[] args) throws IOException {
+        Path startingDirectory = Path.of("/Users/test/workspace/design-patterns");
+        SearchFileVisitor searchFileVisitor =
+                new SearchFileVisitor("Triangle.java", startingDirectory);
+        Files.walkFileTree(startingDirectory, searchFileVisitor);
+    }
+}
+
+~~~
+
++ 스프링
+  + BeanDefinitionVisitor
+
+~~~java
+
+public class VisitorInSpring {
+
+    public static void main(String[] args) {
+        BeanDefinitionVisitor beanDefinitionVisitor;
+    }
+}
+
+~~~
