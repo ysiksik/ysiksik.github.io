@@ -2,7 +2,7 @@
 layout: post
 bigtitle: '우아한테크코스 테코톡'
 subtitle: 매트, 토르의 MySQL 성능 최적화
-date: '2022-11-06 00:00:02 +0900'
+date: '2022-11-12 00:00:02 +0900'
 categories:
     - study
     - elegant-tekotok
