@@ -20,7 +20,7 @@ comments: true
 + 비동기 JavaScript 와 XML 을 말한다.
 + 자바 스크립트와 XMLHttpRequest 객체를 사용해서 클라이언트와 서버가 비동기 방식으로 통신 하는 것 
 + Ajax 이전
-  + ![img.png](TIGGER-Ajax.png)
+  + ![img.png](../../../assets/img/elegant-tekotok/TIGGER-Ajax.png)
   + html 태그로 시작해서 html 태그로 끝나는 완전한 HTML을 서버로부터 전송 받는다.
   + 단점
     + 불필요한 데이터 통신
@@ -30,7 +30,7 @@ comments: true
     + 클라이언트 블로킹
       + 클라이언트와 서버와의 통신이 동기 방식으로 동작한다. 
 + Ajax 방식
-  + ![img.png](TIGGER-Ajax2.png)
+  + ![img.png](../../../assets/img/elegant-tekotok/TIGGER-Ajax2.png)
   + 웹페이지의 변경에 필용한 데이터만 서버로부터 비동기 방식으로 전송받는다.
     + 불필요한 데이터 통신 X
       + 변경할 부분을 갱신하는 데에 필요한 데이터만 서버로부터 전송받는다.
@@ -47,8 +47,8 @@ comments: true
 
 ## Ajax 동작 방식
 + 자바스크립트는 싱글쓰레드로 동작하는데 어떻게 Ajax가 비동기적으로 동작할 수 있었을까?
-+ ![img.png](TIGGER-Ajax3.png)
-+ ![img.png](TIGGER-Ajax4.png)
++ ![img.png](../../../assets/img/elegant-tekotok/TIGGER-Ajax3.png)
++ ![img.png](../../../assets/img/elegant-tekotok/TIGGER-Ajax4.png)
   1. get 함수가 호출되면 get 실행 컨텍스트가 생성되고 Call stack에 쌓인다.
   2. 쌓이게 되면 순차적으로 실행하다가 이벤트 핸들러 바인딩 하는 작업을 만나게 되면 이 작업을 Web API를 통해서 브라우저에게 위임한다.
   3. 그리고 get 함수는 종료했으니깐 콜 스틱을 빠져나간다.
