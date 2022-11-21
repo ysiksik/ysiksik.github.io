@@ -261,7 +261,7 @@ comments: true
   
       @Before("com.xyz.myapp.CommonPointcuts.dataAccessOperation()")
       public void doAccessCheck() {
-          // ...
+          
       }
   }
   
@@ -280,7 +280,7 @@ comments: true
   
       @AfterReturning("com.xyz.myapp.CommonPointcuts.dataAccessOperation()")
       public void doAccessCheck() {
-          // ...
+          
       }
   }
   
