@@ -84,4 +84,228 @@ comments: true
   + SpEL
     + 짧은 표현식을 통해 필요한 데이터나 설정 값을 얻어올 수 있게 하는 특별한 형태의 표현식에 가까운 간편한 언어
   + Null-Safety
++ 스프링의 디자인 철학 
+  + 모든 기능에서 다양한 가능성(다양한 모듈)을 사용 가능, 심지어 외부 모듈을 활용 가능
+    + 너무 높은 자유도 어떤 점에서는 스프링을 어렵게 하는 요소 
+  + 유연하게 계속 추가 개발을 하고 있는 프레임워크
+  + 이전 버전과의 강력한 호환성
+    + 너무 많은 레거시 때문에 코드의 복잡성이 높아지긴 하다.
+  + API 디자인을 섬세하게 노력한다
+    + 스프링 코드 자체가 하나의 좋은 참고 소스
+  + 높은 코드 품질을 유지하려 한다.
+    + 스프링 프로젝트 github은 아주 좋은 참고 소스이자 PR과 이슈 관리도 좋은 프로세스 참고용
+  + 한마디로 높은 자유도를 주고 계속 발전하는 고품질의 다양성이 있는 프로젝트, 그런데 너무 자유로워서 때론 어렵다.
+
+### DI - Dependency Injection
++ IoC(Inversion of Control), DI(Dependency Injection)
+  + IoC나 DI는 레고와 같은것
+    + 스프링이 바닥판처럼 깔려있고, 우리는 그 위에서 멋진 조립(어플리케이션)을 만들면 된다.
++ Bean이란?
+  + 자바에서의 javaBean
+    + 데이터를 저장하기 위한 구조체로 자바 빈 규약이라는 것을 따르는 구조체
+    + private 프로퍼티와 getter/setter로만 데이터를 접근한다.
+    + 인수(argument)가 없는 기본 생성자가 있다.
+
+  ~~~java
+  
+  public class JavaBean {
+      private String id;
+      private Integer count;
+  
+      public JavaBean(){}
+  
+      public String getId() {
+          return id;
+      }
+  
+      public void setId(String id) {
+          this.id = id;
+      }
+  
+      public Integer getCount() {
+          return count;
+      }
+  
+      public void setCount(Integer count) {
+          this.count = count;
+      }
+  }
+  
+  ~~~
+
+  + 스프링에서의 Bean
+    + 스프링 IoC 컨테이너에 의해 생성되고 관리되는 객체
+    + 자바에서처럼 new Object(); 로 생성하지 않는다
+    + 각각의 Bean들 끼리는 서로 편리하게 의존(사용)할 수 있다.
+    + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part1-Spring-Framework2.png)
+  + 스프링 컨테이너 개요
+    + ApplicationContext 인터페이스를 통해 제공되는 스프링 컨테이너는 Bean 객체의 생성 및 Bean들의 조립(상호 의존성 관리)을 담당한다.
+  + Bean의 등록
+    + 과거에는 xml로 설정을 따로 관리하여 등록(불편)
+    + 현재는 annotation 기반으로 Bean 등록
+      + @Bean, @Controller, @Service
+  + Bean 등록 시 정보
+    + Class 경로
+    + Bean 이름
+      + 기본적으로는 원 Class 이름에서 첫 문자만 소문자로 변경 
+      + 원하는 경우 변경 가능
+    + Scope: Bean을 생성하는 규칙
+      + singleton: 컨테이너에 단일로 생성
+      + prototype: 작업 시마다 Bean을 새로 생성하고 싶을 경우
+      + request: http 요청마다 새롭게 Bean을 생성하고 싶은 경우
+  + Bean LifeCycle callback(빈 생명주기 콜백함수)
+    + callback: 어떤 이벤트가 발생하는 경우 호출되는 메서드 
+    + lifecycle callback
+      + Bean을 생성하고 초기화하고 파괴하는 등 특정 시점에 호출되도록 정의된 함수
+    + 주로 많이 사용되는 콜백
+      + @PostConstruct: 빈 생성 시점에 필요한 작업을 수행
+      + @PreDestory: 빈 파괴(주로 어플리케이션 종료) 시점에 필요한 작업을 수행
+
+### AOP
++ 관점 지향 프로그래밍 - Aspect Oriented Programming
+  + 특정한 함수 호출 전이나 후에 공통적인 처리가 필요하다면 -> AOP
+    + 로깅
+    + 트랜젝션
+    + 인증
+  + OOP로 처리하기에는 다소 까다로운 부분을 AOP라는 처리 방식을 도입하여 손쉽게 공통 기능을 추가/수정/삭제 할 수 있도록 했다.
++ AOP의 기본 개념들
+  + Aspect
+    + 여러 클래스나 기능에 걸쳐서 있는 관심사, 그리고 그것들을 모듈화 한 것
+    + AOP 중에서 가장 많이 활용되는 부분은 @Transactional (트랜젝션 관리) 기능
+  + Advice
+    + 조언, AOP에서 실제로 적용하는 기능(로깅, 트랜젝션, 인증 등)을 뜻한다.
+  + Join point
+    + 모듈화된 특정 기능이 실행될 수 있는 연결 포인트
+  + Pointcut
+    + Join point 중에서 해당 Aspect를 정요할 대상을 뽑을 조건식
+  + Target Object
+    + Advice가 적용될 대상 오브젝트
+  + AOP Proxy
+    + 대상 오브젝트에 Aspect를 적용하는 경우 Advice를 덧붙이기 위해 하는 작업을 AOP Porxy라고 한다.
+    + 주로 CGLIB(Code Generation Library, 실행 중에 실시간으로 코드를 생성하는 라이브러리) 프록시를 사용하여 프록싱 처리를 한다.
+  + Weaving
+    + Advice를 비즈니스 로직 코드에 삽입하는 것을 말한다.
+    + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part1-Spring-Framework3.png)
++ AspectJ 지원
+  + AspectJ는 AOP를 제대로 사용하기 위해 꼭 필요한 라이브러리
+  + 기본적으로 제공되는 Spring AOP로는 다양한 기법(Pointcut 등)의 AOP를 사용할 수 없다.
+  + Aspect의 생성
+    
+  ~~~java
+    
+  package org.xyz;
+  import org.aspectj.lang.annotation.Aspect;
+  
+  @Aspect
+  @Component  // Component를 붙인 것은 해당 Aspect를 스프링의 Bean으로 등록해서 사용하기 위함
+  public class UsefulAspect {
+  
+  }
+    
+   ~~~
+  
+  + Pointcut 선언
+    + 해당 Aspect의 Advice(실행할 액션)이 적용될 Join point를 찾기 위한 패턴 또는 조건 생성
+    + 포인트 컷 표현식이라고 부른다.
+    
+  ~~~java
+  
+  package org.xyz;
+  import org.aspectj.lang.annotation.Aspect;
+  
+  @Aspect
+  @Component  // Component를 붙인 것은 해당 Aspect를 스프링의 Bean으로 등록해서 사용하기 위함
+  public class UsefulAspect {
+  
+      @Pointcut("execution(* transfer(..))")
+      private void anyOldTransfer() {}
+  }
+  
+  ~~~
+
+  + Pointcut 결합
+
+  ~~~java
+  
+  package org.xyz;
+  import org.aspectj.lang.annotation.Aspect;
+  
+  @Aspect
+  @Component  // Component를 붙인 것은 해당 Aspect를 스프링의 Bean으로 등록해서 사용하기 위함
+  public class UsefulAspect {
+  
+      @Pointcut("execution(public * *(..))")
+      private void anyPublicOperation() {} //public 메서드 대상 포인트 컷
+  
+      @Pointcut("within(com.xyz.myapp.trading..*)")
+      private void inTrading() {} // 특정 패키지 대상 포인트 컷
+      
+      @Pointcut("anyPublicOperation() && inTrading()")
+      private void tradingOperation() {} // 위의 두 조건을 and(&&) 조건으로 결합한 포인트 컷
+  }
+  
+  ~~~
+  
++ Advice 정의
+  + 포인트컷들을 활용하여 포인트컷의 전/후/주변에서 실행될 액션을 정의한다.
+  + Before Advice
+    + dataAccessOperation()이라는 미리 정의된 포인트 컷의 바로 전에 doAccessCheck가 실행
+
+  ~~~java
+  
+  import org.aspectj.lang.annotation.Aspect;
+  import org.aspectj.lang.annotation.Before;
+  
+  @Aspect
+  public class BeforeExample {
+  
+      @Before("com.xyz.myapp.CommonPointcuts.dataAccessOperation()")
+      public void doAccessCheck() {
+          // ...
+      }
+  }
+  
+  ~~~
+
+  + After Returning Advice
+    + dataAccessOperation()라는 미리 정의된 포인트컷에서 return이 발생된 후 실행
+
+  ~~~java
+  
+  import org.aspectj.lang.annotation.Aspect;
+  import org.aspectj.lang.annotation.AfterReturning;
+  
+  @Aspect
+  public class AfterReturningExample {
+  
+      @AfterReturning("com.xyz.myapp.CommonPointcuts.dataAccessOperation()")
+      public void doAccessCheck() {
+          // ...
+      }
+  }
+  
+  ~~~
+  
+  + Around Advice
+    + businessService()라는 포인트컷의 전/후에 필요한 동작을 추가
+
+  ~~~java
+  
+  import org.aspectj.lang.annotation.Aspect;
+  import org.aspectj.lang.annotation.Around;
+  import org.aspectj.lang.ProceedingJoinPoint;
+  
+  @Aspect
+  public class AroundExample {
+  
+      @Around("com.xyz.myapp.CommonPointcuts.businessService()")
+      public Object doBasicProfiling(ProceedingJoinPoint pjp) throws Throwable {
+          // start stopwatch
+          Object retVal = pjp.proceed();
+          // stop stopwatch
+          return retVal;
+      }
+  }
+  
+  ~~~
     
