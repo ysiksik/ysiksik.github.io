@@ -59,6 +59,7 @@ comments: true
   + 우리가 배우게 될 스프링의 근간이 되는 언어
   + 스프링은 자바 뿐 아니라 코틀린, 그루비로도 사용할 수 있다.
   + 스프링 자체는 거의 대부분 자바로 만들어져 있다.
+  + [https://github.com/spring-projects/spring-framework](https://github.com/spring-projects/spring-framework)
 + Spring Framework : 기업용 어플리케이션을 만드는데 사용 가능한 오픈소스 프레임워크
   + 자바를 이용해서 어플리케이션을 만들기 위해 활용하는 프레임워크
   + 자바, 서블릿, J2EE >>>>> 스프링 프레임워크
@@ -160,6 +161,9 @@ comments: true
     + 주로 많이 사용되는 콜백
       + @PostConstruct: 빈 생성 시점에 필요한 작업을 수행
       + @PreDestory: 빈 파괴(주로 어플리케이션 종료) 시점에 필요한 작업을 수행
+  + References
+    + [https://docs.spring.io/spring-framework/docs/current/reference/html/core.html#beans](https://docs.spring.io/spring-framework/docs/current/reference/html/core.html#beans)
+    + [https://en.wikipedia.org/wiki/JavaBeans](https://en.wikipedia.org/wiki/JavaBeans)
 
 ### AOP
 + 관점 지향 프로그래밍 - Aspect Oriented Programming
@@ -308,7 +312,10 @@ comments: true
   }
   
   ~~~
-  
+
++ References
+  + [https://docs.spring.io/spring-framework/docs/current/reference/html/core.html#aop](https://docs.spring.io/spring-framework/docs/current/reference/html/core.html#aop)
+
 ### Validation, Data binding
 
 #### Validation in spring
@@ -494,3 +501,118 @@ comments: true
   ~~~
   
   + Formatter도 Converter와 마찬가지로 Spring Bean으로 등록하면 자동으로 ConversionService에 등록시켜주기 때문에 필요(요청/응답 시 해당 데이터 타입이 있는 경우)에 따라 자동으로 동작하게 된다. 
+
++ References
+  + [https://docs.spring.io/spring-framework/docs/current/reference/html/core.html#validation](https://docs.spring.io/spring-framework/docs/current/reference/html/core.html#validation)
+
+### Resource
+
+#### Spring Resource
+  + java.net.URL의 한계(classpath 내부 접근이나 상대경로 등)를 넘어서기 위해 스프링에서 추가로 구현
+  + 업무에서는 많이 사용되는 부분은 아니지만, 스프링의 내부 동작을 이해하기 위해서 필요한 부분
+
+##### Resource Interface와 그 구현체들
+
+~~~java
+
+public interface Resource extends InputStreamSource {
+
+    boolean exists();
+
+    boolean isReadable();
+
+    boolean isOpen();
+
+    boolean isFile();
+
+    URL getURL() throws IOException;
+
+    URI getURI() throws IOException;
+
+    File getFile() throws IOException;
+
+    ReadableByteChannel readableChannel() throws IOException;
+
+    long contentLength() throws IOException;
+
+    long lastModified() throws IOException;
+
+    Resource createRelative(String relativePath) throws IOException;
+
+    String getFilename();
+
+    String getDescription();
+}
+
+~~~
+
++ Resource 구현체 목록
+  + Spring 내부 Resource 구현체 중 대표적인 몇가지
+  + UrlResource
+    + java.net.URL을 래핑한 버전, 다양한 종류
+  + ClassPathResource
+    + classpath(소스코드를 빌드한 결과(기본적으로 target/classes 폴더))하위의 리소스 접근 시 사용
+  + FileSystemResource
+    + 이름과 같이 File을 다루기 위한 리소스 구현체
+  + SevletContextResource, InputStreamResource, ByteArrayResource
+    + Sevlet 어플리케이션 루트 하위 파일, InputStream, ByteArrayInput 스트림을 가져오기 위한 구현체
++ Spring ResourceLoader
+  + 스프링 프로젝트 내 Resource(파일 등)에 접근할 때 사용하는 기능
+  + 기본적으로 applicationContext에서 구현이 되어 있다.
+  + 프로젝트 내 파일(주로 classpath 하위 파일)에 접근할 일이 있을 경우 활용
+  + 대부분의 사전정의된 파일들은 자동으로 로딩되도록 되어 있으나, 추가로 필요한 파일이 있을 때 이 부분 활용 가능
+  
+~~~java
+
+@Service
+public class ResourceService {
+	@Autowired
+	ApplicationContext ctx;
+
+	public void setResource() {
+		Resource myTemplate = 
+			ctx.getResource("classpath:some/resource/path/myTemplate.txt");
+			// ctx.getResource("file:/some/resource/path/myTemplate.txt");
+			// ctx.getResource("http://myhost.com/resource/path/myTemplate.txt");
+		// use myTemplate...
+	}
+}
+
+~~~
+
++ ResourcePatternResolver
+  + 스프링 ApplicationContext에서 ResourceLoader를 불러올 때 사용하는 Interface
+  + 위치 지정자 패턴("classpath:***", "file:***", "http:")에 따라 자동으로 Resource 로더 구현체를 선택
+
+~~~java
+
+public interface ApplicationContext extends EnvironmentCapable, 
+		ListableBeanFactory, HierarchicalBeanFactory,
+		MessageSource, ApplicationEventPublisher, ResourcePatternResolver {
+		// Spring ApplicationContext interface
+}
+
+~~~
+
++ Application Contexts & Resource Paths
+  + applicationContext(스프링의 핵심설정)을 이루는 설정값을 가져오는 방법들
+
+~~~java
+
+// let's create an applicationContext
+ApplicationContext ctx = new ClassPathXmlApplicationContext("conf/appContext.xml");
+
+ApplicationContext ctx =
+    new FileSystemXmlApplicationContext("conf/appContext.xml");
+
+ApplicationContext ctx =
+    new FileSystemXmlApplicationContext("classpath:conf/appContext.xml");
+
+
+// then you can use ctx as a Spring
+Bear bear = (Bear) ctx.getBean("bear");
+
+~~~
+
++ References
+  + [https://docs.spring.io/spring-framework/docs/current/reference/html/core.html#resources](https://docs.spring.io/spring-framework/docs/current/reference/html/core.html#resources)
