@@ -9,7 +9,7 @@ categories:
 comments: true
 ---
 
-# 이브, 배카라의 Synchronization EVE-BAKHARA-Synchronization
+# 이브, 배카라의 Synchronization
 [https://youtu.be/ImWjQ1Bxjrs](https://youtu.be/ImWjQ1Bxjrs)
 
 # 이브, 배카라의 Synchronization
