@@ -345,3 +345,166 @@ public class baekjoon20166 {
 
 ***
 
+## [백준 20181번 - 꿈틀꿈틀 호석 애벌레](https://www.acmicpc.net/problem/20181)
+---
+
+__출제 의도__
++ 기능성
+  + 문제의 상황을 시뮬레이션으로 바꿔서 모든 가능한 경우를 수행해보기
++ 효율성
+  + 탐색해야 하는 경우가 너무 많다. => DP
+  + 추가로, 점화식에 필요한 값을 빠르게 계산해 내는 방법으로 Two Pointer 기법
+
+__생각의 흐름 - 음식을 먹게 되는 구간들__
++ 음식을 먹기로 결정하면 그 순간부터 어디까지 먹게 되는 지를 무조건 정해진다는 것을 알게된다.
++ L 번째 음식에서 먹기 시작했을 때, 어디까지 먹으면 만족도는 얼마를 얻을 수 있을까?
++ L을 1부터 N까지 이동시키면서 매번 R을 계산한다고 하자.
+  + L이 1만큼 증가하면 R은 어떻게 될까?
+    + 모든 음식이 양수의 만조도를 가지기 때문에, L이 커지면 R은 절대로 작아질 수 없다.
+    + 즉, 이전의 L에 대한 R값을 이용해서 다음 L에 대한 R을 계산할 수 있다.
+
+__생각의 흐름 - DP라면?__
++ 정직한 순서로 문제를 풀어나가면 된다.
++ 먼저, DP Table을 정의하자
+  + Dy[i] = i번 위치까지 도착했을 때, 가능한 최대 만족도
+  + 정답 : Dy[N]
+  + 초기값 : Dy[0] = 0
+  + 점화식: Dy[i] = max(i번 음식 안먹기, i번 음식까지 먹어서 만족도 얻기)
+
+__생각의 흐름 - 전체 흐름__
+1. 음식을 먹게 되는 구간 [L, R] 을 찾고, 같은 R에 대해서는 뭉쳐서 저장해 놓는다.
+2. R을 1씩 증가시키면서, Dy[R]의 값을 계산해 나아간다.
+3. 이때 점화식은, max(Dy[R-1], max[L-1] + Eat(L,R)) 이다.
+4. 구간을 Two Pointer로 찾고 저장해 놓는다면 시간 복잡도는 O(N)이 된다.
+
+
+__구현__
+
+~~~java
+
+public class baekjoon20181 {
+
+  static int N, K;
+  static long[] arr;
+  static long[] dy;
+
+  static ArrayList<long[]>[] list;
+
+  public static void main(String[] args) throws IOException {
+    BufferedReader br = new BufferedReader(new InputStreamReader(System.in));
+    StringTokenizer st = new StringTokenizer(br.readLine(), " ");
+
+    N = Integer.parseInt(st.nextToken());
+    K = Integer.parseInt(st.nextToken());
+
+    arr = new long[N + 1];
+    dy = new long[N + 1];
+
+    st = new StringTokenizer(br.readLine(), " ");
+    for (int i = 1; i <= N; i++) {
+      arr[i] = Long.parseLong(st.nextToken());
+    }
+
+
+    list = new ArrayList[N + 1];
+
+    for (int i = 1; i <= N; i++) {
+      list[i] = new ArrayList<>();
+    }
+
+
+    long sum = 0;
+    for (int L = 1, R = 0; L <= N; L++) {
+
+      while (R + 1 <= N && sum < K) sum += arr[++R];
+
+      if (K <= sum) {
+        list[R].add(new long[]{L, sum - K});
+      }
+
+      sum -= arr[L];
+
+    }
+
+
+    for (int R = 1; R <= N; R++) {
+
+      dy[R] = dy[R - 1];
+
+      for (long[] x : list[R]) {
+
+        dy[R] = Math.max(dy[R], dy[(int) (x[0]) - 1] + x[1]);
+      }
+    }
+
+
+    System.out.println(dy[N]);
+
+  }
+
+
+}
+
+
+~~~
+
+~~~java
+
+public class baekjoon20181_2 {
+
+    static int N, K;
+    static long[] arr;
+    static long[] dy;
+
+    public static void main(String[] args) throws IOException {
+
+        BufferedReader br = new BufferedReader(new InputStreamReader(System.in));
+        StringTokenizer st = new StringTokenizer(br.readLine(), " ");
+
+        N = Integer.parseInt(st.nextToken());
+        K = Integer.parseInt(st.nextToken());
+
+        arr = new long[N + 1];
+        dy = new long[N + 1];
+
+        st = new StringTokenizer(br.readLine(), " ");
+        for (int i = 1; i <= N; i++) {
+            arr[i] = Long.parseLong(st.nextToken());
+        }
+
+        int right = 1;
+        long sum = 0, dyLeftMax = 0;
+
+        for (int left = 1; left <= N; left++) {
+            dyLeftMax = Math.max(dyLeftMax, dy[left - 1]);
+
+            while (right <= N && sum < K) {
+                sum += arr[right++];
+            }
+
+            if (sum >= K) {
+                dy[right - 1] = Math.max(dy[right - 1], dyLeftMax + (sum - K));
+            } else {
+                break;
+            }
+
+            sum -= arr[left];
+
+        }
+
+        long result = 0;
+
+        for (int i = 1; i <= N; i++) {
+            result = Math.max(result, dy[i]);
+        }
+
+        System.out.println(result);
+
+
+    }
+    
+}
+
+~~~
+
+***
