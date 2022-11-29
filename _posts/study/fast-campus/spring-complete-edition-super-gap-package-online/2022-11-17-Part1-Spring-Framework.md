@@ -791,3 +791,52 @@ Connection: keep-alive
 + [https://developer.mozilla.org/ko/docs/Web/HTTP/Messages](https://developer.mozilla.org/ko/docs/Web/HTTP/Messages)
 
 ### 아주 단순한 구조(1 Layer)의 어플리케이션
++ Dependencies
+  + Lombok
+  + Spring Web
+  + H2 Database
+  + Spring Data JPA
+  + Validation
++ 패키지 구조
+  + 회사랑 사람마다 차이가 있을수 있다. 
++ @RestController
+  + @Controller 인데 @ResponseBody 를 붙인 컨트롤러
+
+### H2 DB 설명, 간단한 DB 저장 기능 구현
++ H2 DB
+  + 메모리 DB로 주로 사용, 파일로도 가능하다. 
+  + 편리하게 테스트 가능하다. 
+  + 어플리케이션이 죽을때 데이터가 가치 삭제된다. 
+  + 간단하게 테스트용으로 사용한다.
++ application.yml h2 console 츨력 설정
+
+~~~yaml
+
+spring:
+  h2:
+    console:
+      enabled: true
+
+~~~
+
++ JPA의 @CreatedDate, @LastModifiedDate로 등록일 수정일 자동 생성 가능하다.
+  + @EnableJpaAuditing 설정해야 한다. 
+  + @EntityListeners(AuditingEntityListener.class) 엔티티에 위의 정보를 설정해야한다.
++ 의존성 주입 시 @RequiredArgsConstructor를 사용해서 의존성 주입 시에 생성자로 주입 시 편리하게 사용 가능하다. 
+  + @Autowired 보다 테스트가 편리하다.
+  + 생성자를 직접 코드를 적어서 주입 시에 코드를 수정해야 하지만 @RequiredArgsConstructor 사용하면 수정하지 않아도 된다. 
+
+### 트랜잭션의 개념
++ ACID
+  + Atomic(원자성)
+    + 작업이 모두 성공하거나 모두 실패해야 한다. 
+  + Consistency(일관성)
+    + 모든 DB 테이블의 자료들은 항상 정해진 규칙에 맞춰서 자료가 저장이 되어있어야 하고 트랜잭션이 종료된 시점에는 일괄성이 맞춰 저 있어야 한다.
+  + Isolation(고립성)
+    + 성능과 TRADE-OFF 하다.
+    + 고립이 잘 된 상태로 두게 되면은 서버에서 많은 요청을 받을 수 없다
+    + 고립이 떨어진 상태면 성능은 좋아지지만 데이터의 정합성이 떨어진다.
+  + Durability(지속성)
+    + 커밋이 되는 시점에는 무조건 커밋 된 이력은 무조건 남아 있어야 한다.
+
+### AOP,Transactional
