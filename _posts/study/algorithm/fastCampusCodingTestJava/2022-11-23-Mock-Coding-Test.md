@@ -508,3 +508,227 @@ public class baekjoon20181_2 {
 ~~~
 
 ***
+
+## [백준 20182번 - 골목대장 호석](https://www.acmicpc.net/problem/20182)
+---
++ 수가 크다, 꼭 정답의 최대치를 확인하자, Long이 필요함을 미리 깨달아야 한다.
+
+__출제 의도__
++ 기능성
+  + 완전 탐색
++ 효율성
+  + Dijkstra 알고르즘 활용
+  + Dijkstra 알고르즘 활용 + 이분 탐색
+
+__생각의 흐름 - 완전 탐색 먼저__
++ 항상, 완전 탐색 방법 부터 먼저 생각해보자.
++ DFS를 통해 가진 돈으로 시작점에서 도착점까지 갈 수 있는 모든 경로를 시도해보자.
++ 가능한 경로는 최대 N! 까지 가능하기 때문에 완전 탬색이 가능하다.
+
+__생각의 흐름 - 정답을 변수로 만들어보자.__
++ 최단경로 -> Dijkstra 알고리즘
++ But, 문제에서 요구하는 "최대 골목 비용"이란 것을 고려할 수가 없다.
++ 따라서, Dijkstra 알고르즘을 쓰기 위해서 최대 골목 비용 X를 결정해 보자
+
+__생각의 흐름 - 정답을 변수로 만들어보자__
++ 골목 최대치 X가 늘어나면 사용 가능한 간선도 늘어나기 때문에, 최단거리는 점점 줄어들게 된다.
++ 그렇다면, 모든 X에 대해 확인하지 말고 이분탐색을 통해 X를 찾을 수 있지 않을까? 즉, Parametric Search이다
+
+__구현__
+
+~~~java
+
+public class baekjoon20168 {
+
+  static int N, M, A, B, C, result;
+
+  static boolean[] visited;
+
+  static ArrayList<int[]>[] list;
+
+
+  public static void main(String[] args) throws IOException {
+
+    BufferedReader br = new BufferedReader(new InputStreamReader(System.in));
+    StringTokenizer st = new StringTokenizer(br.readLine(), " ");
+
+    N = Integer.parseInt(st.nextToken());
+    M = Integer.parseInt(st.nextToken());
+    A = Integer.parseInt(st.nextToken());
+    B = Integer.parseInt(st.nextToken());
+    C = Integer.parseInt(st.nextToken());
+
+    list = new ArrayList[N + 1];
+    visited = new boolean[N + 1];
+
+    result = Integer.MAX_VALUE;
+
+    for (int i = 1; i <= N; i++) {
+      list[i] = new ArrayList<>();
+    }
+
+    for (int i = 1; i <= M; i++) {
+      st = new StringTokenizer(br.readLine(), " ");
+      int a = Integer.parseInt(st.nextToken());
+      int b = Integer.parseInt(st.nextToken());
+      int c = Integer.parseInt(st.nextToken());
+
+      list[a].add(new int[]{b, c});
+      list[b].add(new int[]{a, c});
+    }
+
+    visited[A] = true;
+    dfs20168(A, C, -1);
+
+    if (result == Integer.MAX_VALUE) result = -1;
+
+    System.out.println(result);
+
+  }
+
+  private static void dfs20168(int node, int money, int cost) {
+    if (node == B) {
+      result = Math.min(result, cost);
+      return;
+    }
+
+    if (money <= 0) return;
+
+    for (int[] next : list[node]) {
+
+      if (visited[next[0]] || next[1] > money) continue;
+
+      visited[next[0]] = true;
+
+      dfs20168(next[0], money - next[1], Math.max(cost, next[1]));
+
+      visited[next[0]] = false;
+
+    }
+
+
+  }
+
+
+}
+
+~~~
+
+~~~java
+
+public class baekjoon20182 {
+
+  static int N, M, A, B;
+  static long C;
+
+  static ArrayList<Info>[] list;
+
+  static long max = Long.MAX_VALUE;
+
+  static long[] d;
+
+
+  static class Info implements Comparable<Info> {
+
+    int idx;
+    long cost;
+
+    public Info(int idx, long cost) {
+      this.idx = idx;
+      this.cost = cost;
+    }
+
+    @Override
+    public int compareTo(Info o) {
+
+      if (cost > o.cost) return 1;
+      if (cost == o.cost) return 0;
+      return -1;
+    }
+  }
+
+  public static void main(String[] args) throws IOException {
+
+    BufferedReader br = new BufferedReader(new InputStreamReader(System.in));
+    StringTokenizer st = new StringTokenizer(br.readLine(), " ");
+
+    N = Integer.parseInt(st.nextToken());
+    M = Integer.parseInt(st.nextToken());
+    A = Integer.parseInt(st.nextToken());
+    B = Integer.parseInt(st.nextToken());
+    C = Long.parseLong(st.nextToken());
+
+    list = new ArrayList[N + 1];
+    d = new long[N + 1];
+
+    for (int i = 1; i <= N; i++) {
+      list[i] = new ArrayList<>();
+    }
+
+    for (int i = 1; i <= M; i++) {
+      st = new StringTokenizer(br.readLine(), " ");
+      int a = Integer.parseInt(st.nextToken());
+      int b = Integer.parseInt(st.nextToken());
+      int c = Integer.parseInt(st.nextToken());
+
+      list[a].add(new Info(b, c));
+      list[b].add(new Info(a, c));
+    }
+
+
+    long left = 1;
+    long right = 1000000001;
+    long result = right;
+
+    while (left <= right) {
+      long mid = (left + right) / 2;
+
+      if (dijkstra(mid)) {
+        result = mid;
+        right = mid - 1;
+      } else {
+        left = mid + 1;
+      }
+
+    }
+
+    if (result == 1000000001) System.out.println(-1);
+    else System.out.println(result);
+
+
+  }
+
+  private static boolean dijkstra(long x) {
+
+    PriorityQueue<Info> queue = new PriorityQueue<>();
+
+    Arrays.fill(d, max);
+    d[A] = 0;
+    queue.add(new Info(A, 0));
+    while (!queue.isEmpty()) {
+
+      Info cur = queue.poll();
+
+      if (cur.cost != d[cur.idx]) continue;
+
+      for (Info next : list[cur.idx]) {
+        if (next.cost > x) continue;
+
+        if (d[next.idx] > d[cur.idx] + next.cost) {
+          d[next.idx] = d[cur.idx] + next.cost;
+          queue.add(new Info(next.idx, d[next.idx]));
+        }
+
+      }
+
+    }
+
+    return d[B] <= C;
+  }
+
+
+}
+
+~~~
+
+***

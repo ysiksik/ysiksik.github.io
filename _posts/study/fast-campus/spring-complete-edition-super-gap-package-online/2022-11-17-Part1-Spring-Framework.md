@@ -838,5 +838,6 @@ spring:
     + 고립이 떨어진 상태면 성능은 좋아지지만 데이터의 정합성이 떨어진다.
   + Durability(지속성)
     + 커밋이 되는 시점에는 무조건 커밋 된 이력은 무조건 남아 있어야 한다.
++ @Transactional은 TransactionInterceptor 라는 이름으로 구현체가 있다.
 
-### AOP,Transactional
+
