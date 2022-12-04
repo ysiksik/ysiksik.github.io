@@ -64,19 +64,19 @@ comments: true
   + 첫 세글자는 01x(x는 숫자)의 형태이다.
   + 구분자는 -. 공백, /을 허용한다.
   + 두번째 구역은 3글자 이상 4글자 이하, 마지막 구역은 4글자의 숫자로 이루어진다. 
-  + ![img.png](DONKEYKONG-RegExp.png)
+  + ![img.png](../../../assets/img/elegant-tekotok/DONKEYKONG-RegExp.png)
 + 테스트하기
   + [https://regexr.com/](https://regexr.com/)
 
 ### 이메일
-+ ![img.png](DONKEYKONG-RegExp2.png)
++ ![img.png](../../../assets/img/elegant-tekotok/DONKEYKONG-RegExp2.png)
 
 ### 주민등록번호
-+ ![img.png](DONKEYKONG-RegExp3.png)
++ ![img.png](../../../assets/img/elegant-tekotok/DONKEYKONG-RegExp3.png)
 
 
 ## JavaScript에서의 정규표현식 활용
-+ ![img.png](DONKEYKONG-RegExp4.png)
++ ![img.png](../../../assets/img/elegant-tekotok/DONKEYKONG-RegExp4.png)
   + g: global의 약자, 전 구역을 복수로 검사
   + i: ignore의 약자, 대소문자 구분하지 않는다.
   + m: multiline의 약자, 다중행 검사 
