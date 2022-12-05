@@ -16,7 +16,7 @@ comments: true
 * toc
 {:toc}
 
-## Ch 01. 강의소개, 프로개발자로 성장하는 법
+## 강의소개, 프로개발자로 성장하는 법
 
 ### 개발자의 소프트 스킬
 + 취직, 이직을 위한 짧은 팁
@@ -51,7 +51,7 @@ comments: true
   + src/test : 테스트 관련된 것들이 main과 동일한 구조로 위치
   + build.gradle : 이 프로젝트가 사용하는 프레임워크와 라이브러리가 버전정보와 함께 포함
 
-## Ch 02. 스프링의 핵심 기술 익히기
+## 스프링의 핵심 기술 익히기
 [노션으로 이동](https://productive-pullover-f3e.notion.site/6a09636c5dd942a6bb1d8574768e2593?v=b1bc50f032174c10a3c845c2c7ba09ec)
 
 ### 자바, 그리고 스프링, 스프링 부트
@@ -711,7 +711,7 @@ public void method(String request) {
 + [lombok](https://projectlombok.org/features/NonNull)
 
 
-## Ch 03. 예제를 만들며 이해하는 스프링 웹 어플리케이션 핵심 기술
+## 예제를 만들며 이해하는 스프링 웹 어플리케이션 핵심 기술
 
 ### 롬복 설명
 + 자바 스프링에서 반복적으로 계속 타이핑 해야하는 부분을 간편하게 생성 
@@ -841,3 +841,236 @@ spring:
 + @Transactional은 TransactionInterceptor 라는 이름으로 구현체가 있다.
 
 
+## 테스트 코드
+
+### 테스트를 잘 하는 방법
++ SI 때 혹은 과거
+  + 테스트는 모두 사람이 하는 것이었고, 한 번의 테스트는 상당한 노동력을 필요로 했다.
+  + SI에서는 전용 테스트 팀이 따로 있었고, 인수인계 전에 인수테스트라는 것을 진행해서 기능적인 테스트를 꼼꼼히 했다. 
++ 테스트 바람
+  + 하지만 로직의 대부분 쿼리에 있는 mybatis에서는 테스트하기가 상당히 까다로웠다.
+  + 그 후 시간이 지나 JPA가 등장하여 쿼리가 아닌 자바 코드에 로직이 많이 담기게 됬다.
+    + 유지보수성 극적인 향상 (쿼리로는 다형성이나 디자인패턴 전략 등을 하기가 어렵거나 불가능)
+    + 자바코드에 담긴 로직은 테스트하기 쿼리에 담긴 로직에 비해 상대적으로 편리하다.
++ TDD & 실무
+  + 처음 공부해보고 도입하려고 해보았으나, 클래스의 구성이나 프로그램 구조가 잡히지 않은 상태에서는 어려웠다.
+  + 여러가지로 공부해보고 실무나 주변을 본 결과 완벽한 의미의 TDD(테스트 먼저 개발하고 코드를 만드는 것)은 어렵다.
++ 테스트를 잘 하기 위한 기반
+  + 클래스나 메서드가 SRP를 잘 지키고, 크기가 적절히 작아야 한다.
+    + 그래야 테스트를 집중력 있게 만들 수 있고 한 메서드에 너무 많은 테스트를 수행하지 않아도 된다.
+    + 이게 테스트를 하는 것의 장점이 되기도 한다. (테스트를 하면 자연스럽게 역할이 확인되면서 쪼개진다.)
+  + 적절한 Mocking을 통한 격리성 확보
+    + 단위테스트가 만능은 아니지만, 위의 SRP처럼 해당 메서드의 역할을 정확히 테스트하려면 주변 조건을 적절히 통제해야 한다.
+  + 당연히 잘 작동하겠지라는 생각말고 꼼꼼히 테스트 그리고 너무 과도하게 많은 테스트와 코드량이 생기지 않도록 적절히 끊기
+    + 테스트코드도 코드 리뷰 시에 적절한 테스트를 하는지 확인 필요
+  + 테스트 코드 개선을 위한 노력
+    + 테스트코드도 리팩토링 필요
+    + 테스트코드의 기법들도 지속적인 고민 필요(통합 테스트 등)
+
+### junit, Mockito 설명
++ junit
+  + JAVA의 UNIT 테스트를 위한 프레임워크
+  + 현재 까지 5버전
+  + spring 2.4 버전 부터는 junit 5 
++ @SpringBootTest
+  + 테스트를 할때도 모든 빈을 다 등록해서 실행할 때랑 같은 환경을 만들어서 테스트를 진행하겠다. 
+  + 통합테스트
++ Mockito
+  + @ExtendWith(MockitoExtension.class)
+    + Mockito 기능을 활용해서 테스트를 진행하겠다. 
+  + @InjectMocks
+    + 가짜 객체를 해당 테스트에 넣어준다.
+  + @Mock
+    + 목 객체를 생성해서 의존성 주입 해준다. 
+
+### Controller 테스트 작성
+
+~~~java
+
+@WebMvcTest(DMakerController.class)
+class DMakerControllerTest {
+    @Autowired
+    private MockMvc mockMvc;
+
+    @MockBean
+    private DMakerService dMakerService;
+
+    protected MediaType contentType =
+            new MediaType(MediaType.APPLICATION_JSON.getType(),
+                    MediaType.APPLICATION_JSON.getSubtype(),
+                    StandardCharsets.UTF_8);
+
+    @Test
+    void getAllDevelopers() throws Exception {
+        DeveloperDto juniorDeveloperDto = DeveloperDto.builder()
+                .developerSkillType(DeveloperSkillType.BACK_END)
+                .developerLevel(DeveloperLevel.JUNIOR)
+                .memberId("memberId1").build();
+        DeveloperDto seniorDeveloperDto = DeveloperDto.builder()
+                .developerSkillType(DeveloperSkillType.FRONT_END)
+                .developerLevel(DeveloperLevel.SENIOR)
+                .memberId("memberId2").build();
+        given(dMakerService.getAllEmployedDevelopers())
+                .willReturn(Arrays.asList(juniorDeveloperDto, seniorDeveloperDto));
+
+        mockMvc.perform(get("/developers").contentType(contentType))
+                .andExpect(status().isOk())
+                .andDo(print())
+                .andExpect(
+                        jsonPath("$.[0].developerSkillType",
+                                is(DeveloperSkillType.BACK_END.name()))
+                ).andExpect(
+                jsonPath("$.[0].developerLevel",
+                        is(DeveloperLevel.JUNIOR.name())))
+                .andExpect(
+                        jsonPath("$.[1].developerSkillType",
+                                is(DeveloperSkillType.FRONT_END.name())))
+                .andExpect(
+                        jsonPath("$.[1].developerLevel",
+                                is(DeveloperLevel.SENIOR.name()))
+                );
+    }
+}
+
+~~~
+
++ @WebMvcTest
+  + 컨트롤러쪽 관련된 빈만 등록하고 컨트롤러도 원하는 컨트롤러만 등록 가능 
++ MockMvc
+  + 컨트롤러 호출을 가상으로 만들어 준다. 
++ @MockBean
+  + 가짜 빈으로 등록
+
+### Service 테스트 작성
+
+~~~java
+
+@ExtendWith(MockitoExtension.class)
+class DMakerServiceTest {
+    @Mock
+    private DeveloperRepository developerRepository;
+
+    @InjectMocks
+    private DMakerService dMakerService;
+
+    private final Developer defaultDeveloper = Developer.builder()
+            .developerLevel(SENIOR)
+            .developerSkillType(FRONT_END)
+            .experienceYears(12)
+            .statusCode(EMPLOYED)
+            .name("name")
+            .age(12)
+            .build();
+
+    private CreateDeveloper.Request getCreateRequest(
+            DeveloperLevel developerLevel,
+            DeveloperSkillType developerSkillType,
+            Integer experienceYears
+    ) {
+        return CreateDeveloper.Request.builder()
+                .developerLevel(developerLevel)
+                .developerSkillType(developerSkillType)
+                .experienceYears(experienceYears)
+                .memberId("memberId")
+                .name("name")
+                .age(32)
+                .build();
+    }
+
+    @Test
+    public void testSomething() {
+        //given
+        given(developerRepository.findByMemberId(anyString()))
+                .willReturn(Optional.of(defaultDeveloper));
+
+        //when
+        DeveloperDetailDto developerDetail = dMakerService.getDeveloperDetail("memberId");
+
+        //then
+        assertEquals(SENIOR, developerDetail.getDeveloperLevel());
+        assertEquals(FRONT_END, developerDetail.getDeveloperSkillType());
+        assertEquals(12, developerDetail.getExperienceYears());
+    }
+
+    @Test
+    void createDeveloperTest_success() {
+        //given
+        given(developerRepository.findByMemberId(anyString()))
+                .willReturn(Optional.empty());
+        given(developerRepository.save(any()))
+                .willReturn(defaultDeveloper);
+        ArgumentCaptor<Developer> captor =
+                ArgumentCaptor.forClass(Developer.class);
+
+        //when
+        dMakerService.createDeveloper(getCreateRequest(SENIOR, FRONT_END, MIN_SENIOR_EXPERIENCE_YEARS));
+
+        //then
+        verify(developerRepository, times(1))
+                .save(captor.capture());
+        Developer savedDeveloper = captor.getValue();
+        assertEquals(SENIOR, savedDeveloper.getDeveloperLevel());
+        assertEquals(FRONT_END, savedDeveloper.getDeveloperSkillType());
+        assertEquals(12, savedDeveloper.getExperienceYears());
+    }
+
+    @Test
+    void createDeveloperTest_fail_with_unmatched_level() {
+        //given
+        //when
+        //then
+        DMakerException dMakerException = assertThrows(DMakerException.class,
+                () -> dMakerService.createDeveloper(
+                        getCreateRequest(JUNIOR, FRONT_END,
+                                MAX_JUNIOR_EXPERIENCE_YEARS + 1)
+                )
+        );
+        assertEquals(LEVEL_EXPERIENCE_YEARS_NOT_MATCHED,
+                dMakerException.getDMakerErrorCode()
+        );
+
+        dMakerException = assertThrows(DMakerException.class,
+                () -> dMakerService.createDeveloper(
+                        getCreateRequest(JUNGNIOR, FRONT_END,
+                                MIN_SENIOR_EXPERIENCE_YEARS + 1)
+                )
+        );
+        assertEquals(LEVEL_EXPERIENCE_YEARS_NOT_MATCHED,
+                dMakerException.getDMakerErrorCode()
+        );
+
+        dMakerException = assertThrows(DMakerException.class,
+                () -> dMakerService.createDeveloper(
+                        getCreateRequest(SENIOR, FRONT_END,
+                                MIN_SENIOR_EXPERIENCE_YEARS - 1)
+                )
+        );
+        assertEquals(LEVEL_EXPERIENCE_YEARS_NOT_MATCHED,
+                dMakerException.getDMakerErrorCode()
+        );
+
+    }
+
+    @Test
+    void createDeveloperTest_failed_with_duplicated() {
+        //given
+        given(developerRepository.findByMemberId(anyString()))
+                .willReturn(Optional.of(defaultDeveloper));
+
+        //when
+        //then
+        DMakerException dMakerException = assertThrows(DMakerException.class,
+                () -> dMakerService.createDeveloper(
+                        getCreateRequest(SENIOR, FRONT_END, MIN_SENIOR_EXPERIENCE_YEARS)
+                )
+        );
+
+        assertEquals(DUPLICATED_MEMBER_ID, dMakerException.getDMakerErrorCode());
+    }
+}
+
+~~~
+
++ captor 
+  + 캡처된 데이터를 가지고 올 수 있다.
+  + ArgumentCaptor를 사용하여 실제 저장되는 데이터를 캡처를 하여 확인
