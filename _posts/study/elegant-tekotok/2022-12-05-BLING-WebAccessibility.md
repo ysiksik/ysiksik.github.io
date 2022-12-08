@@ -21,7 +21,7 @@ comments: true
 
 ## 웹 접근성을 준수하는 방법 
 + 스크린 리더가 코드를 어떻게 인식하는지
-  + ![img.png](BLING-WebAccessibility.png) 
+  + ![img.png](../../../assets/img/elegant-tekotok/BLING-WebAccessibility.png) 
   + 브라우저는 코드를 전달 받고 화면에 렌더링하기도 하지만 동시에 스크린 리더가 읽을 수 있는 형식으로된 접근성 트리를 만든다.
   + 스크린 리더는 이 접근성 트리를 토대로 요소를 탐색하게 된다. 
 + Accessible Name
