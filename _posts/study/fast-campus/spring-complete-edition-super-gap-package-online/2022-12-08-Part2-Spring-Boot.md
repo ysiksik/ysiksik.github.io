@@ -317,7 +317,7 @@ comments: true
   + 스프링 부트 2.1 에서 deprecated 된 클래스, 메소드, 프로퍼티들이 삭제됬다.
   + [https://github.com/spring-projects/spring-boot/wiki/Spring-Boot-2.1-Release-Notes#deprecations-in-spring-boot-21](https://github.com/spring-projects/spring-boot/wiki/Spring-Boot-2.1-Release-Notes#deprecations-in-spring-boot-21)
 + Jakarta EE
-  + avax. group ID -> jakarta. 로 이동
+  + javax. group ID -> jakarta. 로 이동
   + com.sun.mail:javax.mail -> com.sun.mail:jakarta.mail
   + org.glassfish:javax.el -> org.glassfish:jakarta.el
 + Junit 5
@@ -354,7 +354,7 @@ comments: true
     + 그러지 않을 경우: "cannot add a configuration with name 'developmentOnly' as a configuration with that name already exists."
 + 주요 버전 업그레이드 (R2DBC 지원)
   + Spring Data Neumann -> R2DBC 지원
-  + R2DBC ConnectionFactory 자동 설정, health indicator, metrics, @DataR2dbcTest
+    + R2DBC ConnectionFactory 자동 설정, health indicator, metrics, @DataR2dbcTest
   + Spring HATEOAS 1.1
   + Spring Integration 5.3
   + Spring Kafka 2.5
@@ -402,3 +402,77 @@ comments: true
 + @ActiveProfiles 에 여러 개의 프로파일 설정하기
   + @ActiveProfiles({"p1","p2"})
   + 이제 이러면 안됨: @ActiveProfiles("p1,p2")
+
+### 버전별 변천사 훑어보기: 2.4
+
++ 참고 자료
+  + [https://github.com/spring-projects/spring-boot/wiki/Spring-Boot-2.4-Release-Notes](https://github.com/spring-projects/spring-boot/wiki/Spring-Boot-2.4-Release-Notes)
+  + [https://youtu.be/lgyO9C9zdrg](https://youtu.be/lgyO9C9zdrg)
+  + [https://spring.io/blog/2020/11/12/spring-boot-2-4-0-available-now](https://spring.io/blog/2020/11/12/spring-boot-2-4-0-available-now)
+  
+> + 버전 네이밍 변화
+> + Java 15, Startup Logging
+> + Jar Optimizations
+> + JUnit Vintage Engine
+> + 설정 파일 처리 기능 변화 (.properties, .yaml)
+> + Logback 설정 변경, Property Migrator
+> + @ConstructorBinding (in 2.2) 과 발전사항
+> + Origin chains
+> + Docker, Buildpack 지원 내용 업데이트
+
++ 버전 네이밍 변화
+  + as-is: 2.3.0.RELEASE
+  + to-be:2.4.0
++ Java 15, Startup Logging
+  + Java 15 공식 지원
+  + JVM 버전이 애플리케이션 시작할 때 로그에 추가됨
++ Jar Optimizations
+  + 비어있는 starter 의존성들이 jar 패키징할 때 자동으로 제외됨
+  + annotation processor 도 자동 제외됨
+    + spring-boot-autoconfigure-processor
+    + spring-boot-configuration-processor
+  + Layered jar 기본 동작, layertools 자동 포함
++ JUnit Vintage Engine
+  + junit-vintage-engine 이 spring-boor-starter-test 에서 빠짐
+  + JUnit 4 를 계속 사용하고 싶은 경우 직접 넣어줘야 함
++ 설정 파일 처리 기능 변화 (.properties, .yaml) 
+  + __properties 에서 yaml 처럼 document 구분하기__
+  + 프로퍼티 파일에서 yaml 처럼 document 구분하기 가능: #---
+  + 일관된 우선 순위: 나중에 읽힌 document, 아래쪽 document
+  + spring.config.import: 다른 프로퍼티 파일을 삽입 가능
+    + "optional:"
+    + application[.properties]
+  + Config Tree
+    + 버그! -> 2.4.1 [https://github.com/spring-projects/spring-boot/issues/24171](https://github.com/spring-projects/spring-boot/issues/24171)
++ Logback 설정 변경, Property Migrator
+  + [https://github.com/spring-projects/spring-boot/wiki/Spring-Boot-2.4-Release-Notes#logback-configuration-properties](https://github.com/spring-projects/spring-boot/wiki/Spring-Boot-2.4-Release-Notes#logback-configuration-properties)
+  + spring-boot-properties-migrator 도움을 받자
+    + 성능에 영향을 미치니까 다 고친 뒤엔 삭제하는 것 잊지 않기
++ @ConstructorBinding (in 2.2) 과 발전사항
+  + 2.2 에서 처음 지원한 기능
+    + @ConstructorBinding
+    + @DefaultValue
+  + 2.4 에서 발전된 기능
+    + @DurationUnit, @DataSizeUnit, @PeriodUnit
+    + @Name
++ Origin chains 
+  + 버전 네이밍 변화
+  + Java 15, Startup Logging
+  + JUnit Vintage Engine
+  + 설정 파일 처리 기능 변화 (.properties, .yaml)
+  + Logback 설정 변경, Property Migrator
+  + @ConstructorBinding (in 2.2) 과 발전사항
+  + Origin chains
+  + Docker, Buildpack 지원 내용 업데이트
++ Docker, Buildpack 지원 내용 업데이트
+  + Publishing Images: 생성된 image를 docker registry에 업로드
+  + Authentication
+    + buildpack support를 통해 private docker registry를 사용
+    + username/password 방식과 token 기반 인증 지원
+  + Paketo Buildpack Defaults: 최신 Paketo images를 기본으로 사용
+    + Paketo image registry: GCR -> Docker Hub
+  + Buildpack Support
+    + 모든 project module 의존성을 "application" layer에 포함
+    + multiple project module로 구성할 경우 모두 같은 layer에 담김
+    + Maven: spring-boot:build-image
+    + Gradle: bootBuildImage
