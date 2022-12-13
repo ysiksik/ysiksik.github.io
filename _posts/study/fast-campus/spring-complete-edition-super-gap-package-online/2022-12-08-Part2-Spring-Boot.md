@@ -476,3 +476,119 @@ comments: true
     + multiple project module로 구성할 경우 모두 같은 layer에 담김
     + Maven: spring-boot:build-image
     + Gradle: bootBuildImage
+
+### 버전별 변천사 훑어보기: 2.5
++ 참고 자료 
+  + [https://github.com/spring-projects/spring-boot/wiki/Spring-Boot-2.5-Release-Notes](https://github.com/spring-projects/spring-boot/wiki/Spring-Boot-2.5-Release-Notes)
+  + [https://spring.io/blog/2021/05/20/spring-boot-2-5-is-now-ga](https://spring.io/blog/2021/05/20/spring-boot-2-5-is-now-ga)
+
+> + Java 16, Gradle 7, Jetty 10, Kotlin 1.5, Groovy 3
+> + 디펜던시 업그레이드
+> + Deprecations from Spring Boot 2.3, 2.4, 2.5
+> + SQL Script DataSource Initialization
+> + 기본 에러 뷰의 메시지
+> + Logging Shutdown Hooks
+> + HTTP/2 over TCP (h2c)
+> + R2DBC DB 초기화
+> + Layered WARs, Docker Image Building Support
+> + GET requests to actuator/startup
+
++ Java 16, Gradle 7, Jetty 10, Kotlin 1.5, Groovy 3
+  + Java 16 정식 지원
+  + Gradle 7 지원
+    + 빌드, 테스트가 더 빨라졌다
+    + 자바 16, 최신 코틀린 지원
+    + [https://gradle.org/whats-new/gradle-7/](https://gradle.org/whats-new/gradle-7/)
+  + Jetty 10
+  + Kotlin 1.5
+  + Groovy 3 
++ 디펜던시 업그레이드
+  + Spring Data 2021.0
+    + CrudRepository, ReactiveCrudRepository: deleteAllById() 가 새로 생김
+  + Spring HATEOAS 1.3
+  + Spring Integration 5.5
+  + Spring Kafka 2.7
+  + Spring Retry 1.3
+  + Spring Security 5.5
+  + Spring Session 2021.0
+  + Jackson 2.12
+  + Mockito 3.7
+  + JUnit Jupiter 5.7
+  + Elasticsearch 7.12
++ Deprecations from Spring Boot 2.3, 2.4, 2.5
+  + 릴리즈 호환성 정책: deprecated 내용들은 최소 2개 minor release 동안 살아있음
+  + 2.3 에서 deprecated 된 것들은 삭제
+  + 2.4 deprecated 내용은 아직 유지, 2.6 에서 삭제 예정
+  + 2.5 에서 deprecated 되는 내용
+    + ActuatorMediaType, ApiVersion
+    + jOOQ *Provider, Settings
+    + EntityManagerFactoryDependsOnPostProcessor
++ SQL Script DataSource Initialization
+  + schema.sql, data.sql 지원 방식이 재설계됨
+  + 스프링 부트 프로퍼티: spring.datasource.* -> spring.sql.init.*
+  + R2DBC 설정 가능
+  + JDBC & R2DBC embedded datasources 지원
+  + sql 기반 db 초기화: 인메모리 임베디드 db를 쓸 때만 (기본값)
+    + 제어: spring.sql.init.mode
+  + data.sql 은 하이버네이트 초기화하기 전에 실행됨: Flyway, Liquibase 의 스크립트 방식 초기화 작업의 기본 동작과 맞추기 위함
++ 기본 에러 뷰의 메시지
+  + 기본 에러 뷰의 message 어트리뷰트가 기존 빈칸 처리에서 아예 사라짐
+  + json 파싱한다면 주의
+  + server.error.include-message
++ Logging Shutdown Hooks
+  + JVM 종료 시 로깅 리소스가 잘 반환되도록 shutdown hook 등록하는 동작이 기본 true가 됨
+    + logging.register-shutdown-hook
+    + 부트 프로퍼티 최초 등장: 1.3
++ HTTP/2 over TCP (h2c)
+  + 임베디드 웹 컨테이너들(Tomcat, Jetty, Reactor Netty, Undertow) HTTP/2 over TCP 지원
+  + 수동 설정 필요없음
+  + H2C 활성화 하려면
+    + server.http2.enabled=true (default: false)
+    + server.ssl.enabled=false (default: true)
+  + 사용하는 임베디드 서버에 따라 H2C가 추가 디펜던시를 불러올 수 있음
++ R2DBC DB 초기화
+  + R2DBC DB 를 스크립트 기반으로 초기화 가능
+  + shema.sql, data.sql 자동 적용
+  + spring.sql.init.* 로 제어
++ Layered WARs, Docker Image Building Support
+  + Layered WARs: Layered JARs 와 매우 유사, 도커 빌드에 효과적
+  + Docker Image Building Support
+    + 커스텀 빌드팩 사용 지원
+    + volume binding 지원
+    + war 지원
++ GET requests to actuator/startup
+  + actuator/startup 을 이제 GET 요청으로 조회 가능
+  + startup 이벤트 버퍼가 사라지지 않고 메모리에 남아있게 되는 것이 차이점
+
+## Boot의 기본기
+
+### Spring Boot Properties
++ 스프링 부트의 기본 기능 전체를 튜닝하는 부트 전용 설정 프로퍼티
++ classpath:application.properties, application.yml 로 제어 가능
++ [https://docs.spring.io/spring-boot/docs/current/reference/html/application-properties.html](https://docs.spring.io/spring-boot/docs/current/reference/html/application-properties.html)
++ 부트의 기능 거의 대부분을 제어 가능
++ 기본값이 세팅되어 있어서 심지어 아무 것도 쓰지 않아도 작동한다.
+
+### @SpringBootApplication
++ 스프링 부트 애플리케이션의 시작점
++ @SpringBootConfiguration: 스프링 부트용 @Configuration
++ @EnableAutoConfiguration: 사전에 정의한 라이브러리 빈을 등록
++ @ComponentScan: 각종 스프링 빈 애노테이션을 베이스 패키지에서부터 스캔하여 스프링 빈으로 스프링 IoC 컨테이너에 등록
+
+#### @SpringBootApplication 의 속성(attribute)들
++ exclude: 클래스로 AutoConfiguration을 제외시킨다.
++ excludeName: 이름(풀 패키지)으로 AutoConfiguration을 제외시킨다.
+  + 해당 클래스에 접근할 수 없을때 사용하면 유용하다.
++ scanBasePackages
++ scanBasePackageClasses
++ nameGenerator
++ proxyBeanMethods
++ ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part2-Spring-Boot.png)
+
+#### Spring Application 에 고급 설정 추가하기
++ SpringApplication 인스턴스를 만들어 run() 전에 각종 설정 가능
++ ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part2-Spring-Boot2.png)
+
+#### 프로젝트 코드 구조 만들기
++ 메인 애플리케이션 클래스는 루트 패키지에 놓는 것을 권장
++ [https://docs.spring.io/spring-boot/docs/current/reference/html/using.html#using.structuring-your-code](https://docs.spring.io/spring-boot/docs/current/reference/html/using.html#using.structuring-your-code)

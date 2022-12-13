@@ -17,8 +17,7 @@ tags: fastcampusAlgorithm
 
 # [Part3 Ch03 류호석배 코딩테스트 모의고사] 류호석배 1회 모의 코테
 
-# 류호석배 1회 모의 코테
-
+# [Part3 Ch03 류호석배 코딩테스트 모의고사] 류호석배 1회 모의 코테
 * toc
   {:toc}
 
