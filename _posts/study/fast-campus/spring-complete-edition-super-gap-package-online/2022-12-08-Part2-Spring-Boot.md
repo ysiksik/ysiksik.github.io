@@ -592,3 +592,111 @@ comments: true
 #### 프로젝트 코드 구조 만들기
 + 메인 애플리케이션 클래스는 루트 패키지에 놓는 것을 권장
 + [https://docs.spring.io/spring-boot/docs/current/reference/html/using.html#using.structuring-your-code](https://docs.spring.io/spring-boot/docs/current/reference/html/using.html#using.structuring-your-code)
+
+### @Component vs. @Configuration
+
+#### @Component
++ 이 클래스는 커스텀 빈이다.
+  1. @ComponentScan -> base package 에서부터 모든 @Component 검색
+  2. 인스턴스화: 필요한 의존성을 모두 주입
+  3. 스프링 컨테이너에 등록: 필요한 곳에 주입
+  
+#### 빈을 만드는 방법 2+1 가지
++ @Component
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part2-Spring-Boot3.png)
++ @Bean (in @Configuration)
+  + 프록시 빈 형식 
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part2-Spring-Boot4.png)
++ @Bean (in @Component): Lite Mode
+  + 프록시 빈 형식이 아니다 팩토리 메소드에 가깝다 
+  + 프록시 빈을 만들지 않아서 가볍다
+  + 프록시 빈이 가지고 있는 기능들을 사용할 수 없다.
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part2-Spring-Boot5.png)
++ [https://docs.spring.io/spring-framework/docs/current/reference/html/core.html#beans-java-basic-concepts](https://docs.spring.io/spring-framework/docs/current/reference/html/core.html#beans-java-basic-concepts)
++ ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part2-Spring-Boot6.png)
+
+#### @Component vs. @Bean
++ @Component
+  + Class-level annotation
+  + 등록하려는 빈의 클래스 소스가 편집 가능한 경우 사용
+  + auto-detection에 걸린다
++ @Bean
+  + method-level annotation
+  + 좀 더 읽기 쉽다
+  + 인스턴스화 하는 코드가 수동으로 작성된다
+  + 빈의 인스턴스 코드와 클래스 정의가 분리된 구조 
+  + 따라서 외부 라이브러리, 써드 파티 클래스도 빈으로 등록 가능하다
+
+#### @Component: Stereotype Annotations
++ 컴포넌트에 해당하는 스테레오 타입 애노테이션
+  + @Controller
+  + @Service
+  + @Repository
++ 컴포넌트는 빈이다.
+
+#### @Configuration
++ 이 클래스는 각종 빈 설정을 담고 있다.
+
+1. @SpringBootApplication이 컴포넌트 스캔을 통해 @Configuration을 찾아낸다.
+2. 안의 빈 설정(메소드)을 읽어서 스프링 컨테이너에 등록
+3. 필요한 곳에 주입
+4. 또는 각종 스프링 인터페이스의 구현에 함께 활용
+
++ ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part2-Spring-Boot7.png)
++ ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part2-Spring-Boot8.png)
+
+#### 결론
++ 애노테이션이 의도에 맞게 사용되었는지 잘 봐주자 
++ 빈 설정은 @Configuration, 클래스 빈 등록은 @Component
++ 정확한 목적을 모르고 쓰면 "잘 모르겠는데 어쨋든 돌아가요" 운영의 시한폭탄
+ 
+### Configuration Properties
+
+#### Externalized Configuration
++ 서로 다른 환경에서도 사용할 수 있다.
++ 애플리케이션을 새로 컴파일하지 않고 설정값을 바꿀 수 있다.
++ 종류
+  + Java properties file
+  + YAML
+  + environment variable
+  + command-line argument
+
+#### 외부 설정의 우선 순위
++ 외부 설정을 읽어들이는 순서: 아래 설정이 위에서 읽은 것을 덮어쓴다.
+
+1. 디폴트 프로퍼티
+2. @Configuration 클래스에 @PropertySource 로 정의된 것
+3. 설정 파일: application.properties
+4. RandomValuePropertySource
+5. OS 환경변수
+6. 자바 시스템 프로퍼티: System.getProperties()
+7. JNDI 속성: java:comp/env
+8. ServletContext - 초기 파라미터
+9. ServletConfig - 초기 파라미터
+10. SPRING_APPLICATION_JSON 안의 프로퍼티들
+11. Command-line arguments
+12. 테스트에 사용된 프로퍼티들
+13. @TestPropertySource
+14. Devtools 글로벌 세팅: $HOME/.config/spring-boot
+
+#### 설정 파일(Config data)의 우선 순위
+1. JAR 패키지 안의 application.properties, application.yaml
+2. JAR 패키지 안의, 프로파일이 지정된 파일: application-[profile].properties
+3. JAR 패키지 밖의 파일
+4. JAR 패키지 밖의 프로파일이 지정된 파일
+
+#### 설정 파일(Config data)의 위치
++ classpath
+  + classpath:/
+  + classpath:/config
++ 현재 티렉토리
+  + ./
+  + ./config
+  + ./config/child
+
+#### 설정 파일(Config data)을 읽는 방법
++ @value
+  + SpEL로 프로퍼티명을 표현
+  + 
++ Environment
++ @ConfigurationProperties

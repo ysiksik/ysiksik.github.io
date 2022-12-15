@@ -9,17 +9,13 @@ categories:
 - fastcampus-codingtest-java
 comments: true
 tags: fastcampusAlgorithm
-
-# related_posts:
-
-# -
 ---
 
 # [Part3 Ch03 류호석배 코딩테스트 모의고사] 류호석배 1회 모의 코테
 
 # [Part3 Ch03 류호석배 코딩테스트 모의고사] 류호석배 1회 모의 코테
 * toc
-  {:toc}
+{:toc}
 
 ## [백준 20164번 - 홀수 홀릭 호석](https://www.acmicpc.net/problem/20164)
 ---
