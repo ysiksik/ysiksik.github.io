@@ -689,7 +689,7 @@ comments: true
 + classpath
   + classpath:/
   + classpath:/config
-+ 현재 티렉토리
++ 현재 디렉토리
   + ./
   + ./config
   + ./config/child
@@ -697,6 +697,328 @@ comments: true
 #### 설정 파일(Config data)을 읽는 방법
 + @value
   + SpEL로 프로퍼티명을 표현
-  + 
+  + type-safe 하지 않다.
+  + 필드 주입 방식을 사용할 경우
+    + 인스턴스화 이후에 주입하므로, final 쓸 수 없다.
+    + 생성자 안에서 보이지 않는다(대안: @PostConstruct)
+  + Relaxed binding 지원 (kebab-case only)
+  + meta-data 없다(javadoc은 적용 가능) 
 + Environment
+  + 애플리케이션 컨텍스트에서 꺼내오는 방법
+  + Environment 빈을 가져오는 방법
+  + 눈에 잘 안 들어온다.
 + @ConfigurationProperties
+  + 자바 클래스로 매핑하므로 type-safe
+  + 각 프로퍼티에 대응하는 meta-data 작성 가능
+  + Relaxed binding 지원
+  + 작성하는 방법
+    + 기본
+      + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part2-Spring-Boot9.png)
+    + @Configuration 생략
+      + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part2-Spring-Boot10.png)
+      + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part2-Spring-Boot11.png)
+    + @Bean 메소드
+      + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part2-Spring-Boot12.png)
+    + @ConstructorBinding
+      + Immutable한 프로퍼티를 구현할 수 있는 방법 - 추천
+      + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part2-Spring-Boot13.png)
++ 결론 
+  + @ConstructorBinding 를 이용해서 
+  + 상수처럼 immutable하고 type-safe 하고 명확한 프로퍼티를 만들어 사용하자
+
+## 실무를 고급지게 만들어주는 기능들
+
+### Lombok
++ "Never write another getter or equals method again"
++ Boilerplate code 를 줄여주는 도구
++ 생산성 향상에 기여
++ [https://projectlombok.org/](https://projectlombok.org/)
+
+#### Lombok & Spring Boo
++ Spring initializr 지원
++ 의존성 추가, 버전 관리 등 빌드 도구 설정에 큰 신경을 쓰지 않아도 된다.
+
+#### Lombok 에서 제일 인기 있는 기능들
++ @Data
+  + @Getter + @Setter + @RequiredArgsConstructor + @ToString + @EqualsAndHashCode
+  + 편하다
+  + 조심해야 한다
++ @Value
+  + 불변 객체를 만들때 쓴다.
+  + • @Getter @FieldDefaults(makeFinal=true, level=AccessLevel.PRIVATE) @AllArgsConstructor @ToString @EqualsAndHashCode.
++ @RequiredArgsConstructor
+  + 스프링 생성자 주입에 잘 어울려서 애용된다.
+
+#### Lombok의 위기?
++ 각종 예상치 못한 동작
++ 과도한 애노테이션, 관례 기반 코드 스타일: 동작 예측이 어렵다는 지적
++ 명시적이고 테스트가 쉬운 코드로 회귀하려는 움직임
++ 사용자의 의도와 컴파일러의 눈을 피해가는 동작
++ @ToString 순환 참조 문제
++ Kotlin: data class 등장
++ Java 14: record 등장
+
+#### Java Records
++ record + static factory method
+
+#### 자잘한 팁과 정리
++ Java 16 과 호환성 문제가 있다 -> 버전 1.18.20 해결
+  + Spring Boot 2.4.4 이하는 버전 수동으로 입력해줄 것
+  + [https://github.com/projectlombok/lombok/issues/2681](https://github.com/projectlombok/lombok/issues/2681)
++ Intellij Lombok plugin -> "Enable annotation processor" 자동 적용이라 안 해도 된다
++ 자동으로 다 해준다 vs. 디테일을 나도 모르게 바꾼다
+
+### Spring Configuration Processor
++ 외부 설정의 문서화
+
+#### spring-boot-configuration-processor 
++ application.properties/.yml 파일에 넣는 커스텀 설정의 자동 완성, 도움말 등을 지원
++ [https://docs.spring.io/spring-boot/docs/current/reference/html/configuration-metadata.html](https://docs.spring.io/spring-boot/docs/current/reference/html/configuration-metadata.html)
++ ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part2-Spring-Boot14.png)
+ 
+### Spring Cache Abstraction
++ 애플리케이션에 "투명하게(transparently)" 캐시를 넣어주는 기능
++ 메소드, 클래스에 적용 가능
++ 캐시 인프라는 스프링 부트 자동 설정으로 세팅되고, 프로퍼티로 관리 가능
+
+#### Transparently?
+캐시가 시스템, 애플리케이션에 투명하게 자리 잡는다
++ 데이터를 통신하는 시스템은 쌍방이 캐시의 존재를 모른다는 의미
++ "캐시가 있건 없건, 시스템의 기대 동작은 동일해야 한다."
++ 캐시의 목표: 성능
++ 캐시의 개념과 목적에 부합하는 성질이자, 조건
+
+#### 캐시를 왜 쓸까?
+반복 작업이라면 고려해 봐야한다.
++ 잘 바뀌지 않는 정보를 외부 저장소에 반복적으로 읽어온다면
++ 기대값이 어차피 같다면
++ 캐싱해서 성능 향상, I/O 감소
+
+#### Spring Boot Starter Cache - 너무 쉬운 방법
++ ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part2-Spring-Boot15.png)
+
+#### 캐싱에서 생각해야 하는 것들
++ 무엇을 캐시할까?
++ 얼마나 오렛동안 캐시할까?
++ 언제 캐시를 갱신할까?
+
+#### 주요 기능들
++ @EnableCaching: 캐시 활성화
++ @Cacheable: 캐시 등록
++ @CacheEvict: 캐시 삭제 
++ @CachePut: 캐시 갱신
+
+#### Redis - 설정
++ ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part2-Spring-Boot16.png)
++ 프로퍼티와 자바 코드를 이용한 설정
++ ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part2-Spring-Boot17.png)
+
+#### Reference
++ [https://docs.spring.io/spring-boot/docs/current/reference/html/features.html#features.caching](https://docs.spring.io/spring-boot/docs/current/reference/html/features.html#features.caching)
++ [https://spring.io/guides/gs/caching/](https://spring.io/guides/gs/caching/)
+
+### Vault Configuration
+
+#### 암호를 관리하는 법
++ DB 접근 암호를 어디에 관리할까?
+  + DB 접속 코드에 직접 입력한다.
+  + properties에 입력한다.
+  + properties에 암호화하여 입력한다.
+  + 별도 DB에 저장한다.
+  + 배포 서버에 저장한다.
+
+#### Hashicorp Vault
++ 민감 정보 관리에 사용하는 오픈소스 도구
++ [https://www.vaultproject.io/](https://www.vaultproject.io/)
++ 민감 정보의 저장, 관리
++ 민감 정보에 접근하는 인증/권한 관리
++ 데이터 암호화
++ 오픈소스: [https://github.com/hashicorp/vault](https://github.com/hashicorp/vault)
++ 장점
+  + 프로젝트와 민감 정보가 완전히 분리
+  + 보안성 강화
+  + 민감 정보에 접근하고 고객과 공유할 수 있는 다양한 방법을 사용할 수 있다
+  + 민감 정보에 접근할 수 있는 권한 관리 기능
++ 단점
+  + 설계에 따라 Vault 서버가 죽으면 인증이 안되어 서비스가 중단되는 문제 발생 (SPoF)
+  + 초기 러닝 커브
+  + Vault 서버를 별도 운영해야 한다
++ Spring Vault Configuration
+  + 스프링 부트 Vault 사용 지원
+  + Spring Vault: Vault 연동을 위한 기본 기능 지원
+    + [https://spring.io/projects/spring-vault](https://spring.io/projects/spring-vault)
+    + spring-vault-core
+  + Spring Cloud Vault: Vault가 외부 환경(Cloud)에 있는 경우를 위한 추가적인 지원
+    + Vault 각종 설정을 properties 기반으로 조작 가능
+    + [https://spring.io/projects/spring-cloud-vault](https://spring.io/projects/spring-cloud-vault)
+    + spring-cloud-start-vault-config
+    + 이거 사용하면 된다
+  + 설정과 사용: 이걸로 끝
+    + ![img.png](Part2-Spring-Boot18.png)
+
+#### 결론
+도입을 검토해 보세요
++ 프로젝트를 오픈소스로 공개하고자 하는 경우
++ 금융, 상거래 관련 서비스를 하면서 민감 정보를 다룰 때 (고객 개인정보 등)
++ 기타 서비스 도메인이 법에 민감한 분야라고 판단될 때
++ 제품 코드와 민감 정보를 분리하고자 할 때
+
+#### Reference
++ [https://learn.hashicorp.com/collections/vault/getting-started](https://learn.hashicorp.com/collections/vault/getting-started)
++ [https://docs.spring.io/spring-cloud-vault/docs/current/reference/html/](https://docs.spring.io/spring-cloud-vault/docs/current/reference/html/)
++ [https://spring.io/guides/gs/accessing-vault/](https://spring.io/guides/gs/accessing-vault/)
++ [https://spring.io/guides/gs/vault-config/](https://spring.io/guides/gs/vault-config/)
++ [https://spring.io/projects/spring-cloud-vault#overview](https://spring.io/projects/spring-cloud-vault#overview)
+  
+## 아는 사람만 아는 Boot 기능
+
+### Spring Native [Experimental]
+Native?
++ GraalVM
++ AOT
++ High performance - 고성능
++ Reduced memory consumption - 메모리 소비 감소
+
+
+#### GraalVM
+"Run Programs Faster Anywhere"
++ Oracle Labs + 여러 협력사, 대학 연국실 협력 개발
++ 2012년 처음 세상에 공개, 2019.5.9. 첫GA
++ 기존 C++로 만든 Hotspot JVM의 개발 한계를 극복하기 위한 Meta-circular JVM
++ 성능, 클라우드 환경, 다양성을 고려
++ [https://www.graalvm.org/](https://www.graalvm.org/)
++ ![img.png](Part2-Spring-Boot19.png)
+
+#### AOT: ahead-of-time compile
+"미리 기계어로 번역한다"
++ vs. JIT(just-in-time) - 기계어 번역 시점이 언제인가?
+  + JIT: 중간 언어(바이트코드) -> 기계어 (runtime)
+  + AOT: 중간 언어(바이트코드) -> 기계어 (compile time)
++ vs. Static Compiler - 무엇을 기계어로 번역하는가?
+  + Static Compiler: 소스 코드 -> 기계어 (compile time)
+  + AOT: 중간 언어 -> 기계어 (compile time)
++ 기계어가 번역이 끝나 있으므로 속도가 더 빠르다
++ 런타임에서 컴파일러를 필요로 하지 않아 더 가볍다
+
+#### Native Image
++ AOT compiler를 이용해 native image 빌드 
++ 정적 분석 과정을 포함
++ 네이티브 바이너리 결과물은 즉시 실행 가능한 기계 코드 전체를 포함 - JVM 불필요
++ 다른 네이티브 이미지와 링크 가능
++ 더 빠른 성능, 적은 메모리 소모
++ 클라우드 네이티브 애플리케이션 배포에 효과적일 것으로 기대 
+
+
+#### Spring Native
++ Spring Native로 할 수 있는 일
+  + lightweight docker container containing a native executable (by default) 
+    + 네이티브 실행 파일을 포함하는 경량 도커 컨테이너
+  + a native executable (using maven plugin)
+    + 네이티브 실행 파일
++ Spring Native: 준비물
+  + sdkman
+    + curl -s "https://get.sdkman.io" | bash
+    + source "~/.sdkman/bin/sdkman-init.sh"
+    + sdk help
+  + GraalVM
+    + sdk list java | grep GraalVM
+    + sdk install java 21.1.0.r${JAVA_VERSION}-grl (ex: java 21.1.0.r16-grl)
+  + docker
+    + docker run hello-world
+    + rootless mode 로 되어야 함 (위 명령어가 sudo 없이 되어야 함) (macOS 는 되어 있음)
++ Spring Native: 셋업 주의사항
+  + Spring Boot 2.5.2 부터 지원
+  + 이미지 빌드는 매우 오래 걸린다
+  + macOS 에서 docker로 실행할 경우, 최소 8G의 넉넉한 램을 할당해줄 것
+  + docker 커맨드가 rootless 하게 실행되도록 준비할 것 (macOS는 해당 없다)
+  + 안 되는 기능이 있을 수 있으나 사전에 정확히 파악이 어렵다
+  + Java 16 지원 안 한다 (21.1.0.r16-grl 을 써도)
+  + 한글 출력에 문제가 있다 
+
+#### Reference
++ [https://docs.spring.io/spring-native/docs/current/reference/htmlsingle/](https://docs.spring.io/spring-native/docs/current/reference/htmlsingle/)
+
+### Testcontainers
+
+#### 외부 장치와 연결된 기능의 통합 테스트
++ H2 이용: 편하지만 MySQL 과 동일한 환경은 아니다 (예상 못한 문제 발생)
++ Mocking: 테스트 가능해 지지만, 이것도 MySQL 로 인해 발생하는 문제를 감지 못한다.
++ 로컬에 프로젝트가 필요한 것과 동일한 셋팅으로 MySQL 설치
+  + 번거롭다, 리소스를 잡아먹는다
+  + 새로 셋업하는 개발 컴퓨터에서는 실패하는 테스트 (MySQL 존재를 몰랐기 때문에)
++ MySQL 을 docker에 올린다.
+  + 테스트를 실행할 때마다 docker를 올리고, 내리는 작업을 따로 해줘야 한다.
+
+#### Testcontainers
+도커를 활용할 수 있는 또 한가지 방법
++ DB 등의 외부 장치를 코드로 표현하고, 자동으로 docker 이미지로 만들고 등록/해제
++ 외부 장치와 연관이 있는 부분의 통합 테스트를 용이하게 
++ 자바 라이브러리, JUnit 호환
++ [https://www.testcontainers.org/](https://www.testcontainers.org/)
++ 정리
+  + redis 를 컨테이너로 만들고 소스코드로 표현이 가능해졌다 (단 docker는 설치)
+  + 테스트용 컨테이너가 자동으로 올라가고 내려가서 편리하다 - 그만큼 테스트 속도는 느려진다
+  + 컨테이너로 등록하여 동적으로 변하는 설정 - @DynamicPropertySource
+  + Logger 를 주입하면 컨테이너 내부에서 일어나는 일을 관찰 가능
+  + 잘 안되는 경우도 있다 (ex: VaultContainer 이용한 Vault 연동)
+  + 문서와 참고자료가 부족한 편
+    + 대부분의 공식 예제 코드가 JUnit4로 작성되었다
+    + 새롭게 소개된 메소드의 사용법 등 자료가 부족하다
+    + deprecated 된 기능의 이유와 대안이 문서화 되어있지 않다
+
+#### Reference
++ [https://www.testcontainers.org/](https://www.testcontainers.org/)
++ [https://hub.docker.com/search](https://hub.docker.com/search)
++ [https://docs.spring.io/spring-boot/docs/current/reference/html/howto.html#howto.testing.testcontainers](https://docs.spring.io/spring-boot/docs/current/reference/html/howto.html#howto.testing.testcontainers)
+
+### Config Server
+
+#### 설정값을 관리하는 방법
++ 소스 코드 안에 삽입
+  + 설정값이 소스 코드에 노출된다.
+  + 설정을 바꾸고 싶으면 빌드/배포 해야한다.
++ 외부 설정 파일 (*.properties)
+  + 좀 나은 방법, 설정값을 덮어쓸 수 있는 방법이 존재 (ex: command line argument)
+  + 패키징 되어 있기 때문에, 변경점을 확정하면 결국 빌드 / 배포
++ DB에 관리
+  + 설정을 바꾸고 싶으면 DB값을 update
+  + 설정값이 몇 개 없는데 테이블 설계하기 애매하다.
+
+#### Spring Cloud Config
++ 설정을 바꾸고 싶으면 파일 내용만 바꾸면 끝
++ git repository 지원
++ 분산 환경에서 다양한 스프링 부트 애플리케이션이 접근하기 용이
++ Spring Cloud Config: 사용
+  + application.properties 에 설정 파일을 저장하는 git repository 등록
++ properties endpoint
+  + /{application}/{profile}[/{label}]
+  + /{application}-{profile}.yml
+  + /{label}/{application}-{profile}.yml
+  + /{application}-{profile}.properties
+  + /{label}/{application}-{profile}.properties
++ endpoint 설명
+  + application: 스프링 부트 앱 이름 (spring.config.name) (default:application)
+  + profile: 스프링 부트 프로파일 (ex: alpha, beta, real, test, ...)
+  + label: git 브랜치명 (default: master)
+
+#### Reference
++ [https://cloud.spring.io/spring-cloud-config/reference/html/](https://cloud.spring.io/spring-cloud-config/reference/html/)
+
+### Config Client
+
+#### Spring Config Client
+Spring Config Server 로부터 설정값을 일거오려면
++ 간단하다.
++ spring-cloud-start-config
+  + 테스트 중인 경우, spring-cloud-config-server 는 의존성에서 제거할 것 
++ configserver
++ 알맞은 application name (프로퍼티 파일명), label (git branch) 설정
++ 좀 더 나아가면
+  + /refresh 때문에 actuator와 뗄 수 없는 관계 ?
+    + ContextRefresher
+  + 설정이 바뀔 때마다 모든 서비스들의 /refresh 를 호출하는 것은 불편
+    + Spring Cloud Bus
+
+#### Reference
++ [https://cloud.spring.io/spring-cloud-config/reference/html/](https://cloud.spring.io/spring-cloud-config/reference/html/)
++ [https://spring.io/guides/gs/centralized-configuration/](https://spring.io/guides/gs/centralized-configuration/)
