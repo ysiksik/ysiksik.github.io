@@ -854,7 +854,7 @@ comments: true
     + spring-cloud-start-vault-config
     + 이거 사용하면 된다
   + 설정과 사용: 이걸로 끝
-    + ![img.png](Part2-Spring-Boot18.png)
+    + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part2-Spring-Boot18.png)
 
 #### 결론
 도입을 검토해 보세요
@@ -887,7 +887,7 @@ Native?
 + 기존 C++로 만든 Hotspot JVM의 개발 한계를 극복하기 위한 Meta-circular JVM
 + 성능, 클라우드 환경, 다양성을 고려
 + [https://www.graalvm.org/](https://www.graalvm.org/)
-+ ![img.png](Part2-Spring-Boot19.png)
++ ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part2-Spring-Boot19.png)
 
 #### AOT: ahead-of-time compile
 "미리 기계어로 번역한다"
