@@ -106,3 +106,162 @@ public class BaseController implements ErrorController {
 + [https://en.wikipedia.org/wiki/Functional_programming](https://en.wikipedia.org/wiki/Functional_programming)
 + [https://blog.cleancoder.com/uncle-bob/2012/12/22/FPBE1-Whats-it-all-about.html](https://blog.cleancoder.com/uncle-bob/2012/12/22/FPBE1-Whats-it-all-about.html)
 + [https://docs.spring.io/spring-framework/docs/current/reference/html/web.html#webmvc-fn](https://docs.spring.io/spring-framework/docs/current/reference/html/web.html#webmvc-fn)
+
+
+### 요청, 응답 설계
+
+#### Handler Methods
++ 핸들러 메소드란
+  + Spring Web 에서 사용자의 요청(request)을 받아 응답(response)을 리턴하는 메소드
++ 매핑 정보
+  + @RequestMapping
+    + name: 뷰 템플릿에서 식별할 때 쓰는 이름
+    + value, path: URI
+    + method: HTTP method(ex: GET, POST, ...)
+    + params: 파라미터 검사
+    + headers: 헤더 검사
+    + consumes: 헤더의 Content-Type 검사
+    + produces: 헤더의 Accept 검사
+    + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part3-Spring-Web-MVC.png)
+  + @RequestMapping shortcuts
+    + @GetMapping
+    + @PostMapping
+    + @PutMapping
+    + @DeleteMapping
+    + @PatchMapping
++ 요청
+  + 핸들러 메소드가 받을 수 있는 요청들
+    + 메소드 파라미터로 적어 넣을 수 있는 타입들
+    + ServletRequest, ServletResponse, HttpSession
+    + WebRequest, NativeWebRequest
+    + @RequestParam, @PathVariable
+    + @RequestBody, HttpEntity<B>
+    + @ModelAttribute, @SessionAttribute, Model, ModelMap
+    + @RequestHeader, @CookieValue
+    + Principal, Locale, TimeZone, InputStream, OutputStream, Reader, Writer, ....
+    + 많이 있다.
++ 응답
+  + 핸들러 메소드가 내보낼 수 있는 응답들
+    + 메소드가 리턴할 수 있는 타입들
+    + ModelAndView
+    + String, View
+    + @ModelAttribute, Map, Model
+    + @ResponseBody
+    + HttpEntity<B>, ResponseEntity<B>
+    + HttpHeaders
+    + void
+    + 등등
+
+#### Reference
++ [https://docs.spring.io/spring-framework/docs/current/reference/html/web.html#mvc-ann-methods](https://docs.spring.io/spring-framework/docs/current/reference/html/web.html#mvc-ann-methods)
+
+### @ControllerAdvice
+
+#### 스프링 부트 기본 에러 응답의 응용
+__BasicErrorController__
++ 스프링 부트의 기본 응답이 마음에 든다면
++ BasicErrorController 를 상속 받아서 
+  + 특정 메소드만 오버라이드 하거나
+  + 특정 핸들러 메소드를 추가하는 식으로 응용
++ BasicErrorController 의 핸들러 메소드
+  + BasicErrorController.errorHtml() -> 뷰 응답
+  + BasicErrorController.error() -> json body 응답
+
+#### 커스텀 에러 페이지: 기본
++ 간단히 static html 이나 template 파일을 추가해서 커스텀 페이지를 등록하는 법
++ 단일 기본 페이지
+  + /resources/static/error.html
+  + /resources/public/error.html
+  + /resources/template/error.[템플릿 확장자]
++ html status 별 기본 페이지
+  + /resources/[static|public|template]/error/{http status 번호}.[html|템플릿확장자]
+  + /resources/[static|public|template]/error/4xx.[html|템플릿확장자]
+  + /resources/[static|public|template]/error/5xx.[html|템플릿확장자]
+
+#### @ExceptionHandler
++ 비즈니스 로직이 던진 예외에 반응하는 핸들러 메소드
++ 위치: 특정 컨트롤러 클래스 내부 or @ControllerAdvice 컴포넌트 내부
++ 특정 예외에 반응
++ 예외 처리 범위
+  + 컨트롤러 안에 작성했을 경우: 해당 컨트롤러만
+  + @ControllerAdvice 에 작성했을 경우: 프로젝트 전체
++ 핸들러 메소드에 속하기 때문에 입출력 자료형도 핸들러 메소드와 유사하지만, 예외를 입력 인자로 다룰 수 있다는 점이 차이점
++ [https://docs.spring.io/spring-framework/docs/current/reference/html/web.html#mvc-ann-exceptionhandler-args](https://docs.spring.io/spring-framework/docs/current/reference/html/web.html#mvc-ann-exceptionhandler-args)
++ [https://docs.spring.io/spring-framework/docs/current/reference/html/web.html#mvc-ann-exceptionhandler-return-values](https://docs.spring.io/spring-framework/docs/current/reference/html/web.html#mvc-ann-exceptionhandler-return-values)
+
+#### @ControllerAdvice
++ @ExceptionHandler 를 모아서 글로벌하게 적용할 때 쓰는 애노테이션
++ 종류
+  + @ControllerAdvice
+  + @RestControllerAdvice
++ 속성
+  + value == basePackages
+  + basePackages: 적용 범위를 문자열을 이용해 특정 패키지로 지정
+  + basePackagesClasses: 적용 범위를 대표 클래스 한개를 이용해 특정 패키지로 지정
+    + basePackages 를 type-safe 하게 사용하기 위해 제공하는 옵션
+  + assignableTypes: 적용 범위를 특정 클래스에 할당할 수 있는 컨트롤러로 지정
+  + annotations: 적용 범위를 특정 애노테이션을 사용한 컨트롤러로 지정
++ ResponseEntityExceptionHandler
+  + Spring MVC 에서 내부적으로 발생하는 예외들을 처리하는 클래스
+  + API 예외 처리를 담당하는 @ControllerAdvice 클래스에서 상속 받아 사용
+  + 커스트마이징을 원하는 특정 메소드 오버라이드 
+
+#### Reference
++ [https://docs.spring.io/spring-framework/docs/current/reference/html/web.html#mvc-exceptionhandlers](https://docs.spring.io/spring-framework/docs/current/reference/html/web.html#mvc-exceptionhandlers)
++ [https://docs.spring.io/spring-framework/docs/current/reference/html/web.html#mvc-ann-controller-advice](https://docs.spring.io/spring-framework/docs/current/reference/html/web.html#mvc-ann-controller-advice)
+
+### 컨트롤러 테스트
++ @TestConstructor(autowireMode = TestConstructor.AutowireMode.ALL)
+  + 어노테션을 붙이면 생성자의 모든 의존성 주입
+
+#### 스프링 부트 테스트
++ @SpringBootTest 기본 구성
+  + 일딴 스프링 컨테이너와 스프링 부트 환경을 포함하는 테스트는 이것으로 다 작성가능
+  + 통합 테스트를 할 때 적절한 선택
+  + 애플리케이션 컨텍스트를 로드하는데 시간이 걸리므로 테스트가 다소 무거운 편
+  + @SpringBootTest
+    + 포함한 애노테이션: @BootstrapWith + @ExtendWith
+      + 흔한 실수: JUnit 5 쓸 때 @ExtendWith(SpringExtension.class) 쓰지 않기
+  + @Test
+    + JUnit 5 애노테이션
+    + 단위 테스트 메소드를 지정
++ @SpringBootTest
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part3-Spring-Web-MVC2.png)
+  + value, properties: 프로퍼티 설정
+  + args: 애플리케이션 실행 시 커맨드라인으로 입력하는 인자(옵션) 설정
+  + classes: ApplicationContext 로딩을 위한 설정 클래스를 직접 지정
+  + webEnvironment: ApplicationContext 의 웹 환경 설정
+    + WebEnvironment.MOCK: mock servlet, embedded server 동작 x
+      + @AutoConfigureMockMvc, @AutoConfigureWebTestClient 와 함께 써서 mock test 가능
+    + WebEnvironment.RANDOM_PORT: 랜덤 포트, embedded server 동작
+    + WebEnvironment.DEFINED_PORT: 포트 지정(server.port), embedded server 동작
+    + WebEnvironment.NONE: 웹 환경 구성 안 함, embedded server 동작 x
+
+#### 스프링 부트 테스트: Slice Test
+__Auto-configured Test (Slice Test)__
++ 스프링 애플리케이션에서 내가 필요한 일부분(slice)의 자동 설정만 불러오는 방법
++ @DataCassandraTest
++ @DataJdbcTest
++ @DataJpaTest
++ @DataLdapTest
++ @DataMongoTest
++ @DataNeo4jTest
++ @DataR2dbcTest
++ @DataRedisTest
++ @JdbcTest
++ @JooqTest
++ @JsonTest
++ @RestClientTest
++ @WebFluxTest
++ @WebMvcTest
++ @WebServiceClientTes
+
+#### 스프링 부트 테스트: @WebMvcTest
+Spring MVC 컨트롤러 레이어를 슬라이스 테스트할 때 사용
++ MockMvc 빈을 자동 설정하고 테스트에 사용
++ 로드할 컨트롤러 클래스를 지정 가능 (기본 동작: 전체 컨트롤러 로드)
+
+#### Reference
++ [https://docs.spring.io/spring-boot/docs/current/reference/html/features.html#features.testing.spring-boot-applications](https://docs.spring.io/spring-boot/docs/current/reference/html/features.html#features.testing.spring-boot-applications)
++ [https://docs.spring.io/spring-boot/docs/current/reference/html/test-auto-configuration.html#test-auto-configuration](https://docs.spring.io/spring-boot/docs/current/reference/html/test-auto-configuration.html#test-auto-configuration)
++ [https://github.com/json-path/JsonPath](https://github.com/json-path/JsonPath)
