@@ -265,3 +265,32 @@ Spring MVC 컨트롤러 레이어를 슬라이스 테스트할 때 사용
 + [https://docs.spring.io/spring-boot/docs/current/reference/html/features.html#features.testing.spring-boot-applications](https://docs.spring.io/spring-boot/docs/current/reference/html/features.html#features.testing.spring-boot-applications)
 + [https://docs.spring.io/spring-boot/docs/current/reference/html/test-auto-configuration.html#test-auto-configuration](https://docs.spring.io/spring-boot/docs/current/reference/html/test-auto-configuration.html#test-auto-configuration)
 + [https://github.com/json-path/JsonPath](https://github.com/json-path/JsonPath)
+
+### TDD 방식으로 복습하기
+
+#### TDD
+Test Driven Development (TDD)
++ 테스트 주고 개발 기법
++ 프로그램의 설계와 구현, 사고의 흐름을 테스트 중심으로 생각하는 개발 방법
++ 개발 순서의 변화
+  + as-is: 구현한다 -> 테스트한다
+  + to-be: 테스트를 만든다 -> 구현한다
++ 주요 키워드: 익스트림 프로그래밍 (XP), 애자일, 폭포수 모델, Test-First Programming
+
+#### RED - GREEN- REFACTOR
+TDD 개발 사이클
+1. RED: (실패하는) 테스트를 짠다. (요구 사항의 명세)
+2. GREEN: 테스트를 성공시킨다.(구현)
+3. REFACTOR: 구현 코드를 고도화(리팩토링)한다.
+
+#### Given - When - Then
+테스트의 구조를 표현하는 방법(a.k.a. 3A, Arrange - Act - Assert)
++ Given (Arrange): 상태(state)의 정의 - 테스트를 수행할 때 전제 조건
++ When (Act): 동작 - 테스트 실행
++ Then (Assert): 검증 - 동작의 결과(actual) vs 예상값(expected)
+
+#### Reference
++ [https://en.wikipedia.org/wiki/Test-driven_development](https://en.wikipedia.org/wiki/Test-driven_development)
++ [https://ko.wikipedia.org/wiki/%ED%85%8C%EC%8A%A4%ED%8A%B8_%EC%A3%BC%EB%8F%84_%EA%B0%9C%EB%B0%9C](https://ko.wikipedia.org/wiki/%ED%85%8C%EC%8A%A4%ED%8A%B8_%EC%A3%BC%EB%8F%84_%EA%B0%9C%EB%B0%9C)
++ [https://martinfowler.com/bliki/TestDrivenDevelopment.html](https://martinfowler.com/bliki/TestDrivenDevelopment.html)
++ [https://martinfowler.com/bliki/GivenWhenThen.html](https://martinfowler.com/bliki/GivenWhenThen.html)
