@@ -348,9 +348,9 @@ build.gradle 에 spring-boot-starter-validation 의존성 추가
   + debug
   + trace
   + logging.level.원하는.패키지.이름
-  + ![img.png](Part3-Spring-Web-MVC3.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part3-Spring-Web-MVC3.png)
 + banner
-  + ![img.png](Part3-Spring-Web-MVC4.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part3-Spring-Web-MVC4.png)
 + config
   + spring.config.activate.on-profile
   + spring.profiles 가 deprecated 되었으니 주의
@@ -360,8 +360,8 @@ build.gradle 에 spring-boot-starter-validation 의존성 추가
   + spring.main.banner-mode
   + spring.main.lazy-initialization
 + json
-  + ![img.png](Part3-Spring-Web-MVC5.png)
-  + ![img.png](Part3-Spring-Web-MVC6.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part3-Spring-Web-MVC5.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part3-Spring-Web-MVC6.png)
 + web
   + spring.hateoas.use-hal-as-default-json-media-type
   + spring.mvc.converters.preferred-json-mapper
@@ -371,7 +371,7 @@ build.gradle 에 spring-boot-starter-validation 의존성 추가
   + spring.mvc.view.prefix
   + spring.mvc.view.suffix
 + web (servlet.multipart)
-  + ![img.png](Part3-Spring-Web-MVC7.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part3-Spring-Web-MVC7.png)
 + server
   + server.error.whitelabel.enabled
   + server.port
