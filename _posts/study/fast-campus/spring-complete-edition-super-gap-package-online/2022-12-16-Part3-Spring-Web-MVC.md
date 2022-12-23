@@ -384,3 +384,16 @@ build.gradle 에 spring-boot-starter-validation 의존성 추가
 
 #### Reference
 +[https://docs.spring.io/spring-boot/docs/current/reference/html/application-properties.html](https://docs.spring.io/spring-boot/docs/current/reference/html/application-properties.html)
+
+### 비즈니스 로직의 테스트
+비즈니스 로직을 테스트하는 방법
++ unit test, solitary test -> 필요로 하는 것들만 사용하거나 mocking, slice test
+  + 컨트롤러 입출력의 확인
+  + 에러의 검증
+  + 비즈니스 로직의 동작
++ integration test, sociable test -> @SpringBootTest
+  + 인증 + api 호출
+  + api 호출 -> 비즈니스 -> 데이터 접근 -> 응답 까지
+
+#### Reference
++ [https://docs.spring.io/spring-boot/docs/current/reference/html/features.html#features.testing](https://docs.spring.io/spring-boot/docs/current/reference/html/features.html#features.testing)
