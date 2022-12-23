@@ -294,3 +294,93 @@ TDD 개발 사이클
 + [https://ko.wikipedia.org/wiki/%ED%85%8C%EC%8A%A4%ED%8A%B8_%EC%A3%BC%EB%8F%84_%EA%B0%9C%EB%B0%9C](https://ko.wikipedia.org/wiki/%ED%85%8C%EC%8A%A4%ED%8A%B8_%EC%A3%BC%EB%8F%84_%EA%B0%9C%EB%B0%9C)
 + [https://martinfowler.com/bliki/TestDrivenDevelopment.html](https://martinfowler.com/bliki/TestDrivenDevelopment.html)
 + [https://martinfowler.com/bliki/GivenWhenThen.html](https://martinfowler.com/bliki/GivenWhenThen.html)
+
+## 비즈니스 로직 구현
+
+### @Service 이해
+비즈니스 로직을 담당하는 컴포넌트
++ 도메인 모델(데이터)과 컨트롤러 사이에 위치
++ 클래스 네이빙을 반드시 '-Service'로 할 필요 없다
+  + 하지만 관례적으로 실무에서 즐겨 사용되는 네이밍
++ 구현방식
+  + 인터페이스 + 클래스: 정석
+    + 인터페이스를 요구사항에 따른 기능 문서(ex: javadoc)로 작성
+    + 같은 기능을 하는 다양한 구현체를 작성할 니즈가 예상될 때 적합
+  + 클래스
+    + 실무에서는 즐겨 사용되기도 하는 방식
+    + 인터페이스를 추가로 작성하는 수고를 덜게 된다
+    + 컨트롤러 레이어와 결합도는 증가한다
+
+#### Reference
++ [https://docs.spring.io/spring-framework/docs/current/reference/html/core.html#beans-scanning-name-generator](https://docs.spring.io/spring-framework/docs/current/reference/html/core.html#beans-scanning-name-generator)
+
+### Validation
++ 사용자 입력값에 있을지 모르는 오류를 처리하려면?
+  + 모든 입력단 앞에 방어 코드가 추가된다.
+  + 방어 코드는 복잡하고 반복적인 대표적인 boilerplate code(상용구 코드) 
++ 애노테이션 기반으로 데이터 검증을 돕는 JSR-303, JSR-380 표준이 도입
+  + 검즉 구현과 비즈니스 로직을 분리하고, 비즈니스 로직에 더 집중 가능
+  + 간결한 코드 표현, 더 나은 가독성
+
+#### Validation in Boot
+build.gradle 에 spring-boot-starter-validation 의존성 추가
++ Spring Boot 2.3 이전: spring-boot-starter-web 에 기본 포함
++ Spring Boot 2.3 이후: 직접 넣어줘야 한다
++ 사용 패턴
+  + @Validated + 메소드 파라미터 검증
+    + 메소드 파라미터에 validation annotation 을 직접 사용해서 검증하는 방법
+    + 클래스에 @Validated 필요
+    + 발생 예외: ConstraintViolationException, 직접 처리해 줘야 하는 예외
+    + ConfigurationProperties 클래스에도 적용 가능
+  + @Valid + Data Object
+    + 검증하려는 데이터 오브젝트에만 검증 로직을 적용할 때
+    + @Validated 필요하지 않다
+    + 발생 예외: MethodArgumentNotValidException
+      + ResponseEntityExceptionHandler 지원을 받을 수 있다
+  
+#### Reference
++ [https://docs.spring.io/spring-boot/docs/current/reference/html/features.html#features.validation](https://docs.spring.io/spring-boot/docs/current/reference/html/features.html#features.validation)
++ [https://spring.io/guides/gs/validating-form-input/](https://spring.io/guides/gs/validating-form-input/)
++ [https://beanvalidation.org/2.0/spec/#builtinconstraints](https://beanvalidation.org/2.0/spec/#builtinconstraints)
+
+### Spring Boot Properties
++ logging
+  + debug
+  + trace
+  + logging.level.원하는.패키지.이름
+  + ![img.png](Part3-Spring-Web-MVC3.png)
++ banner
+  + ![img.png](Part3-Spring-Web-MVC4.png)
++ config
+  + spring.config.activate.on-profile
+  + spring.profiles 가 deprecated 되었으니 주의
+  + spring.config.import
+  + spring.config.use-legacy-processing
++ main
+  + spring.main.banner-mode
+  + spring.main.lazy-initialization
++ json
+  + ![img.png](Part3-Spring-Web-MVC5.png)
+  + ![img.png](Part3-Spring-Web-MVC6.png)
++ web
+  + spring.hateoas.use-hal-as-default-json-media-type
+  + spring.mvc.converters.preferred-json-mapper
+  + spring.mvc.format.date
+  + spring.mvc.format.date-time
+  + spring.mvc.format.time
+  + spring.mvc.view.prefix
+  + spring.mvc.view.suffix
++ web (servlet.multipart)
+  + ![img.png](Part3-Spring-Web-MVC7.png)
++ server
+  + server.error.whitelabel.enabled
+  + server.port
+  + http encoding, session, ssl, tomcat ...
++ 그 밖에
+  + security
+  + actuator
+  + devtools
+
+
+#### Reference
++[https://docs.spring.io/spring-boot/docs/current/reference/html/application-properties.html](https://docs.spring.io/spring-boot/docs/current/reference/html/application-properties.html)
