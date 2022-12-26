@@ -397,3 +397,172 @@ build.gradle 에 spring-boot-starter-validation 의존성 추가
 
 #### Reference
 + [https://docs.spring.io/spring-boot/docs/current/reference/html/features.html#features.testing](https://docs.spring.io/spring-boot/docs/current/reference/html/features.html#features.testing)
+
+## 뷰, 뷰 템플릿
+
+### 타임리프
+
+#### Thymeleaf 만의 특징, 강점
+HTML5 웹 표준을 준수하는 템플릿
++ 전체적인 문법이 HTML5 마크업 표준을 최대한 해치지 않게끔 설계
++ Decoupled logic: 템플릿 문법을 아예 템플릿에서 분리 가능
+  + 순수한 마크업만 남음 -> 템플릿 엔진이 작동하지 않아도 렌더링되는 정적 목업 페이지
+  + 디자이너가 이해하기 쉬운 코드
+
+#### Thymeleaf: Cheet Sheet
++ 템플릿 문법 적용 방법
+  + 3가지
+  + "th": tag
+  + "data-th-" attribute
+  + decoupled logic
++ Expressions
+  + Variable Expressions: ${...}
+  + Selection Variable Expressions: *{...}
+  + Message Expressions: #{...}
+  + Link URL Expressions: @{...}
+  + Fragment Expressions: ~{...}
++ Literals
+  + Text literals: 'one text', 'Another one!',…
+  + Number literals: 0, 34, 3.0, 12.3,…
+  + Boolean literals: true, false
+  + Null literal: null
+  + Literal tokens: one, sometext, main,…
++ Text operations
+  + String concatenation: +
+  + Literal substitutions: |The name is ${name}|
++ Arithmetic operations
+  + Binary operators: +, -, *, /, %
+  + Minus sign (unary operator): -
++ Boolean operations
+  + Binary operators: and, or
+  + Boolean negation (unary operator): !, not
++ Comparisons and equality
+  + Comparators: >, <, >=, <= (gt, lt, ge, le)
+  + Equality operators: ==, != (eq, ne)
++ Conditional operators
+  + If-then: (if) ? (then)
+  + If-then-else: (if) ? (then) : (else)
+  + Default: (value) ?: (defaultvalue)
++ Special tokens
+  + No-Operation: _
+
+#### Reference
++ [https://www.thymeleaf.org/](https://www.thymeleaf.org/)
++ [https://springhow.com/spring-boot-template-engines-comparison/](https://springhow.com/spring-boot-template-engines-comparison/)
+
+### 프리마커
+
+#### FreeMarker
+Apache FreeMarker
++ 아파치 재단에서 만든 오픈소스 자바 템플릿 엔진
++ 2000년 릴리즈 발표
++ 2015년 아파치 인큐베이터 등록, 2018년 완전한 아파치 프로젝트가 됨
++ FreeMarker Template Language (FTL) 을 사용
+
+#### Apache FreeMarker 장점
+오랫동안 실무에서 보편적으로 널리 사용된 템플릿 엔진
++ 강력한 템플릿 문법을 지원: 복잡한 동작을 수행 가능
++ 경량: 외부 의존성을 갖지 않는다
++ 국제화 대응 가능
++ XML 처리 가능
+
+#### FreeMarker + Spring Boot
+스프링 부트에서 프리마커 사용하기
++ 스프링 부트 프리마커 의존성 추가
++ 템플릿 파일 작성
+  + .ftlh: html 베이스의 템플릿
+  + .ftlx: xml 베이스의 템플릿
+
+#### FreeMarker: 기능
++ Type
+  + Scalars: String, Number, Boolean, Date-like
+  + Containers: Hash, Sequence, Collection
+  + Subroutines: Methods, Functions, User-defined directives
+  + Miscellaneous: Node, Markup output
++ Structure
+  + text
+  + interpolation
+  + FTL tag
+  + comment
++ Template Syntax
+  + Directives: <#directivename parameters>
+    + <#list>
+    + <#if>
+    + <#assign>
+  + Expressions
+    + built-ins: ${string?builtin}
+      + upper_case, html, c, size, cap_first, join(), ...
+      + default value operator: ${value!"default"}
+  + Interpolations: ${expression}
+
+#### Reference
++ [https://freemarker.apache.org/](https://freemarker.apache.org/)
+
+### 머스타쉬
+
+#### Mustache
+logic-less templates.
++ 2009년 최초 릴리즈
++ 제어 흐름을 표현하는 문법이 없는 점이 특징
++ list 태그와 람다식을 이용해 조건문이나 반복문을 표현
++ 엄청나게 다양한 언어 지원: ActionScript, C++, Clojure, CoffeeScript, ColdFusion, Common Lisp, Crystal, D, Dart, Delphi, Elixir, Erlang, .....
++ 콧수염을 닮은 중괄호를 많이 사용해서 이름이 이렇게 붙음
++ 모바일과 웹 애플리케이션에서 주로 사용됨
+
+#### Mustache + Spring Boot
+스프링 부트에서 머스타쉬 사용하기
++ 머스타쉬 부트 프리마커 의존성 추가
++ 템플릿 파일 작성
+
+#### Mustache: 기능 
+변수의 표현
++ 단일 변수: Hello {{name}}
++ 오브젝트 멤버: Hello {{person.name}}
++ 리스트: {{#people}} {{name}} {{/people}}
+
+#### Reference
++ [http://mustache.github.io/](http://mustache.github.io/)
++ [https://github.com/Mustache/Mustache](https://github.com/Mustache/Mustache)
+
+### 그루비 템플릿
+
+#### Groovy Template
+그루비 언어로도 템플릿 뷰를 작성할 수 있다
++ 템플릿 언어가 마크업과 완전히 동떨어진 그루비로 작성됨
++ 파일 확장자: .tpl
++ 공식 문서와 스프링 블로그, 유명 사이트 튜토리얼 일부 외에는 참고할 만한 의견이나 글이 별로 없음
+
+#### Reference
++ [https://docs.groovy-lang.org/docs/next/html/documentation/template-engines.html#_the_markuptemplateengine](https://docs.groovy-lang.org/docs/next/html/documentation/template-engines.html#_the_markuptemplateengine)
+
+## 설정과 생산성을 향상시키는 주요 도구들
+
+### Rest Repositories
+Repository 로부터 REST API 를 자동으로 만들어주는 기술
++ Spring Data REST 를 사용
++ 페이징, 정렬, 리미트 사용 가능
++ QueryDSL Extension 을 함께 사용하면 큰 노력 없이 컬럼별 검색 기능까지 사용 가능
+
+#### Rest Repositories 와 실무
++ 편리해 보이는데, 실무에서 많이 사용하나요?
+  + 많이 사용하지는 않는다.
+  + 도메인을 직접 api 에 노출하는 것을 꺼린다.
+  + 복잡한 요구사항에 맞춰 api 설계를 하고 싶은 경우 부적합하다.
+  + 설정을 잘 하지 않으면 불필요한 API가 노출될 수도 있다.
+  + 실무에서 API는 필요에 따라 직접 만드는 편이다.
++ 이럴 땐 사용을 고려
+  + 내부에서 사용하는 애플리케이션을 만들 때
+  + 도메인이 복잡하지 않울 때
+  + 요구사항이 복잡하지 않고 심플한 CRUD로 구성되어 있을 때
+  + 빠르게 만들어야 할 때
+
+#### Reference
++ [https://docs.spring.io/spring-data/rest/docs/current/reference/html/#reference](https://docs.spring.io/spring-data/rest/docs/current/reference/html/#reference)
++ [https://spring.io/guides/gs/accessing-data-rest/](https://spring.io/guides/gs/accessing-data-rest/)
+
+### Rest Repositories HAL Explorer
+이제 API 테스트도 스프링 부트에서
++ 심플하고 편리한 UI 제공
+
+#### Reference
++ [https://docs.spring.io/spring-data/rest/docs/current/reference/html/#tools.hal-explorer](https://docs.spring.io/spring-data/rest/docs/current/reference/html/#tools.hal-explorer)
