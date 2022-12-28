@@ -383,7 +383,7 @@ build.gradle 에 spring-boot-starter-validation 의존성 추가
 
 
 #### Reference
-+[https://docs.spring.io/spring-boot/docs/current/reference/html/application-properties.html](https://docs.spring.io/spring-boot/docs/current/reference/html/application-properties.html)
++ [https://docs.spring.io/spring-boot/docs/current/reference/html/application-properties.html](https://docs.spring.io/spring-boot/docs/current/reference/html/application-properties.html)
 
 ### 비즈니스 로직의 테스트
 비즈니스 로직을 테스트하는 방법
@@ -513,12 +513,6 @@ logic-less templates.
 스프링 부트에서 머스타쉬 사용하기
 + 머스타쉬 부트 프리마커 의존성 추가
 + 템플릿 파일 작성
-
-#### Mustache: 기능 
-변수의 표현
-+ 단일 변수: Hello {{name}}
-+ 오브젝트 멤버: Hello {{person.name}}
-+ 리스트: {{#people}} {{name}} {{/people}}
 
 #### Reference
 + [http://mustache.github.io/](http://mustache.github.io/)
