@@ -566,3 +566,62 @@ Repository 로부터 REST API 를 자동으로 만들어주는 기술
 
 #### Reference
 + [https://docs.spring.io/spring-data/rest/docs/current/reference/html/#tools.hal-explorer](https://docs.spring.io/spring-data/rest/docs/current/reference/html/#tools.hal-explorer)
+
+### Devtools
+
+#### Spring Boot Devtools
+스프링 부트 개발의 절친
++ 스프링 부트 모듈들의 세부 설정을 개발에 적합한 형태로 자동으로 바꿔준다. (ex: 캐시 끄기)
++ Automatic restart - 자바 코드가 바뀌면 자동으로 애플리케이션을 재시작
++ Live reload - 정적 페이지가 바뀌면 자동으로 브라우저 웹페이지 refresh
+
+#### Devtools: Automatic Restart
++ Restart vs Cold start
+  + 자동 재시작은 생각보다 빠르다
+  + devtools classloader: base classloader + restart classloader
+    + restart (triggered devtools): restart classloader 만 갱신한다 (개발에서 자주 바뀌는 부분)
+    + cold start(부트 직접 재시작): 전체 classloader 갱신
+  + Restart triggering condition: classpath 안의 소스코드가 업데이트 되었을 때
+    + build project
+      + "build project automatically": 소스코드 변경할 때 마다 자동으로 빌드 시작 -> 수시로 restart
+    + maven: mvn compile
+    + gradle: gradle build
++ Restart vs Reload
+  + 소스코드 변경의 더 빠른 반영을 원한다면
+    + JRebel을 살펴보기
+    + 매우 빠름 (거의 즉시, 늦어도 3초 내외면 소스코드 변경이 애플리케이션에 반영됨)
+    + 생산성 향상
+    + 유료
+
+#### Devtools: Live Reload
++ Live Reload
+  + 웹페이지에 변경점이 발생하면 바로 refresh
+  + embedded Live Reload server
+  + browser extension 설치 필요: chrome, firefox, safari 지원
+  + 리소스에 변경이 일어나면 브라우저 리프레쉬를 트리거
+
+#### Reference
++ [https://docs.spring.io/spring-boot/docs/current/reference/html/using.html#using.devtools](https://docs.spring.io/spring-boot/docs/current/reference/html/using.html#using.devtools)
++ [https://www.jrebel.com/products/jrebel](https://www.jrebel.com/products/jrebel)
++ [http://livereload.com/extensions/](http://livereload.com/extensions/)
+
+### Actuator
+
+#### Spring Boot Actuator
+스프링 부트의 다양한 설정과 지표를 모니터링할 수 있는 도구
++ 내가 만든 빈이 잘 등록되었을까?
++ 내가 만든 빈이 다른 빈들과 어떤 연관 관계를 맺고 있을까?
++ 내가 설정한 환경변수, 프로퍼티가 잘 등록되었을까?
++ 내가 의도한 엔드포인트가 잘 노출되고 있을까?
++ 내가 의도한 로깅이 잘 일어나고 있을까?
++ 헬스 체크: 시스템이 정상 동작하고 있을까?
++ 캐시가 잘 동작하고 있을까?
+
+#### Actuator: Endpoints
++ 기본 엔드포인트
+  + auditevents, beans, caches, conditions, configprops, env, ....
++ 웹애플리케이션에서 추가로 활성화되는 엔드포인트
+  + heapdump, jolokia, logfile, prometheus
+
+#### Actuator
++ [https://docs.spring.io/spring-boot/docs/current/reference/html/actuator.html#actuator](https://docs.spring.io/spring-boot/docs/current/reference/html/actuator.html#actuator)
