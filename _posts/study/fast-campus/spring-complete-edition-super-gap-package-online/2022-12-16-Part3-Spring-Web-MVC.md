@@ -56,7 +56,6 @@ public class BaseController implements ErrorController {
 
 + __management.endpoints.web.exposure.include=*__ 같은 경우에는 실제 배포시 성능과 보안 때문에 정리 해주어야 한다.
 
-
 ### 함수 기반 설계
 
 #### 함수형 프로그래밍
@@ -172,11 +171,11 @@ __BasicErrorController__
 + 단일 기본 페이지
   + /resources/static/error.html
   + /resources/public/error.html
-  + /resources/template/error.[템플릿 확장자]
+  + /resources/template/error.템플릿 확장자
 + html status 별 기본 페이지
-  + /resources/[static|public|template]/error/{http status 번호}.[html|템플릿확장자]
-  + /resources/[static|public|template]/error/4xx.[html|템플릿확장자]
-  + /resources/[static|public|template]/error/5xx.[html|템플릿확장자]
+  + /resources/static,public,template/error/{http status 번호}.html,템플릿확장자
+  + /resources/static,public,template/error/4xx.html,템플릿확장자
+  + /resources/static,public,template/error/5xx.html,템플릿확장자
 
 #### @ExceptionHandler
 + 비즈니스 로직이 던진 예외에 반응하는 핸들러 메소드
@@ -291,7 +290,6 @@ TDD 개발 사이클
 
 #### Reference
 + [https://en.wikipedia.org/wiki/Test-driven_development](https://en.wikipedia.org/wiki/Test-driven_development)
-+ [https://ko.wikipedia.org/wiki/%ED%85%8C%EC%8A%A4%ED%8A%B8_%EC%A3%BC%EB%8F%84_%EA%B0%9C%EB%B0%9C](https://ko.wikipedia.org/wiki/%ED%85%8C%EC%8A%A4%ED%8A%B8_%EC%A3%BC%EB%8F%84_%EA%B0%9C%EB%B0%9C)
 + [https://martinfowler.com/bliki/TestDrivenDevelopment.html](https://martinfowler.com/bliki/TestDrivenDevelopment.html)
 + [https://martinfowler.com/bliki/GivenWhenThen.html](https://martinfowler.com/bliki/GivenWhenThen.html)
 
@@ -408,43 +406,6 @@ HTML5 웹 표준을 준수하는 템플릿
 + Decoupled logic: 템플릿 문법을 아예 템플릿에서 분리 가능
   + 순수한 마크업만 남음 -> 템플릿 엔진이 작동하지 않아도 렌더링되는 정적 목업 페이지
   + 디자이너가 이해하기 쉬운 코드
-
-#### Thymeleaf: Cheet Sheet
-+ 템플릿 문법 적용 방법
-  + 3가지
-  + "th": tag
-  + "data-th-" attribute
-  + decoupled logic
-+ Expressions
-  + Variable Expressions: ${...}
-  + Selection Variable Expressions: *{...}
-  + Message Expressions: #{...}
-  + Link URL Expressions: @{...}
-  + Fragment Expressions: ~{...}
-+ Literals
-  + Text literals: 'one text', 'Another one!',…
-  + Number literals: 0, 34, 3.0, 12.3,…
-  + Boolean literals: true, false
-  + Null literal: null
-  + Literal tokens: one, sometext, main,…
-+ Text operations
-  + String concatenation: +
-  + Literal substitutions: |The name is ${name}|
-+ Arithmetic operations
-  + Binary operators: +, -, *, /, %
-  + Minus sign (unary operator): -
-+ Boolean operations
-  + Binary operators: and, or
-  + Boolean negation (unary operator): !, not
-+ Comparisons and equality
-  + Comparators: >, <, >=, <= (gt, lt, ge, le)
-  + Equality operators: ==, != (eq, ne)
-+ Conditional operators
-  + If-then: (if) ? (then)
-  + If-then-else: (if) ? (then) : (else)
-  + Default: (value) ?: (defaultvalue)
-+ Special tokens
-  + No-Operation: _
 
 #### Reference
 + [https://www.thymeleaf.org/](https://www.thymeleaf.org/)

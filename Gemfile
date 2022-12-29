@@ -47,5 +47,7 @@ end
 gem 'wdm' if Gem.win_platform?
 gem "tzinfo-data" if Gem.win_platform?
 
-gem 'jekyll-spaceship'
+gem 'jekyll-spaceship', git: 'https://github.com/jeffreytse/jekyll-spaceship'
 gem "jekyll-mermaid"
+
+gem "webrick", "~> 1.7"

@@ -917,12 +917,7 @@ Native?
     + 네이티브 실행 파일
 + Spring Native: 준비물
   + sdkman
-    + curl -s "https://get.sdkman.io" | bash
-    + source "~/.sdkman/bin/sdkman-init.sh"
-    + sdk help
   + GraalVM
-    + sdk list java | grep GraalVM
-    + sdk install java 21.1.0.r${JAVA_VERSION}-grl (ex: java 21.1.0.r16-grl)
   + docker
     + docker run hello-world
     + rootless mode 로 되어야 함 (위 명령어가 sudo 없이 되어야 함) (macOS 는 되어 있음)
