@@ -186,3 +186,186 @@ JPA, 하이버네이트를 몰라도 되어야 한다
 + [https://hibernate.org/](https://hibernate.org/)
 + [https://en.wikipedia.org/wiki/Hibernate_(framework)](https://en.wikipedia.org/wiki/Hibernate_(framework))
 + [https://docs.spring.io/spring-data/jpa/docs/2.5.5/reference/html/#reference](https://docs.spring.io/spring-data/jpa/docs/2.5.5/reference/html/#reference)
+
+### in memory 테스트 DB - H2
+
+#### H2
++ "Java SQL database"
++ 스프링 부트가 지원하는, 가장 세팅하기 편한 인메모리 DB
++ 빠르다, 오픈소스, JDBC API
++ 다양한 모드 지원: embedded, server, in-memory
++ 브라우저 콘솔 지원 (h2-console)
++ 경량 jar: 약 2 MB
++ 순수 자바로 구현
++ Compatibility mode: IBM DB2, Derby, HSQLDB, MSSQL, MySQL, Oracle, PostgreSQL
+
+#### Reference
++ [https://www.h2database.com/](https://www.h2database.com/)
+
+## Spring Data JPA 와 테크닉
+
+### @Repository
+스프링 스테레오타입 애노테이션
++ persistence layer 를 구현하는 클래스에 사용
++ @Component 와 마찬가지로 해당 클래스를 빈으로 등록
++ DAO 패턴을 적용한 클래스에도 사용 가능
++ persistence layer 에서 발생하는 예외를 잡아서 DataAccessException 으로 처리해 준다
+  + PersistenceExceptionTranslationPostProcessor
++ Spring Data JPA 를 사용한다면, "직접 사용할 일은 없다"고 봐도 무방하다
+
+#### Spring Data JPA 와 주요 인터페이스들
+Spring Data JPA 인터페이스
++ 단계별로 필요한 기능까지만 사용 가능
++ Repository: 기본 repository 인터페이스, 어떤 메소드도 제공하지 않는다
++ CrudRepository: Repository + CRUD 기능 제공
++ PagingAndSortingRepository: CrudRepository + 페이징, 정렬 기능 제공
++ JpaRepository: PagingAndSortingRepository + Spring Data JPA repository 전체 기능
+
+#### Query method
+인터페이스에 작성한 메소드 이름이 곧 쿼리 표현이 된다.
++ ex: List<Event> findByEventStatusAndEventNameOrCapacity(String eventStatus, String eventName, Integer capacity);
++ 다이나믹 쿼리를 만들 수는 없다.
++ 사용 가능한 키워드
+  + distinct, and, or, is, not, between, lessThan, lessThanEqual, greaterThen, greaterThenEqual
+  + null, isNotNull, like, startingWith, endingWith, containing, orderBy, in, true, false, ignoreCase
+  + [https://docs.spring.io/spring-data/jpa/docs/2.5.5/reference/html/#jpa.query-methods.query-creation](https://docs.spring.io/spring-data/jpa/docs/2.5.5/reference/html/#jpa.query-methods.query-creation)
++ join 등 복잡한 표현은 불가
+
+#### 몇가지 애노테이션들
++ @Param: 쿼리 메소드 입력 파라미터에 사용하여 애노테이션 기반 파라미터 바인딩할 때 사용 
++ @Query: 직접 JPQL을 작성하고 싶을 때 사용
++ @NoRepositoryBean: 빈으로 등록하고 싶지 않은 인터페이스를 지정할 수 있다.
+  + 특정 쿼리 메소드를 기본 메소드로 지정하는 방식으로 운영 가능
+  + 특정 메소드를 선택적으로 사용하거나 api에 노출하고자 할 때도 사용하는 테크닉
+
+#### Reference
++ [https://docs.spring.io/spring-data/jpa/docs/2.5.5/reference/html/#reference](https://docs.spring.io/spring-data/jpa/docs/2.5.5/reference/html/#reference)
++ [https://spring.io/guides/gs/accessing-data-jpa/](https://spring.io/guides/gs/accessing-data-jpa/)
+
+### @Entity 디자인
+
+#### @Entity
+엔티티 클래스 애노테이션
++ 데이터베이스에 저장(persist)할 자바 객체를 정의
++ 다양한 애노테이션을 이용해 보다 자세한 테이블 스키마 정보를 표현
++ 애노테이션으로 표현한 스키마 정보와 실제 테이블 스키마가 완벽히 일치해야 할 필요는 없다.
++ 하나의 도메인(domain)으로 간주
+
+#### @Entity: JPA 애노테이션
+@Entity 클래스 안에서 사용되는 주요 JPA 애노테이션
++ @Table, @Index, @UniqueConstraint: 테이블 기본 정보와 인덱스, unique 키를 설정
++ @Id, @GeneratedValue: primary key 설정
++ @Column: 각 컬럼 설정
++ @Enumerated: enum 을 처리하는 방법을 설정
++ @Transient: 특정 필드를 DB 영속 대상에서 제외
++ @OneToOne, @OneToMany, @ManyToOne, @ManyToMany: 연관 관계 설정
++ @MappedSuperClass: 상속을 이용한 공통 필드 정의
++ @Embedded, @Embeddable: 클래스 멤버를 이용한 공통 필드 정의
++ @DateTimeFormat: 스프링에서 제공하는 애노테이션, 날짜 입력 포맷을 정의
+
+#### @Entity: JPA 엔티티의 lifecycle event 를 활용한 Auditing 테크닉
+JPA 엔티티에 생성일시, 수정일시 같이 일정하게 작성하는 메타데이터를 처리 가능
++ @PrePersist
++ @PostPersist
++ @PreRemove
++ @PostRemove
++ @PreUpdate
++ @PostUpdate
++ @PostLoad
+
+#### @Entity: Spring JPA Auditing 애노테이션
+엔티티의 생성일시, 수정일시, 생성자, 수정자를 자동으로 관리해주는 애노테이션 
++ 설정
+  + @EnableJpaAuditing
+  + @EntityListeners(AuditingEntityListener.class)
++ 활용
+  + @CreatedBy
+  + @CreatedDate
+  + @LastModifiedBy
+  + @ LastModifiedDate
+
+#### Reference
++ [https://docs.spring.io/spring-data/jpa/docs/2.5.5/reference/html/#reference](https://docs.spring.io/spring-data/jpa/docs/2.5.5/reference/html/#reference)
+
+### DataSource, TransactionManager
+
+#### DataSource
+물리적인 데이터소스(데이터베이스) 정보를 담는 인터페이스
++ 하나의 물리 데이터베이스를 표현
++ 다양한 구현체를 사용
+  + EmbeddedDatabaseBuilder: HSQL, Derby, H2 등 임베디드 DB 세팅할 때 사용
+  + DataSourceBuilder: JDBC DataSource 빌더
+  + DriverManagerDataSource: JDBC 드라이버로 세팅하는 DataSource
+  + SimpleDriverDataSource: DriverManagerDataSource 를 간편하게 만든 버전
+  + HikariDataSource: HikariCP 를 connection pool 로 사용하는 DataSource
+  + 기타 등등
+
+#### TransactionManager
+스프링 트랜젝션 관리 기능을 담당하는 인터페이스
++ 용도에 따라 다양한 인터페이스와 구현체들
+  + PlatformTransactionManager, ReactiveTransactionManager
+  + JpaTransactionManager: Spring Data JPA 일반적인 상황에 사용하는 구현체, 단일 EntityManagerFactory 를 사용
+  + DataSourceTransactionManager: 단일 JDBC DataSource 를 사용하는 구현체
+  + HibernateTransactionManager: 하이버네이트 SessionFactory 를 사용하는 구현체
+  + ChainedTransactionManager: 여러 개의 트랜잭션 매니저를 묶어서 사용하는 구현체
+    + @Deprecated (as of Boot 2.5)
+  + 등등
+
+#### JPA DB 수동 설정 (Java code)
+자바 코드로 DataSource, TransactionManager 를 수동 세팅해야 하는 경우가 있다
++ 언제?
+  + configuration properties 로 커버되지 않은 세밀한 옵션을 줄 때 
+  + 다중 DataSource
++ 세팅해야 하는 요소
+  + DataSource
+  + EntityManagerFactory -> LocalContainerEntityManagerFactoryBean
+    + 추가적인 예외 처리 기능 때문에, 인터페이스 말고 구현체를 직접 빈으로 등록해야 한다
+  + PlatformTransactionManager
++ 세팅 구성: DataSource (DB 설정) -> EntityManagerFactory (JPA 엔티티 관리) -> PlatformTransactionManager (트랜잭션 관리)
+
+#### @Transactional
+스프링이 애노테이션 기반 트랜잭션 관리 기능을 제공
++ EntityManager 불러오고 -> 구역 지정하고 -> commit(), rollback() 직접 할 필요 없다
++ 서비스 클래스, 메소드에 적용하는 것으로 간단히 트랜잭션 구역을 설정
+  + 동시에 설정하면 메소드가 우선
++ JpaRepository 는 메소드 단위 @Transactional 이 이미 붙어있다
++ 관련 애노테이션
+  + 스프링 테스트 지원 애노테이션: @DataJpaTest와 좋은 궁합 
+    + @Commit
+    + @Rollback
+  + javax.transaction.@Transactional: 스플이 패키지가 아니다, 기대하는 기능을 주지 않으므로 주의
+
+#### @Transactional: attributes
+@Transactional 이 제공하는 다양한 옵션들
++ transactionManager(value): 사용할 트랜잭션 매니저를 이름으로 특정
++ label: 트랜잭션 구분 짓고 식별하는 레이블
++ propagation: 트랜잭션이 중첩될 경우 동작(트랜잭션 효과의 전파) 규칙 (default:REQUIRED)
++ isolation: 트랜잭션 내부 데이터의 격리 레벨 (default:DEFAULT)
++ timeout,timeoutString: 시간 제한을 거는 것이 가능
++ readOnly: "이 트랜잭션 안에서는 select만 일어난다"를 표현
+  + 강제성이 없음을 주의 - 힌트로 생각하자
+  + 이 옵션을 처리하지 않는 트랜잭션 매니저 구현체를 사용할 경우, 별도의 예외처리를 안 한다
++ rollbackFor, rollbackForClassName
++ noRollbackFor, noRollbackForClassName
+
+#### @Transactional: Propagation
+중첩된 트랜잭션의 동작 규칙
++ REQUIRED(default): 현재 있으면 보조, 없으면 새로 만들기
++ SUPPORTS: 현재 있으면 보조, 없으면 트랜잭션 없이 실행
++ MANDATORY: 있으면 보조, 없으면 예외 처리
++ REQUIRES_NEW: 트랜잭션을 생성하고 실행, 현재 있던 것은 미룬다
++ NOT_SUPPORTED: 트랜잭션 없이 실행, 현재 있던 것은 미룬다
++ NEVER: 트랜잭션 없이 실행, 현재 트랜잭션이 있었으면 예외 처리
++ NESTED: 현재 있으면 그 안에서 중첩된 트랜잭션 형성
+
+#### @Transactional: Isolation
+트랜잭션 내부 데이터의 격리 수준
++ DEFAULT: 데이터베이스에게 맡긴다
++ READ_UNCOMMITTED: dirty read + non-repeatable read + phantom read
++ READ_COMMITTED: non-repeatable read + phantom read
++ REPEATABLE_READ: phantom read
++ SERIALIZABLE: 완전 직렬 수행
+
+#### Reference
++ [https://docs.spring.io/spring-data/jpa/docs/2.5.5/reference/html/#jpa.java-config](https://docs.spring.io/spring-data/jpa/docs/2.5.5/reference/html/#jpa.java-config)
++ [https://github.com/spring-projects/spring-data-commons/issues/2232](https://github.com/spring-projects/spring-data-commons/issues/2232) 
