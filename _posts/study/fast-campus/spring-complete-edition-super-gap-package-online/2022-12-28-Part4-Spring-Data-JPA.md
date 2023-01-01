@@ -282,7 +282,7 @@ JPA 엔티티에 생성일시, 수정일시 같이 일정하게 작성하는 메
   + @CreatedBy
   + @CreatedDate
   + @LastModifiedBy
-  + @ LastModifiedDate
+  + @LastModifiedDate
 
 #### Reference
 + [https://docs.spring.io/spring-data/jpa/docs/2.5.5/reference/html/#reference](https://docs.spring.io/spring-data/jpa/docs/2.5.5/reference/html/#reference)
@@ -369,3 +369,5 @@ JPA 엔티티에 생성일시, 수정일시 같이 일정하게 작성하는 메
 #### Reference
 + [https://docs.spring.io/spring-data/jpa/docs/2.5.5/reference/html/#jpa.java-config](https://docs.spring.io/spring-data/jpa/docs/2.5.5/reference/html/#jpa.java-config)
 + [https://github.com/spring-projects/spring-data-commons/issues/2232](https://github.com/spring-projects/spring-data-commons/issues/2232) 
+
+
