@@ -370,4 +370,50 @@ JPA 엔티티에 생성일시, 수정일시 같이 일정하게 작성하는 메
 + [https://docs.spring.io/spring-data/jpa/docs/2.5.5/reference/html/#jpa.java-config](https://docs.spring.io/spring-data/jpa/docs/2.5.5/reference/html/#jpa.java-config)
 + [https://github.com/spring-projects/spring-data-commons/issues/2232](https://github.com/spring-projects/spring-data-commons/issues/2232) 
 
+### JPA 테스트
 
+#### @DataJpaTest
+persistence layer 를 슬라이스 테스트하기 위한 각종 자동 설정을 지원
++ 단순 select, insert 등 기본 쿼리 메소드의 테스트를 하지 않는 편
++ 복잡한 JPQL 이나 쿼리 표현을 테스트하기 적합
++ 잘 사용하는 세부 기능들
+  + TestEntityManager: 테스트 데이터를 주입할 EntityManager 를 사용 가능
+  + @AutoConfigureTestDatabase: 테스트용 인메모리 DB 를 다른 환경으로 바꾸고자 할 때
++ 기타 스프링 부트 테스트 애노테이션
+  + @JdbcTest: Spring Data 기능 없이 DataSource 만 테스트
+  + @DataJdbcTest: DataSource + Spring Data JDBC
+
+#### Reference
++ [https://docs.spring.io/spring-boot/docs/2.5.4/reference/htmlsingle/#features.testing.spring-boot-applications.autoconfigured-spring-data-jpa](https://docs.spring.io/spring-boot/docs/2.5.4/reference/htmlsingle/#features.testing.spring-boot-applications.autoconfigured-spring-data-jpa)
+
+## 복잡한 쿼리의 작성과 응용
+
+### Querydsl VS Jooq
+
+#### Querydsl
+"Unified Queries for Java. Querydsl is compact, safe and easy to learn." ("Java에 대한 통합 쿼리. Querydsl은 작고 안전하며 배우기 쉽습니다.")
++ 자바 코드(엔티티) -> DB 쿼리 생성 도구
++ HQL 생성 라이브러리
+  + type-safety 가 부족한 HQL(JPQL)의 대한
+  + 읽기 어려운 Criteria API의 대안
++ 기존 기술과의 비교
+  + JPQL: type-safety 가 좀 아쉽다
+  + Criteria: 어렵다
++ Querydsl 코드
+  + 보다 편리한 readable 한 쿼리 작성
+  + 편리한 join
+  + 스프링 Pageable 과 매끄러운 연동
+
+#### Jooq
+"jOOQ generates Java code from your database and lets you build type safe SQL queries through its fluent API." ("jOOQ는 데이터베이스에서 Java 코드를 생성하고 유창한 API를 통해 유형 안전 SQL 쿼리를 작성할 수 있습니다.")
++ DB schema -> Java class 도구
++ ORM framework 가 아니다
++ "jOOQ is not a replacement for JPA" ("Jooq는 JPA를 대체하지 않습니다.")
+  + SQL 이 잘 어울리는 곳엔, Jooq 가 잘 맞아요
+  + Object Persistence 가 잘 어울리는 곳엔, JPA 가 잘 맞아요
++ Jooq says: "Jooq + JPA
+
+#### Reference
++ [https://querydsl.com/](https://querydsl.com/)
++ [https://www.jooq.org/](https://www.jooq.org/)
++ [https://www.jooq.org/doc/3.15/manual-single-page/#jooq-and-jpa](https://www.jooq.org/doc/3.15/manual-single-page/#jooq-and-jpa)
