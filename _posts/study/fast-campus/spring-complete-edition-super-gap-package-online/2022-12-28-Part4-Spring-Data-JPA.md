@@ -417,3 +417,121 @@ persistence layer 를 슬라이스 테스트하기 위한 각종 자동 설정�
 + [https://querydsl.com/](https://querydsl.com/)
 + [https://www.jooq.org/](https://www.jooq.org/)
 + [https://www.jooq.org/doc/3.15/manual-single-page/#jooq-and-jpa](https://www.jooq.org/doc/3.15/manual-single-page/#jooq-and-jpa)
+
+
+### Querydsl 활용
+
+#### Querydsl
+JPQL 작성 라이브러리 
++ Spring Data JPA 와 조합하여 보다 복잡한 쿼리를 type-safe 하게 작성 가능
+  + 커스텀 key join
+  + 자유로운 query projection
++ Spring Data JPA Repository interface 와 매끄럽게 연동
++ Spring Data 에서 다양한 서포트 지원
+  + QuerydslRepositorySupport: EntityManager를 노출하지 않고 Querydsl 필요 기능 직접 지원
+  + QuerydslPredicateExecutor: Predicate 을 이용한 dynamic select, Spring Data REST 지원
+  + QuerydslBinderCustomizer: 파라미터 바인딩의 세부 기능 조절을 지원
+
+#### Reference
++ [https://querydsl.com/static/querydsl/4.4.0/reference/html_single/](https://querydsl.com/static/querydsl/4.4.0/reference/html_single/)
+
+### Jooq 활용
+
+#### Jooq
+테이블 스키마로부터 자바 코드를 만드러주는 라이브러리
++ 시스템의 설계가 자바 코드(엔티티)가 아닌, DB에서 시작될 때 유용한 구조
++ Jooq, 좋은 이유
+  + Jooq 방식으로 사용한다면, 엔티티를 작성할 필요가 없다
+  + 로그가 보기 예쁘다
+    + query 로그 안에 binding parameter 가 함께 포함된다
++ Jooq, 불편한 이유
+  + ORM 기술이 아니기 때문에, Spring Data JPA 와 결이 잘 안 맞는다
+  + JPA 와 정반대 매커니즘: Jooq 클래스가 엔티티 클래스를 방해
+  + JPA 기술이 아니어서 오는 문제점
+    + Spring Data JPA 트랜잭션 연동이 힘들다: 자체 트랜잭션 기술 -> Jooq 코드가 서비스에 노출
+    + 하이버네이트 auto-ddl 사용 불가, DB 스키마는 이미 준비되어 있어야 한다
+  + 스프링과 연동되어있지 않아서 오는 불편함
+    + 스프링 Pageable 정보로부터 Jooq 쿼리를 조합하기가 상당히 까다롭다
+  + gradle 플러그인을 쓸 경우, DB 정보가 build.gradle에 침투한다
+    + DB 기본 정보, 로깅, 타입 변환(enum 등) 정보, 패키지 정보, DB dialect JDBC 드라이버 정보...
+  + 매뉴얼도 꽤 어렵고 레퍼런스도 적다
++ 스프링이 초기에 밀어줬지만 Querydsl 에 밀리는 또 하나의 이유
+  + 유료
+  + Open Source 플랜만 무료
+    + open source DB dialect 지원: derby, firebird, h2, hsqldb, ignite, mariadb, mysql, postgresql, sqlite
+    + 지원 안되는 대표적인 DB: ms access, oracle, sql server, aurora, bigquery, db2, snowflake 등
+  + Express, Professional, Enterprise 플랜에 따라 단계별 과금
+
+#### Reference
++ [https://www.jooq.org/doc/3.14/manual/](https://www.jooq.org/doc/3.14/manual/)
++ [https://github.com/etiennestuder/gradle-jooq-plugin](https://github.com/etiennestuder/gradle-jooq-plugin)
++ [https://github.com/etiennestuder/gradle-jooq-plugin/tree/master/example/configure_jooq_version_from_spring_boot](https://github.com/etiennestuder/gradle-jooq-plugin/tree/master/example/configure_jooq_version_from_spring_boot)
+
+### eager fetch, lazy fetch, N+1 문제
+
+#### eager fetch, lazy fetch
+Fetch
++ 애플리케이션이 DB로 부터 데이터를 가져오는 것
++ DB와 통신하여 데이터를 읽는 것에는 큰 비용이 소모되기 때문에, 똑똑하게 가져오는 전략이 필요
++ eager: 프로그램 코드가 쿼리를 날리는 시점에 데이터를 즉시 가져오기 
+  + ex: select a.id from A a inner join B b on a.b_id = b.id (b를 보지 않았지만 일단 다 가져온다)
++ lazy: 가져오려는 데이터를 애플리케이션에서 실제로 접근할 때 가져온다
+  + ex: select a.id from A; (select b from B b where b.id = ?)
++ lazy 전략은 기본적으로 
+  + ORM의 특징이자 기능적 장점
+  + 더 빠르고 경제적인 쿼리 (적절히만 사용한다면)
+  + 잘못 사용하면 데이터 접근 에러 (ex: LazyInitializationException)
+
+#### fetch 기본 전략 (default setting)
+각 JPA 연관관계 애노테이션은 기본 fetch 전략을 가지고 있다
++ 기본 세팅의 핵심은 "어느 쪽이 효율적인가"
++ @OneToOne: FetchType.EAGER
++ @ManyToOne: FetchType.EAGER
++ @OneToMany: FetchType.LAZY
++ @ManyToMany: FetchType.LAZY
+
+#### fetch 전략의 설정 (실전)
+효율성 - 데이터가 어느 쪽으로 더 자주 사용될 것 같은가 예측
++ default 내버려두기: 필요한 시점에 최선의 방식으로 데이터를 가져온다
++ LAZY 사용: 연관 관계가 있는 엔티티에서 자식 엔티티만 가져온느 시나리오일 때
+  + 프로그래머가 로직 흐름에서 join을 의식하고 있지 않다
+  + LAZY 세팅이 후속 쿼리 발생 방지를 보장하지 않는다 
+    + ex: 불러들인 자식 엔티티가 서비스 레이어 어딘가에서 결국 부모 엔티티 필드를 건드렸을 경우
++ EAGER 사용: 연관 관계 있는 엔티티에서 무조건 다 가져오는 시나리오일 때
+  + 프로그래머가 join을 사용해야 하는 상황임을 인지하고 있다
+  + EAGER 세팅이 join 동작을 보장하지 않는다 
+    + ex: Spring Data JPA 쿼리 메소드 findAll()
+    + JPQL 을 직접 작성해서 join 을 영속성 컨텍스트에 알려줘야 함 (ex: querydsl)
+
+#### N+1 query problem
++ 쿼리를 한 번 날렸는데 1 + N 개의 쿼리가 생겼다
+
+#### N+1 query problem 해결
+3가지 방법
++ 똑똑한 lazy
+  + 비즈니스 로직을 면밀히 분석하여, 불필요한 연관 관계 테이블 정보를 불러오는 부분을 제거 
+  + 가장 똑똑하고 효율적인 방법
++ eager fetch + join jpql
+  + join 쿼리를 직접 작성하는 방법은 다양 (@Query, querydsl, ...)
+  + 쿼리 한 번에 오긴 하겠지만, join 쿼리 연산 비용과 네트워크로 전달되는 데이터가 클 수 있다
++ 후속 쿼리를 in 으로 묶어주기: N + 1 -> 1 + 1 로 I/O 줄일 수 있음
+  + 하이버네이트 프로퍼티: default_batch_fetch_size
+  + 스프링 부트에서 쓰는 법: spring.jpa.properties.hibernate.default_batch_fetch_size
+  + 100 ~ 1000 사이를 추천
+  + 모든 쿼리에 적용되고 복잡한 도메인에서 join 쿼리를 구성하는 것이 골치 아플 때 효율적
+
+#### Reference
++ [https://docs.oracle.com/cd/E24290_01/coh.371/e23131/bestpractice.htm#CHDHGEDA](https://docs.oracle.com/cd/E24290_01/coh.371/e23131/bestpractice.htm#CHDHGEDA)
++ [https://docs.oracle.com/javaee/7/tutorial/persistence-intro001.htm#BNBQA](https://docs.oracle.com/javaee/7/tutorial/persistence-intro001.htm#BNBQA)
+
+### 순환 참조 문제
+각 모듈이 서로를 의존하고 있는 상태
++ 스프링을 사용하다보면, JPA 뿐만 아니라 다양한 위치에서 간혹 경험하게 된다.
++ 스프링 컴포넌트 끼리 참조하는 경우
++ JPA 에서 가장 흔하게 발생하는 순환 참조: toString() (lombok)
++ 해결 방법
+  + 한 쪽의 참조를 제거하는 것으로 간단히 해결된다
+  + lombok @ToString: 한 쪽 사용을 제거
+  
+#### Reference
++ [https://en.wikipedia.org/wiki/Circular_dependency](https://en.wikipedia.org/wiki/Circular_dependency)
