@@ -1107,7 +1107,7 @@ http.addFilterBefore(
 + 이 토큰 값을 유저가 게시글 조회 요청을 할 때 함께 보내고 서버2(서버1 이여도 상관없다)에서 이 토큰을 의미 있는 값으로 해석한다 그리고 그 값을 토대로 유저를 인증한다
 + 세션방식에서의 JSESSIONID은 key로만 활용될 수 있는 의미없는 값 들이 들어있다
 + 그러나 토큰은 유저를 설명할 수 있는 데이터(ex username)포함한다
-+ ![img.png](Part5-Spring-Security9.png)
++ ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part5-Spring-Security9.png)
 + 토큰 방식은 다음과 같은 장단점이 있다.
   + 장점
     + 세션관리를 할필요가 없어 별도의 저장소가 필요하지 않다
@@ -1132,7 +1132,7 @@ http.addFilterBefore(
   + Signature에 사용한 암호화 알고리즘이 무엇인지, Key의 ID가 무었인지 정보를 담고 있다
   + 이 정보를 Json으로 변환해서 UTF-8로 인코딩한 뒤 Base64 URL-Safe로 인코딩한 값이 들어가 있다
   + 결과 값이 난해한 문자로 보이지만 암호화된 값은 아니다 
-  + ![img.png](Part5-Spring-Security10.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part5-Spring-Security10.png)
 + Payload
   + 실질적으로 인증에 필요한 데이터를 저장한다
   + 데이터의 각각 필드들을 Claim이라고 한다
@@ -1142,7 +1142,7 @@ http.addFilterBefore(
   + 그외에도 원하는 Claim을 얼마든지 추가할수 있지만 민감정보는 포함시켜서는 안된다
   + Payload 역시 Header와 마찬가지로 암호화되지 않는다
   + Json으로 바꾼뒤 UTF8로 인코딩하고 Base64로 변겨한 데이터일 뿐이다
-  + ![img.png](Part5-Spring-Security11.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part5-Spring-Security11.png)
 + Signature
   + 앞선 Header와 Payload는 암호화하지 않았고 json -> utf8 ->base64로 변환한 데이터이다
   + 이렇게 Header와 Payload 생성 매커니즘은 너무 쉽고 누구나 만들 수 있는 데이터이다
@@ -1150,7 +1150,7 @@ http.addFilterBefore(
   + 그래서 JWT의 구조에서 가장 마지막에 있는 Signature는 토큰 자체의 진위여부를 판단하는 용도로 사용한다
   + Signature는 Header와 Payload를 합친뒤 비밀키로 Hash를 생성하여 암호화 한다
   + 헤더.페이로드 값을 SecretKey로 Hashing하고 Base64로 변경한다 
-  + ![img.png](Part5-Spring-Security12.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part5-Spring-Security12.png)
 + Key Rolling
   + JWT의 토큰 생성 매커니즘을 보다보면 Secret Key가 노출되면 사실상 모든 데이터가 유출될 수 있다는 걸 알수 있다
   + 이런 문제를 방지하기 위해 Secret Key를 여러개 두고 Key 노출을 대비할 수 있다
