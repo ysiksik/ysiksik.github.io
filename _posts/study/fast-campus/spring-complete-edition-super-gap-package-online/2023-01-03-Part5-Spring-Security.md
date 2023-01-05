@@ -1089,3 +1089,258 @@ http.addFilterBefore(
 );
 
 ~~~
+
+## JWT 기본개념
+
+### 토큰으로 인증하기
++ 세션은 이런 장단점을 자기고 있다.
+  + 장점
+    + JSESSIONID는 유의미한 값이 아니라 서버에서 세션(사용자) 정보를 찾는 Key로만 활용한다 
+    + 따라서 탈취되었다고 해서 개인정보가 탈취된건 아니다
+      + 세션하이제킹 공격을 당할수 있기 때문에 절대적으로 안전하다는 뜻은 아니다 
+  + 단점
+    + 서버에 세션(사용자) 정보를 저장할 공간이 필요하다
+    + 서비스를 이용하는 사용자가 많다면 저장할 공간도 더 많이 필요하다
+    + 분산 서버에서는 세션을 공유하는데 어려움이 있다
++ 세션의 단점을 해결하기 위해서 토큰으로 인증하는 방법을 사용할 수 있다
++ 유저가 로그인을 하면 서버에서는 토큰을 생성한 뒤에 저장하지 않고 (stateless) 토큰 값을 내려준다
++ 이 토큰 값을 유저가 게시글 조회 요청을 할 때 함께 보내고 서버2(서버1 이여도 상관없다)에서 이 토큰을 의미 있는 값으로 해석한다 그리고 그 값을 토대로 유저를 인증한다
++ 세션방식에서의 JSESSIONID은 key로만 활용될 수 있는 의미없는 값 들이 들어있다
++ 그러나 토큰은 유저를 설명할 수 있는 데이터(ex username)포함한다
++ ![img.png](Part5-Spring-Security9.png)
++ 토큰 방식은 다음과 같은 장단점이 있다.
+  + 장점
+    + 세션관리를 할필요가 없어 별도의 저장소가 필요하지 않다
+    + 서버 분산&클러스터 환경과 같은 확장성에 좋다 
+  + 단점
+    + 한 번 제공된 토큰은 회수가 어렵다
+    + 세션의 경우에는 서버에서 세션을 삭제해버리면 브라우저의 JSESSIONID는 무용지물이 되어버린다
+    + 그러나 토큰은 세션을 저장하지 않기 때문에 한번 제공된 토큰을 회수할수 없다
+    + 그래서 보통 토큰의 유효기간을 짧게 한다
+    + 토큰에는 유저의 정보가 있기 때문에 상대적으로 안정성이 우려된다 따라서 민감정보를 토큰에 포함시키면 안된다 (ex 패스워드, 개인정보)
+
+### JWT의 구조
++ 토큰 방식에서 가장 잘 알려진 JWT가 있다
++ Json Web Token의 줄임말이다
++ JWT구조는 아래와 같다
+  + HEADER.PAYLOAD.SIGNATURE
+  + 예시
+    + eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJ1c2VyIiwicm9sZXMiOl.hHkvviDzMIx8EkXUTZsNLWGy51p2
+      bVnJknEC0HYxMaRkXGQJdIWqIX1Rv8rGK6bMq6mYyGES3jxNJVPz33wvEQ
++ Header
+  + Header는 JWT를 검증하는데 필요한 정보를 가진 객체이다
+  + Signature에 사용한 암호화 알고리즘이 무엇인지, Key의 ID가 무었인지 정보를 담고 있다
+  + 이 정보를 Json으로 변환해서 UTF-8로 인코딩한 뒤 Base64 URL-Safe로 인코딩한 값이 들어가 있다
+  + 결과 값이 난해한 문자로 보이지만 암호화된 값은 아니다 
+  + ![img.png](Part5-Spring-Security10.png)
++ Payload
+  + 실질적으로 인증에 필요한 데이터를 저장한다
+  + 데이터의 각각 필드들을 Claim이라고 한다
+  + 대부부의 경우에 Claim에 username을 포함한다
+  + 인증할 때 payload에 있는 username을 가져와서 유저 정보를 조회할 때 사용해야하기 때문이다 
+  + 또한, 토큰 발행시간(iat)와 토큰 만로시간(exp)를 포함한다
+  + 그외에도 원하는 Claim을 얼마든지 추가할수 있지만 민감정보는 포함시켜서는 안된다
+  + Payload 역시 Header와 마찬가지로 암호화되지 않는다
+  + Json으로 바꾼뒤 UTF8로 인코딩하고 Base64로 변겨한 데이터일 뿐이다
+  + ![img.png](Part5-Spring-Security11.png)
++ Signature
+  + 앞선 Header와 Payload는 암호화하지 않았고 json -> utf8 ->base64로 변환한 데이터이다
+  + 이렇게 Header와 Payload 생성 매커니즘은 너무 쉽고 누구나 만들 수 있는 데이터이다
+  + 따라서 저 두개의 데이터만 있다면 토큰에 대한 진위여부 판단은 전혀 이루어질수 없다
+  + 그래서 JWT의 구조에서 가장 마지막에 있는 Signature는 토큰 자체의 진위여부를 판단하는 용도로 사용한다
+  + Signature는 Header와 Payload를 합친뒤 비밀키로 Hash를 생성하여 암호화 한다
+  + 헤더.페이로드 값을 SecretKey로 Hashing하고 Base64로 변경한다 
+  + ![img.png](Part5-Spring-Security12.png)
++ Key Rolling
+  + JWT의 토큰 생성 매커니즘을 보다보면 Secret Key가 노출되면 사실상 모든 데이터가 유출될 수 있다는 걸 알수 있다
+  + 이런 문제를 방지하기 위해 Secret Key를 여러개 두고 Key 노출을 대비할 수 있다
+  + Secret Key를 여러개를 사용하고 수시로 추가하고 삭제해줘서 변경한다면 Secret Key 중에 1개가 노출되어도 다른 Secret Key와 데이터는 안전한 상태가 된다
+  + 이걸 바로 Key Rolling이라고 한다 (Key Rolling은 필수가 아니다)
+  + Key Rolling에서는 여러개의 Secret Key가 존재한다
+  + Secret Key 1개에 Unique한 ID (kid 혹은 key id라고 부른다)를 연결시켜 둔다
+  + JWT 토큰을 만들 때 헤더에 kid를 포함하여 제공하고 서버에서 토큰을 해석할 때 kid로 Secret Key를 찾아서 Signature를 검증한다
+
+## Spring Security + JWT 구현하기
+
+### JWT Util 만들기
+
++ 의존성 추가 
+
+~~~groovy
+
+// jjwt
+implementation 'io.jsonwebtoken:jjwt-api:0.11.2'
+runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.11.2'
+runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.11.2'
+
+~~~ 
+
++ JwtKey
+  + JWT Secret Key 를 관리하고 제공한다
+  + Key Rolling을 지원한다
++ JwtUtils
+  + JWT 토큰을 생성하거나 Parsing하는 메소드를 제공한다
++ SigningKeyResolver
+  + JWT의 헤더에서 kid를 찾아서 Key(SecretKey + 알고리즘)를 찾아온다
+  + Signature를 검증할 때 사용한다
++ JwtKey.getKey()
+  + kid로 Secret Key를 찾아온다
+
+~~~java
+
+/**
+ * kid로 Key찾기
+*
+ * @param kid kid
+ * @return Key
+ */
+public static Key getKey(String kid){
+        String key=SECRET_KEY_SET.getOrDefault(kid,null);
+        if(key==null)
+        return null;
+        return Keys.hmacShaKeyFor(key.getBytes(StandardCharsets.UTF_8));
+        }
+
+~~~
+
++ JwtKey.getRandomKey()
+  + 여러개의 Secret Key 중에 랜덤으로 선택하여 kid와 SecretKey를 제공한다
+
+~~~java
+
+/**
+ * SECRET_KEY_SET 에서 랜덤한 KEY 가져오기
+*
+ * @return kid와 key Pair
+ */
+public static Pair<String, String> getRandomKey() {
+ String kid = KID_SET[randomIndex.nextInt(KID_SET.length)];
+ return Pair.of(kid, SECRET_KEY_SET.get(kid));
+}
+
+~~~
+
++ JwtUtils.createToken()
+  + User로 JWT Token을 만든다
+  + HEADER: alg(알고리즘 종류), kid
+  + PAYLOAD: sub(username), iat(토큰발행시간), exp(토큰만료시간)
+  + SIGNATURE: JwtKey.getRandomKey로 구한 Secret Key로 HS512 해시
+
+~~~java
+
+public static String createToken(User user){
+        Claims claims=Jwts.claims().setSubject(user.getUsername());// subject
+        Date now=new Date(); // 현재 시간
+        Pair<String, String> key=JwtKey.getRandomKey();
+        // JWT Token 생성
+        return Jwts.builder()
+        .setClaims(claims) // 정보 저장
+        .setIssuedAt(now) // 토큰 발행 시간 정보
+        .setHeaderParam(JwsHeader.KEY_ID,key.getFirst()) // kid
+        .setExpiration(new Date(now.getTime()+JwtProperties.EXPIRATION_TIME)) // 토큰 만료 시간 설정 (now + 10분)
+        .signWith(Keys.hmacShaKeyFor(key.getSecond().getBytes(StandardCharsets.UTF_8))) // 알고리즘과 SecretKey
+        .compact();
+        }
+
+~~~
+
++ JwtUtils.getUsername()
+  + JWT Token에서 username을 구한다
+  + SigningKeyResolver로 Signature를 검증한다 
+  + 이 과정중에 토큰이 만료가 되었거나 적합하지 않으면 Exception이 발생한다
+
+~~~java
+
+/**
+ * 토큰에서 username 찾기
+ * @param token 토큰
+ * @return username
+ */
+public static String getUsername(String token) {
+ return Jwts.parserBuilder() // parser용 builder
+ .setSigningKeyResolver(SigningKeyResolver.instance)
+ .build()
+ .parseClaimsJws(token)
+ .getBody()
+ .getSubject();
+}
+
+~~~
+
++ SigningKeyResolver
+  + SigningKeyResolver는 헤더에 있는 kid를 조회해서 그 kid에 해당하는 비밀키를 가져온다 
+
+~~~java
+
+/**
+ * JwsHeader를 통해 Signature 복호화에 필요한 Key를 조회해옵니다.
+ */
+public class SigningKeyResolver extends SigningKeyResolverAdapter {
+ public static SigningKeyResolver instance = new SigningKeyResolver();
+ @Override
+ public Key resolveSigningKey(JwsHeader jwsHeader, Claims claims) {
+ String kid = jwsHeader.getKeyId();
+ if (kid == null)
+ return null;
+ return JwtKey.getKey(kid);
+ }
+}
+
+~~~
+
+### JWT Filter 만들기
++ JwtAuthenticationFilter
+  + 로그인을 하면 JWT 토큰을 응답 쿠키에 넣어준다
+  + UsernamePasswordAuthenticationFilter를 상속했기 때문에 기본동작은 거의 비슷하다
+  + 로그인에 성공하면 User 정보로 JWT Token을 생성하고 응답 쿠키에 값을 넣어준다 
+
+~~~java
+
+@Override
+protected void successfulAuthentication(
+ HttpServletRequest request,
+ HttpServletResponse response,
+ FilterChain chain,
+ Authentication authResult
+) throws IOException {
+ User user = (User) authResult.getPrincipal();
+ String token = JwtUtils.createToken(user);
+ // 쿠키 생성
+ Cookie cookie = new Cookie(JwtProperties.COOKIE_NAME, token);
+ cookie.setMaxAge(JwtProperties.EXPIRATION_TIME); // 쿠키의 만료시간 설정
+ cookie.setPath("/");
+ response.addCookie(cookie);
+ response.sendRedirect("/");
+
+~~~
+
++ JwtAuthorizationFilter
+  1. Cookie에서 JWT Token을 구한다
+  2. JWT Token을 파싱하여 username을 구한다
+  3. username으로 User을 구하고 Authentication을 생성한다
+  4. 생성된 Authentication을 SecurityContext에 넣는다
+  5. Exception이 발생하면 응답의 쿠키를 null로 변경한다
+
++ SpringSecurityConfig
+
+~~~java
+
+// basic authentication
+http.httpBasic().disable(); // basic authentication filter 비활성화
+// csrf
+http.csrf().disable();
+// remember-me
+http.rememberMe().disable();
+// stateless
+http.sessionManagement()
+ .sessionCreationPolicy(SessionCreationPolicy.STATELESS);
+// jwt filter
+http.addFilterBefore(
+ new JwtAuthenticationFilter(authenticationManager()),
+ UsernamePasswordAuthenticationFilter.class
+).addFilterBefore(
+ new JwtAuthorizationFilter(userRepository),
+ BasicAuthenticationFilter.class
+);
+
+~~~
