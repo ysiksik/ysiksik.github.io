@@ -97,11 +97,68 @@ comments: true
 + client_id, client_secret으로만 자격 증명을 진행한다
 + Refresh Token 정보는 내려주지 않는다
 
-## OAuth2 Social 인증 App 등록
+## OAuth2 Social 인증
 
-### Facbook App 등록
+### OAuth2 Social 인증 App 등록
+
+#### Facbook App 등록
 1. [https://developers.facebook.com/](https://developers.facebook.com/) 이동
 2. 로그인 이동
 3. 로그인 진행
 4. 내 앱 이동 
 5. 앱 만들기 클릭
+6. 비즈니스 선택, 계속 클릭
+7. 표시할 앱 이름 작성, 앱 만들기 클릭
+8. 방금 생성할 앱, 테스트할 앱만들기
+9. 테스트 앱만들기
+10. 앱 ID, 앱 스크릿 코드 복사 하여 보관
+11. 리다이렉션 도메인 공유 허용 리스트 등록 http://localhost:8081/login/oauth2/code/facebook
+
+#### Google App 등록
+1. [https://console.developers.google.com/](https://console.developers.google.com/) 이동
+2. 새 프로젝트 클릭
+3. 프로젝트 이름 지정, 만들기 버튼 클릭
+4. OAuth 동의 화면 이동
+5. OAuth 클라이언트 ID 등록
+6. 웹 애플리케이션 선택
+7. 승인된 리디렉션 URI http://localhost:8081/login/oauth2/code/google 등록
+8. 클라이언트ID, 클라이언트 보안 비밀 코드 복사 이후 보관
+
+### OAuth2 Social 인증 Project Setting
+
+#### Social 연동
++ ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part6-Spring-OAuth2-Social8.png)
+  + Facebook, Google App의 client-id, client-secret를 각각 설정
++ ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part6-Spring-OAuth2-Social9.png)
+  + Security 설정을 진행, /login, /index 요청은 허용 그 외 요청은 모두 인가 이후 호출 가능하게 설정
++ ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part6-Spring-OAuth2-Social10.png)
+  + 토큰 정보 출력 컨트롤러, index 컨트롤러 각각 생성
+
+### OAuth2 Social 인증 자동 설정 살펴보기
++ 페이스북 토큰 API 주소 설정은?
++ 구글 토큰 API 설정은?
++ 리다이렉트 URL 설정은?
+
+#### 자동 설정 살펴보기
++ yml 설정이 Registration 바인딩 되는 구조 
++ 내부적으로 Facebook, Google 같은 Social인증은 Token 정보가 구현되어 있다 
++ 최종적으로 ClientRegistration 객체에 바인딩 된다
+
+### OAuth2 Social 인증 Social 인증 커스텀 하기
++ ClientRegistrationRepository
+  + ClientRegistration에 대한 정보를 저장하는 저장소
+  + Authorization Server에서 해당 클라이언트의 정보가 필요할 때 사용
++ OAuth2AuthorizedClientService
+  + 실제 OAuth2 인증을 진행하는 서비스
+  + Access Token에 대한 통신을 담당
++ ClientRegistration
+  + 접속할 Provider에 대한 정보를 구현
++ [https://developers.facebook.com/docs/permissions/reference/](https://developers.facebook.com/docs/permissions/reference/)
+  + scope 요청을 통한 추가 정보 요청
+
+### OAuth2 Social 인증 Social 회원 가입
++ ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part6-Spring-OAuth2-Social11.png)
++ 회원 가입에 필요한 객체
++ User: 유저 엔티티 객체
++ UserFindService: 유저 조회 서비스, email 조회
++ UserRegistrationService: 실제 회원 가입
