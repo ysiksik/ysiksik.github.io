@@ -1212,3 +1212,998 @@ spring:
     ddl-auto: create-drop
 
 ~~~
+
+#### 프로젝트 빌드, 실행시키기
++ Intellij에서 실행하기
+  + Program Arguments
+    + Job 이름 넣기
+    + --job.names=expirePointJob
+  + Job Parameter 넣기
+    + today=2021-09-01
++ Jar로 만들어서 실행시키기
+  + java -jar point-management-practice-copy-1.0-SNAPSHOT.jar --job.name=expirePointJob today=2021-09-03
+
+### 프로젝트 업그레이드
+
+#### 문제점 1 
++ 언제 발생할 까?
+  + 처리할 데이터 개수 > Page Size 인 경우
+  + Reader의 조건으로 사용하는 필드와 Processor에서 수정하는 필드가 동일한 경우
+  + ![img.png](Part9-Hands-onProjects15.png)
+  + ![img.png](Part9-Hands-onProjects16.png)
++ 해결방법
+  + ![img.png](Part9-Hands-onProjects17.png)
+
+#### 문제점 2
++ 대량 처리 테스트, 성능 측정을 하지 않았다
++ 해결방법
+  + 배치 대량 처리 테스트해보기
+    + 실제로 배치 대량 처리 테스트를 통해 프로젝트의 안전성을 확보해야한다.
+  + 쿼리 튜닝하기
+    + 스프링 배치의 경우에는 유독 쿼리 튜닝이 필요하다.
+    + 튜닝된 select 쿼리를 사용하면 그렇지 않은 쿼리보다 수천배정도 차이가 난다.
+  + 파티셔닝 하기
+    + 병렬로 데이터를 처리한다면 처리 속도가 증가될 것이다.
+    + 병렬 처리라는 것은 성능 개선에 도움을 주지만 동시성 처리를 해야하기 때문에 함부로 사용할 수 없고 에러처리와 동작을 이해하는데 어려움이 생긴다.
+    + 위의 두가지를 먼저 시도해보고 그럼에도 개선점이 없어보인다면 파티셔닝을 시도하는 것이 좋다.
+
+#### ReverseJpaPagingItemReader 구현하기
++ 기존 코드
+
+~~~java
+
+@Bean
+@StepScope
+public JpaPagingItemReader<Point> expirePointItemReader(
+ EntityManagerFactory entityManagerFactory,
+ @Value("#{T(java.time.LocalDate).parse(jobParameters[today])}")
+ LocalDate today
+) {
+ return new JpaPagingItemReaderBuilder<Point>()
+ .name("expirePointItemReader")
+ .entityManagerFactory(entityManagerFactory)
+ .queryString("select p from Point p where p.expireDate < :today and used = false and expired = false")
+ .parameterValues(Map.of("today", today))
+ .pageSize(1000)
+ .build();
+}
+
+~~~
+
++ 수정된 코드
+
+~~~java
+
+@Bean
+@StepScope
+public ReverseJpaPagingItemReader<Point> expirePointItemReader(
+ PointRepository pointRepository,
+ @Value("#{T(java.time.LocalDate).parse(jobParameters[today])}")
+ LocalDate today
+) {
+ return new ReverseJpaPagingItemReaderBuilder<Point>()
+ .name("messageExpireSoonPointItemReader")
+ .query(
+ pageable -> pointRepository.findPointToExpire(today, pageable) // Repository에 Page를 반환하는 메소드를구현한 다음에 여기다 넣으면 된다.
+ )
+ .pageSize(1000)
+ .sort(Sort.by(Sort.Direction.ASC, "id")) // 제 내부에서는 id를 DESC로 나열하고 뒤에서부터 데이터를 읽어서순서에는 변함이 없습니다.
+ .build();
+}
+
+~~~
+
++ 새로운 ItemReader 만들기
+
+~~~java
+
+package me.benny.fcp.job.reader;
+
+import com.google.common.collect.Lists;
+import org.springframework.batch.core.annotation.AfterRead;
+import org.springframework.batch.core.annotation.BeforeRead;
+import org.springframework.batch.core.annotation.BeforeStep;
+import org.springframework.batch.item.ItemReader;
+import org.springframework.batch.item.ItemStreamSupport;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+
+import java.util.Iterator;
+import java.util.List;
+import java.util.Objects;
+import java.util.function.Function;
+
+public class ReverseJpaPagingItemReader<T> extends ItemStreamSupport implements ItemReader<T> {
+    private static final int DEFAULT_PAGE_SIZE = 100;
+
+    private int page = 0;
+    private int totalPage = 0;
+    private List<T> readRows = Lists.newArrayList();
+
+    private int pageSize = DEFAULT_PAGE_SIZE;
+    private Function<Pageable, Page<T>> query;
+    private Sort sort = Sort.unsorted();
+
+    ReverseJpaPagingItemReader() {}
+
+    public void setPageSize(int pageSize) {
+        this.pageSize = (pageSize > 0) ? pageSize : DEFAULT_PAGE_SIZE;
+    }
+
+    public void setQuery(Function<Pageable, Page<T>> query) {
+        this.query = query;
+    }
+
+    public void setSort(Sort sort) {
+        if (!Objects.isNull(sort)) {
+            // pagination을 마지막 페이지부터 하기때문에 sort direction를 모두 reverse한다.
+            // ASC <-> DESC
+            Iterator<Sort.Order> orderIterator = sort.iterator();
+            final List<Sort.Order> reverseOrders = Lists.newLinkedList();
+            while (orderIterator.hasNext()) {
+                Sort.Order prev = orderIterator.next();
+                reverseOrders.add(
+                        new Sort.Order(
+                                prev.getDirection().isAscending() ? Sort.Direction.DESC : Sort.Direction.ASC,
+                                prev.getProperty()
+                        )
+                );
+            }
+            this.sort = Sort.by(reverseOrders);
+        }
+    }
+
+    /**
+     * 스텝 실행 전에 동작함
+     */
+    @BeforeStep
+    public void beforeStep() {
+        // 우리는 뒤에서부터 읽을 것이기 때문에 마지막 페이지 번호를 구해서 page에 넣어줍니다.
+        totalPage = getTargetData(0).getTotalPages();
+        page = totalPage - 1;
+    }
+
+    /**
+     * read() 함수가 실행되기 전에 동작함
+     */
+    @BeforeRead
+    public void beforeRead() {
+        if (page < 0)
+            return;
+        if (readRows.isEmpty()) // 읽은 데이터를 모두 소진하면 db로 부터 데이터를 가져와서 채워놓는다.
+            readRows = Lists.newArrayList(getTargetData(page).getContent());
+    }
+
+    @Override
+    public T read() {
+        // null을 반환하면 Reader는 모든 데이터를 소진한걸로 인지하고 종료합니다.
+        // 데이터를 리스트에서 거꾸로 (readRows.size() - 1) 뒤에서부터 빼줍니다.
+        return readRows.isEmpty() ? null : readRows.remove(readRows.size() - 1);
+    }
+
+    /**
+     * read() 이후에 동작함
+     */
+    @AfterRead
+    public void afterRead() {
+        // 데이터가 없다면 page를 1 차감합니다.
+        if (readRows.isEmpty()) {
+            this.page--;
+        }
+    }
+
+    /**
+     * page 번호에 해당하는 데이터를 가져와서 Page 형식으로 반환합니다.
+     */
+    private Page<T> getTargetData(int readPage) {
+        return Objects.isNull(query)?Page.empty():query.apply(PageRequest.of(readPage, pageSize, sort));
+    }
+}
+
+~~~
+
+#### 데이터 대량처리 테스트
++ 일단 대량으로 데이터를 넣어보자
++ 일단 포인트 지갑 2개 생성
+
+~~~sql
+
+INSERT INTO `point_wallet`
+(user_id, amount)
+VALUES ('user1', 0);
+INSERT INTO `point_wallet`
+(user_id, amount)
+VALUES ('user2', 0);
+
+~~~
+
++ 포인트 예약적립 건 데이터 대량 insert 프로시저 생성
+  + 프로시저를 사용하지 않고 그 어떤 방법으로도 데이터를 대량으로 만들수만 있으면 상관없다
+
+~~~sql
+
+DELIMITER //
+CREATE PROCEDURE bulkInsert()
+BEGIN
+DECLARE i INT DEFAULT 1;
+DECLARE random_amount bigint DEFAULT 1;
+WHILE (i <= 10000) DO  -- 10000개를 insert.
+SET random_amount = FLOOR(1000 + (RAND() * 9000)); -- 1000원 부터 10000원까지 랜덤금액을 넣음
+INSERT INTO `point_reservation`
+(point_wallet_id, amount, earned_date, available_days, is_executed)
+VALUES (1, random_amount, '2021-09-13', 10, 0); -- point_wallet Id와 적립일자확인 필수
+SET i = i+1;
+END WHILE;
+END;
+//
+DELIMITER ;
+
+~~~
+
++ 프로시저 실행하는 방법
+  + call bulkInsert();
++ bulkInsert 프로시저 삭제하는 방법
+  + drop procedure if exists bulkInsert;
++ 배치 스트레스 테스트 변수 파악하기
+  + Docker MySQL
+    + 실제 운영 환경에서는 도커 MySQL을 사용하지 않을 것이기 때문에 환경이 다르다
+    + Docker MySQL은 적은 리소스로 동작하기 때문에 실제 운영환경과 같은 환경에서의 테스트라고 보기 어렵다.
+  + 네트워크
+    + Docker MySQL은 네트워크 비용이 거의 들지 않는다
+    + 바로 로컬에 있는 Database에 접근하여 데이터를 가져오고 쓰기 때문이다.
+    + 이 또한, 실제 운영환경과 같은 환경에서의 테스트라고 보기 어렵다
+  + 데이터 개수
+    + 사업이 얼마나 잘되고 있는지에 따라 다르겠지만 애초에 100만개라는 데이터가 많은 데이터는 아니다.
+  + 데이터 분포도
+    + 데이터 분포도 즉, 카티널리티가 운영환경과 스트레스테스트 환경이 다르다.
+    + 운영 환경에서는 훨씬 더 다양한 케이스 별로 데이터가 분포되어있을 것이다.
+    + 스트레스 테스트 환경에서는 그런 다양한 케이스를 만들기가 어렵다.
+
+#### 쿼리 튜닝하기
++ 배치 성능에 가장 큰 영향을 미치는 것 중에 하나가 바로 ItemReader의 조회성능이다.
++ 프로젝트마다 특징이 다르기 때문에 반드시 그런것은 아니지만 대부분의 경우에는 ItemReader에서 가져온 데이터를 수정하거나 변환해서 데이터베이스에 저장한.
++ 수정하거나 변환하는 부분, 그리고 데이터베이스에 저장하는 부분은 눈에 띄는 개선이 있기 어려운 부분이다. (물론 JPA를 쓰지 않고 다른 방식을 사용한다면 크게 개선될 수 있습니다.)
++ 하지만 Reader의 조회 쿼리 성능은 배치 성능에 매우 큰 영향을 준다.
++ 특히나, group by하고 sum하는 복잡한 쿼리의 경우에는 조회 성능이 압도적으로 중하다.
++ 쿼리 튜닝 어떻게 하나요?
+  + 쿼리를 튜닝하기 위해서는 explain을 통한 확인이 필요하다.
++ 쿼리 튜닝 주의할 점
+  + Index 마구 추가 하지 않기
+    + Index가 많아지면 그 테이블에 데이터를 Insert할 때 시간이 증가된다.
+    + 인덱스를 마구 추가하게 되면 원래 계획했던 대로 쿼리가 동작하지 않을 수도 있다.
+      + 결과는 동일하겠지만 빠른 방법을 두고 굳이 어려운 방법으로 동작할 수도 있다.
+    + 데이터 분포도에 따라 의미있던 Index가 의미가 없어지기도 한다.
+    + 서비스가 진행됨에 따라 데이터들의 분포도가 바뀔수 있기 때문이다.
+    + 따라서 섣불리 인덱스를 추가하지 않고 꼼꼼하게 확인하거나 DB전문가의 도움을 받는게 좋다
+  + Index 추가 보다 조회 쿼리 자체를 수정해보기
+    + 인덱스로 모든 것을 해결하려고 하기 보다는 쿼리 자체를 수정하는 것이 더 효율적인 경우가 많다
+    + 예를 들면 orderby 대상을 변경해본다던가 또는 join을 subquery로 변경해보기
+
+#### 파티셔닝
++ 파티셔닝이란
+  1. Master Step을 이용해 처리할 데이터를 더 작게 나눈다
+  2. Worker Step을 통해 나눈 데이터를 처리하도록 한다.
+  3. Local에서 처리하면 Multi Thread로 처리한다
+  4. Remote로 처리하면 여러 서버가 동시에 처리한다.
+
++ ![img.png](Part9-Hands-onProjects18.png)
+
+##### 파티셔닝 구현하는 방법
++ Partitioner를 구현
+
+~~~java
+
+public interface Partitioner {
+    Map<String, ExecutionContext> partition(int gridSize); //gridSize: StepExecution 생성 개수
+}
+
+~~~
+
++ PartitionHandler를 구현
+  + Master 스텝이 Worker 스텝을 어떻게 관리하는 지를 결정하는 부분이다. 크게 두가지 중에 하나를 사용한다.
+    + TaskExecutorPartitionHandler
+      + 로컬에서 Thread로 분할
+    + MessageChannelPartitionHandler
+      + 원격으로 메타 데이터 전송
++ 파티셔닝 구현 코드
+
+~~~java
+
+package me.benny.fcp.job.reservation;
+
+import lombok.RequiredArgsConstructor;
+import me.benny.fcp.point.reservation.PointReservationRepository;
+import org.springframework.batch.core.partition.support.Partitioner;
+import org.springframework.batch.item.ExecutionContext;
+
+import java.time.LocalDate;
+import java.util.HashMap;
+import java.util.Map;
+
+@RequiredArgsConstructor
+public class ExecutePointReservationStepPartitioner implements Partitioner {
+    private final PointReservationRepository pointReservationRepository;
+    private final LocalDate today;
+
+    @Override
+    public Map<String, ExecutionContext> partition(int gridSize) {
+        //오늘 처리할 예약건의 최소Id와 최대Id를 구함
+        long min = pointReservationRepository.findMinId(today); 
+        long max = pointReservationRepository.findMaxId(today);
+        long targetSize = (max - min) / gridSize + 1; //gridSize 로 Id를 분할합니다. gridSize: 4 / min : 1 / max : 20 이면  1~5 / 6~10 / 11~15 / 16~20 분할
+
+        Map<String, ExecutionContext> result = new HashMap<>();
+        long number = 0;
+        long start = min;
+        long end = start + targetSize - 1;
+
+        while (start <= max) {
+            ExecutionContext value = new ExecutionContext();
+            if (end >= max) {
+                end = max;
+            }
+            // minId와 maxId를 StepExectuionContext에 넣음
+            value.putLong("minId", start);
+            value.putLong("maxId", end);
+            result.put("partition" + number, value); // 파티션이름, StepExecutionContext를 반환 데이터에 넣는다.
+            start += targetSize;
+            end += targetSize;
+            number++;
+        }
+        return result;
+    }
+}
+
+~~~
+
+
+~~~java
+
+package me.benny.fcp.job.reservation;
+
+import me.benny.fcp.job.reader.ReverseJpaPagingItemReader;
+import me.benny.fcp.job.reader.ReverseJpaPagingItemReaderBuilder;
+import me.benny.fcp.point.Point;
+import me.benny.fcp.point.PointRepository;
+import me.benny.fcp.point.reservation.PointReservation;
+import me.benny.fcp.point.reservation.PointReservationRepository;
+import me.benny.fcp.point.wallet.PointWallet;
+import me.benny.fcp.point.wallet.PointWalletRepository;
+import org.springframework.batch.core.Step;
+import org.springframework.batch.core.configuration.annotation.JobScope;
+import org.springframework.batch.core.configuration.annotation.StepBuilderFactory;
+import org.springframework.batch.core.configuration.annotation.StepScope;
+import org.springframework.batch.core.partition.support.TaskExecutorPartitionHandler;
+import org.springframework.batch.item.ItemProcessor;
+import org.springframework.batch.item.ItemWriter;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.core.task.TaskExecutor;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.util.Pair;
+import org.springframework.transaction.PlatformTransactionManager;
+
+import java.time.LocalDate;
+
+@Configuration
+public class ExecutePointReservationStepConfiguration {
+
+  /**
+   * 파티셔닝 사용
+   * 단, 동시성 문제가 있어서 사용이 불가합니다.
+   */
+  @Bean
+  @JobScope
+  public Step executePointReservationMasterStep(
+          StepBuilderFactory stepBuilderFactory,
+          TaskExecutorPartitionHandler partitionHandler,
+          PointReservationRepository pointReservationRepository,
+          @Value("#{T(java.time.LocalDate).parse(jobParameters[today])}")
+          LocalDate today
+  ) {
+    return stepBuilderFactory
+            .get("executePointReservationMasterStep")
+            .partitioner(
+                    "executePointReservationStep", // Worker Step이 될 Step 이름 추가
+                    new ExecutePointReservationStepPartitioner(pointReservationRepository, today) // Partitioner 추가
+            )
+            .partitionHandler(partitionHandler) // PartitionHandler추가
+            .build();
+  }
+
+  // 로컬에서 Thread로 파티셔닝 진행
+  @Bean
+  public TaskExecutorPartitionHandler partitionHandler(
+          Step executePointReservationStep,
+          TaskExecutor taskExecutor
+  ) {
+    TaskExecutorPartitionHandler partitionHandler = new TaskExecutorPartitionHandler();
+    partitionHandler.setStep(executePointReservationStep);
+    partitionHandler.setGridSize(8);
+    partitionHandler.setTaskExecutor(taskExecutor);
+    return partitionHandler;
+  }
+
+  @Bean
+  public Step executePointReservationStep(
+          StepBuilderFactory stepBuilderFactory,
+          PlatformTransactionManager platformTransactionManager,
+          ReverseJpaPagingItemReader<PointReservation> executePointReservationItemReader,
+          ItemProcessor<PointReservation, Pair<PointReservation, Point>> executePointReservationItemProcessor,
+          ItemWriter<Pair<PointReservation, Point>> executePointReservationItemWriter
+  ) {
+    return stepBuilderFactory
+            .get("executePointReservationStep")
+            .allowStartIfComplete(true)
+            .transactionManager(platformTransactionManager)
+            .<PointReservation, Pair<PointReservation, Point>>chunk(1000)
+            .reader(executePointReservationItemReader)
+            .processor(executePointReservationItemProcessor)
+            .writer(executePointReservationItemWriter)
+            .build();
+  }
+
+  @Bean
+  @StepScope
+  public ReverseJpaPagingItemReader<PointReservation> executePointReservationItemReader(
+          PointReservationRepository pointReservationRepository,
+          @Value("#{T(java.time.LocalDate).parse(jobParameters[today])}") LocalDate today,
+          // StepExecutionContext로 minId, maxId 사용가능
+          @Value("#{stepExecutionContext[minId]}") Long minId,
+          @Value("#{stepExecutionContext[maxId]}") Long maxId
+  ) {
+    return new ReverseJpaPagingItemReaderBuilder<PointReservation>()
+            .name("messageExpireSoonPointItemReader")
+            .query(
+                    pageable -> pointReservationRepository.findPointReservationToExecute(today, minId, maxId, pageable) //minId, maxId를 추가해서 WorkerStep이 맡아야할 8등분 되어 감소함
+            )
+            .pageSize(1000)
+            .sort(Sort.by(Sort.Direction.ASC, "id"))
+            .build();
+  }
+
+  @Bean
+  @StepScope
+  public ItemProcessor<PointReservation, Pair<PointReservation, Point>> executePointReservationItemProcessor() {
+    return reservation -> {
+      reservation.setExecuted(true);
+      Point earnedPoint = new Point(
+              reservation.getPointWallet(),
+              reservation.getAmount(),
+              reservation.getEarnedDate(),
+              reservation.getExpireDate()
+      );
+      PointWallet wallet = earnedPoint.getPointWallet();
+      wallet.setAmount(wallet.getAmount().add(earnedPoint.getAmount()));
+      return Pair.of(reservation, earnedPoint);
+    };
+  }
+
+  @Bean
+  @StepScope
+  public ItemWriter<Pair<PointReservation, Point>> executePointReservationItemWriter(
+          PointReservationRepository pointReservationRepository,
+          PointRepository pointRepository,
+          PointWalletRepository pointWalletRepository
+  ) {
+    return reservationAndPoints -> {
+      for (Pair<PointReservation, Point> pair : reservationAndPoints) {
+        PointReservation reservation = pair.getFirst();
+        Point point = pair.getSecond();
+        pointReservationRepository.save(reservation);
+        pointRepository.save(point);
+        pointWalletRepository.save(reservation.getPointWallet());
+      }
+    };
+  }
+}
+
+~~~
+
+##### 파티셔닝 주의 사항
++ 파티셔닝 하기 전에…
+  + 배치 성능을 개선하려고 한다면 중요한 선택지 중에 하나가 바로 파티셔닝이다.
+  + 상황만 잘 맞는다면 당연히 눈에 띄는 개선을 이룰수 있다.
+  + 그러나 파티셔닝을 하기에 앞서 자신의 코드와 코드에서 사용하는 쿼리를 개선해서 성능을 개선하는 것을 먼저 해보는 걸 추천한다.
+  + 문제 있는 코드가 있다면 아무리 스레드를 늘린다고 하더라도 근본적으로 개선되기는 어렵다.
++ 동시성 처리
+  + 파티셔닝을 하게되면 병렬처리를 한다.
+  + 즉, 동시성 문제를 겪게 된다.
+  + 배치 Job의 절반 이상은 이런 동시성 문제때문에 파티셔닝이 불가한 상태이다.
+  + 만약에 중간에 동시성 문제를 해결하기 위해 Lock을 걸게 되면 병렬처리는 하는 의미가 없어져 오히려 성능이 저하될 수도 있다.
+
+## P3. 유지보수하기 좋은 코드 디자인 
+
+### Part 2. 프로젝트 Setting
++ IntelliJ 사용법
+  + [https://github.com/cheese10yun/code-design/blob/master/ch2/README.md](https://github.com/cheese10yun/code-design/blob/master/ch2/README.md)
+
+#### 패키기 구조
++ Layer VS Domain
+  + Layer
+    + ![img.png](Part9-Hands-onProjects19.png)
+  + Domain
+    + ![img.png](Part9-Hands-onProjects20.png)
++ Layer 장단점
+  + ![img.png](Part9-Hands-onProjects19.png)
+   + 장점
+      + 프로젝트 이해가 낮아도 전체적인 구조를 빠르게 파악 가능
+      + 작성 하고자하는 계층이 명확할 경우 빠르게 개발 가능
+  + 단점
+    + 각 레이어별로 수십개의 클래스들이 존재하여 코드 파악이 어렵다
+    + Layer를 기준으로 분리했기 때문에 코드의 응집력이 떨어진다
++ Domain 장단점
+  + ![img.png](Part9-Hands-onProjects20.png)
+  + 장점
+    + 관련된 코드들이 응집해 있다
+    + 디렉토리 구조를 통해 도메인을 이해할 수 있다
+  + 단점
+    + 도메인 지식없이 이해하기 어렵다
+    + 각 계층을 구분하기 위한 논의가 필요하다
++ __권장하는 도메인__
+  + ![img.png](Part9-Hands-onProjects21.png)
+    + domain: 도메인을 담당
+    + global: 프로젝트의 전체담당
+    + Infra: 외부 인프라스트럭처 담당 
+  + domain
+    + ![img.png](Part9-Hands-onProjects22.png)
+    + api: 컨트롤러 클래스들이 존재한다.
+    + domain : 도메인 엔티티에 대한 클래스로 구성된다. 특정 도메인에만 속하는 Embeddable, Enum 같은 클래스도 구성된다.
+    + dto : 주로 Request, Response 객체들로 구성된다.
+    + exception : 해당 도메인이 발생시키는 Exception으로 구성된다.
+  + global
+    + ![img.png](Part9-Hands-onProjects23.png)
+    + global은 프로젝트 전방위적으로 시용되는 객체들로 구성된다.
+    + common : 공통으로 사용되는 Value 객체들로 구성된다. 페이징 처리를 위한 Request, 공통된 응답을 주는 Response 객체들이 있다.
+    + config : 스프링 각종 설정들로 구성된다.
+    + error : 예외 핸들링을 담당하는 클래스로 구성됩니다.
+    + util : 유틸성 클래스들이 위치한다.
+  + infra
+    + ![img.png](Part9-Hands-onProjects24.png)
+    + infra 디렉터리는 인프라스트럭처 관련된 코드들로 구성된다.
++ 구조 예시
+  + ![img.png](Part9-Hands-onProjects25.png)
+
+### Part 3. 객체를 풍부하게 표현하기
+
+#### Lombok을 잘 사용해야 객체 디지인을 망치지 않는다
++ @Data는 지양하자
+  + 무분별한 @Setter 남용
+    + Setter는 그 의도가 분명하지 않고 객체를 언제든지 변경할 수 있는 상태가되어서 객체의 안전성이 보장받기 힘들다
+  + ToString 양방향 순환 참조 문제
+  + @EqualsAndHashCode 의 남발
++ 클래스 상단의 @Builder는 지양 하자
+  + Student 자기 자신의 객체가, 본인의 생성되는 플로우에서 보다 명확하게 필요한 값과 필요하지 않은 값을 구분해서 받게 해야한다.
++ lombok.config 설정을 통해서 제한 하자
+
+~~~properties
+
+lombak.Setter.flagUsage = error
+lombak.AllArgsConstuctor.flagUsage = error
+lombak.data.flagUsage = error
+lombak.addLombokGeneratedAnnotation = true
+lombok.toString.flagUsage=WARNING
+
+~~~
+
+### Part 4. Exception 처리 방법
+
+#### 오류 코드 코드보다 예외를 사용하라
++ ![img.png](Part9-Hands-onProjects26.png)
++ ![img.png](Part9-Hands-onProjects27.png)
+
+1. try catch를 최대한 지양해라.(로직으로 예외 처리가 가능하다면)
+2. try catch를 하는데 아무런 처리가 없다면 로그라도 추가하자
+3. try catch를 사용하게 된다면, 더 구체적인 예외를 발생시키는것이 좋다. (Exception 직접 정의 or Error Message를 명확하게)
+
+#### Check Exception VS UnChecked Exception
++ ![img.png](Part9-Hands-onProjects28.png)
++ ![img.png](Part9-Hands-onProjects29.png)
++ ![img.png](Part9-Hands-onProjects30.png)
+
+### Part 5. API Server Error 처리
+
+#### 통일된 Error Response를 가져야하는 이유
++ Error Response
+  + ![img.png](Part9-Hands-onProjects31.png)
++ Error Response 객체
+  + ![img.png](Part9-Hands-onProjects32.png)
++ Error Code
+  + ![img.png](Part9-Hands-onProjects33.png)
+
+#### @ControllerAdvice를 활용한 일관된 예외 핸들링
++ 컨트롤러 예외 처리
+  + ![img.png](Part9-Hands-onProjects34.png)
+    + 컨틀롤러에서 모든 요청에 대한 값 검증을 진행하고 이상이 없을 시에 서비스 레이어를 호출해야 한다.
+    + 컨트롤러의 중요한 책임 중의 하나는 요청에 대한 값 검증이 있다. 스프링은 Bean Validation 검증
+      을 쉽고 일관성 있게 처리할 수 있도록 도와준다. 모든 예외는 @ControllerAdvice 선언된 객체에서
+      핸들링 된다.
++ Error Response 객체
+  + ![img.png](Part9-Hands-onProjects35.png)
+
+#### 계층화를 통한 Business Exception 처리 방법
++ 비지니스 예외를 위한 최상위 BusinessException 클래스
+  + ![img.png](Part9-Hands-onProjects36.png)
+    + 최상위 BusinessException을 기준으로 예외를 발생시키면 통일감 있는 예외 처리를 가질 수 있다.
+      비니지스 로직을 수행하는 코드 흐름에서 로직의 흐름을 진행할 수 없는 상태인 경우에는 적절한
+      BusinessException 중에 하나를 예외를 발생 시키거나 직접 정의하게 된다.
+    + 이렇게 발생하는 모든 예외는 handleBusinessException 에서 동일하게 핸들링 된다. 예외 발생시
+      알람을 받는 등의 추가적인 행위도 손쉽게 가능하다. 또 BusinessException 클래스의 하위 클래스
+      중에서 특정 예외에 대해서 다른 알람을 받는 등의 더 디테일한 핸들링도 가능해진다.
++ Business Exception 처리
+  + ![img.png](Part9-Hands-onProjects37.png)
+
+#### 효율적인 Validation
++ Custom Validation 어노테이션 만들기
+  + ![img.png](Part9-Hands-onProjects38.png)
+  + ![img.png](Part9-Hands-onProjects39.png)
+  + ![img.png](Part9-Hands-onProjects40.png)
++ ConstraintValidator 사용법
+  + ![img.png](Part9-Hands-onProjects41.png)
+  + ![img.png](Part9-Hands-onProjects42.png)
+
+### Part 6. 자신의 책임과 의도가 명확한 객체 디자인
+
+#### 적절한 객체의 크기를 찾아가는 여정
++ 인터페이스 이유
+  + 세부 구현체를 숨기고 인터페이스를 바라보게 함으로써 클래스 간의 의존관계를 줄이는 것
+  + 인터페이스를 구현하는 여러 구현체가 있고 기능에 따라 적절한 구현체가 들어가서 다형성을 주기 위함
+
+#### 묻지 말고 시켜라!
++ 객체는 충분히 협력적이어야 한다.
+  + 객체간의 협력관계에서 상대 객체에 대한 정보를 꼬치꼬치 묻는 않고는다, 묻지 말고 시켜라 Tell, Don’t Ask
+  + 객체는 충분히 협럭적이고 자율적인 관계를 유지 해야한다. 객체의 관계는 복종하는 관계가 아니다
+
+### Part 7. 시스템 내 강결합 문제 해결
+
+#### ApplicationEventPublisher를 이용한 시스템 내의 강결합 문제 해결
++ 회원 가입 시나리오
+  + ![img.png](Part9-Hands-onProjects48.png)
++ 시스템의 강결한 결합문제 
+  + ![img.png](Part9-Hands-onProjects43.png)
++ 트랜잭션의 문제
+  + ![img.png](Part9-Hands-onProjects44.png)
+  + ![img.png](Part9-Hands-onProjects45.png)
++ 시스템의 강결한 결합 문제 해결
+  + ![img.png](Part9-Hands-onProjects46.png)
+  + 회원 가입 -> 회원 가입 쿠폰 발행 -> 회원 가입 완료 이벤트 발행 -> 회원 가입 이벤트 리스너 동작 -> 회원 가입 이메일 전송
++ 트랜잭션의 문제 해결
+  + ![img.png](Part9-Hands-onProjects47.png)
+  + @TransactionalEventListener으로 리스너를 등록하는 경우 해당 트랜잭션이 Commit된 이후에 리스너가 동작하게 됩니다
+  + 위처럼 동일하게 회원 가입 쿠폰에서 예외가 발생하게 된다면 트랜잭션 Commit이 진행되지 않기 때문에 해당 리스너가 동작하지 않게 되어 트랜잭션 문제를 해결할 수 있습니다
++ 주문 시나리오
+  + ![img.png](Part9-Hands-onProjects49.png)
++ 장바구니 삭제시 트랜잭션 문제
+  + ![img.png](Part9-Hands-onProjects50.png)
++ 성능 문제
+  + ![img.png](Part9-Hands-onProjects51.png)
++ 장바구니 삭제시 트랜잭션 문제, 성능 문제 해결
+  + ![img.png](Part9-Hands-onProjects52.png)
+  + ![img.png](Part9-Hands-onProjects53.png)
+  + ![img.png](Part9-Hands-onProjects54.png)
+    + 트랜잭션이 다르기 때문에 Cart 제거시 문제가 생겨도 Order Insert의 영향을 주지 않는다
+
+### Part 8. 테스팅 방법 및 전략
+
+#### Junit5 특징
++ Junit5 기본설정은 테스트 메서드 마다 인스턴스를 생성한다
+  + 테스트 코드간의 디펜던시를 줄이기 위함
++ Junit5 인스턴스를 공유해서 사용할 수 있는 설정이 있다
+  + 인스턴스 변수에 static 키워드 추가 
+  + @TestInstance(Lifecycle.PER_CLASS) 추가
++ 전처리 후처리 기능을 통해서 테스트 메서드 사후 동작에 작업을 할 수 있다
+
+~~~java
+
+public class Junit5_2 {
+
+    /**
+     * @BeforeAll 테스트 실행되기 전 한번 실행됨
+     * @BeforeEach 모든 테스트 마다 실행되기 전에 실행됨
+     * @AfterEach 모든 테스트 마다 실행된후 전에 실행됨
+     * @AfterAll 테스트 실행된 후 한 번 실행됨
+     */
+
+    @BeforeAll
+    static void beforeAll() {
+        System.out.println("BeforeAll : 테스트 실행되기 이전 단 한 번만 실행");
+    }
+
+    @AfterAll
+    static void afterAll() {
+        System.out.println("AfterAll : 테스트 실행되기 이전 단 한 번만 실행");
+    }
+
+    @BeforeEach
+    void beforeEach() {
+        System.out.println("BeforeEach: 모든 테스트 마다 실행되기 이전 실행 ");
+    }
+
+    @AfterEach
+    void afterEach() {
+        System.out.println("AfterEach : 모든 테스트 마다 실행 이후 실행");
+    }
+
+    @Test
+    void test_1() {
+        System.out.println("test_1");
+    }
+
+    @Test
+    void test_2() {
+        System.out.println("test_2");
+    }
+}
+
+~~~
+
++ Junit5 기본 설정은 테스트 코드의 순서를 보장하지 않지만 특정 설정을 통해서 보장받을 수 있다
+
+~~~java
+
+@TestInstance(Lifecycle.PER_CLASS)
+@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
+public class Junit5_3 {
+
+    @Test
+    @Order(2)
+    void test_1() {
+        System.out.println("test_1");
+    }
+
+    @Test
+    @Order(1)
+    void test_2() {
+        System.out.println("test_2");
+    }
+
+    @Test
+    @Order(99)
+    void test_3() {
+        System.out.println("test_3");
+    }
+}
+
+~~~
+
+#### Junit5 @ParameterizedTest 사용법
++ @ParameterizedTest를 통해서 다양한 파라미터를 편리하기 테스트 할 수 있다.
++ @ValueSource, @EnumSource, @CsvSource, @MethodSource
+
+~~~java
+
+public class Junit5 {
+
+    @ParameterizedTest
+    @ValueSource(strings = {"1", "2"})
+    void valueSource_1(String value) {
+        System.out.println(value);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false, false})
+    void valueSource_2(boolean value) {
+        System.out.println(value);
+    }
+
+    @ParameterizedTest
+    @EnumSource(Quarter.class)
+    void enumSource_1(Quarter quarter) {
+        then(quarter.getValue()).isIn(1, 2, 3, 4);
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = Quarter.class, names = {"Q1", "Q2"})
+    void enumSource_2(Quarter quarter) {
+        then(quarter.getValue()).isIn(1, 2);
+        then(quarter.getValue()).isNotIn(3, 4);
+    }
+
+    @ParameterizedTest
+    @CsvSource(
+        value = {
+            "010-1234-1234,01012341234",
+            "010-2333-2333,01023332333",
+            "02-223-1232,022231232"
+        }
+    )
+    void csvSource(String value, String expected) {
+        final String number = value.replace("-", "");
+        then(number).isEqualTo(expected);
+    }
+
+    @ParameterizedTest
+    @MethodSource("providerOrder")
+    void methodSource(Order order, int expectedTotalPrice) {
+        then(order.getTotalPrice()).isEqualTo(expectedTotalPrice);
+    }
+
+    static List<Arguments> providerOrder() {
+        final List<Arguments> arguments = new ArrayList<>();
+
+        arguments.add(Arguments.of(new Order(100, 2), 200));
+        arguments.add(Arguments.of(new Order(100, 3), 300));
+
+        return arguments;
+    }
+}
+
+enum Quarter {
+    Q1(1, "1분기"),
+    Q2(2, "2분기"),
+    Q3(3, "3분기"),
+    Q4(4, "4분기");
+
+    private final int value;
+    private final String description;
+
+    Quarter(int value, String description) {
+        this.value = value;
+        this.description = description;
+    }
+
+    public int getValue() {
+        return value;
+    }
+
+    public String getDescription() {
+        return description;
+    }
+}
+
+class Order {
+
+    private int price;
+    private int quantity;
+
+    public Order(int price, int quantity) {
+        this.price = price;
+        this.quantity = quantity;
+    }
+
+    public int getTotalPrice() {
+        return price * quantity;
+    }
+
+    public int getPrice() {
+        return price;
+    }
+
+    public int getQuantity() {
+        return quantity;
+    }
+}
+
+~~~
+
+#### Junit5 AssertJ 사용 방법
++ [https://assertj.github.io/doc/](https://assertj.github.io/doc/)
++ 자동 완성 기능이 있어 편리하게 테스트 코드 작성
++ 강력한 검증 기능
++ BDD 스타일 지원
+
+~~~java
+
+public class Test_2 {
+
+    @Test
+    public void 기존_matcher_불편한점() {
+//        org.hamcrest.MatcherAssert.assertThat("aa", org.hamcrest.Matchers.is("aa"));
+
+    }
+
+    @Test
+    public void 문장_검사() {
+        final String title = "AssertJ is best matcher";
+        then(title)
+            .isNotNull()
+            .startsWith("AssertJ")
+            .contains(" ")
+            .endsWith("matcher")
+        ;
+    }
+
+    @Test
+    public void 다양한_기능_제공() {
+        then(BigDecimal.ZERO).isEqualByComparingTo(BigDecimal.valueOf(0));
+        then(" ").isBlank();
+        then("").isEmpty();
+        then("YWJjZGVmZw==").isBase64();
+        then("AA").isIn("AA", "BB", "CC");
+
+        final LocalDate targetDate = LocalDate.of(2020, 5, 5);
+        then(targetDate).isBetween(LocalDate.of(2020, 1, 1), LocalDate.of(2020, 12, 12));
+    }
+
+    @Test
+    public void collection_검증() {
+        final List<Member> members = new ArrayList<>();
+        members.add(new Member("Kim"));
+        members.add(new Member("Joo"));
+        members.add(new Member("Jin"));
+
+        then(members).hasSize(3);
+        then(members).allSatisfy(member -> {
+                System.out.println(member);
+                then(member.getName()).isIn("Kim", "Joo", "Jin");
+                then(member.getId()).isNull();
+            }
+        );
+    }
+
+    @Test
+    public void thenThrownBy_사용법() {
+        thenThrownBy(() -> new Member(""))
+            .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    public void BDD_Style() {
+        assertThat(10).isEqualTo(10);
+        assertThat(true).isTrue();
+
+        then(10).isEqualTo(10);
+        then(true).isTrue();
+    }
+}
+
+~~~
+
+#### 스프링의 다양한 테스트 종류
++ 통합 테스트
++ 단위 테스트, JPA, MVC (Slice Test)
++ 단위 테스트, Service Mock 테스트
++ POJO, 도메인 테스트
+
+~~~java
+
+@TestConstructor(autowireMode = TestConstructor.AutowireMode.ALL)
+@ActiveProfiles("test")
+@DataJpaTest
+public class RepositoryTest {
+
+    private final MemberRepository memberRepository;
+
+    public RepositoryTest(MemberRepository memberRepository) {
+        this.memberRepository = memberRepository;
+    }
+
+    @Test
+    public void member_test() {
+        //given
+        memberRepository.save(new Member("yun"));
+
+        //when
+        final Member findMember = memberRepository.findByName("yun");
+
+        //then
+        then(findMember.getName()).isEqualTo("yun");
+    }
+
+    @Test
+    @Sql("/member-set-up.sql")
+    public void sql_test() {
+        final List<Member> members = memberRepository.findAll();
+        then(members).hasSize(7);
+    }
+}
+
+
+~~~
+
+#### Pull Request & Test build
++ [Travis CI](https://travis-ci.org/)
++ [Codecov](https://about.codecov.io/)
++ CI & Test Report
+  + [https://github.com/cheese10yun/jacoco/pull/1](https://github.com/cheese10yun/jacoco/pull/1)
+
+#### Test Coverage 룰적용
++ Jacoco Coverage Rule 적용
+  + Jacoco를 통해 Coverage Rule을 적용
+  + 특정 커버리지에 도달하지 못하면 Build Failed
+  + Test Build시 Test Coverage Report 전달받기
++ Jacoco Test Coverage Report
+  + ![img.png](Part9-Hands-onProjects55.png)
