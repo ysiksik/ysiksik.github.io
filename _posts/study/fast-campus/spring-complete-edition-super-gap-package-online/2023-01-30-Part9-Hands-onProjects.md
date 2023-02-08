@@ -1229,10 +1229,10 @@ spring:
 + 언제 발생할 까?
   + 처리할 데이터 개수 > Page Size 인 경우
   + Reader의 조건으로 사용하는 필드와 Processor에서 수정하는 필드가 동일한 경우
-  + ![img.png](Part9-Hands-onProjects15.png)
-  + ![img.png](Part9-Hands-onProjects16.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects15.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects16.png)
 + 해결방법
-  + ![img.png](Part9-Hands-onProjects17.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects17.png)
 
 #### 문제점 2
 + 대량 처리 테스트, 성능 측정을 하지 않았다
@@ -1488,7 +1488,7 @@ DELIMITER ;
   3. Local에서 처리하면 Multi Thread로 처리한다
   4. Remote로 처리하면 여러 서버가 동시에 처리한다.
 
-+ ![img.png](Part9-Hands-onProjects18.png)
++ ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects18.png)
 
 ##### 파티셔닝 구현하는 방법
 + Partitioner를 구현
@@ -1724,11 +1724,11 @@ public class ExecutePointReservationStepConfiguration {
 #### 패키기 구조
 + Layer VS Domain
   + Layer
-    + ![img.png](Part9-Hands-onProjects19.png)
+    + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects19.png)
   + Domain
-    + ![img.png](Part9-Hands-onProjects20.png)
+    + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects20.png)
 + Layer 장단점
-  + ![img.png](Part9-Hands-onProjects19.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects19.png)
    + 장점
       + 프로젝트 이해가 낮아도 전체적인 구조를 빠르게 파악 가능
       + 작성 하고자하는 계층이 명확할 경우 빠르게 개발 가능
@@ -1736,7 +1736,7 @@ public class ExecutePointReservationStepConfiguration {
     + 각 레이어별로 수십개의 클래스들이 존재하여 코드 파악이 어렵다
     + Layer를 기준으로 분리했기 때문에 코드의 응집력이 떨어진다
 + Domain 장단점
-  + ![img.png](Part9-Hands-onProjects20.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects20.png)
   + 장점
     + 관련된 코드들이 응집해 있다
     + 디렉토리 구조를 통해 도메인을 이해할 수 있다
@@ -1744,28 +1744,28 @@ public class ExecutePointReservationStepConfiguration {
     + 도메인 지식없이 이해하기 어렵다
     + 각 계층을 구분하기 위한 논의가 필요하다
 + __권장하는 도메인__
-  + ![img.png](Part9-Hands-onProjects21.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects21.png)
     + domain: 도메인을 담당
     + global: 프로젝트의 전체담당
     + Infra: 외부 인프라스트럭처 담당 
   + domain
-    + ![img.png](Part9-Hands-onProjects22.png)
+    + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects22.png)
     + api: 컨트롤러 클래스들이 존재한다.
     + domain : 도메인 엔티티에 대한 클래스로 구성된다. 특정 도메인에만 속하는 Embeddable, Enum 같은 클래스도 구성된다.
     + dto : 주로 Request, Response 객체들로 구성된다.
     + exception : 해당 도메인이 발생시키는 Exception으로 구성된다.
   + global
-    + ![img.png](Part9-Hands-onProjects23.png)
+    + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects23.png)
     + global은 프로젝트 전방위적으로 시용되는 객체들로 구성된다.
     + common : 공통으로 사용되는 Value 객체들로 구성된다. 페이징 처리를 위한 Request, 공통된 응답을 주는 Response 객체들이 있다.
     + config : 스프링 각종 설정들로 구성된다.
     + error : 예외 핸들링을 담당하는 클래스로 구성됩니다.
     + util : 유틸성 클래스들이 위치한다.
   + infra
-    + ![img.png](Part9-Hands-onProjects24.png)
+    + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects24.png)
     + infra 디렉터리는 인프라스트럭처 관련된 코드들로 구성된다.
 + 구조 예시
-  + ![img.png](Part9-Hands-onProjects25.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects25.png)
 
 ### Part 3. 객체를 풍부하게 표현하기
 
@@ -1792,41 +1792,41 @@ lombok.toString.flagUsage=WARNING
 ### Part 4. Exception 처리 방법
 
 #### 오류 코드 코드보다 예외를 사용하라
-+ ![img.png](Part9-Hands-onProjects26.png)
-+ ![img.png](Part9-Hands-onProjects27.png)
++ ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects26.png)
++ ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects27.png)
 
 1. try catch를 최대한 지양해라.(로직으로 예외 처리가 가능하다면)
 2. try catch를 하는데 아무런 처리가 없다면 로그라도 추가하자
 3. try catch를 사용하게 된다면, 더 구체적인 예외를 발생시키는것이 좋다. (Exception 직접 정의 or Error Message를 명확하게)
 
 #### Check Exception VS UnChecked Exception
-+ ![img.png](Part9-Hands-onProjects28.png)
-+ ![img.png](Part9-Hands-onProjects29.png)
-+ ![img.png](Part9-Hands-onProjects30.png)
++ ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects28.png)
++ ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects29.png)
++ ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects30.png)
 
 ### Part 5. API Server Error 처리
 
 #### 통일된 Error Response를 가져야하는 이유
 + Error Response
-  + ![img.png](Part9-Hands-onProjects31.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects31.png)
 + Error Response 객체
-  + ![img.png](Part9-Hands-onProjects32.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects32.png)
 + Error Code
-  + ![img.png](Part9-Hands-onProjects33.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects33.png)
 
 #### @ControllerAdvice를 활용한 일관된 예외 핸들링
 + 컨트롤러 예외 처리
-  + ![img.png](Part9-Hands-onProjects34.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects34.png)
     + 컨틀롤러에서 모든 요청에 대한 값 검증을 진행하고 이상이 없을 시에 서비스 레이어를 호출해야 한다.
     + 컨트롤러의 중요한 책임 중의 하나는 요청에 대한 값 검증이 있다. 스프링은 Bean Validation 검증
       을 쉽고 일관성 있게 처리할 수 있도록 도와준다. 모든 예외는 @ControllerAdvice 선언된 객체에서
       핸들링 된다.
 + Error Response 객체
-  + ![img.png](Part9-Hands-onProjects35.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects35.png)
 
 #### 계층화를 통한 Business Exception 처리 방법
 + 비지니스 예외를 위한 최상위 BusinessException 클래스
-  + ![img.png](Part9-Hands-onProjects36.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects36.png)
     + 최상위 BusinessException을 기준으로 예외를 발생시키면 통일감 있는 예외 처리를 가질 수 있다.
       비니지스 로직을 수행하는 코드 흐름에서 로직의 흐름을 진행할 수 없는 상태인 경우에는 적절한
       BusinessException 중에 하나를 예외를 발생 시키거나 직접 정의하게 된다.
@@ -1834,16 +1834,16 @@ lombok.toString.flagUsage=WARNING
       알람을 받는 등의 추가적인 행위도 손쉽게 가능하다. 또 BusinessException 클래스의 하위 클래스
       중에서 특정 예외에 대해서 다른 알람을 받는 등의 더 디테일한 핸들링도 가능해진다.
 + Business Exception 처리
-  + ![img.png](Part9-Hands-onProjects37.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects37.png)
 
 #### 효율적인 Validation
 + Custom Validation 어노테이션 만들기
-  + ![img.png](Part9-Hands-onProjects38.png)
-  + ![img.png](Part9-Hands-onProjects39.png)
-  + ![img.png](Part9-Hands-onProjects40.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects38.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects39.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects40.png)
 + ConstraintValidator 사용법
-  + ![img.png](Part9-Hands-onProjects41.png)
-  + ![img.png](Part9-Hands-onProjects42.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects41.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects42.png)
 
 ### Part 6. 자신의 책임과 의도가 명확한 객체 디자인
 
@@ -1861,29 +1861,29 @@ lombok.toString.flagUsage=WARNING
 
 #### ApplicationEventPublisher를 이용한 시스템 내의 강결합 문제 해결
 + 회원 가입 시나리오
-  + ![img.png](Part9-Hands-onProjects48.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects48.png)
 + 시스템의 강결한 결합문제 
-  + ![img.png](Part9-Hands-onProjects43.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects43.png)
 + 트랜잭션의 문제
-  + ![img.png](Part9-Hands-onProjects44.png)
-  + ![img.png](Part9-Hands-onProjects45.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects44.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects45.png)
 + 시스템의 강결한 결합 문제 해결
-  + ![img.png](Part9-Hands-onProjects46.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects46.png)
   + 회원 가입 -> 회원 가입 쿠폰 발행 -> 회원 가입 완료 이벤트 발행 -> 회원 가입 이벤트 리스너 동작 -> 회원 가입 이메일 전송
 + 트랜잭션의 문제 해결
-  + ![img.png](Part9-Hands-onProjects47.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects47.png)
   + @TransactionalEventListener으로 리스너를 등록하는 경우 해당 트랜잭션이 Commit된 이후에 리스너가 동작하게 됩니다
   + 위처럼 동일하게 회원 가입 쿠폰에서 예외가 발생하게 된다면 트랜잭션 Commit이 진행되지 않기 때문에 해당 리스너가 동작하지 않게 되어 트랜잭션 문제를 해결할 수 있습니다
 + 주문 시나리오
-  + ![img.png](Part9-Hands-onProjects49.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects49.png)
 + 장바구니 삭제시 트랜잭션 문제
-  + ![img.png](Part9-Hands-onProjects50.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects50.png)
 + 성능 문제
-  + ![img.png](Part9-Hands-onProjects51.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects51.png)
 + 장바구니 삭제시 트랜잭션 문제, 성능 문제 해결
-  + ![img.png](Part9-Hands-onProjects52.png)
-  + ![img.png](Part9-Hands-onProjects53.png)
-  + ![img.png](Part9-Hands-onProjects54.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects52.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects53.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects54.png)
     + 트랜잭션이 다르기 때문에 Cart 제거시 문제가 생겨도 Order Insert의 영향을 주지 않는다
 
 ### Part 8. 테스팅 방법 및 전략
@@ -2206,4 +2206,4 @@ public class RepositoryTest {
   + 특정 커버리지에 도달하지 못하면 Build Failed
   + Test Build시 Test Coverage Report 전달받기
 + Jacoco Test Coverage Report
-  + ![img.png](Part9-Hands-onProjects55.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part9-Hands-onProjects55.png)
