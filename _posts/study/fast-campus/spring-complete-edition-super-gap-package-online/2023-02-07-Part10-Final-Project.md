@@ -94,3 +94,68 @@ comments: true
     + salt 필요
   + Brute-force 공격에 대비가 가능해야 한다. (연산속도가 너무 빠르면 안된다.)
   + BCrypt 알고리즘을 많이 사용한다.
+
+## 이메일 발송 기능 개발
+
+### gmail smtp 서버를 이용하기 위한 등록 절차
++ 메일 발송에 필요한 준비불
+  + Gmail SMTP 접속용 계정 생성
+  + 테스트를 위한 실제 이메일 준비 (1~3개)
++ 대략적인 개발 순서 
+  + gmail smtp 계성 생성 및 메링 전송을 위한 앱등록
+  + spring mail starter 의존성 추가
+  + 스프링 설정에 smtp 추가
+  + 이메일 발송 기능 개발 
+
+### Gmail SMTP 용 설정하기
++ 구글 계정의 보안 설정 접속 후 2단계 인증 진행
+  + [https://myaccount.google.com/u/2/security](https://myaccount.google.com/u/2/security)
++ 앱 비밀번호 클릭
++ 앱 비밀번호 설정
+  + 앱설정 -> 메일
+  + 기타 설정 -> 기타(맞춤 이름)
++ 앱 이름 추가 후 생성
++ 앱 비밀번호 확인
+  + 스프링 설정에 추가
+
+## 알람 배치 시스템 개발
+
+### 배치 아키텍쳐 설명
+
++ 스프링 배치 구조 
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part10-Final-Project2.png)
++ ItemReader
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part10-Final-Project3.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part10-Final-Project4.png)
+  + 단순하게 아이템 하나를 읽는 Strategy 이다.
+  + 배치 어플리케이션은 데이터를 읽는 것으로 시작하기 때문에, 다양한 데이터 소스 (꼭 db를 말하는 것은 아니다) 로부터 데이터를 읽을 수 있는 구현체를 잘 정의하는게 중요하다.
++ ItemProcessor
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part10-Final-Project5.png)
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part10-Final-Project6.png)
+  + Reader 로부터 받아온 Item을 가공하는 담당.
+  + Item이 <I> 타입이었다면 <O> 타입으로 변경해서 넘길 수 있다.
+  + 배치 어플리케이션의 핵심 비즈니스 로직이 들어가게 된다
+  + 하지만 따로 가공할 로직이 없다면 Processor 는 만들지 않아도 된다.(Optional)
+  + 프로세서는 개발자가 직접 구현하는 영역이기 때문에 제공되는 구현체의 종류도 Reader에 비해 별로 없다.
++ ItemWriter
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part10-Final-Project7.png)
+  + Reader, Processor 로부터 받아온 Item 에 대한 마지막 처리 단계 (마지막이니 void)
+    + db에 저장하거나, 파일로 쓰거나, 이벤트를 발행하거나 등등
+  + Step 을 만들 때 지정하는 Chunk 갯수만큼의 인자로 받게된다. 
+  + ex)
+    + Paging Reader의 page_size = 10, Chunk = 100 이라면
+    + Reader가 10번 Page Read 를 하고
+    + Processor 100번 처리할 때마다
+    + Writer를 실행한다
++ Chunk Orientation, Batch Transaction 에 대해
+  + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part10-Final-Project8.png)
+  + 스프링배치는 Chunk 지향 프로세싱
+    + 읽어야 할 또는, 처리할 아이템이 굉장히 많을때 트랜잭션을한번에 이어가는 것 보다 일정 주기로 여러번 실행하는 것이 안정적이다.
+    + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part10-Final-Project9.png)
+    + 안정적?
+    + Fault Tolerant (장애 허용)
+    + 실패 시 다양한 처리를 할 수 있게 해준다. 
+  + [https://docs.spring.io/spring-batch/docs/current/reference/html/step.html#chunkOrientedProcessing](https://docs.spring.io/spring-batch/docs/current/reference/html/step.html#chunkOrientedProcessing)
+  + TaskletStep.doExecution(StepExecution stepExecution)
+    + ![img.png](../../../../assets/img/spring-complete-edition-super-gap-package-online/Part10-Final-Project10.png)
+
