@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 레오의 함수형 프로그래밍
 date: '2022-11-13 00:00:02 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

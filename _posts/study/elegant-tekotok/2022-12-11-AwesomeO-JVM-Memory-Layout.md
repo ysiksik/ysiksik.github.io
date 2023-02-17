@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 어썸오의 JVM Memory Layout
 date: '2022-12-11 00:00:00 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

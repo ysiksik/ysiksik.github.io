@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 준찌의 Function Component & Execution Context
 date: '2022-11-25 00:00:00 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

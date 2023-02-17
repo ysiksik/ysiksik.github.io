@@ -4,8 +4,6 @@ bigtitle: '코딩으로 학습하는 GoF의 디자인 패턴'
 subtitle: 생성 패턴(Creational Patterns)
 date: '2022-10-04 00:00:00 +0900'
 categories:
-    - study
-    - inflearn
     - gof-design-pattern
 comments: true
 ---

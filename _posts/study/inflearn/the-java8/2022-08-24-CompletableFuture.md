@@ -4,8 +4,6 @@ bigtitle: '더 자바, Java 8'
 subtitle: CompletableFuture
 date: '2022-08-24 00:00:00 +0900'
 categories:
-    - study
-    - inflearn
     - the-java8
 comments: true
 ---

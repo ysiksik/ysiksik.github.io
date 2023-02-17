@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 호프의 프론트엔드에서 컴포넌트
 date: '2022-09-11 00:00:00 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

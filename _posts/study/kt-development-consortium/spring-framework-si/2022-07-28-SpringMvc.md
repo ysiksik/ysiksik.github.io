@@ -4,8 +4,6 @@ bigtitle: 'Spring 전자정부 프레임워크 기반 SI 실무'
 subtitle: Spring MVC
 date: '2022-07-28 00:00:00 +0900'
 categories:
-    - study
-    - kt-development-consortium
     - spring-framework-si
 tags: spring
 comments: true

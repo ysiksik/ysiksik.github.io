@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 민초의 RESTful
 date: '2022-11-06 00:00:01 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---
@@ -109,4 +108,3 @@ comments: true
 
 
 
-  

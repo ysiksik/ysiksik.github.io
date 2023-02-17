@@ -4,8 +4,6 @@ bigtitle: '코딩으로 학습하는 GoF의 디자인 패턴'
 subtitle: 행동 관련 패턴(Behavioral Patterns)
 date: '2022-10-26 00:00:00 +0900'
 categories:
-    - study
-    - inflearn
     - gof-design-pattern
 comments: true
 ---

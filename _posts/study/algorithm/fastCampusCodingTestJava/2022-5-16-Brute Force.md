@@ -4,8 +4,6 @@ bigtitle: '알고리즘 유형별 문제풀이'
 subtitle: 01.완전 탐색 (Brute Force)
 date: '2022-5-16 11:45:51 +0900'
 categories:
-    - study
-    - algorithm
     - fastcampus-codingtest-java
 comments: true
 tags: fastcampusAlgorithm

@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 기론, 리버의 JDK Dynamic Proxy와 CGLIB
 date: '2022-11-14 00:00:00 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

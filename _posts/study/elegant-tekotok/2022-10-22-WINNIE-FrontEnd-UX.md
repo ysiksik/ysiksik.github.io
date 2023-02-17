@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 위니의 프론트엔드 개발자에게 UX란
 date: '2022-10-22 00:00:00 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

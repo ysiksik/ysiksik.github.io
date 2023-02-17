@@ -1,5 +1,5 @@
 ---
-layout: list
+layout: page
 bigtitle: KT개발컨소시엄
 category: study
 slug: kt-development-consortium

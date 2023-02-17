@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 동키콩의 RegExp의 효율적 활용
 date: '2022-12-04 00:00:01 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

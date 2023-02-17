@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 마르코의 Progressive Web App
 date: '2022-11-25 00:00:01 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---
@@ -206,4 +205,3 @@ comments: true
 + Lighthouse / PWABuilder
   + ![img.png](../../../assets/img/elegant-tekotok/MARCO-Progressive-Web-App22.png)
          
-      

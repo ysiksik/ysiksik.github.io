@@ -1,5 +1,5 @@
 ---
-layout: list
+layout: page
 bigtitle: 인프런
 category: study
 slug: inflearn

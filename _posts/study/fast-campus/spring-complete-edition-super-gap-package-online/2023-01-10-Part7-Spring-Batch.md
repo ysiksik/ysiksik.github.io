@@ -4,8 +4,6 @@ bigtitle: '한 번에 끝내는 Spring 완.전.판 초격차 패키지 Online.'
 subtitle: Part 7. Spring Batch
 date: '2023-01-10 00:00:00 +0900'
 categories:
-- study
-- fast-campus
 - spring-complete-edition-super-gap-package-online
 comments: true
 ---

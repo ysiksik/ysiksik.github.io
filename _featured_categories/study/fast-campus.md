@@ -1,5 +1,5 @@
 ---
-layout: list
+layout: page
 bigtitle: 패스트 캠퍼스
 category: study
 slug: fast-campus

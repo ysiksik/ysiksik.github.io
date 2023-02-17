@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 연로그의 쿠키 vs 세션 vs 토큰 vs 캐시
 date: '2022-10-30 00:00:00 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

@@ -1,5 +1,5 @@
 ---
-layout: list
+layout: page
 type: category
 bigtitle: Study
 slug: study

@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 아스피의 정렬 알고리즘
 date: '2022-10-19 00:00:00 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

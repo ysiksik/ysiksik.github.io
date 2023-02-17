@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 유세지의 Node.js
 date: '2023-02-04 00:00:01 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

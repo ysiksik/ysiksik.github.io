@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 토닉, 후디의 인증과 인가 - 부족사회부터 소셜로그인까지
 date: '2022-10-25 00:00:00 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

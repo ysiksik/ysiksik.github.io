@@ -4,8 +4,6 @@ bigtitle: '더 자바, Java 8'
 subtitle: 인터페이스의 변화
 date: '2022-08-17 00:00:00 +0900'
 categories:
-    - study
-    - inflearn
     - the-java8
 comments: true
 ---

@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 찬, 레넌의 CI/CD와 무중단 배포
 date: '2022-09-12 00:00:00 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---
@@ -139,4 +138,3 @@ comments: true
   + 클라이언트 요청을 대신 받아 서버에 전달하는 대리 서버
 + 로드 밸런싱
   + 클라언트의 요청을 여러 서버에 분산해주는 역할
-  

@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 돔하디의 Virtual DOM
 date: '2022-12-17 00:00:02 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---
@@ -91,4 +90,3 @@ comments: true
 + 컴파일러 -> Svlete
   + 라이브러리가 아닌 컴파일러
   + React처럼 런타임에 Virtual DOM을 만들어서 비교하고 화면을 렌더하는 방식이 아니라 컴파일시에 이 모든 과정들을 미리 처리하기 때문에 브라우저에 어떠한 추가 코드를 제공하지 않아도 된다. 
-    

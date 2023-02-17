@@ -4,8 +4,6 @@ bigtitle: '알고리즘 유형별 문제풀이'
 subtitle: 류호석배 1회 모의 코테
 date: '2022-11-23 00:00:00 +0900'
 categories:
-- study
-- algorithm
 - fastcampus-codingtest-java
 comments: true
 tags: fastcampusAlgorithm

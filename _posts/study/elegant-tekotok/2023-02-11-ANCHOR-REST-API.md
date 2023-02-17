@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 정의 REST API
 date: '2023-02-11 00:00:02 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

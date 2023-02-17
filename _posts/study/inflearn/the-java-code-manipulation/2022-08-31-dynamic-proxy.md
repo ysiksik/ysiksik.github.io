@@ -4,8 +4,6 @@ bigtitle: '더 자바, 코드를 조작하는 다양한 방법'
 subtitle: 다이나믹 프록시
 date: '2022-08-31 00:00:00 +0900'
 categories:
-    - study
-    - inflearn
     - the-java-code-manipulation
 comments: true
 ---

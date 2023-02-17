@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 록바의 웹 성능 개선하기 - 이미지
 date: '2022-10-11 00:00:00 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

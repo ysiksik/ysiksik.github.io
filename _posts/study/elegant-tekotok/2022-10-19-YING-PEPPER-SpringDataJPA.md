@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 잉, 페퍼의Spring Data JPA 삽질일지
 date: '2022-10-19 00:00:01 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 해리의 JavaScript와 ECMAScript의 탄생
 date: '2022-12-04 00:00:00 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

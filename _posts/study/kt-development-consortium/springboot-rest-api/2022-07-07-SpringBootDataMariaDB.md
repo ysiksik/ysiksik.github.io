@@ -4,8 +4,6 @@ bigtitle: 'Spring Boot 기반 REST API 개발'
 subtitle: 스프링 부트 데이터(Maria DB 사용)
 date: '2022-07-07 00:00:05 +0900'
 categories:
-    - study
-    - kt-development-consortium
     - springboot-rest-api
 tags: RestAPI
 comments: true

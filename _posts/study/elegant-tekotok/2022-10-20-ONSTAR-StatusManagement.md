@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 온스타의 상태관리
 date: '2022-10-20 00:00:00 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

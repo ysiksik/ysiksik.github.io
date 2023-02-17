@@ -4,8 +4,6 @@ bigtitle: '알고리즘 유형별 문제풀이'
 subtitle: 04.두 포인터 (Two Pointer) - 응용편
 date: '2022-07-20 00:00:00 +0900'
 categories:
-    - study
-    - algorithm
     - fastcampus-codingtest-java
 comments: true
 tags: fastcampusAlgorithm

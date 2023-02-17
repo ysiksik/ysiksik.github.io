@@ -4,8 +4,6 @@ bigtitle: 'Spring 전자정부 프레임워크 기반 SI 실무'
 subtitle: Spring
 date: '2022-07-18 00:00:00 +0900'
 categories:
-    - study
-    - kt-development-consortium
     - spring-framework-si
 tags: spring
 comments: true
@@ -123,4 +121,3 @@ comments: true
   + Spring Framework는 여러 ORM(Object Relational Mapping) Framework에 플러그인 되어, Object Relational 툴 (JDO, Hibernate, iBatis)을 제공한다.
 + Spring Web MVC
   + Spring Framework는 자체적으로 MVC 프레임워크를 제공하고 있으며, 스프링만 사용해도 MVC기반의 웹 어플리케이션을 어렵지 않게 개발이 가능하다.
-  

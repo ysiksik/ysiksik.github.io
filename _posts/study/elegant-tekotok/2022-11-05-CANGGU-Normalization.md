@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 짱구의 정규화
 date: '2022-11-05 00:00:01 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---
@@ -95,4 +94,3 @@ comments: true
     + 조인을 하는 연산시간이 늘어날수도 있다. 
     
 
-      

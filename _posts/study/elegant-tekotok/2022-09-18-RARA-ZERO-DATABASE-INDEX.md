@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 라라, 제로의 데이터베이스 인덱스
 date: '2022-09-18 00:00:00 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

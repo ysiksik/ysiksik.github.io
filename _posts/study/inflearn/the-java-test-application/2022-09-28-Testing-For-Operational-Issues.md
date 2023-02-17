@@ -4,8 +4,6 @@ bigtitle: '더 자바, 애플리케이션을 테스트하는 다양한 방법'
 subtitle: 운영 이슈 테스트
 date: '2022-09-28 00:00:01 +0900'
 categories:
-    - study
-    - inflearn
     - the-java-test-application
 comments: true
 ---

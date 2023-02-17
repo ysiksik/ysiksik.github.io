@@ -4,8 +4,6 @@ bigtitle: '더 자바, 애플리케이션을 테스트하는 다양한 방법'
 subtitle: 아키텍처 테스트
 date: '2022-09-30 00:00:00 +0900'
 categories:
-    - study
-    - inflearn
     - the-java-test-application
 comments: true
 ---

@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 조시 쿤의 서블릿 필터 그리고 스프링 인터셉터
 date: '2022-09-02 00:00:00 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

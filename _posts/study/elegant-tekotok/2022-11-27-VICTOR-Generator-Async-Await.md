@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 빅터의 Generator와 Async/Await
 date: '2022-11-27 00:00:01 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

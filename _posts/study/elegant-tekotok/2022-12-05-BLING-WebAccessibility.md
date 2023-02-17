@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 블링의 웹 접근성
 date: '2022-12-05 00:00:00 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 콤피의 CSS를 통한 브라우저 렌더링 최적화
 date: '2022-11-02 00:00:00 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

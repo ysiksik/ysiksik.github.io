@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 매트, 토르의 MySQL 성능 최적화
 date: '2022-11-12 00:00:02 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---
@@ -68,4 +67,3 @@ comments: true
     + ICP를 활성화하고 인덱스의 컬럼만 사용하여 WHERE 조건의 일부를 평가할 수 있는 경우 MySQL 엔진은 WHERE 조건 부분을 스토리엔진으로 푸시 
 
 
-  

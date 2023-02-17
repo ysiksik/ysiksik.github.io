@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 후니의 스프링 트랜잭션
 date: '2023-01-01 00:00:00 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

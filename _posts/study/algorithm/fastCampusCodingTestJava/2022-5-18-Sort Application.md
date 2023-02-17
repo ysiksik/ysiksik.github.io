@@ -4,8 +4,6 @@ bigtitle: '알고리즘 유형별 문제풀이'
 subtitle: 02.다양한 정렬 응용법 (Sort Application)
 date: '2022-5-18 11:45:51 +0900'
 categories:
-    - study
-    - algorithm
     - fastcampus-codingtest-java
 comments: true
 tags: fastcampusAlgorithm

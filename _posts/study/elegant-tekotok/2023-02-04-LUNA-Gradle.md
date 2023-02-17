@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 루나의 Gradle
 date: '2023-02-04 00:00:00 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

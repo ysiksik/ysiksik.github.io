@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 시지프의 타입스크립트 도약하기
 date: '2022-10-23 00:00:00 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

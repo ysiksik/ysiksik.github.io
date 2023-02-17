@@ -4,8 +4,6 @@ bigtitle: '더 자바, 코드를 조작하는 다양한 방법'
 subtitle: 애노테이션 프로세서
 date: '2022-09-01 00:00:00 +0900'
 categories:
-    - study
-    - inflearn
     - the-java-code-manipulation
 comments: true
 ---

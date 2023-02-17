@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 승팡, 케이의 REST Docs
 date: '2022-09-14 00:00:01 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

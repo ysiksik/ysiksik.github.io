@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 더즈, 티키의 Classic TDD VS Mockist TDD
 date: '2023-02-05 00:00:00 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

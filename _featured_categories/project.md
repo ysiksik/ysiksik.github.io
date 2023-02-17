@@ -1,5 +1,5 @@
 ---
-layout: list
+layout: page
 bigtitle: Project
 slug: project
 menu: true

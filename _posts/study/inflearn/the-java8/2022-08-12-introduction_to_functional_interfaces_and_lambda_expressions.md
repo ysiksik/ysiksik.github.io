@@ -4,8 +4,6 @@ bigtitle: '더 자바, Java 8'
 subtitle: 함수형 인터페이스와 람다 표현식
 date: '2022-08-12 00:00:01 +0900'
 categories:
-    - study
-    - inflearn
     - the-java8
 comments: true
 ---

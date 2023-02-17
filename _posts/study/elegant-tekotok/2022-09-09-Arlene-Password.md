@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 알린의 암호
 date: '2022-09-09 00:00:00 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

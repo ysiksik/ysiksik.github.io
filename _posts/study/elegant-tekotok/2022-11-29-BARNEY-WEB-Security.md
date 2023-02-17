@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 바니의 웹 보안
 date: '2022-11-29 00:00:00 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

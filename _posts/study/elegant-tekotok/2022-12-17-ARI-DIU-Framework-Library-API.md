@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 아리, 디우의 프레임워크 vs 라이브러리 vs API
 date: '2022-12-17 00:00:01 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

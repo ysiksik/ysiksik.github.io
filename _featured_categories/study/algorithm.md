@@ -1,5 +1,5 @@
 ---
-layout: list
+layout: page
 bigtitle: 알고리즘
 category: study
 slug: algorithm

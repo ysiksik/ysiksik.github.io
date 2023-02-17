@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 앨버의 리액트 렌더링 최적화
 date: '2022-12-09 00:00:00 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

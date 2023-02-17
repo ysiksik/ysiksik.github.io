@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 릭의 MySQL 아키텍처
 date: '2022-11-05 00:00:00 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---
@@ -82,4 +81,3 @@ __4 옵티마이저가 만들어낸 실행 계획은 스토리지 엔진에게 �
   + 하나의 레코드에 대해 여러 개의 버전을 관리
   + 잠금 없는 일관된 읽기
   + Undo log 
-  

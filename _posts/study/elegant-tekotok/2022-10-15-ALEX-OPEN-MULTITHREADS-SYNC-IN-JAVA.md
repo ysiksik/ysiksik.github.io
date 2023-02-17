@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 알렉스, 열음의 멀티스레드와 동기화 In Java
 date: '2022-10-15 00:00:00 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

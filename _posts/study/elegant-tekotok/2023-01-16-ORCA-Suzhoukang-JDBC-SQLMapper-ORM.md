@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 범고래, 소주캉의 JDBC, SQL Mapper, ORM
 date: '2023-01-16 00:00:00 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

@@ -4,8 +4,6 @@ bigtitle: 'Java12 프로그래밍'
 subtitle: 객체 지향 자바 프로그래밍
 date: '2022-06-28 00:00:00 +0900'
 categories:
-    - study
-    - kt-development-consortium
     - java12-programming
 tags: JAVA12
 comments: true
@@ -659,5 +657,4 @@ graph TD;
   + RandomAccessFile 생성자
     + RandomAccessFile(String file, String mode) - 입출력 할 파일 이름을 문자열로 받고, 입출력 mode를 매개변수로 받음 mode에 읽기전용 'r'과 일고 쓰기인 'rw' 사용 가능
     + RandomAccessFile(File file, String mode) - 입출력 할 File 클래스의 객체를 매개변수로 받고, 입출력 mode를 매개변수로 받음 mode에 읽기전용 'r'과 일고 쓰기인 'rw' 사용 가능
-  
   

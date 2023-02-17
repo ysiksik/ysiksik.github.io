@@ -4,8 +4,6 @@ bigtitle: 'Spring Boot 기반 REST API 개발'
 subtitle: REST API 보안 적용
 date: '2022-07-08 00:00:00 +0900'
 categories:
-    - study
-    - kt-development-consortium
     - springboot-rest-api
 tags: RestAPI
 comments: true
@@ -309,4 +307,3 @@ HttpServletRequest에서 꺼내온 사용자 아이디와 패스워드를 진짜
   + @JsonSerialize
     + 커스텀 Serialize를 지정 할 때 사용한다.
     + @JsonSerialize 은 엔터티를 마샬링할 때 사용할 사용정 직렬화기를 나타냅니다.
-      

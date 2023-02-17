@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 무비의 React의 state
 date: '2023-02-05 00:00:02 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

@@ -4,8 +4,6 @@ bigtitle: 'SQL을 활용한 데이터 분석'
 subtitle: 제약조건
 date: '2022-08-11 00:00:04 +0900'
 categories:
-    - study
-    - kt-development-consortium
     - data-analysis-with-sql
 comments: true
 ---

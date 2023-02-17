@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 도리의 Class
 date: '2022-10-21 00:00:00 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---

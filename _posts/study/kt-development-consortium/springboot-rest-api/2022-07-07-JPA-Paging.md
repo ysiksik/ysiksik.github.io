@@ -4,8 +4,6 @@ bigtitle: 'Spring Boot 기반 REST API 개발'
 subtitle: JPA 페이징 처리
 date: '2022-07-07 00:00:04 +0900'
 categories:
-    - study
-    - kt-development-consortium
     - springboot-rest-api
 tags: RestAPI
 comments: true

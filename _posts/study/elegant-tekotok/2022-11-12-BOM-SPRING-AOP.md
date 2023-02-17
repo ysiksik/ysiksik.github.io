@@ -4,7 +4,6 @@ bigtitle: '우아한테크코스 테코톡'
 subtitle: 봄의 AOP와 SPRING AOP
 date: '2022-11-12 00:00:00 +0900'
 categories:
-    - study
     - elegant-tekotok
 comments: true
 ---
@@ -100,4 +99,3 @@ comments: true
 
 
 
-  
