@@ -84,6 +84,8 @@ menu:
             url:      /the-java-test-application/
           - title:  코딩으로 학습하는 GoF의 디자인 패턴
             url:      /gof-design-pattern/
+          - title: Spring Cloud로 개발하는 마이크로서비스 애플리케이션(MSA)
+            url:      /spring-cloud-msa/
       - title: 패스트 캠퍼스
         url: /fast-campus/
         submenu:
