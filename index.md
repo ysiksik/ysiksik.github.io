@@ -231,6 +231,7 @@ mobileNet을 이용한 classification으로 버섯을 구별해주는 인공지�
     <div>클린코드<img src= "/assets/img/Reading/5.jpg"></div>
     <div>업무에 바로 쓰는 SQL 튜닝<img src= "/assets/img/Reading/4.jpg"></div>
     <div>Do it! 자료구조와 함께 배우는 알고리즘 입문 자바 편<img src= "/assets/img/Reading/3.png"></div>
+    <div>토비의 스프링 3.1<img src= "/assets/img/Reading/6.jpg"></div>
     <div>Java의 정석<img src= "/assets/img/Reading/2.jpg"></div>
     <div>비전공자를 위한 이해할 수 있는 IT 지식<img src= "/assets/img/Reading/1.png"></div>
 </div>
@@ -238,6 +239,7 @@ mobileNet을 이용한 classification으로 버섯을 구별해주는 인공지�
 - 클린코드
 - 업무에 바로 쓰는 SQL 튜닝
 - Do it! 자료구조와 함께 배우는 알고리즘 입문 자바 편
+- 토비의 스프링 3.1
 - Java의 정석
 - 비전공자를 위한 이해할 수 있는 IT 지식
 
