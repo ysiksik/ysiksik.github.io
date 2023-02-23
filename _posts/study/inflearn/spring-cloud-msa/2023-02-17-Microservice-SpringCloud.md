@@ -372,3 +372,68 @@ comments: true
   + Teams communicating through API contracts (API 계약을 통해 통신하는 팀)
   + Develop, test and deploy each service independently (각 서비스를 독립적으로 개발, 테스트 및 배포)
   + Consumer Driven Contract (소비자 주도 계약) 
+
+## SOA와 MSA와의 차이점
++ SOA(Service Oriented Architecture, 서비스 지향 아키텍처)
+  + 비즈니스 측면에서의 서비스 재사용성
+  + ESB(Enterprise Service Bus)라는 서비스 채널 이용 -> 서비스 공유, 재사용
++ MSA(Microservice Architecture, 마이크로서비스 아키텍처)
+  + 한 가지 작은 서비스에 집중
+  + 서비스 공유하지 않고 독립적 실행
++ 서비스의 공유 지향점
+  + SOA - 재사용을 통한 비용 절감
+  + MSA - 서비스 간의 결합도를 낮추어 변화에 능동적으로 대응
+  + ![img.png](../../../../assets/img/spring-cloud-msa/Microservice-SpringCloud15.png)
++ 기술 방식
+  + SOA - 공통의 서비스를 ESB에 모아 사업 측면에서 공통 서비스 형식으로 서비스 제공
+  + MSA - 각 독립된 서비스가 노출된 REST API를 사용
+  + ![img.png](../../../../assets/img/spring-cloud-msa/Microservice-SpringCloud16.png)
+
+### RESTful Web Service
++ “A way to grade your API according to the constraints of REST.” - by Leonard Richardson
++ "REST의 제약 조건에 따라 API를 평가하는 방법." - 레너드 리처드슨
+  + LEVEL 0
+    + Expose soap web services in rest style
+    + 휴식 스타일로 비누 웹 서비스 노출
+    + http://server/getPosts
+    + http://server/deletePosts
+    + http://server/doThis
+  + LEVEL 1
+    + Expose resources with proper uri
+    + 적절한 uri로 리소스 노출
+    + http://server/accounts
+    + http://server/accounts/10
+    + note: improper use of http methods, HTTP 메소드의 부적절한 사용 
+  + LEVEL 2
+    + Level1 + HTTP Methods
+  + LEVEL 3
+    + Level2 + HATEOAS
+    + DATA + NEXT POSSIBLE ACTIONS, 다음 가능한 조치
+  + ![img.png](../../../../assets/img/spring-cloud-msa/Microservice-SpringCloud18.png)
++ Consumer first, 소비자 우선
++ Make best use of HTTP, HTTP를 최대한 활용하십시오.
++ Request methods
+  + GET
+  + POST
+  + PUT
+  + DELETE
++ Response Status
+  + 200
+  + 404
+  + 400
+  + 201
+  + 401
++ No secure info in URI, URI에 보안 정보가 없습니다.
++ Use plurals, 복수형 사용
+  + prefer /users to /user
+  + prefer /users/1 to /user/1
++ User nouns for resources, 자원에 대한 사용자 명사
++ For exceptions, 예외의 경우
+  + define a consistent approach, 일관된 접근 방식 정의
+    + /search
+    + PUT /gists/{id}/star
+    + DELETE /gists/{id}/star
+
+### SOA vs Micro Service Example
++ ![img.png](../../../../assets/img/spring-cloud-msa/Microservice-SpringCloud17.png)
+
