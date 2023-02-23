@@ -437,3 +437,49 @@ comments: true
 ### SOA vs Micro Service Example
 + ![img.png](../../../../assets/img/spring-cloud-msa/Microservice-SpringCloud17.png)
 
+## MSA 표준 구성요소
++ ![img.png](../../../../assets/img/spring-cloud-msa/Microservice-SpringCloud28.png)
++ CNCF(Cloud Native Computing Foundation, 클라우드 네이티브 컴퓨팅 재단)
+  + Cloud Native Interactive Landscape - 클라우드 네이티브 대화형 환경
+  + [https://landscape.cncf.io/](https://landscape.cncf.io/)
+  + ![img.png](../../../../assets/img/spring-cloud-msa/Microservice-SpringCloud20.png)
+  + ![img.png](../../../../assets/img/spring-cloud-msa/Microservice-SpringCloud21.png)
+
+### Service Mesh Capabilities
++ ![img.png](../../../../assets/img/spring-cloud-msa/Microservice-SpringCloud19.png)
+  + MSA 인프라 -> 미들웨어
+    + 프록시 역할, 인증, 권한 부여, 암호화, 서비스 검색, 요청 라우팅, 로드 밸런싱
+    + 자가 치유 복구 서비스 
+  + 서비스간의 통신과 관련된 기능을 자동화 
+
+### MSA 기반 기술
++ ![img.png](../../../../assets/img/spring-cloud-msa/Microservice-SpringCloud22.png)
+
+## Spring Cloud
++ “By 2017, at least 70% of new enterprise Java applications won’t be deployed on traditional app servers”
++ “2017년까지 새로운 엔터프라이즈 Java 애플리케이션의 최소 70%가 기존 앱 서버에 배포되지 않을 것입니다.”
++ [https://spring.io/projects/spring-cloud](https://spring.io/projects/spring-cloud)
++ ![img.png](../../../../assets/img/spring-cloud-msa/Microservice-SpringCloud23.png)
+  + Spring Cloud는 개발자가 분산 시스템의 일반적인 패턴 (예 : 구성 관리, 서비스 검색, 회로 차단기, 지능형 라우팅, 마이크로 프록시, 제어 버스, 일회용 토큰, 전역 잠금, 리더십 선택, 분산 세션, 클러스터 상태)을 신속하게 구축 할 수있는 도구를 제공합니다.
+  분산 시스템의 조정은 보일러 플레이트 패턴으로 이어지며 Spring Cloud 개발자는 이러한 패턴을 구현하는 서비스 및 애플리케이션을 신속하게 구축 할 수 있습니다. 
+  개발자 자신의 노트북, 베어메탈 데이터 센터 및 Cloud Foundry와 같은 관리형 플랫폼을 포함한 모든 분산 환경에서 잘 작동합니다.
++ Spring Boot + Spring Cloud
+  + ![img.png](../../../../assets/img/spring-cloud-msa/Microservice-SpringCloud24.png)
++ Main Projects
+  + ![img.png](../../../../assets/img/spring-cloud-msa/Microservice-SpringCloud25.png)
++ Centralized configuration management, 중앙 집중식 구성 관리
+  + Spring Cloud Config Server
++ Location transparency, 위치 투명성
+  + Naming Server (Eureka)
++ Load Distribution (Load Balancing), 부하 분산(부하 분산)
+  + Ribbon (Client Side)
+  + Spring Cloud Gateway
++ Easier REST Clients, 더 쉬운 REST 클라이언트
+  + FeignClient
++ Visibility and monitoring, 가시성 및 모니터링
+  + Zipkin Distributed Tracing
+  + Netflix API gateway
++ Fault Tolerance, 내결함성 
+  + Hystrix
++ ![img.png](../../../../assets/img/spring-cloud-msa/Microservice-SpringCloud26.png)
++ ![img.png](../../../../assets/img/spring-cloud-msa/Microservice-SpringCloud27.png)
