@@ -112,3 +112,33 @@ comments: true
 + Step8) Logging Filter – Test
   + ![img.png](../../../../assets/img/spring-cloud-msa/API-Gateway-Service23.png)
   + ![img.png](../../../../assets/img/spring-cloud-msa/API-Gateway-Service24.png)
+
+## Spring Cloud Gateway – Eureka 연동
++ ![img.png](../../../../assets/img/spring-cloud-msa/API-Gateway-Service25.png)
++ Step1) Eureka Client 추가 – pom.xml, application.yml
+  + Spring Cloud Gateway, First Service, Second Service
+  + ![img.png](../../../../assets/img/spring-cloud-msa/API-Gateway-Service26.png)
+  + ![img.png](../../../../assets/img/spring-cloud-msa/API-Gateway-Service27.png)
++ Step2) Eureka Client 추가 –application.yml
+  + Spring Cloud Gateway
+  + ![img.png](../../../../assets/img/spring-cloud-msa/API-Gateway-Service28.png)
++ Step3) Eureka Server – Service 등록 확인
+  + Spring Cloud Gateway, First Service, Second Service
+  + ![img.png](../../../../assets/img/spring-cloud-msa/API-Gateway-Service29.png)
+
+## Spring Cloud Gateway – Load Balancer
++ Step4) First Service, Second Service를각각2개씩기동
+  1. VM Options à-Dserver.port=[다른포트]
+  2. mvn spring-boot:run -Dspring-boot.run.jvmArguments='-Dserver.port=9003'
+  3. mvn clean compile package
+  $ java -jar -Dserver.port=9004 ./target/user-service-0.0.1-SNAPSHOT.jar
++ Step5) Eureka Server – Service 등록확인
++ Step6) Random port 사용
+  + Spring Cloud Gateway, First Service, Second Service
+  + ![img.png](../../../../assets/img/spring-cloud-msa/API-Gateway-Service30.png)
++ Step6) Post 확인 – FirstController.java
+  + ![img.png](../../../../assets/img/spring-cloud-msa/API-Gateway-Service31.png)
++ Step6) Random port 사용
+  + Spring Cloud Gateway, First Service, Second Service
+  + ![img.png](../../../../assets/img/spring-cloud-msa/API-Gateway-Service32.png)
+
