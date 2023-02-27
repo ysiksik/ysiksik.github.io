@@ -83,3 +83,32 @@ comments: true
   + ![img.png](../../../../assets/img/spring-cloud-msa/API-Gateway-Service11.png)
 + Step4) Test
   + ![img.png](../../../../assets/img/spring-cloud-msa/API-Gateway-Service12.png)
++ Step5) Filter using Property – application.yml
+  + ![img.png](../../../../assets/img/spring-cloud-msa/API-Gateway-Service13.png)
++ Step5) Test
+  + ![img.png](../../../../assets/img/spring-cloud-msa/API-Gateway-Service14.png)
+
+## Spring Cloud Gateway – Custom Filter
++ Step6) Custom Filter – CustomFilter.java
+  + ![img.png](../../../../assets/img/spring-cloud-msa/API-Gateway-Service15.png)
++ Step6) Custom Filter – application.yml
+  + ![img.png](../../../../assets/img/spring-cloud-msa/API-Gateway-Service16.png)
++ Step6) Custom Filter – FirstServiceController.java, SecondServiceController.java
+  + ![img.png](../../../../assets/img/spring-cloud-msa/API-Gateway-Service17.png)
+
+## Spring Cloud Gateway – Global Filter
++ Step7) Global Filter – GlobalFilter.java
+  + ![img.png](../../../../assets/img/spring-cloud-msa/API-Gateway-Service18.png)
++ Step7) Global Filter – application.yml
+  + ![img.png](../../../../assets/img/spring-cloud-msa/API-Gateway-Service19.png)
++ Step7) Global Filter – Test
+  + ![img.png](../../../../assets/img/spring-cloud-msa/API-Gateway-Service20.png)
+
+## Spring Cloud Gateway – Custom Filter (Logging)
++ Step8) Logging Filter – LoggingFilter.java
+  + ![img.png](../../../../assets/img/spring-cloud-msa/API-Gateway-Service21.png)
++ Step8) Logging Filter – application.yml
+  + ![img.png](../../../../assets/img/spring-cloud-msa/API-Gateway-Service22.png)
++ Step8) Logging Filter – Test
+  + ![img.png](../../../../assets/img/spring-cloud-msa/API-Gateway-Service23.png)
+  + ![img.png](../../../../assets/img/spring-cloud-msa/API-Gateway-Service24.png)
