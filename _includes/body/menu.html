@@ -12,9 +12,10 @@
               {% if site.menu %}
                   {% for node in site.menu %}
                       {% assign url = node.url | default: node.href %}
-                          <a 
+                          <a
                           {% if forloop.first %}id="_drawer--opened"{% endif %}
-                          href="{% include_cached smart-url url=url %}"
+                          href=""
+                          onclick="location.href='{% include_cached smart-url url=url %}'"
                           class="nav-btn top-menu {% if node.external %}external{% endif %}"
                           {% if node.rel %}rel="{{ node.rel }}"{% endif %}
                           >
@@ -23,7 +24,7 @@
                   {% endfor %}
               {% endif %}
           </div>
-          
+
           <!--검색 tipuesearch -->
           <div class="nav-span">
             <form action="/search">
@@ -35,7 +36,7 @@
                 <div style="clear: both;"></div>
             </form>
         </div>
-          
+
       </div>
   </div>
 </div>

@@ -3,7 +3,7 @@
 
 <li class="h6">
   <div>
-    <a href="{{ post.url | relative_url }}" class="flip-title"><span>{{ post.title }} </span></a>
+    <a onclick="location.href='{{ post.url | relative_url }}'" href="" class="flip-title"><span>{{ post.title }} </span></a>
     <time style="display: inline-block; width: 10rem" class="faded fine" datetime="{{ post.date | date_to_xmlschema }}">_{{ post.date | date:format }}</time>
   </div>
 </li>

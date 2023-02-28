@@ -25,7 +25,7 @@
     {% endif %}
   {% endunless %}
 
-  {% if username contains "//" or username contains "mailto:" %}
+  {% if username contains "//" or username contains "mailto:" %}c
     {% assign url = username %}
   {% else %}
     {% assign url = username | prepend:prep | append:app %}
