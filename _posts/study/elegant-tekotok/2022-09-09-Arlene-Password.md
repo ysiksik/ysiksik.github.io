@@ -134,7 +134,7 @@ graph LR;
 + JWT 토큰 에서 사용
 + ![img.png](/assets/img/elegant-tekotok/password6.png)
 
-### 전자 성명(feat.비대칭키 암호)
+### 전자 서명(feat.비대칭키 암호)
 + 대규모 데이터를 직접 비대칭키로 암호화하기 어려움
 + 데이터를 해시 값으로 만들고 해시 값을 전자 서명
 + ![img.png](/assets/img/elegant-tekotok/password7.png)
