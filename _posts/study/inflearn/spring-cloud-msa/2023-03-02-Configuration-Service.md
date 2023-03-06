@@ -79,3 +79,33 @@ comments: true
 + 번거로운 작업으로 인해 Spring Cloud Bus를 사용
 + ![img.png](../../../../assets/img/spring-cloud-msa/Configuration-Service16.png)
 
+## Spring Cloud Gateway
++ Dependencies
+  + ![img.png](../../../../assets/img/spring-cloud-msa/Configuration-Service17.png)
++ bootstrap.yml 추가
+  + ![img.png](../../../../assets/img/spring-cloud-msa/Configuration-Service18.png)
++ application.yml
+  + ![img.png](../../../../assets/img/spring-cloud-msa/Configuration-Service19.png)
++ ApigatewayServiceApplication.java
+  + ![img.png](../../../../assets/img/spring-cloud-msa/Configuration-Service20.png)
++ application.yml
+  + USER-SERVICE의 Actuator 정보 추가
+  + ![img.png](../../../../assets/img/spring-cloud-msa/Configuration-Service21.png)
+
+## Multiple environments
++ ![img.png](../../../../assets/img/spring-cloud-msa/Configuration-Service22.png)
+
+## Remote Git Repository
++ $ git remote -v
++ $ git remote add origin https://github.com/joneconsulting/spring-cloud-config.git
++ $ git push --set-upstream origin master
++ ![img.png](../../../../assets/img/spring-cloud-msa/Configuration-Service23.png)
++ ![img.png](../../../../assets/img/spring-cloud-msa/Configuration-Service24.png)
++ ![img.png](../../../../assets/img/spring-cloud-msa/Configuration-Service25.png)
+
+## Native File Repository
++ config-service 프로젝트의 application.yml
+  + ![img.png](../../../../assets/img/spring-cloud-msa/Configuration-Service26.png)
+  + ![img.png](../../../../assets/img/spring-cloud-msa/Configuration-Service27.png)
+  + ![img.png](../../../../assets/img/spring-cloud-msa/Configuration-Service28.png)
+  + ![img.png](../../../../assets/img/spring-cloud-msa/Configuration-Service29.png)
