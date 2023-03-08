@@ -92,3 +92,23 @@ comments: true
   + ![img_8.png](../../../../assets/img/spring-cloud-msa/Spring-Cloud-Bus30.png)
   
 ## AMQP 사용
+
+### Dependencies 추가
++ Config Server
+  + AMQP for Spring Cloud Bus, Actuator
+  + ![img.png](../../../../assets/img/spring-cloud-msa/Spring-Cloud-Bus31.png)
++ Users Microservice, Gateway Service
+  + AMQP for Spring Cloud Bus
+  + ![img.png](../../../../assets/img/spring-cloud-msa/Spring-Cloud-Bus32.png)
+
+### application.yml 수정
++ Config Server, Users Microservice, Gateway Service
+  + ![img.png](../../../../assets/img/spring-cloud-msa/Spring-Cloud-Bus33.png)
+  + ![img_1.png](../../../../assets/img/spring-cloud-msa/Spring-Cloud-Bus34.png)
+  + Spring Cloud 2020.0.0에서 bus-env -> busenv, bus-refresh -> busrefresh
+
+## Actuator
++ Stop RabbitMQ server
+  + ![img.png](../../../../assets/img/spring-cloud-msa/Spring-Cloud-Bus35.png)
++ Start RabbitMQ server again
+  + ![img.png](../../../../assets/img/spring-cloud-msa/Spring-Cloud-Bus36.png)
