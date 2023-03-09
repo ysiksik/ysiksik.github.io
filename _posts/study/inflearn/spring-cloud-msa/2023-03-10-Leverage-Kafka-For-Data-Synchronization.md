@@ -156,3 +156,46 @@ comments: true
 + Kafka Producer를이용해서Kafka Topic에데이터직접전송
   + Kafka-console-producer에서 데이터 전송 -> Topic에 추가 -> MariaDB에 추가
   + ![img_9.png](../../../../assets/img/spring-cloud-msa/Leverage-Kafka-For-Data-Synchronization20.png)
+  
+## Kafka 적용 – Orders + Catalogs Service
+
+### 데이터 동기화 ① - Orders -> Catalogs
++ Orders Service에 요청 된 주문의 수량 정보를 Catalogs Service에 반영
++ Orders Service에서 Kafka Topic으로 메시지 전송 -> Producer
++ Catalogs Service에서 Kafka Topic에 전송 된 메시지 취득 -> Consumer
++ ![img.png](../../../../assets/img/spring-cloud-msa/Leverage-Kafka-For-Data-Synchronization21.png)
++ Catalogs Service 수정
+  + ![img_1.png](../../../../assets/img/spring-cloud-msa/Leverage-Kafka-For-Data-Synchronization22.png)
+  + ![img_2.png](../../../../assets/img/spring-cloud-msa/Leverage-Kafka-For-Data-Synchronization23.png)
++ Orders Service 수정
+  + ![img_3.png](../../../../assets/img/spring-cloud-msa/Leverage-Kafka-For-Data-Synchronization24.png)
+  + ![img_4.png](../../../../assets/img/spring-cloud-msa/Leverage-Kafka-For-Data-Synchronization25.png)
+  + ![img_5.png](../../../../assets/img/spring-cloud-msa/Leverage-Kafka-For-Data-Synchronization26.png)
++ Orders Service -> Producer
+  + ![img.png](../../../../assets/img/spring-cloud-msa/Leverage-Kafka-For-Data-Synchronization27.png)
++ Catalogs Service -> Consumer
+  + ![img_1.png](../../../../assets/img/spring-cloud-msa/Leverage-Kafka-For-Data-Synchronization28.png)
+
+## Kafka 적용 – Multiple Orders Service
++ Multiple Orders Service에서의 데이터 동기화
+  + Orders Service 2개 기동
+    + Users의 요청 분산 처리
+    + Orders 데이터도 분산 저장 à 동기화 문제
+
+### 데이터 동기화 ② - Multiple Orders Service
++ Orders Service에 요청 된 주문 정보를 DB가 아니라 Kafka Topic으로 전송
++ Kafka Topic에 설정 된 Kafka Sink Connect를 사용해 단일 DB에 저장 -> 데이터 동기화
++ ![img.png](../../../../assets/img/spring-cloud-msa/Leverage-Kafka-For-Data-Synchronization29.png)
++ Orders Service의 JPA 데이터베이스 교체
+  + H2 DB -> MariaDB
+  + ![img_1.png](../../../../assets/img/spring-cloud-msa/Leverage-Kafka-For-Data-Synchronization30.png)
++ Orders Service의 Controller 수정
+  + ![img_2.png](../../../../assets/img/spring-cloud-msa/Leverage-Kafka-For-Data-Synchronization31.png)
++ Orders Service의 Producer에서 발생하기 위한 메시지 등록
+  + ![img_3.png](../../../../assets/img/spring-cloud-msa/Leverage-Kafka-For-Data-Synchronization32.png)
+  + ![img_4.png](../../../../assets/img/spring-cloud-msa/Leverage-Kafka-For-Data-Synchronization36.png)
++ Orders Service의 OrderProducer 생성
+  + ![img_5.png](../../../../assets/img/spring-cloud-msa/Leverage-Kafka-For-Data-Synchronization33.png)
+  + ![img_6.png](../../../../assets/img/spring-cloud-msa/Leverage-Kafka-For-Data-Synchronization34.png)
++ Orders Service를 위한 Kafka Sink Connector 추가
+  + ![img_7.png](../../../../assets/img/spring-cloud-msa/Leverage-Kafka-For-Data-Synchronization35.png),
