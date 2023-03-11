@@ -179,7 +179,7 @@ comments: true
 ## Kafka 적용 – Multiple Orders Service
 + Multiple Orders Service에서의 데이터 동기화
   + Orders Service 2개 기동
-    + Users의 요청 분산 처리
+    + Users의 요청 분산 처리 
     + Orders 데이터도 분산 저장 à 동기화 문제
 
 ### 데이터 동기화 ② - Multiple Orders Service
