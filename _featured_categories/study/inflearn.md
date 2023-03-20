@@ -22,10 +22,12 @@ related_posts:
 * [더 자바, 애플리케이션을 테스트하는 다양한 방법]{:.heading.flip-title}
 * [코딩으로 학습하는 GoF의 디자인 패턴]{:.heading.flip-title}
 * [Spring Cloud로 개발하는 마이크로서비스 애플리케이션(MSA)]{:.heading.flip-title}
+* [스프링 입문 - 코드로 배우는 스프링 부트, 웹 MVC, DB 접근 기술]{:.heading.flip-title}
 
 [더 자바, Java 8]: /the-java8/
 [더 자바, 코드를 조작하는 다양한 방법]: /the-java-code-manipulation/
 [더 자바, 애플리케이션을 테스트하는 다양한 방법]: /the-java-test-application/
 [코딩으로 학습하는 GoF의 디자인 패턴]: /gof-design-pattern/
 [Spring Cloud로 개발하는 마이크로서비스 애플리케이션(MSA)]: /spring-cloud-msa/
+[스프링 입문 - 코드로 배우는 스프링 부트, 웹 MVC, DB 접근 기술]: /spring-introduction/
 
