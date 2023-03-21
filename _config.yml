@@ -88,6 +88,8 @@ menu:
             url:      /spring-cloud-msa/
           - title: 스프링 입문 - 코드로 배우는 스프링 부트, 웹 MVC, DB 접근 기술
             url:      /spring-introduction/
+          - title: 스프링 핵심 원리 - 기본편
+            url:      /spring-core-basics/
       - title: 패스트 캠퍼스
         url: /fast-campus/
         submenu:
