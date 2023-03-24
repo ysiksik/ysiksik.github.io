@@ -25,7 +25,7 @@ comments: true
 + 2019년이 되어서야 W3C와 WHATWG가 합의해서 HTML을 하나의 버전으로 통합하다
 
 ## 브라우저 기본 구조
-+ ![img.png](../../../assets/img/spring-core-basics/WAVE-BrowserRendering.png)
++ ![img.png](../../../assets/img/elegant-tekotok/WAVE-BrowserRendering.png)
 + 사용자 인터페이스는 주소 표시줄, 앞/뒤로 가기 버튼 북마크 등이 있다.
 + 사용자가 요청한 페이지를 제외한 모든 부분을 지칭한다
 + 브라우저 엔진은 사용자 인터페이스와 렌더링 엔진 사이에서 동작을 제어하는 엔진입니다.
@@ -76,4 +76,4 @@ comments: true
 + composite은 레이어들을 최종적으로 합성하는 단계를 말한다
 +  “때”에 주목해야 한다, 어느 때, 조건이 있다는 것이다, 여기서 조건은 위에서 설명했던 쌓임 맥락, 이 쌓임 맥락이 쌓이는 특별한 속성과 같다
 + 쌓임 맥락을 생성하는 특별한 속성
-  + ![img_1.png](../../../assets/img/spring-core-basics/WAVE-BrowserRendering1.png)
+  + ![img_1.png](../../../assets/img/elegant-tekotok/WAVE-BrowserRendering1.png)
