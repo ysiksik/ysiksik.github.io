@@ -258,4 +258,4 @@ FilterType은 5가지 옵션이 있다
 
 + 수동 빈 등록, 자동 빈 등록 오류시 스프링 부트 에러
   + Consider renaming one of the beans or enabling overriding by setting spring.main.allow-bean-definition-overriding=true
-  + 스프링 부트인 CoreApplication 을 실행해보면 오류를 볼 수 있다.
+  
