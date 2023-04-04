@@ -90,6 +90,8 @@ menu:
             url:      /spring-introduction/
           - title: 스프링 핵심 원리 - 기본편
             url:      /spring-core-basics/
+          - title: 모든 개발자를 위한 HTTP 웹 기본 지식
+            url:      /http-web-basics/
       - title: 패스트 캠퍼스
         url: /fast-campus/
         submenu:
