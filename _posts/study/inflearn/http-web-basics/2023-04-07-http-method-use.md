@@ -140,3 +140,4 @@ comments: true
     + 문서, 컬렉션, 스토어로 해결하기 어려운 추가 프로세스 실행
     + 동사를 직접 사용
     + 예) /members/{id}/delete
++ [https://restfulapi.net/resource-naming](https://restfulapi.net/resource-naming)
