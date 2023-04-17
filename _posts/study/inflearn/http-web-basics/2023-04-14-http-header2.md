@@ -1,7 +1,7 @@
 ---
 layout: post
 bigtitle: '모든 개발자를 위한 HTTP 웹 기본 지식'
-subtitle: HTTP 헤더1 - 캐시와 조건부 요청
+subtitle: HTTP 헤더2 - 캐시와 조건부 요청
 date: '2023-04-14 00:00:00 +0900'
 categories:
 - http-web-basics
@@ -9,9 +9,9 @@ comments: true
 
 ---
 
-# HTTP 헤더1 - 캐시와 조건부 요청
+# HTTP 헤더2 - 캐시와 조건부 요청
 
-# HTTP 헤더1 - 캐시와 조건부 요청
+# HTTP 헤더2 - 캐시와 조건부 요청
 * toc
 {:toc}
 
