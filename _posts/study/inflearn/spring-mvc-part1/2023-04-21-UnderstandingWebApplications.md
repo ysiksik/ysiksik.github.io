@@ -4,7 +4,7 @@ bigtitle: '모든 개발자를 위한 HTTP 웹 기본 지식'
 subtitle: 웹 애플리케이션 이해
 date: '2023-04-21 00:00:00 +0900'
 categories:
-- http-web-basics
+- spring-mvc-part1
 comments: true
 
 ---
