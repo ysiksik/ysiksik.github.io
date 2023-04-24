@@ -15,5 +15,7 @@ hide_description: false
 ## 카테고리
 
 * [코인 거래소]{:.heading.flip-title}
+* [쿠폰 서비스]{:.heading.flip-title}
 
 [코인 거래소]: /coin-exchange/
+[쿠폰 서비스]: /coupon-service/
