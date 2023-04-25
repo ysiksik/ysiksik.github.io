@@ -177,6 +177,7 @@ mobileNet을 이용한 classification으로 버섯을 구별해주는 인공지�
 ---
 
 <div class="certifi">
+    <div>한 번에 끝내는 코딩테스트 365 Java편 초격차 패키지<img src= "/assets/img/Certificates/23.png"></div>
     <div>이펙티브 자바 완벽 공략 2부<img src= "/assets/img/Certificates/22.png"></div>
     <div>이펙티브 자바 완벽 공략 1부<img src= "/assets/img/Certificates/21.png"></div>
     <div>코딩으로 학습하는 리펙토링<img src= "/assets/img/Certificates/20.png"></div>
@@ -201,6 +202,7 @@ mobileNet을 이용한 classification으로 버섯을 구별해주는 인공지�
     <div>2020.05 ~ 2021.05 데이터베이스 모델링 실무<img src= "/assets/img/Certificates/1.png"></div>
 </div>
 
+- 한 번에 끝내는 코딩테스트 365 Java편 초격차 패키지
 - 이펙티브 자바 완벽 공략 2부
 - 이펙티브 자바 완벽 공략 1부
 - 코딩으로 학습하는 리펙토링
