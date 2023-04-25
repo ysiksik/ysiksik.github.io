@@ -1,7 +1,7 @@
 ---
 layout: post
 bigtitle: '쿠폰 서비스'
-subtitle: 쿠폰 발급 서비스 구성
+subtitle: 쿠폰 서비스 구성
 date: '2023-04-23 00:00:00 +0900'
 categories:
 - coupon-service
