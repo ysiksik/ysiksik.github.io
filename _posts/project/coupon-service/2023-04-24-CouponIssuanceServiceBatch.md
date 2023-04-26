@@ -26,6 +26,9 @@ comments: true
 + Quartz
 + PostgreSQL-PPAS
 + MyBatis
++ Jenkins
++ RUNDESK
++ NEXUS
 
 ## 기술적인 부분
 + 배치용(Job용)과 수동용(Manual용) 스크립트로 구분하여 실행합니다.
