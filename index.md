@@ -24,7 +24,7 @@ SIKSIK
 
 <center>Java & Spring 백엔드 개발자</center>
 
-<center>프론트 개발 (JavaScript. jQuery, ReactJs, Thymeleaf )</center>
+<center>프론트 개발 (JavaScript. jQuery, ReactJs, Thymeleaf)</center>
 
 <center>금융보안데이터센터(FSDC) 클라우드 운영 및 관리</center>
 
