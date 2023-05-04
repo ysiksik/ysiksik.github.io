@@ -26,7 +26,6 @@ comments: true
 + PostgreSQL-PPAS
 + JPA
 + Querydsl
-+ REACT JS 16.14.0
 + Jenkins
 + RUNDESK
 + NEXUS
