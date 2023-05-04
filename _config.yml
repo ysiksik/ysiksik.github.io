@@ -112,6 +112,8 @@ menu:
         url: /coin-exchange/
       - title: 쿠폰 서비스
         url: /coupon-service/
+      - title: 결제 시스템 (PG)
+        url: /payment-system/
 #  - title:             Blog
 #    url:               /blog/
 #    submenu:
