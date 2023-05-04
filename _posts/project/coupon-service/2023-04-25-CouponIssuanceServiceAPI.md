@@ -28,6 +28,7 @@ comments: true
 + Jenkins
 + RUNDESK
 + NEXUS
++ SVN
 
 ## 기술적인 부분
 + API 보안 : HTTPS 프로토콜과 SSL 인증서를 이용하여 보안을 강화합니다.

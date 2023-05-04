@@ -30,6 +30,7 @@ comments: true
 + Jenkins
 + RUNDESK
 + NEXUS
++ SVN
 
 ## 기술적인 부분
 + JENKIN로 Scheduling 구현 해서 테스트

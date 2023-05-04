@@ -31,6 +31,7 @@ comments: true
 + Jenkins
 + RUNDESK
 + NEXUS
++ SVN
 
 ## 기술적인 부분
 + 휴대폰 소액 결제 가상 결제 포트폴리오

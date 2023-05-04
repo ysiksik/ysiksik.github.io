@@ -31,6 +31,7 @@ comments: true
 + Jenkins
 + RUNDESK
 + NEXUS
++ SVN
 
 ## 기술적인 부분
 + 세션 관리 : Spring Session 프레임워크를 이용하여 세션 관리를 합니다. 서버에서 세션을 관리하므로, 보안상 이점이 있습니다.
