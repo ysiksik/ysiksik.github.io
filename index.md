@@ -24,7 +24,7 @@ SIKSIK
 
 <center>Backend: Java & Spring </center>
 
-<center>Frontend : JavaScript. jQuery, ReactJs, Thymeleaf</center>
+<center>Frontend: JavaScript. jQuery, ReactJs, Thymeleaf</center>
 
 <center>DevOps: 금융보안데이터센터(FSDC) 클라우드 운영 및 관리</center>
 
@@ -41,12 +41,12 @@ SIKSIK
 
 제 📚관심분야는 다음과 같습니다.
 
-📝 정보관리 기술사
-🌱 Spring
-☕️ Java
-🛠 DevOps
-🔙 Back-end
-🔜 Front-end
++ 🌱 Spring
++ ☕ Java
++ 🔙 Back-end
++ 🛠 DevOps
++ 🔜 Front-end
++ 📝 정보관리 기술사
 이러한 분야에서 더욱 전문적인 지식과 기술을 습득하고 발전하기 위해 노력하고 있습니다. 💡
 
 감사합니다! 🙏
