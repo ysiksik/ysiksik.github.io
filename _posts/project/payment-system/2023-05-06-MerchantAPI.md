@@ -2,7 +2,7 @@
 layout: post
 bigtitle: '결제 시스템 (PG)'
 subtitle: 가맹점 API
-date: '2023-05-06 00:00:00 +0900'
+date: '2023-05-06 00:00:01 +0900'
 categories:
 - payment-system
 comments: true
