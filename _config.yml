@@ -94,6 +94,8 @@ menu:
             url:      /http-web-basics/
           - title: 스프링 MVC 1편 - 백엔드 웹 개발 핵심 기술
             url:      /spring-mvc-part1/
+          - title: 스프링 MVC 2편 - 백엔드 웹 개발 핵심 기술
+            url:      /spring-mvc-part2/
       - title: 패스트 캠퍼스
         url: /fast-campus/
         submenu:

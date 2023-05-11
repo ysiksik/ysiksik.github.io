@@ -1,6 +1,6 @@
 ---
 layout: post
-bigtitle: '모든 개발자를 위한 HTTP 웹 기본 지식'
+bigtitle: '스프링 MVC 1편 - 백엔드 웹 개발 핵심 기술'
 subtitle: 스프링 MVC - 기본 기능
 date: '2023-05-08 00:00:02 +0900'
 categories:

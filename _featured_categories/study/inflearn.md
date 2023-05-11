@@ -26,6 +26,7 @@ related_posts:
 * [스프링 핵심 원리 - 기본편]{:.heading.flip-title}
 * [모든 개발자를 위한 HTTP 웹 기본 지식]{:.heading.flip-title}
 * [스프링 MVC 1편 - 백엔드 웹 개발 핵심 기술]{:.heading.flip-title}
+* [스프링 MVC 2편 - 백엔드 웹 개발 핵심 기술]{:.heading.flip-title}
 
 [더 자바, Java 8]: /the-java8/
 [더 자바, 코드를 조작하는 다양한 방법]: /the-java-code-manipulation/
@@ -36,4 +37,5 @@ related_posts:
 [스프링 핵심 원리 - 기본편]: /spring-core-basics/
 [모든 개발자를 위한 HTTP 웹 기본 지식]: /http-web-basics/
 [스프링 MVC 1편 - 백엔드 웹 개발 핵심 기술]: /spring-mvc-part1/
+[스프링 MVC 2편 - 백엔드 웹 개발 핵심 기술]: /spring-mvc-part2/
 
