@@ -45,8 +45,6 @@ comments: true
 ### 타임리프 기본 기능
 + 타임리프 사용 선언
   + ``` <html xmlns:th="http://www.thymeleaf.org"> ```
-  
-~~~
 + 기본 표현식
   + 간단한 표현:
     + 변수 표현식: ${...}
@@ -62,7 +60,7 @@ comments: true
     + 리터럴 토큰: one, sometext, main,…
   + 문자 연산:
     + 문자 합치기: +
-    + 리터럴 대체: |The name is ${name}|
+    + 리터럴 대체: ```|The name is ${name}|```
   + 산술 연산:
     + Binary operators: +, -, *, /, %
     + Minus sign (unary operator): -
@@ -79,7 +77,7 @@ comments: true
   + 특별한 토큰:
     + No-Operation: _
   + [https://www.thymeleaf.org/doc/tutorials/3.0/usingthymeleaf.html#standard-expression-syntax](https://www.thymeleaf.org/doc/tutorials/3.0/usingthymeleaf.html#standard-expression-syntax) 
-~~~
+
 
 ## 텍스트 - text, utext
 + 타임리프는 기본적으로 HTML 테그의 속성에 기능을 정의해서 동작한다
@@ -261,3 +259,112 @@ static class HelloBean {
 </html>
 
 ~~~
+
+## 유틸리티 객체와 날짜
++ 타임리프는 문자, 숫자, 날짜, URI등을 편리하게 다루는 다양한 유틸리티 객체들을 제공한다
++ 타임리프 유틸리티 객체들
+  + ```#message``` : 메시지, 국제화 처리
+  + ```#uris``` : URI 이스케이프 지원
+  + ```#dates``` : java.util.Date 서식 지원
+  + ```#calendars``` : java.util.Calendar 서식 지원
+  + ```#temporals``` : 자바8 날짜 서식 지원
+  + ```#numbers``` : 숫자 서식 지원
+  + ```#strings``` : 문자 관련 편의 기능
+  + ```#objects``` : 객체 관련 기능 제공
+  + ```#bools``` : boolean 관련 기능 제공
+  + ```#arrays``` : 배열 관련 기능 제공
+  + ```#lists``` , #sets , #maps : 컬렉션 관련 기능 제공
+  + ```#ids``` : 아이디 처리 관련 기능 제공
++ 타임리프 유틸리티 객체
+  + [https://www.thymeleaf.org/doc/tutorials/3.0/usingthymeleaf.html#expression-utility-objects](https://www.thymeleaf.org/doc/tutorials/3.0/usingthymeleaf.html#expression-utility-objects)
++ 유틸리티 객체 예시
+  + [https://www.thymeleaf.org/doc/tutorials/3.0/usingthymeleaf.html#appendix-b-expression-utility-objects](https://www.thymeleaf.org/doc/tutorials/3.0/usingthymeleaf.html#appendix-b-expression-utility-objects)
+
+### 자바8 날짜
++ 타임리프에서 자바8 날짜인 ```LocalDate``` , ```LocalDateTime``` , ```Instant``` 를 사용하려면 추가 라이브러리가 필요하다. 스프링 부트 타임리프를 사용하면 해당 라이브러리가 자동으로 추가되고 통합된다
++ 타임리프 자바8 날짜 지원 라이브러리
+  + ```thymeleaf-extras-java8time```
++ 사용 예시
+
+~~~html
+
+<span th:text="${#temporals.format(localDateTime, 'yyyy-MM-dd HH:mm:ss')}"></span>
+
+~~~
+
+~~~html
+
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+  <meta charset="UTF-8">
+  <title>Title</title>
+</head>
+<body>
+<h1>LocalDateTime</h1>
+<ul>
+  <li>default = <span th:text="${localDateTime}"></span></li>
+  <li>yyyy-MM-dd HH:mm:ss = <span th:text="${#temporals.format(localDateTime,
+'yyyy-MM-dd HH:mm:ss')}"></span></li>
+</ul>
+<h1>LocalDateTime - Utils</h1>
+<ul>
+  <li>${#temporals.day(localDateTime)} = <span th:text="${#temporals.day(localDateTime)}"></span></li>
+  <li>${#temporals.month(localDateTime)} = <span th:text="${#temporals.month(localDateTime)}"></span></li>
+  <li>${#temporals.monthName(localDateTime)} = <span th:text="${#temporals.monthName(localDateTime)}"></span></li>
+  <li>${#temporals.monthNameShort(localDateTime)} = <span th:text="${#temporals.monthNameShort(localDateTime)}"></span></li>
+  <li>${#temporals.year(localDateTime)} = <span th:text="${#temporals.year(localDateTime)}"></span></li>
+  <li>${#temporals.dayOfWeek(localDateTime)} = <span th:text="${#temporals.dayOfWeek(localDateTime)}"></span></li>
+  <li>${#temporals.dayOfWeekName(localDateTime)} = <span th:text="${#temporals.dayOfWeekName(localDateTime)}"></span></li>
+  <li>${#temporals.dayOfWeekNameShort(localDateTime)} = <span th:text="${#temporals.dayOfWeekNameShort(localDateTime)}"></span></li>
+  <li>${#temporals.hour(localDateTime)} = <span th:text="${#temporals.hour(localDateTime)}"></span></li>
+  <li>${#temporals.minute(localDateTime)} = <span th:text="${#temporals.minute(localDateTime)}"></span></li>
+  <li>${#temporals.second(localDateTime)} = <span th:text="${#temporals.second(localDateTime)}"></span></li>
+  <li>${#temporals.nanosecond(localDateTime)} = <span th:text="${#temporals.nanosecond(localDateTime)}"></span></li>
+</ul>
+</body>
+</html>
+
+
+~~~
+
+## URL 링크
++ 타임리프에서 URL을 생성할 때는 ```@{...}``` 문법을 사용하면 된다.
+
+~~~html
+
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+  <meta charset="UTF-8">
+  <title>Title</title>
+</head>
+<body>
+<h1>URL 링크</h1>
+<ul>
+  <li><a th:href="@{/hello}">basic url</a></li>
+  <li><a th:href="@{/hello(param1=${param1}, param2=${param2})}">hello query param</a></li>
+  <li><a th:href="@{/hello/{param1}/{param2}(param1=${param1}, param2=${param2})}">path variable</a></li>
+  <li><a th:href="@{/hello/{param1}(param1=${param1}, param2=${param2})}">path variable + query parameter</a></li>
+</ul>
+</body>
+</html>
+
+
+~~~
+
++ 단순한 URL
+  + ```@{/hello}``` ->  ```/hello```
++ 쿼리 파라미터
+  + ```@{/hello(param1=${param1}, param2=${param2})}``` -> ```/hello?param1=data1&param2=data2```
+    + ```()``` 에 있는 부분은 쿼리 파라미터로 처리된다.
++ 경로 변수
+  + ```@{/hello/{param1}/{param2}(param1=${param1}, param2=${param2})}``` -> ```/hello/data1/data2```
+    + URL 경로상에 변수가 있으면 ```()``` 부분은 경로 변수로 처리된다.
++ 경로 변수 + 쿼리 파라미터
+  + ```@{/hello/{param1}(param1=${param1}, param2=${param2})}``` -> ```/hello/data1?param2=data2```
+    + 경로 변수와 쿼리 파라미터를 함께 사용할 수 있다.
++ 상대경로, 절대경로, 프로토콜 기준을 표현할 수 도 있다.
+  + ```/hello``` : 절대 경로
+  + ```hello``` : 상대 경로
+  + 참고 [https://www.thymeleaf.org/doc/tutorials/3.0/usingthymeleaf.html#link-urls](https://www.thymeleaf.org/doc/tutorials/3.0/usingthymeleaf.html#link-urls)
