@@ -45,7 +45,8 @@ comments: true
 ### 타임리프 기본 기능
 + 타임리프 사용 선언
   + ``` <html xmlns:th="http://www.thymeleaf.org"> ```
-+ ``` 기본 표현식
+```
++ 기본 표현식
   + 간단한 표현:
     + 변수 표현식: ${...}
     + 선택 변수 표현식: *{...}
@@ -76,7 +77,8 @@ comments: true
     + Default: (value) ?: (defaultvalue)
   + 특별한 토큰:
     + No-Operation: _
-  + [https://www.thymeleaf.org/doc/tutorials/3.0/usingthymeleaf.html#standard-expression-syntax](https://www.thymeleaf.org/doc/tutorials/3.0/usingthymeleaf.html#standard-expression-syntax) ```
+  + [https://www.thymeleaf.org/doc/tutorials/3.0/usingthymeleaf.html#standard-expression-syntax](https://www.thymeleaf.org/doc/tutorials/3.0/usingthymeleaf.html#standard-expression-syntax) 
+```
 
 ## 텍스트 - text, utext
 + 타임리프는 기본적으로 HTML 테그의 속성에 기능을 정의해서 동작한다
@@ -157,3 +159,23 @@ comments: true
 </div>
 
 ~~~
+
+## 기본 객체들
++ 타임리프는 기본 객체들을 제공한다.
++ ```${#request}``` - 스프링 부트 3.0부터 제공하지 않는다.
++ ```${#response}``` - 스프링 부트 3.0부터 제공하지 않는다.
++ ```${#session}``` - 스프링 부트 3.0부터 제공하지 않는다.
++ ```${#servletContext}``` - 스프링 부트 3.0부터 제공하지 않는다.
++ ```${#locale}```
+
++ 스프링 부트 3.0
+  + 스프링 부트 3.0 부터는 ${#request} , ${#response} , ${#session} , ${#servletContext} 를 지원하지 않는다.
+  + 스프링 부트 3.0이라면 직접 model 에 해당 객체를 추가해서 사용해야 한다. 
++ ```#request``` 는 ```HttpServletRequest``` 객체가 그대로 제공되기 때문에 데이터를 조회하려면 ```request.getParameter("data")``` 처럼 불편하게 접근해야 한다
++ 이런 점을 해결하기 위해 편의 객체도 제공한다
+  + HTTP 요청 파라미터 접근: ```param```
+    + 예) ```${param.paramData}```
+  + HTTP 세션 접근: ```session```
+    + 예) ```${session.sessionData}```
+  + 스프링 빈 접근: ```@```
+    + 예) ```${@helloBean.hello('Spring!')}```
