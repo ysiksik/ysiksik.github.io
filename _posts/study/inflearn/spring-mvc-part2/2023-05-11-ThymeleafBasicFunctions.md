@@ -45,7 +45,8 @@ comments: true
 ### 타임리프 기본 기능
 + 타임리프 사용 선언
   + ``` <html xmlns:th="http://www.thymeleaf.org"> ```
-```
+  
+~~~
 + 기본 표현식
   + 간단한 표현:
     + 변수 표현식: ${...}
@@ -78,7 +79,7 @@ comments: true
   + 특별한 토큰:
     + No-Operation: _
   + [https://www.thymeleaf.org/doc/tutorials/3.0/usingthymeleaf.html#standard-expression-syntax](https://www.thymeleaf.org/doc/tutorials/3.0/usingthymeleaf.html#standard-expression-syntax) 
-```
+~~~
 
 ## 텍스트 - text, utext
 + 타임리프는 기본적으로 HTML 테그의 속성에 기능을 정의해서 동작한다
@@ -179,3 +180,84 @@ comments: true
     + 예) ```${session.sessionData}```
   + 스프링 빈 접근: ```@```
     + 예) ```${@helloBean.hello('Spring!')}```
+
+### 스프링 부트 3.0 미만이라면 다음과 같이 작성하자
+
+~~~html
+
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+  <meta charset="UTF-8">
+  <title>Title</title>
+</head>
+<body>
+<h1>식 기본 객체 (Expression Basic Objects)</h1>
+<ul>
+  <li>request = <span th:text="${#request}"></span></li>
+  <li>response = <span th:text="${#response}"></span></li>
+  <li>session = <span th:text="${#session}"></span></li>
+  <li>servletContext = <span th:text="${#servletContext}"></span></li>
+  <li>locale = <span th:text="${#locale}"></span></li>
+</ul>
+<h1>편의 객체</h1>
+<ul>
+  <li>Request Parameter = <span th:text="${param.paramData}"></span></li>
+  <li>session = <span th:text="${session.sessionData}"></span></li>
+  <li>spring bean = <span th:text="${@helloBean.hello('Spring!')}"></span></li>
+</ul>
+</body>
+</html>
+
+~~~
+
+### 스프링 부트 3.0 이상이라면 다음과 같이 작성하자
+
+~~~java
+
+@GetMapping("/basic-objects")
+public String basicObjects(Model model,HttpServletRequest request,
+        HttpServletResponse response,HttpSession session){
+        session.setAttribute("sessionData","Hello Session");
+        model.addAttribute("request",request);
+        model.addAttribute("response",response);
+        model.addAttribute("servletContext",request.getServletContext());
+        return"basic/basic-objects";
+        }
+
+@Component("helloBean")
+static class HelloBean {
+  public String hello(String data) {
+    return "Hello " + data;
+  }
+}
+
+~~~
+
+~~~html
+
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+  <meta charset="UTF-8">
+  <title>Title</title>
+</head>
+<body>
+<h1>식 기본 객체 (Expression Basic Objects)</h1>
+<ul>
+  <li>request = <span th:text="${request}"></span></li>
+  <li>response = <span th:text="${response}"></span></li>
+  <li>session = <span th:text="${session}"></span></li>
+  <li>servletContext = <span th:text="${servletContext}"></span></li>
+  <li>locale = <span th:text="${#locale}"></span></li>
+</ul>
+<h1>편의 객체</h1>
+<ul>
+  <li>Request Parameter = <span th:text="${param.paramData}"></span></li>
+  <li>session = <span th:text="${session.sessionData}"></span></li>
+  <li>spring bean = <span th:text="${@helloBean.hello('Spring!')}"></span></li>
+</ul>
+</body>
+</html>
+
+~~~
