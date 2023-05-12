@@ -644,3 +644,280 @@ static class HelloBean {
   + 타임리프 프로토타입은 약간 특이한데, HTML 주석에 약간의 구문을 더했다
   + HTML 파일을 웹 브라우저에서 그대로 열어보면 HTML 주석이기 때문에 이 부분이 웹 브라우저가 렌더링하지 않는다
   + 타임리프 렌더링을 거치면 이 부분이 정상 렌더링 된다. 쉽게 이야기해서 HTML 파일을 그대로 열어보면 주석처리가 되지만, 타임리프를 렌더링 한 경우에만 보이는 기능이다
+
+## 블록
++ ```<th:block>``` 은 HTML 태그가 아닌 타임리프의 유일한 자체 태그다
+
+~~~html
+
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+  <meta charset="UTF-8">
+  <title>Title</title>
+</head>
+<body>
+<th:block th:each="user : ${users}">
+  <div>
+    사용자 이름1 <span th:text="${user.username}"></span>
+    사용자 나이1 <span th:text="${user.age}"></span>
+  </div>
+  <div>
+    요약 <span th:text="${user.username} + ' / ' + ${user.age}"></span>
+  </div>
+</th:block>
+</body>
+</html>
+
+~~~
+
++ 타임리프의 특성상 HTML 태그안에 속성으로 기능을 정의해서 사용하는데, 위 예처럼 이렇게 사용하기 애매한 경우에 사용하면 된다. ```<th:block>``` 은 렌더링시 제거된다
+
+
+## 자바스크립트 인라인
++ 타임리프는 자바스크립트에서 타임리프를 편리하게 사용할 수 있는 자바스크립트 인라인 기능을 제공한다. ```<script th:inline="javascript">```
++ 텍스트 렌더링
+  + ```var username = [[${user.username}]];```
+    + 인라인 사용 전 -> ```var username = userA;```
+    + 인라인 사용 후 -> ```var username = "userA";```
+  + 인라인 사용 전 렌더링 결과를 보면 userA 라는 변수 이름이 그대로 남아있다. 타임리프 입장에서는 정확하게 렌더링 한 것이지만 아마 개발자가 기대한 것은 다음과 같은 "userA"라는 문자일 것이다.
+  + 결과적으로 userA가 변수명으로 사용되어서 자바스크립트 오류가 발생한다. 다음으로 나오는 숫자의 경우에는 " 가 필요 없기 때문에 정상 렌더링 된다
+  + 인라인 사용 후 렌더링 결과를 보면 문자 타입인 경우 ```"``` 를 포함해준다. 추가로 자바스크립트에서 문제가 될 수 있는 문자가 포함되어 있으면 이스케이프 처리도 해준다. 예) ```"``` -> ```\"```
++ 자바스크립트 내추럴 템플릿
+  + 타임리프는 HTML 파일을 직접 열어도 동작하는 내추럴 템플릿 기능을 제공한다. 자바스크립트 인라인 기능을 사용하면 주석을 활용해서 이 기능을 사용할 수 있다
+  + ```var username2 = /*[[${user.username}]]*/ "test username";```
+    + 인라인 사용 전 -> ```var username2 = /*userA*/ "test username";```
+    + 인라인 사용 후 -> ```var username2 = "userA";```
+  + 인라인 사용 전 결과를 보면 정말 순수하게 그대로 해석을 해버렸다. 따라서 내추럴 템플릿 기능이 동작하지 않고, 심지어 렌더링 내용이 주석처리 되어 버린다.
+  + 인라인 사용 후 결과를 보면 주석 부분이 제거되고, 기대한 "userA"가 정확하게 적용된다.
++ 객체
+  + 타임리프의 자바스크립트 인라인 기능을 사용하면 객체를 JSON으로 자동으로 변환해준다.
+  + ```var user = [[${user}]];```
+    + 인라인 사용 전 -> ```var user = BasicController.User(username=userA, age=10);```
+    + 인라인 사용 후 -> ```var user = {"username":"userA","age":10};```
+  + 인라인 사용 전은 객체의 toString()이 호출된 값이다
+  + 인라인 사용 후는 객체를 JSON으로 변환해준다
++ 자바스크립트 인라인 each
+  + 자바스크립트 인라인은 each를 지원하는데, 다음과 같이 사용한다.
+
+~~~html
+
+<!-- 자바스크립트 인라인 each -->
+<script th:inline="javascript">
+ [# th:each="user, stat : ${users}"]
+ var user[[${stat.count}]] = [[${user}]];
+ [/]
+</script>
+
+~~~
+
+## 템플릿 조각
++ 웹 페이지를 개발할 때는 공통 영역이 많이 있다. 예를 들어서 상단 영역이나 하단 영역, 좌측 카테고리 등등 여러 페이지에서 함께 사용하는 영역들이 있다
++ 이런 부분을 코드를 복사해서 사용한다면 변경시 여러 페이지를 다 수정해야 하므로 상당히 비효율 적이다
++ 타임리프는 이런 문제를 해결하기 위해 템플릿 조각과 레이아웃 기능을 지원한다
+
+~~~html
+
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<body>
+<footer th:fragment="copy">
+  푸터 자리 입니다.
+</footer>
+<footer th:fragment="copyParam (param1, param2)">
+  <p>파라미터 자리 입니다.</p>
+  <p th:text="${param1}"></p>
+  <p th:text="${param2}"></p>
+</footer>
+</body>
+</html>
+
+~~~
+
++ ```th:fragment``` 가 있는 태그는 다른곳에 포함되는 코드 조각으로 이해하면 된다.
+
+~~~html
+
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+  <meta charset="UTF-8">
+  <title>Title</title>
+</head>
+<body>
+<h1>부분 포함</h1>
+<h2>부분 포함 insert</h2>
+<div th:insert="~{template/fragment/footer :: copy}"></div>
+<h2>부분 포함 replace</h2>
+<div th:replace="~{template/fragment/footer :: copy}"></div>
+<h2>부분 포함 단순 표현식</h2>
+<div th:replace="template/fragment/footer :: copy"></div>
+<h1>파라미터 사용</h1>
+<div th:replace="~{template/fragment/footer :: copyParam ('데이터1', '데이터 2')}"></div>
+</body>
+</html>
+
+~~~
+
++ ```template/fragment/footer :: copy``` : ```template/fragment/footer.html``` 템플릿에 있는 ```th:fragment="copy"``` 라는 부분을 템플릿 조각으로 가져와서 사용한다는 의미이다
+
++ 부분 포함 insert
+  + ```<div th:insert="~{template/fragment/footer :: copy}"></div>```
+
+~~~html
+
+<h2>부분 포함 insert</h2>
+<div>
+<footer>
+푸터 자리 입니다.
+</footer>
+</div>
+
+~~~
+
++ th:insert 를 사용하면 현재 태그( div ) 내부에 추가한다
+
++ 부분 포함 replace
+  + ```<div th:replace="~{template/fragment/footer :: copy}"></div>```
+
+~~~html
+
+<h2>부분 포함 replace</h2>
+<footer>
+푸터 자리 입니다.
+</footer>
+
+~~~
+
++ th:replace 를 사용하면 현재 태그( div )를 대체한다
+
++ 부분 포함 단순 표현식
+  + ```<div th:replace="template/fragment/footer :: copy"></div>```
+
+~~~java
+
+<h2>부분 포함 단순 표현식</h2>
+<footer>
+푸터 자리 입니다.
+</footer>
+
+~~~
+
++ ```~{...}``` 를 사용하는 것이 원칙이지만 템플릿 조각을 사용하는 코드가 단순하면 이 부분을 생략할 수 있다.
+  
++ 파라미터 사용
+  + 다음과 같이 파라미터를 전달해서 동적으로 조각을 렌더링 할 수도 있다.
+  + ```<div th:replace="~{template/fragment/footer :: copyParam ('데이터1', '데이터2')}"></div>```
+
+~~~html
+
+<h1>파라미터 사용</h1>
+<footer>
+<p>파라미터 자리 입니다.</p>
+<p>데이터1</p>
+<p>데이터2</p>
+</footer>
+
+~~~
+
+~~~html
+
+<footer th:fragment="copyParam (param1, param2)">
+ <p>파라미터 자리 입니다.</p>
+ <p th:text="${param1}"></p>
+ <p th:text="${param2}"></p>
+</footer>
+
+~~~
+
+## 템플릿 레이아웃1
++ 템플릿 레이아웃
+  + 이전에는 일부 코드 조각을 가지고와서 사용했다면, 이번에는 개념을 더 확장해서 코드 조각을 레이아웃에 넘겨서 사용하는 방법에 대해서 알아보자
++ 예를 들어서 ```<head>``` 에 공통으로 사용하는 css , javascript 같은 정보들이 있는데, 이러한 공통
+  정보들을 한 곳에 모아두고, 공통으로 사용하지만, 각 페이지마다 필요한 정보를 더 추가해서 사용하고
+  싶다면 다음과 같이 사용하면 된다
+
+~~~html
+
+<html xmlns:th="http://www.thymeleaf.org">
+<head th:fragment="common_header(title,links)">
+ <title th:replace="${title}">레이아웃 타이틀</title>
+ <!-- 공통 -->
+ <link rel="stylesheet" type="text/css" media="all" th:href="@{/css/awesomeapp.css}">
+ <link rel="shortcut icon" th:href="@{/images/favicon.ico}">
+ <script type="text/javascript" th:src="@{/sh/scripts/codebase.js}"></script>
+ <!-- 추가 -->
+ <th:block th:replace="${links}" />
+</head>
+
+~~~
+
+~~~html
+
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head th:replace="template/layout/base :: common_header(~{::title},~{::link})">
+  <title>메인 타이틀</title>
+  <link rel="stylesheet" th:href="@{/css/bootstrap.min.css}">
+  <link rel="stylesheet" th:href="@{/themes/smoothness/jquery-ui.css}">
+</head>
+<body>
+메인 컨텐츠
+</body>
+</html>
+
+~~~
+
++ ```common_header(~{::title},~{::link})``` 이 부분이 핵심이다.
+  + ```::title``` 은 현재 페이지의 title 태그들을 전달한다.
+  + ```::link``` 는 현재 페이지의 link 태그들을 전달한다.
++ 메인 타이틀이 전달한 부분으로 교체되었다
++ 공통 부분은 그대로 유지되고, 추가 부분에 전달한 ```<link>``` 들이 포함된 것을 확인할 수 있다.
++ 이 방식은 사실 앞서 배운 코드 조각을 조금 더 적극적으로 사용하는 방식이다. 쉽게 이야기해서 레이아웃 개념을 두고, 그 레이아웃에 필요한 코드 조각을 전달해서 완성하는 것으로 이해하면 된다
+
+## 템플릿 레이아웃2
++ 템플릿 레이아웃 확장
+  + 앞서 이야기한 개념을 ```<head>``` 정도에만 적용하는게 아니라 ```<html>``` 전체에 적용할 수도 있다.
+
+~~~html
+
+<!DOCTYPE html>
+<html th:fragment="layout (title, content)" xmlns:th="http://www.thymeleaf.org">
+<head>
+  <title th:replace="${title}">레이아웃 타이틀</title>
+</head>
+<body>
+<h1>레이아웃 H1</h1>
+<div th:replace="${content}">
+  <p>레이아웃 컨텐츠</p>
+</div>
+<footer>
+  레이아웃 푸터
+</footer>
+</body>
+</html>
+
+~~~
+
+
+~~~html
+
+<!DOCTYPE html>
+<html th:replace="~{template/layoutExtend/layoutFile :: layout(~{::title},~{::section})}" xmlns:th="http://www.thymeleaf.org">
+<head>
+  <title>메인 페이지 타이틀</title>
+</head>
+<body>
+<section>
+  <p>메인 페이지 컨텐츠</p>
+  <div>메인 페이지 포함 내용</div>
+</section>
+</body>
+</html>
+
+~~~
+
++ ```layoutFile.html``` 을 보면 기본 레이아웃을 가지고 있는데, ```<html>``` 에 ```th:fragment``` 속성이 정의되어 있다.
++ 이 레이아웃 파일을 기본으로 하고 여기에 필요한 내용을 전달해서 부분부분 변경하는 것으로 이해하면 된다.
++ ```layoutExtendMain.html``` 는 현재 페이지인데, ```<html>``` 자체를 ```th:replace``` 를 사용해서 변경하는 것을 확인할 수 있다
++ 결국 ```layoutFile.html``` 에 필요한 내용을 전달하면서 ```<html>``` 자체를 ```layoutFile.html``` 로 변경한다
