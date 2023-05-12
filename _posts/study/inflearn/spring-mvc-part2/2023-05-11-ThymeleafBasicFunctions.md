@@ -448,3 +448,199 @@ static class HelloBean {
   + 조건식: 자바의 조건식과 유사하다
   + Elvis 연산자: 조건식의 편의 버전
   + No-Operation: ```_``` 인 경우 마치 타임리프가 실행되지 않는 것 처럼 동작한다. 이것을 잘 사용하면 HTML 의 내용 그대로 활용할 수 있다. 마지막 예를 보면 데이터가 없습니다. 부분이 그대로 출력된다.
+
+## 속성 값 설정
++ 타임리프 태그 속성(Attribute)
+  + 타임리프는 주로 HTML 태그에 ```th:*``` 속성을 지정하는 방식으로 동작한다. ```th:*``` 로 속성을 적용하면 기존 속성을 대체한다. 기존 속성이 없으면 새로 만든다.
++ 속성 추가
+  + ```th:attrappend``` : 속성 값의 뒤에 값을 추가한다.
+  + ```th:attrprepend``` : 속성 값의 앞에 값을 추가한다.
+  + ```th:classappend``` : class 속성에 자연스럽게 추가한다.
++ checked 처리
+  + HTML에서는 ```<input type="checkbox" name="active" checked="false" />``` 이 경우에도 checked 속성이 있기 때문에 checked 처리가 되어버린다
+  + HTML에서 checked 속성은 checked 속성의 값과 상관없이 checked 라는 속성만 있어도 체크가 된다. 이런 부분이 true , false 값을 주로 사용하는 개발자 입장에서는 불편하다.
+  + 타임리프의 ```th:checked``` 는 값이 false 인 경우 checked 속성 자체를 제거한다.
+  + ```<input type="checkbox" name="active" th:checked="false" />``` -> 타임리프 렌더링 후: ```<input type="checkbox" name="active" />```
+
+## 반복
++ 타임리프에서 반복은 th:each 를 사용한다. 추가로 반복에서 사용할 수 있는 여러 상태 값을 지원한다
+
+~~~html
+
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+  <meta charset="UTF-8">
+  <title>Title</title>
+</head>
+<body>
+<h1>기본 테이블</h1>
+<table border="1">
+  <tr>
+    <th>username</th>
+    <th>age</th>
+  </tr>
+  <tr th:each="user : ${users}">
+    <td th:text="${user.username}">username</td>
+    <td th:text="${user.age}">0</td>
+  </tr>
+</table>
+<h1>반복 상태 유지</h1>
+<table border="1">
+  <tr>
+    <th>count</th>
+    <th>username</th>
+    <th>age</th>
+    <th>etc</th>
+  </tr>
+  <tr th:each="user, userStat : ${users}">
+    <td th:text="${userStat.count}">username</td>
+    <td th:text="${user.username}">username</td>
+    <td th:text="${user.age}">0</td>
+    <td>
+      index = <span th:text="${userStat.index}"></span>
+      count = <span th:text="${userStat.count}"></span>
+      size = <span th:text="${userStat.size}"></span>
+      even? = <span th:text="${userStat.even}"></span>
+      odd? = <span th:text="${userStat.odd}"></span>
+      first? = <span th:text="${userStat.first}"></span>
+      last? = <span th:text="${userStat.last}"></span>
+      current = <span th:text="${userStat.current}"></span>
+    </td>
+  </tr>
+</table>
+</body>
+</html>
+
+~~~
+
++ 반복 기능
+  + ```<tr th:each="user : ${users}">```
+  + 반복시 오른쪽 컬렉션( ```${users}``` )의 값을 하나씩 꺼내서 왼쪽 변수( user )에 담아서 태그를 반복 실행합니다.
+  + ```th:each``` 는 List 뿐만 아니라 배열, java.util.Iterable , java.util.Enumeration 을 구현한 모든 객체를 반복에 사용할 수 있습니다. Map 도 사용할 수 있는데 이 경우 변수에 담기는 값은 Map.Entry 입니다.
++ 반복 상태 유지
+  + ```<tr th:each="user, userStat : ${users}">```
+  + 반복의 두번째 파라미터를 설정해서 반복의 상태를 확인 할 수 있습니다
+  + 두번째 파라미터는 생략 가능한데, 생략하면 지정한 변수명( user ) + Stat 가 됩니다
+  + 여기서는 user + Stat = userStat 이므로 생략 가능합니다
++ 반복 상태 유지 기능
+  + index : 0부터 시작하는 값
+  + count : 1부터 시작하는 값
+  + size : 전체 사이즈
+  + even , odd : 홀수, 짝수 여부( boolean )
+  + first , last :처음, 마지막 여부( boolean )
+  + current : 현재 객체
+
+## 조건부 평가
++ 타임리프의 조건식
+  + if , unless ( if 의 반대)
+
+~~~html
+
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+  <meta charset="UTF-8">
+  <title>Title</title>
+</head>
+<body>
+<h1>if, unless</h1>
+<table border="1">
+  <tr>
+    <th>count</th>
+    <th>username</th>
+    <th>age</th>
+  </tr>
+  <tr th:each="user, userStat : ${users}">
+    <td th:text="${userStat.count}">1</td>
+    <td th:text="${user.username}">username</td>
+    <td>
+      <span th:text="${user.age}">0</span>
+      <span th:text="'미성년자'" th:if="${user.age lt 20}"></span>
+      <span th:text="'미성년자'" th:unless="${user.age ge 20}"></span>
+    </td>
+  </tr>
+</table>
+<h1>switch</h1>
+<table border="1">
+  <tr>
+    <th>count</th>
+    <th>username</th>
+    <th>age</th>
+  </tr>
+  <tr th:each="user, userStat : ${users}">
+    <td th:text="${userStat.count}">1</td>
+    <td th:text="${user.username}">username</td>
+    <td th:switch="${user.age}">
+      <span th:case="10">10살</span>
+      <span th:case="20">20살</span>
+      <span th:case="*">기타</span>
+    </td>
+  </tr>
+</table>
+</body>
+</html>
+
+~~~
+
++ if, unless
+  + 타임리프는 해당 조건이 맞지 않으면 태그 자체를 렌더링하지 않는다
+  + 만약 다음 조건이 false 인 경우 ```<span>...<span>``` 부분 자체가 렌더링 되지 않고 사라진다
+    + ```<span th:text="'미성년자'" th:if="${user.age lt 20}"></span>```
++ switch
+  + ```*``` 은 만족하는 조건이 없을 때 사용하는 디폴트이다.
+
+## 주석
+
+~~~html
+
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+  <meta charset="UTF-8">
+  <title>Title</title>
+</head>
+<body>
+<h1>예시</h1>
+<span th:text="${data}">html data</span>
+<h1>1. 표준 HTML 주석</h1>
+<!--
+<span th:text="${data}">html data</span>
+-->
+<h1>2. 타임리프 파서 주석</h1>
+<!--/* [[${data}]] */-->
+<!--/*-->
+<span th:text="${data}">html data</span>
+<!--*/-->
+<h1>3. 타임리프 프로토타입 주석</h1>
+<!--/*/
+<span th:text="${data}">html data</span>
+/*/-->
+</body>
+</html>
+
+~~~
+
++ 결과
+
+~~~html
+
+<h1>예시</h1>
+<span>Spring!</span>
+<h1>1. 표준 HTML 주석</h1>
+<!--
+<span th:text="${data}">html data</span>
+-->
+<h1>2. 타임리프 파서 주석</h1>
+<h1>3. 타임리프 프로토타입 주석</h1>
+<span>Spring!</span>
+
+~~~
+
++ 표준 HTML 주석
+  + 자바스크립트의 표준 HTML 주석은 타임리프가 렌더링 하지 않고, 그대로 남겨둔다
++ 타임리프 파서 주석
+  + 타임리프 파서 주석은 타임리프의 진짜 주석이다. 렌더링에서 주석 부분을 제거한다
++ 타임리프 프로토타입 주석
+  + 타임리프 프로토타입은 약간 특이한데, HTML 주석에 약간의 구문을 더했다
+  + HTML 파일을 웹 브라우저에서 그대로 열어보면 HTML 주석이기 때문에 이 부분이 웹 브라우저가 렌더링하지 않는다
+  + 타임리프 렌더링을 거치면 이 부분이 정상 렌더링 된다. 쉽게 이야기해서 HTML 파일을 그대로 열어보면 주석처리가 되지만, 타임리프를 렌더링 한 경우에만 보이는 기능이다
