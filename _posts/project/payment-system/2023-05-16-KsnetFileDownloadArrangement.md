@@ -2,7 +2,7 @@
 layout: post
 bigtitle: '결제 시스템 (PG)'
 subtitle: KSNET PG 대사 파일 다운로드 배치
-date: '2023-05-16 00:00:00 +0900'
+date: '2023-05-16 00:00:01 +0900'
 categories:
 - payment-system
 comments: true
