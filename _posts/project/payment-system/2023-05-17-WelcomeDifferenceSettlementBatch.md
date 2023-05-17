@@ -1,16 +1,16 @@
 ---
 layout: post
 bigtitle: '결제 시스템 (PG)'
-subtitle: 웰컴 차액정산 배치
+subtitle: 웰컴 PG 차액정산 배치
 date: '2023-05-17 00:00:02 +0900'
 categories:
 - payment-system
 comments: true
 ---
 
-# 웰컴 차액정산 배치
+# 웰컴 PG 차액정산 배치
 
-# 웰컴 차액정산 배치 
+# 웰컴 PG 차액정산 배치 
 * toc
 {:toc}
 
