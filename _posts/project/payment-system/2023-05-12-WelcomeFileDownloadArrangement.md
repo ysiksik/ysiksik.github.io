@@ -1,7 +1,7 @@
 ---
 layout: post
 bigtitle: '결제 시스템 (PG)'
-subtitle: 웰컴 PG 대사 파일 다운로드 배치
+subtitle: 웰컴 PG의 대사 파일 다운로드 배치
 date: '2023-05-12 00:00:00 +0900'
 categories:
 - payment-system

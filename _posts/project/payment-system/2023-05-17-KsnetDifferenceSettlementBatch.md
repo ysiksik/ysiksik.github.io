@@ -1,16 +1,16 @@
 ---
 layout: post
 bigtitle: '결제 시스템 (PG)'
-subtitle: Ksnet PG 차액정산 배치
+subtitle: Ksnet PG에 차액 정산 연동 배치
 date: '2023-05-17 00:00:01 +0900'
 categories:
 - payment-system
 comments: true
 ---
 
-# Ksnet PG 차액정산 배치
+# Ksnet PG에 차액 정산 연동 배치
 
-# Ksnet PG 차액정산 배치 
+# Ksnet PG에 차액 정산 연동 배치
 * toc
 {:toc}
 

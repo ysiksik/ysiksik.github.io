@@ -1,16 +1,16 @@
 ---
 layout: post
 bigtitle: '결제 시스템 (PG)'
-subtitle: KSNET PG 대사 파일 TO DB 저장 배치
+subtitle: KSNET PG의 대사 파일 TO DB 저장 배치
 date: '2023-05-16 00:00:02 +0900'
 categories:
 - payment-system
 comments: true
 ---
 
-# KSNET PG 대사 파일 TO DB 저장 배치
+# KSNET PG의 대사 파일 TO DB 저장 배치
 
-# KSNET PG 대사 파일 TO DB 저장 배치
+# KSNET PG의 대사 파일 TO DB 저장 배치
 * toc
 {:toc}
 
