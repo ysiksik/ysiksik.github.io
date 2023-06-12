@@ -725,6 +725,7 @@ public class ItemServiceApplication implements WebMvcConfigurer {
 > **주의**
 > 글로벌 설정을 하면 BeanValidator가 자동 등록되지 않는다. 
 > 참고로 글로벌 설정을 직접 사용하는 경우는 드물다.
+
 > **참고**
 > 검증시 @Validated @Valid 둘다 사용가능하다.
 > javax.validation.@Valid 를 사용하려면 build.gradle 의존관계 추가가 필요하다.
