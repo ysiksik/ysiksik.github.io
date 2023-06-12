@@ -4,9 +4,8 @@ bigtitle: '스프링 MVC 2편 - 백엔드 웹 개발 핵심 기술'
 subtitle: 검증1 - Validation
 date: '2023-05-30 00:00:01 +0900'
 categories:
-
 - spring-mvc-part2
-  comments: true
+comments: true
 
 ---
 
