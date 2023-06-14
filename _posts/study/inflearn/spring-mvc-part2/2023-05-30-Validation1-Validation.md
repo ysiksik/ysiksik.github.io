@@ -14,7 +14,7 @@ comments: true
 # 검증1 - Validation
 
 * toc
-  {:toc}
+{:toc}
 
 ## 검증 요구사항
 
