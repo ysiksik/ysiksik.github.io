@@ -43,7 +43,7 @@ SIKSIK
 
 + 🌱 Spring
 + ☕ Java
-+ 🔙 Back-end1
++ 🔙 Back-end
 + 🛠 DevOps
 + 🔜 Front-end
 + 📝 정보관리 기술사

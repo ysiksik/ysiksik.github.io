@@ -188,4 +188,4 @@ comments: true
   + ![img_16.png](../../../../assets/img/http-web-basics/http-header2_16.png)
   + ![img_17.png](../../../../assets/img/http-web-basics/http-header2_17.png)
 + must-revalidate
-  + ![img_18.png](img_18.png)
+  + ![img_18.png](../../../../assets/img/http-web-basics/http-header2_18.png)
