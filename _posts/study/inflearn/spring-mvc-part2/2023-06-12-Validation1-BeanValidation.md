@@ -320,3 +320,25 @@ public String editV2(@PathVariable Long itemId, @Validated(UpdateCheck.class)
     있으므로 고민하는게 좋지만, 어설프게 합치면 수 많은 분기문(등록일 때, 수정일 때) 때문에 나중에
     유지보수에서 고통을 맛본다
   + 이런 어설픈 분기문들이 보이기 시작하면 분리해야 할 신호이다.
+
+## Bean Validation - HTTP 메시지 컨버터
+@Valid, @Validated는 HttpMessageConverter (@RequestBody)에도 적용할 수 있다.
+
+> 참고
+> @ModelAttribute는 HTTP 요청 파라미터(URL 쿼리 스트링, POST Form)를 다룰 때 사용한다.
+> @RequestBody는 HTTP Body의 데이터를 객체로 변환할 때 사용한다. 주로 API JSON 요청을 다룰 때 사용한다.
+
++ 실패 요청: JSON을 객체로 생성하는 것 자체가 실패함
+  + HttpMessageConverter에서 요청 JSON을 객체로 생성하는데 실패한다.
+  + 이 경우는 객체를 만들지 못하기 때문에 컨트롤러 자체가 호출되지 않고 그 전에 예외가 발생한다. 물론 Validator도 실행되지 않는다.
++ 검증 오류 요청: JSON을 객체로 생성하는 것은 성공했고, 검증에서 실패함
+  + return bindingResult.getAllErrors();는 ObjectError와 FieldError를 반환한다.
+  + 스프링이 이 객체를 JSON으로 변환해서 클라이언트에 전달했다.
+  + 실제 개발할 때는 이 객체들을 그대로 사용하지 말고, 필요한 데이터만 뽑아서 별도의 API 스펙을 정의하고 그에 맞는 객체를 만들어서 반환해야 한다.
+
+### @ModelAttribute vs @RequestBody
++ HTTP 요청 파리미터를 처리하는 @ModelAttribute는 각각의 필드 단위로 세밀하게 적용된다. 그래서 특정 필드에 타입이 맞지 않는 오류가 발생해도 나머지 필드는 정상 처리할 수 있었다.
++ HttpMessageConverter는 @ModelAttribute와 다르게 각각의 필드 단위로 적용되는 것이 아니라, 전체 객체 단위로 적용된다. 따라서 메시지 컨버터의 작동이 성공해서 객체를 만들어야 @Valid, @Validated가 적용된다.
++ @ModelAttribute는 필드 단위로 정교하게 바인딩이 적용된다. 특정 필드가 바인딩 되지 않아도 나머지 필드는 정상 바인딩 되고, Validator를 사용한 검증도 적용할 수 있다.
++ @RequestBody는 HttpMessageConverter 단계에서 JSON 데이터를 객체로 변경하지 못하면 이후 단계 자체가 진행되지 않고 예외가 발생한다. 컨트롤러도 호출되지 않고, Validator도 적용할 수 없다.
++ 참고: HttpMessageConverter 단계에서 실패하면 예외가 발생한다.
