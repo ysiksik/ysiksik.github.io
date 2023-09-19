@@ -244,7 +244,7 @@ mobileNet을 이용한 classification으로 버섯을 구별해주는 인공지�
     <div>2020.05 ~ 2021.05 데이터베이스 모델링 실무<img src= "/assets/img/Certificates/1.png"></div>
 </div>
 
-- 10개 프로젝트로 완성하는 백엔드 웹개발(JavaSpring) 초격차 패키지 Online.
+- 10개 프로젝트로 완성하는 백엔드 웹개발(Java Spring) 초격차 패키지 Online.
 - 한 번에 끝내는 코딩테스트 365 Java편 초격차 패키지
 - 이펙티브 자바 완벽 공략 2부
 - 이펙티브 자바 완벽 공략 1부
