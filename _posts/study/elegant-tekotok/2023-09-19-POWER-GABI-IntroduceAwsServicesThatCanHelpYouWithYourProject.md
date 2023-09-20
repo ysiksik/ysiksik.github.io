@@ -15,7 +15,7 @@ comments: true
 * toc
 {:toc}
 
-## EC2
+## EC2(Elastic Compute Cloud)
 + 배포를 하기 위해 EC2 AWS에 EC2를 사용할 수 있다
 + EC2에 C가 두 개인 것을 보고 C2인 걸 알겠는데 Elastic이라는 단어는 왜 있을까?
   + Elastic이라는 단어에는 탄력있는, 신축성있는 이라는 뜻 그래서 성능, 용량을 자유롭게 탄력적으로 조절할 수 있고 또 비용을 사용한 만큼 탄력적으로 지불한다는 점에서 elastic이라는 단어가 붙은 것
