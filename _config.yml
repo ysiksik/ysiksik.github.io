@@ -63,8 +63,8 @@ menu:
       - title:   KT개발컨소시엄
         url:      /kt-development-consortium/
         submenu:
-          - title:  데이터베이스 모델링
-            url:      /database-modeling/
+#          - title:  데이터베이스 모델링
+#            url:      /database-modeling/
           - title:  Java12 프로그래밍
             url:      /java12-programming/
           - title:  Spring 전자정부 프레임워크 기반 SI 실무
