@@ -9,7 +9,7 @@ description: >
 list: true
 order: 1
 submenu: true
-published: false 
+#published: false 
 ---
 # 데이터베이스 모델링
 

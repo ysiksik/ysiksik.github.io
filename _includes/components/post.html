@@ -1,4 +1,3 @@
-
 {% assign post             = include.post             %}
 {% assign no_link_title    = include.no_link_title    %}
 {% assign no_excerpt       = include.no_excerpt       %}
@@ -7,94 +6,123 @@
 
 <!--제목-->
 <article id="post{{ post.id | replace:'/','-' }}" class="page post mb6" role="article">
-  <header>
-    <h1 class="post-title flip-project-title">
-      {% unless no_link_title %}<a href="{{ post.url | relative_url }}" class="flip-title">{% endunless %}
-        {{ post.bigtitle }}
-      {% unless no_link_title %}</a>{% endunless %}
-    </h1>
-    <!--부제목-->
-    <h2 class="post-title flip-project-shubtitle">
-      {% unless no_link_title %}<a href="{{ post.url | relative_url }}" class="flip-subtitle">{% endunless %}
-        {{ post.subtitle }}
-      {% unless no_link_title %}</a>{% endunless %}
-    </h2>
-    <div class="post-date">
-      {% assign category_start     = "카테고리 : "     | default:" in " %}
-      {% assign tag_start          = "  tag #"          | default:" - " %}
-      {% assign category_separator = site.data.strings.category_separator | default:" >> " %}
-      {% assign tag_separator      = " #"     | default:". "  %}
-      {% include components/tag-list.html tags=post.categories meta=site.featured_categories start_with=category_start separator=category_separator %}
-      {% include components/tag-list.html tags=post.tags meta=site.featured_tags start_with=tag_start separator=tag_separator %}
-      <br>
-      <!--년월일-->
-      {% assign post_format = "%Y년 %m월 %d일 글" | default:"%Y %m %d" %}
-      <time datetime="{{ post.date | date_to_xmlschema }}">{{ post.date | date:post_format }}</time>
-    </div>
-    {% assign alt = false %}
-    {% unless hide_image %}{% if post.image %}
-      {% unless no_link_title %}<a href="{{ post.url | relative_url }}" class="no-hover no-print-link {% unless post.hide_image %}flip-project{% endunless %}" tabindex="-1">{% endunless %}
-        <div class="lead aspect-ratio sixteen-nine flip-project-img">
-          {% include_cached components/hy-img.html img=post.image alt=post.title width=864 height=486 %}
-        </div>
-      {% unless no_link_title %}</a>{% endunless %}
-      {% assign alt = '' %}
-    {% endif %}{% endunless %}
+    <header>
+        <script>
+            $(function () {
+                if(window.location.pathname.includes('database-modeling')){
 
-    {% include components/message.html text=post.description hide=hide_description alt=alt %}
-    <!--상단버튼-->
-    {% include page-button.html %}
-    <!--게시물 생성시 hits생성-->
-      <div style="text-align:right; text-align: center">
-          <!-- <a href="https://hits.seeyoufarm.com/{{ site.url | remove_first: 'https://' | remove_first: 'http://' }}{{ page.url }}"
-            target="_blank"> -->
+                    const queryString = window.location.search;
+                    const urlParams = new URLSearchParams(queryString);
+                    const check = urlParams.get("key");
+
+                    if (check !== 'siksik'){
+                        history.back();
+                    }
+                }
+
+            });
+        </script>
+
+        <h1 class="post-title flip-project-title">
+            {% unless no_link_title %}<a href="{{ post.url | relative_url }}" class="flip-title">{% endunless %}
+            {{ post.bigtitle }}
+            {% unless no_link_title %}</a>{% endunless %}
+        </h1>
+        <!--부제목-->
+        <h2 class="post-title flip-project-shubtitle">
+            {% unless no_link_title %}<a href="{{ post.url | relative_url }}" class="flip-subtitle">{% endunless %}
+            {{ post.subtitle }}
+            {% unless no_link_title %}</a>{% endunless %}
+        </h2>
+        <div class="post-date">
+            {% assign category_start = "카테고리 : " | default:" in " %}
+            {% assign tag_start = " tag #" | default:" - " %}
+            {% assign category_separator = site.data.strings.category_separator | default:" >> " %}
+            {% assign tag_separator = " #" | default:". " %}
+            {% include components/tag-list.html tags=post.categories meta=site.featured_categories start_with=category_start separator=category_separator %}
+            {% include components/tag-list.html tags=post.tags meta=site.featured_tags start_with=tag_start separator=tag_separator %}
+            <br>
+            <!--년월일-->
+            {% assign post_format = "%Y년 %m월 %d일 글" | default:"%Y %m %d" %}
+            <time datetime="{{ post.date | date_to_xmlschema }}">{{ post.date | date:post_format }}</time>
+        </div>
+        {% assign alt = false %}
+        {% unless hide_image %}{% if post.image %}
+        {% unless no_link_title %}<a href="{{ post.url | relative_url }}" class="no-hover no-print-link {% unless post.hide_image %}flip-project{% endunless %}" tabindex="-1">{% endunless %}
+        <div class="lead aspect-ratio sixteen-nine flip-project-img">
+            {% include_cached components/hy-img.html img=post.image alt=post.title width=864 height=486 %}
+        </div>
+        {% unless no_link_title %}</a>{% endunless %}
+        {% assign alt = '' %}
+        {% endif %}{% endunless %}
+
+        {% include components/message.html text=post.description hide=hide_description alt=alt %}
+        <!--상단버튼-->
+        {% include page-button.html %}
+        <!--게시물 생성시 hits생성-->
+        <div style="text-align:right; text-align: center">
+            <!-- <a href="https://hits.seeyoufarm.com/{{ site.url | remove_first: 'https://' | remove_first: 'http://' }}{{ page.url }}"
+              target="_blank"> -->
             <img
-            src="https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https://{{ site.url | remove_first: 'https://' | remove_first: 'http://' }}{{ page.url }}&count_bg=%2379C83D&title_bg=%23555555&icon=&icon_color=%23E7E7E7&title=%EC%A1%B0%ED%9A%8C%EC%88%98&edge_flat=false"/>
-          <!-- </a> -->
-      </div>
-  </header>
-  <div class="markdown-body">
-    <ins class="kakao_ad_area" style="display:none;"
-         data-ad-unit    = "DAN-t9o4PPiNZJboUChC"
-         data-ad-width   = "320"
-         data-ad-height  = "50"></ins>
-    <script type="text/javascript" src="//t1.daumcdn.net/kas/static/ba.min.js" async></script>
-    {% if no_excerpt %}
-    {{ post.content }}
-  {% else %}
-    {{ post.excerpt }}
-  </div>
+                    src="https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https://{{ site.url | remove_first: 'https://' | remove_first: 'http://' }}{{ page.url }}&count_bg=%2379C83D&title_bg=%23555555&icon=&icon_color=%23E7E7E7&title=%EC%A1%B0%ED%9A%8C%EC%88%98&edge_flat=false"/>
+            <!-- </a> -->
+        </div>
+    </header>
+    <div class="markdown-body">
+        <ins class="kakao_ad_area" style="display:none;"
+             data-ad-unit="DAN-t9o4PPiNZJboUChC"
+             data-ad-width="320"
+             data-ad-height="50"></ins>
+        <script type="text/javascript" src="//t1.daumcdn.net/kas/static/ba.min.js" async></script>
+        {% if no_excerpt %}
+        {{ post.content }}
+        {% else %}
+        {{ post.excerpt }}
+    </div>
 
     {% capture post_title %}<a class="heading flip-title" href="{{ post.url | relative_url }}">{{ post.title }}</a>{% endcapture %}
     {% assign text = site.data.strings.continue_reading | default:"Continue reading <!--post_title-->" %}
     <!--footer-->
     <footer>
-      <p class="read-more">
-        {{ text | replace:"<!--post_title-->", post_title }}
-      </p>
+        <p class="read-more">
+            {{ text | replace:"<!--post_title--> ", post_title }}
+        </p>
 
     </footer>
-  {% endif %}
-</div>
+    {% endif %}
+    </div>
 </article>
 
 <script>
-  var config = {
-      startOnLoad:true,
-      theme: 'forest',
-      flowchart:{
-              useMaxWidth:false,
-              htmlLabels:true
+    var config = {
+        startOnLoad: true,
+        theme: 'forest',
+        flowchart: {
+            useMaxWidth: false,
+            htmlLabels: true
+        }
+    };
+    mermaid.initialize(config);
+    mermaid.init(undefined, '.language-mermaid');
+</script>
+
+
+ <!--<script>
+  // setTimeout(function(){
+  // location.reload();
+  // },3000); // 3000밀리초 = 3초
+
+  $(function () {
+      if(window.location.pathname.includes('database-modeling')){
+
+          const queryString = window.location.search;
+          const urlParams = new URLSearchParams(queryString);
+          const check = urlParams.get("key");
+
+          if (check !== 'siksik'){
+              history.back();
           }
-  };
-  mermaid.initialize(config);
-  mermaid.init(undefined, '.language-mermaid');
-  </script>
+      }
 
-
-
-<!-- <script>
-  setTimeout(function(){
-  location.reload();
-  },3000); // 3000밀리초 = 3초
-  </script> -->
+  });
+  </script>-->
