@@ -9,7 +9,7 @@ comments: true
 ---
 
 # 아마란스의 로깅
-https://youtu.be/X_iE36En9F4?si=fIspkhYcBEw9GU9i
+[https://youtu.be/X_iE36En9F4?si=fIspkhYcBEw9GU9i](https://youtu.be/X_iE36En9F4?si=fIspkhYcBEw9GU9i)
 
 # 아마란스의 로깅
 * toc
@@ -70,7 +70,6 @@ https://youtu.be/X_iE36En9F4?si=fIspkhYcBEw9GU9i
 + rollingPolicy로 TimeBasedRollingPolicy를 선언을 해주어서 일정한 기간에 따라서 일정 기간 주기로 새로운 파일을 생성해주게 될 것이다
 + fileNamePattern은 이 생성한 로그 파일의 이름을 정의, 여기에서 이제 %d 라는게 보이는데 퍼센트 뒤와 그 위에 날짜 형식이 보인다 이게 바로 로그 파일을 작성할 주기를 설정 디폴트 설정인데 매일에 한 번씩 로그 파일을 생성한다는 의미
  
-
 ## 부록
 + ![img_13.png](../../../assets/img/elegant-tekotok/AMARANTH-Logging13.png)
 + 어펜더와 필터는 로그백 내부에서 추상화된 객체로 존재
