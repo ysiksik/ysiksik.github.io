@@ -628,3 +628,105 @@ public class WebConfig implements WebMvcConfigurer {
 ### 정리
 + 서블릿 필터와 스프링 인터셉터는 웹과 관련된 공통 관심사를 해결하기 위한 기술이다
 + 서블릿 필터와 비교해서 스프링 인터셉터가 개발자 입장에서 훨씬 편리하다는 것을 코드로 이해했을 것이다. 특별한 문제가 없다면 인터셉터를 사용하는 것이 좋다.
+
+## ArgumentResolver 활용
+
+### @Login 애노테이션 생성
+
+~~~java
+
+package hello.login.web.argumentresolver;
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+@Target(ElementType.PARAMETER)
+@Retention(RetentionPolicy.RUNTIME)
+public @interface Login {
+}
+
+~~~
+
++ ```@Target(ElementType.PARAMETER) ```: 파라미터에만 사용
++ ```@Retention(RetentionPolicy.RUNTIME) ```: 리플렉션 등을 활용할 수 있도록 런타임까지 애노테이션 정보가 남아있음
+
+### LoginMemberArgumentResolver 생성
+
+~~~java
+
+package hello.login.web.argumentresolver;
+
+import hello.login.domain.member.Member;
+import hello.login.web.SessionConst;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.MethodParameter;
+import org.springframework.web.bind.support.WebDataBinderFactory;
+import org.springframework.web.context.request.NativeWebRequest;
+import org.springframework.web.method.support.HandlerMethodArgumentResolver;
+import org.springframework.web.method.support.ModelAndViewContainer;
+
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpSession;
+
+@Slf4j
+public class LoginMemberArgumentResolver implements
+        HandlerMethodArgumentResolver {
+  @Override
+  public boolean supportsParameter(MethodParameter parameter) {
+    log.info("supportsParameter 실행");
+    boolean hasLoginAnnotation = parameter.hasParameterAnnotation(Login.class);
+    boolean hasMemberType = Member.class.isAssignableFrom(parameter.getParameterType());
+    return hasLoginAnnotation && hasMemberType;
+  }
+
+  @Override
+  public Object resolveArgument(MethodParameter parameter,
+                                ModelAndViewContainer mavContainer, NativeWebRequest webRequest,
+                                WebDataBinderFactory binderFactory) throws Exception {
+    log.info("resolveArgument 실행");
+    HttpServletRequest request = (HttpServletRequest) webRequest.getNativeRequest();
+    HttpSession session = request.getSession(false);
+    if (session == null) {
+      return null;
+    }
+    return session.getAttribute(SessionConst.LOGIN_MEMBER);
+  }
+}
+
+~~~
+
++ ```supportsParameter()``` : ```@Login``` 애노테이션이 있으면서 ```Member``` 타입이면 해당 ```ArgumentResolver``` 가 사용된다
++ ```resolveArgument()``` : 컨트롤러 호출 직전에 호출 되어서 필요한 파라미터 정보를 생성해준다. 여기서는 세션에 있는 로그인 회원 정보인 ```member``` 객체를 찾아서 반환해준다. 이후 스프링MVC는 컨트롤러의
+  메서드를 호출하면서 여기에서 반환된 ```member``` 객체를 파라미터에 전달해준다.
+
+### WebMvcConfigurer에 설정 추가
+
+~~~java
+
+package hello.login;
+
+import hello.login.web.argumentresolver.LoginMemberArgumentResolver;
+import hello.login.web.filter.LogFilter;
+import hello.login.web.filter.LoginCheckFilter;
+import hello.login.web.interceptor.LogInterceptor;
+import hello.login.web.interceptor.LoginCheckInterceptor;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.web.method.support.HandlerMethodArgumentResolver;
+import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
+import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+
+import javax.servlet.Filter;
+import java.util.List;
+
+@Configuration
+public class WebConfig implements WebMvcConfigurer {
+  @Override
+  public void addArgumentResolvers(List<HandlerMethodArgumentResolver> resolvers) {
+    resolvers.add(new LoginMemberArgumentResolver());
+  }
+  //...
+}
+
+~~~
