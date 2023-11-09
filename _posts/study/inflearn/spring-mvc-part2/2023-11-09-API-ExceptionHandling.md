@@ -106,10 +106,10 @@ public ResponseEntity<Map<String, Object>> error(HttpServletRequest request) {}
 + 컨트롤러 밖으로 던져진 예외를 해결하고, 동작 방식을 변경하고 싶으면 HandlerExceptionResolver 를 사용하면 된다. 줄여서 ExceptionResolver 라 한다.
 
 #### ExceptionResolver 적용 전
-+ ![img.png](img.png)
++ ![img.png](../../../../assets/img/spring-mvc-part2/API-ExceptionHandling.png)
 
 #### ExceptionResolver 적용 후
-+ ![img_1.png](img_1.png)
++ ![img_1.png](../../../../assets/img/spring-mvc-part2/API-ExceptionHandling1.png)
 + 참고: ExceptionResolver 로 예외를 해결해도 postHandle() 은 호출되지 않는다.
 
 ### HandlerExceptionResolver - 인터페이스
