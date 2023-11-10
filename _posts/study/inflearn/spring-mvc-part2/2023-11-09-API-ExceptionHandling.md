@@ -297,4 +297,101 @@ public void extendHandlerExceptionResolvers(List<HandlerExceptionResolver> resol
 + 따라서 예외가 발생해도 서블릿 컨테이너까지 예외가 전달되지 않고, 스프링 MVC에서 예외 처리는 끝이 난다.
 + 결과적으로 WAS 입장에서는 정상 처리가 된 것이다. 이렇게 예외를 이곳에서 모두 처리할 수 있다는 것이 핵심이다.
 + 서블릿 컨테이너까지 예외가 올라가면 복잡하고 지저분하게 추가 프로세스가 실행된다. 반면에 ExceptionResolver 를 사용하면 예외처리가 상당히 깔끔해진다.
-+ 그런데 직접 ExceptionResolver 를 구현하려고 하니 상당히 복잡하다. 지금부터 스프링이 제공하는 ExceptionResolver 들을 알아보자.
++ 그런데 직접 ExceptionResolver 를 구현하려고 하니 상당히 복잡하다. 
+
+## API 예외 처리 - 스프링이 제공하는 ExceptionResolver1
+스프링 부트가 기본으로 제공하는 ExceptionResolver
++ ```HandlerExceptionResolverComposite``` 에 다음 순서로 등록
+
+1. ```ExceptionHandlerExceptionResolver```
+2. ```ResponseStatusExceptionResolver```
+3. ```DefaultHandlerExceptionResolver``` -> 우선 순위가 가장 낮다.
+
++ ExceptionHandlerExceptionResolver
+  + ```@ExceptionHandler``` 을 처리한다. API 예외 처리는 대부분 이 기능으로 해결한다.
++ ResponseStatusExceptionResolver
+  + HTTP 상태 코드를 지정해준다
+  + ```예) @ResponseStatus(value = HttpStatus.NOT_FOUND)```
++ DefaultHandlerExceptionResolver
+  + 스프링 내부 기본 예외를 처리한다.
+
+### ResponseStatusExceptionResolver
++ ```ResponseStatusExceptionResolver``` 는 예외에 따라서 HTTP 상태 코드를 지정해주는 역할을 한다. 다음 두 가지 경우를 처리한다.
+  + ```@ResponseStatus``` 가 달려있는 예외
+  + ```ResponseStatusException``` 예외
+
+~~~java
+
+
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.ResponseStatus;
+
+@ResponseStatus(code = HttpStatus.BAD_REQUEST, reason = "잘못된 요청 오류")
+public class BadRequestException extends RuntimeException {
+}
+
+~~~
+
++ ```@ResponseStatus``` 애노테이션을 적용하면 HTTP 상태 코드를 변경해준다
++ BadRequestException 예외가 컨트롤러 밖으로 넘어가면 ```ResponseStatusExceptionResolver``` 예외가 해당 애노테이션을 확인해서 오류 코드를 ```HttpStatus.BAD_REQUEST``` (400)으로 변경하고, 메시지도 담는다.
++ ```ResponseStatusExceptionResolver``` 코드를 확인해보면 결국 ```response.sendError(statusCode, resolvedReason)``` 를 호출하는 것을 확인할 수 있다.
++ ```sendError(400)``` 를 호출했기 때문에 WAS에서 다시 오류 페이지( ```/error``` )를 내부 요청한다.
+
+#### 메시지 기능
++ ```reason``` 을 ```MessageSource``` 에서 찾는 기능도 제공한다. ```reason = "error.bad"```
+
+~~~java
+
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.ResponseStatus;
+
+//@ResponseStatus(code = HttpStatus.BAD_REQUEST, reason = "잘못된 요청 오류")
+@ResponseStatus(code = HttpStatus.BAD_REQUEST, reason = "error.bad")
+public class BadRequestException extends RuntimeException {
+}
+
+~~~
+
++ messages.properties
+
+~~~properties
+
+error.bad=잘못된 요청 오류입니다. 메시지 사용
+
+~~~
+
+#### ResponseStatusException
++ ```@ResponseStatus``` 는 개발자가 직접 변경할 수 없는 예외에는 적용할 수 없다. (애노테이션을 직접 넣어야 하는데, 내가 코드를 수정할 수 없는 라이브러리의 예외 코드 같은 곳에는 적용할 수 없다.)
++ 추가로 애노테이션을 사용하기 때문에 조건에 따라 동적으로 변경하는 것도 어렵다. 이때는 ```ResponseStatusException``` 예외를 사용하면 된다
+
+
+~~~java
+
+@GetMapping("/api/response-status-ex2")
+public String responseStatusEx2() {
+ throw new ResponseStatusException(HttpStatus.NOT_FOUND, "error.bad", new IllegalArgumentException());
+}
+
+~~~
+
+## API 예외 처리 - 스프링이 제공하는 ExceptionResolver2
++ DefaultHandlerExceptionResolver 는 스프링 내부에서 발생하는 스프링 예외를 해결한다.
++ 대표적으로 파라미터 바인딩 시점에 타입이 맞지 않으면 내부에서 ```TypeMismatchException``` 이 발생하는데, 이 경우 예외가 발생했기 때문에 그냥 두면 서블릿 컨테이너까지 오류가 올라가고, 결과적으로 500 오류가 발생한다.
++ 그런데 파라미터 바인딩은 대부분 클라이언트가 HTTP 요청 정보를 잘못 호출해서 발생하는 문제이다. HTTP 에서는 이런 경우 HTTP 상태 코드 400을 사용하도록 되어 있다.
++ ```DefaultHandlerExceptionResolver``` 는 이것을 500 오류가 아니라 HTTP 상태 코드 400 오류로 변경한다.
++ 스프링 내부 오류를 어떻게 처리할지 수 많은 내용이 정의되어 있다.
+
+### 코드 확인
++ ```DefaultHandlerExceptionResolver.handleTypeMismatch``` 를 보면 다음과 같은 코드를 확인할 수 있다.
++ ```response.sendError(HttpServletResponse.SC_BAD_REQUEST)``` (400) 결국 ```response.sendError()``` 를 통해서 문제를 해결한다.
++ ```sendError(400)``` 를 호출했기 때문에 WAS에서 다시 오류 페이지( ```/error``` )를 내부 요청한다
+
+### 정리
+지금까지 다음 ```ExceptionResolver``` 들에 대해 알아보았다
+
+1. ```ExceptionHandlerExceptionResolver```
+2. ```ResponseStatusExceptionResolver``` : HTTP 응답 코드 변경
+3. ```DefaultHandlerExceptionResolver``` : 스프링 내부 예외 처리
+
++ ```HandlerExceptionResolver``` 를 직접 사용하기는 복잡하다. API 오류 응답의 경우 response 에 직접 데이터를 넣어야 해서 매우 불편하고 번거롭다. ModelAndView 를 반환해야 하는 것도 API에는 잘 맞지 않는다.
++ 스프링은 이 문제를 해결하기 위해 ```@ExceptionHandler``` 라는 매우 혁신적인 예외 처리 기능을 제공한다. ```ExceptionHandlerExceptionResolver``` 이다
