@@ -15,7 +15,9 @@
                     const urlParams = new URLSearchParams(queryString);
                     const check = urlParams.get("key");
 
-                    if (check !== 'siksik'){
+                    const check2 = localStorage.getItem("key")
+
+                    if (check !== 'siksik' && check2 !== 'siksik'){
                         history.back();
                     }
                 }
