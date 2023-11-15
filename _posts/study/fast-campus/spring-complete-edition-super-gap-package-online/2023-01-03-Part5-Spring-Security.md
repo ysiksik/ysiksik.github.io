@@ -690,7 +690,7 @@ public UserDetailsService userDetailsService(){
 + 위존된 페이지는 Csrf Token이 없거나 잘못된 Csrf Token을 가지고 있다
 + 따라서 정상적인 페이지에는 Csrf Token 값을 알려줘야 하는데 Thymeleaf에서는 페이지를 만들때 자동으로 Csrf Token을 넣어준다
 + 따로 추가하지 않았는데 아래 같은 코드가 form tag안에 자동으로 생성된다
-  + <input type="hidden" name="_csrf" value="594af42a-63e9-4ef9-aeb2-3687f12cdf43"/>
+  + ```<input type="hidden" name="_csrf" value="594af42a-63e9-4ef9-aeb2-3687f12cdf43"/>```
 + 대신 굳이 사용자에게 보여줄 필요가 없는 값이기 때문에 hidden으로 처리된다
 + Csrf filter는 자동으로 활성화 되어있는 Filter지만 명시적으로 On 하기 위해서는 http.csrf(); 코드를 추가한다 
 + Off하기 위해서는 http.csrf().disable(); 코드를 추가한다 

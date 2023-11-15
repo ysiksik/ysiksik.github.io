@@ -84,3 +84,104 @@ public String helloV2(@RequestParam Integer data) {
 > 타입을 변환할 때 마다 객체를 계속 생성해야 하는 단점이 있다. 지금은 Converter 의 등장으로 해당
 > 문제들이 해결되었고, 기능 확장이 필요하면 Converter 를 사용하면 된다.
 
+## 타입 컨버터 - Converter
++ 타입 컨버터를 사용하려면 ```org.springframework.core.convert.converter.Converter``` 인터페이스를 구현하면 된다. 
+
+> **주의**
+> 
+> Converter 라는 이름의 인터페이스가 많으니 조심해야 한다.
+> org.springframework.core.convert.converter.Converter 를 사용해야 한다.
+
++ 컨버터 인터페이스
+
+~~~java
+
+package org.springframework.core.convert.converter;
+public interface Converter<S, T> {
+ T convert(S source);
+}
+
+~~~
+
+### 문자를 숫자로 변환하는 타입 컨버터
+
+~~~java
+
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.convert.converter.Converter;
+
+@Slf4j
+public class StringToIntegerConverter implements Converter<String, Integer> {
+  @Override
+  public Integer convert(String source) {
+    log.info("convert source={}", source);
+    return Integer.valueOf(source);
+  }
+}
+
+~~~
+
++ ```String``` -> ```Integer``` 로 변환하기 때문에 소스가 String 이 된다. 이 문자를 ```Integer.valueOf(source)``` 를 사용해서 숫자로 변경한 다음에 변경된 숫자를 반환하면 된다.
+
+### 숫자를 문자로 변환하는 타입 컨버터
+
+~~~java
+
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.convert.converter.Converter;
+
+@Slf4j
+public class IntegerToStringConverter implements Converter<Integer, String> {
+  @Override
+  public String convert(Integer source) {
+    log.info("convert source={}", source);
+    return String.valueOf(source);
+  }
+}
+
+~~~
+
++ 이번에는 숫자를 문자로 변환하는 타입 컨버터이다. 앞의 컨버터와 반대의 일을 한다. 이번에는 숫자가 입력되기 때문에 소스가 ```Integer``` 가 된다. ```String.valueOf(source)``` 를 사용해서 문자로 변경한 다음 변경된 문자를 반환하면 된다.
+
+### 사용자 정의 타입 컨버터
++ 127.0.0.1:8080 과 같은 IP, PORT를 입력하면 IpPort 객체로 변환하는 컨버터
+
+~~~java
+
+import lombok.EqualsAndHashCode;
+import lombok.Getter;
+
+@Getter
+@EqualsAndHashCode
+public class IpPort {
+  private String ip;
+  private int port;
+
+  public IpPort(String ip, int port) {
+    this.ip = ip;
+    this.port = port;
+  }
+}
+
+~~~
+
++ 롬복의 ```@EqualsAndHashCode``` 를 넣으면 모든 필드를 사용해서 ```equals()``` , ```hashcode()``` 를 생성한다. 따라서 모든 필드의 값이 같다면 ```a.equals(b)``` 의 결과가 참이 된다.
+
+~~~java
+
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.convert.converter.Converter;
+
+@Slf4j
+public class StringToIpPortConverter implements Converter<String, IpPort> {
+  @Override
+  public IpPort convert(String source) {
+    log.info("convert source={}", source);
+    String[] split = source.split(":");
+    String ip = split[0];
+    int port = Integer.parseInt(split[1]);
+    return new IpPort(ip, port);
+  }
+}
+
+~~~
