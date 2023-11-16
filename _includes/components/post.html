@@ -10,13 +10,11 @@
         <script>
             $(function () {
                 if(window.location.pathname.includes('database-modeling')){
-
+                    console.log(window.location.pathname);
                     const queryString = window.location.search;
                     const urlParams = new URLSearchParams(queryString);
                     const check = urlParams.get("key");
-
                     const check2 = localStorage.getItem("key")
-
                     if (check !== 'siksik' && check2 !== 'siksik'){
                         history.back();
                     }
