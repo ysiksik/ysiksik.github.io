@@ -9,7 +9,7 @@ comments: true
 ---
 
 # 오도의 정렬 알고리즘
-[https://youtu.be/oyzWDtMquo4?si=CqMBSEOlb7r7r___](https://youtu.be/oyzWDtMquo4?si=CqMBSEOlb7r7r___)
+[https://youtu.be/oyzWDtMquo4?si=4MctoxwGkR32lyRU](https://youtu.be/oyzWDtMquo4?si=4MctoxwGkR32lyRU)
 
 # 오도의 정렬 알고리즘
 * toc
