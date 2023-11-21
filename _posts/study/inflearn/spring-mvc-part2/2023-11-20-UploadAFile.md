@@ -259,4 +259,317 @@ public class ServletUploadControllerV2 {
 > 다음 부분도 파일의 바이너리 데이터를 모두 출력하므로 끄는 것이 좋다.
 > log.info("body={}", body);
 
-+ 서블릿이 제공하는 ```Part``` 는 편하기는 하지만, ```HttpServletRequest``` 를 사용해야 하고, 추가로 파일 부분만 구분하려면 여러가지 코드를 넣어야 한다. 이번에는 스프링이 이 부분을 얼마나 편리하게 제공하는지 확인해보자.
++ 서블릿이 제공하는 ```Part``` 는 편하기는 하지만, ```HttpServletRequest``` 를 사용해야 하고, 추가로 파일 부분만 구분하려면 여러가지 코드를 넣어야 한다.
+
+## 스프링과 파일 업로드
++ 스프링은 ```MultipartFile``` 이라는 인터페이스로 멀티파트 파일을 매우 편리하게 지원한다.
+
+~~~java
+
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Controller;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.multipart.MultipartFile;
+
+import javax.servlet.http.HttpServletRequest;
+import java.io.File;
+import java.io.IOException;
+
+@Slf4j
+@Controller
+@RequestMapping("/spring")
+public class SpringUploadController {
+  @Value("${file.dir}")
+  private String fileDir;
+
+  @GetMapping("/upload")
+  public String newFile() {
+    return "upload-form";
+  }
+
+  @PostMapping("/upload")
+  public String saveFile(@RequestParam String itemName, @RequestParam MultipartFile file, HttpServletRequest request) throws IOException {
+    log.info("request={}", request);
+    log.info("itemName={}", itemName);
+    log.info("multipartFile={}", file);
+    if (!file.isEmpty()) {
+      String fullPath = fileDir + file.getOriginalFilename();
+      log.info("파일 저장 fullPath={}", fullPath);
+      file.transferTo(new File(fullPath));
+    }
+    return "upload-form";
+  }
+}
+
+~~~
+
++ 코드를 보면 스프링 답게 딱 필요한 부분의 코드만 작성하면 된다
++ ```@RequestParam MultipartFile file```업로드하는 HTML Form의 name에 맞추어 ```@RequestParam``` 을 적용하면 된다.
++ ```@ModelAttribute``` 에서도 MultipartFile 을 동일하게 사용할 수 있다.
++ MultipartFile 주요 메서드
+  + ```file.getOriginalFilename()``` : 업로드 파일 명
+  + ```file.transferTo(...)``` : 파일 저장
+
+## 예제로 구현하는 파일 업로드, 다운로드
+
+~~~java
+
+import lombok.Data;
+
+import java.util.List;
+
+@Data
+public class Item {
+  private Long id;
+  private String itemName;
+  private UploadFile attachFile;
+  private List<UploadFile> imageFiles;
+}
+
+~~~
+
+~~~java
+
+
+import org.springframework.stereotype.Repository;
+
+import java.util.HashMap;
+import java.util.Map;
+
+@Repository
+public class ItemRepository {
+  private final Map<Long, Item> store = new HashMap<>();
+  private long sequence = 0L;
+
+  public Item save(Item item) {
+    item.setId(++sequence);
+    store.put(item.getId(), item);
+    return item;
+  }
+
+  public Item findById(Long id) {
+    return store.get(id);
+  }
+}
+
+~~~
+
+~~~java
+
+import lombok.Data;
+
+@Data
+public class UploadFile {
+  private String uploadFileName;
+  private String storeFileName;
+
+  public UploadFile(String uploadFileName, String storeFileName) {
+    this.uploadFileName = uploadFileName;
+    this.storeFileName = storeFileName;
+  }
+}
+
+~~~
+
++ ```uploadFileName``` : 고객이 업로드한 파일명
++ ```storeFileName``` : 서버 내부에서 관리하는 파일명
+
+~~~java
+
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Component;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.io.File;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+
+@Component
+public class FileStore {
+  @Value("${file.dir}")
+  private String fileDir;
+
+  public String getFullPath(String filename) {
+    return fileDir + filename;
+  }
+
+  public List<UploadFile> storeFiles(List<MultipartFile> multipartFiles) throws IOException {
+    List<UploadFile> storeFileResult = new ArrayList<>();
+    for (MultipartFile multipartFile : multipartFiles) {
+      if (!multipartFile.isEmpty()) {
+        storeFileResult.add(storeFile(multipartFile));
+      }
+    }
+    return storeFileResult;
+  }
+
+  public UploadFile storeFile(MultipartFile multipartFile) throws IOException {
+    if (multipartFile.isEmpty()) {
+      return null;
+    }
+    String originalFilename = multipartFile.getOriginalFilename();
+    String storeFileName = createStoreFileName(originalFilename);
+    multipartFile.transferTo(new File(getFullPath(storeFileName)));
+    return new UploadFile(originalFilename, storeFileName);
+  }
+
+  private String createStoreFileName(String originalFilename) {
+    String ext = extractExt(originalFilename);
+    String uuid = UUID.randomUUID().toString();
+    return uuid + "." + ext;
+  }
+
+  private String extractExt(String originalFilename) {
+    int pos = originalFilename.lastIndexOf(".");
+    return originalFilename.substring(pos + 1);
+  }
+}
+
+~~~
+
++ 멀티파트 파일을 서버에 저장하는 역할을 담당한다.
++ ```createStoreFileName()``` : 서버 내부에서 관리하는 파일명은 유일한 이름을 생성하는 ```UUID``` 를 사용해서 충돌하지 않도록 한다.
++ ```extractExt()``` : 확장자를 별도로 추출해서 서버 내부에서 관리하는 파일명에도 붙여준다. 예를 들어서 고객이 ```a.png``` 라는 이름으로 업로드 하면 ```51041c62-86e4-4274-801d-614a7d994edb.png``` 와 같이 저장한다.
+
+~~~java
+
+import lombok.Data;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.util.List;
+
+@Data
+public class ItemForm {
+  private Long itemId;
+  private String itemName;
+  private List<MultipartFile> imageFiles;
+  private MultipartFile attachFile;
+}
+
+~~~
+
++ ```List<MultipartFile> imageFiles``` : 이미지를 다중 업로드 하기 위해 ```MultipartFile``` 를 사용했다. 
++ ```MultipartFile attachFile``` : 멀티파트는 ```@ModelAttribute``` 에서 사용할 수 있다.
+
+~~~java
+
+import hello.upload.domain.UploadFile;
+import hello.upload.domain.Item;
+import hello.upload.domain.ItemRepository;
+import hello.upload.file.FileStore;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.io.*;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.ResponseEntity;
+import org.springframework.stereotype.Controller;
+import org.springframework.ui.Model;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.servlet.mvc.support.RedirectAttributes;
+import org.springframework.web.util.UriUtils;
+
+import java.io.IOException;
+import java.net.MalformedURLException;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+
+@Slf4j
+@Controller
+@RequiredArgsConstructor
+public class ItemController {
+  private final ItemRepository itemRepository;
+  private final FileStore fileStore;
+
+  @GetMapping("/items/new")
+  public String newItem(@ModelAttribute ItemForm form) {
+    return "item-form";
+  }
+
+  @PostMapping("/items/new")
+  public String saveItem(@ModelAttribute ItemForm form, RedirectAttributes redirectAttributes) throws IOException {
+    UploadFile attachFile = fileStore.storeFile(form.getAttachFile());
+    List<UploadFile> storeImageFiles =
+            fileStore.storeFiles(form.getImageFiles());
+    //데이터베이스에 저장
+    Item item = new Item();
+    item.setItemName(form.getItemName());
+    item.setAttachFile(attachFile);
+    item.setImageFiles(storeImageFiles);
+    itemRepository.save(item);
+    redirectAttributes.addAttribute("itemId", item.getId());
+    return "redirect:/items/{itemId}";
+  }
+
+  @GetMapping("/items/{id}")
+  public String items(@PathVariable Long id, Model model) {
+    Item item = itemRepository.findById(id);
+    model.addAttribute("item", item);
+    return "item-view";
+  }
+
+  @ResponseBody
+  @GetMapping("/images/{filename}")
+  public Resource downloadImage(@PathVariable String filename) throws MalformedURLException {
+    return new UrlResource("file:" + fileStore.getFullPath(filename));
+  }
+
+  @GetMapping("/attach/{itemId}")
+  public ResponseEntity<Resource> downloadAttach(@PathVariable Long itemId) throws MalformedURLException {
+    Item item = itemRepository.findById(itemId);
+    String storeFileName = item.getAttachFile().getStoreFileName();
+    String uploadFileName = item.getAttachFile().getUploadFileName();
+    UrlResource resource = new UrlResource("file:" + fileStore.getFullPath(storeFileName));
+    log.info("uploadFileName={}", uploadFileName);
+    String encodedUploadFileName = UriUtils.encode(uploadFileName, StandardCharsets.UTF_8);
+    String contentDisposition = "attachment; filename=\"" + encodedUploadFileName + "\"";
+    return ResponseEntity.ok()
+            .header(HttpHeaders.CONTENT_DISPOSITION, contentDisposition)
+            .body(resource);
+  }
+}
+
+~~~
+
++ ```@GetMapping("/items/new")``` : 등록 폼을 보여준다.
++ ```@PostMapping("/items/new")``` : 폼의 데이터를 저장하고 보여주는 화면으로 리다이렉트 한다.
++ ```@GetMapping("/items/{id}")``` : 상품을 보여준다.
++ ```@GetMapping("/images/{filename}")``` : ```<img>``` 태그로 이미지를 조회할 때 사용한다. ```UrlResource```로 이미지 파일을 읽어서 ```@ResponseBody``` 로 이미지 바이너리를 반환한다.
++ ```@GetMapping("/attach/{itemId}")``` : 파일을 다운로드 할 때 실행한다. 예제를 더 단순화 할 수 있지만, 파일 다운로드 시 권한 체크같은 복잡한 상황까지 가정한다 생각하고 이미지 id 를 요청하도록 했다. 파일 다운로드시에는
+  고객이 업로드한 파일 이름으로 다운로드 하는게 좋다. 이때는 ```Content-Disposition``` 해더에 ```attachment; filename="업로드 파일명"``` 값을 주면 된다.
+
+~~~html
+
+<!DOCTYPE HTML>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+  <meta charset="utf-8">
+</head>
+<body>
+<div class="container">
+  <div class="py-5 text-center">
+    <h2>상품 등록</h2>
+  </div>
+  <form th:action method="post" enctype="multipart/form-data">
+    <ul>
+      <li>상품명 <input type="text" name="itemName"></li>
+      <li>첨부파일<input type="file" name="attachFile"></li>
+      <li>이미지 파일들<input type="file" multiple="multiple" name="imageFiles"></li>
+    </ul>
+    <input type="submit"/>
+  </form>
+</div> <!-- /container -->
+</body>
+</html>
+
+~~~
+
++ 다중 파일 업로드를 하려면 ```multiple="multiple"``` 옵션을 주면 된다.
++ ```ItemForm``` 의 다음 코드에서 여러 이미지 파일을 받을 수 있다.
++ ```private List<MultipartFile> imageFiles;```
