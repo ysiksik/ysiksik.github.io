@@ -105,6 +105,8 @@ menu:
             url: /spring-complete-edition-super-gap-package-online/
       - title:    우아한 테코톡
         url:    /elegant-tekotok/
+      - title: 독서
+        url:    /book/
       - title:    페이먼츠
         url:    /payments/
         #          - title:  실무 적용 SQL 성능 튜닝

@@ -1,15 +1,15 @@
 ---
 layout: list
 category: study
-bigtitle: 페이먼츠
+bigtitle: 독서
 description: >
-  PG 업무 공부 내용 정리
+  독서 공부 내용 정리
 list: true
-order: 7
+order: 6
 menu: true
 submenu: true
 ---
-# 페이먼츠
+# 독서
 
 
 

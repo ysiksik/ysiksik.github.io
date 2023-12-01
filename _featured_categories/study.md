@@ -20,6 +20,7 @@ hide_description: false
 * [인프런]{:.heading.flip-title}
 * [패스트 캠퍼스]{:.heading.flip-title}
 * [우아한 테코톡]{:.heading.flip-title}
+* [독서]{:.heading.flip-title}
 * [페이먼츠]{:.heading.flip-title}
 
   
@@ -28,4 +29,5 @@ hide_description: false
 [인프런]: /inflearn/
 [패스트 캠퍼스]: /fast-campus/
 [우아한 테코톡]: /elegant-tekotok/
+[독서]: /book/
 [페이먼츠]: /payments/
