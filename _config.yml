@@ -98,6 +98,8 @@ menu:
             url:      /spring-mvc-part2/
           - title: 이펙티브 자바 완벽 공략 1부
             url:      /effective-java1/
+          - title: 대세는 쿠버네티스 [초급~중급]
+            url:      /kubernetes-trending/
       - title: 패스트 캠퍼스
         url: /fast-campus/
         submenu:

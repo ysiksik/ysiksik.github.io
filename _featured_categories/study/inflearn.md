@@ -28,6 +28,7 @@ related_posts:
 * [스프링 MVC 1편 - 백엔드 웹 개발 핵심 기술]{:.heading.flip-title}
 * [스프링 MVC 2편 - 백엔드 웹 개발 핵심 기술]{:.heading.flip-title}
 * [이펙티브 자바 완벽 공략 1부]{:.heading.flip-title}
+* [대세는 쿠버네티스]{:.heading.flip-title}
 
 
 [더 자바, Java 8]: /the-java8/
@@ -41,4 +42,5 @@ related_posts:
 [스프링 MVC 1편 - 백엔드 웹 개발 핵심 기술]: /spring-mvc-part1/
 [스프링 MVC 2편 - 백엔드 웹 개발 핵심 기술]: /spring-mvc-part2/
 [이펙티브 자바 완벽 공략 1부]: /effective-java1/
+[대세는 쿠버네티스]: /kubernetes-trending/
 
