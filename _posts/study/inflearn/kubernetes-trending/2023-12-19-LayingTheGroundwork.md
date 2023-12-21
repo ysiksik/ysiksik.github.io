@@ -1,7 +1,7 @@
 ---
 layout: post
 bigtitle: '대세는 쿠버네티스 [초급~중급]'
-subtitle: [기초편] 기초 다지기
+subtitle: 기초 다지기
 date: '2023-12-19 00:00:02 +0900'
 categories:
 - kubernetes-trending
