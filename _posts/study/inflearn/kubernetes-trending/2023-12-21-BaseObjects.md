@@ -287,3 +287,175 @@ spec:
   externalTrafficPolicy: Local, Cluster    # 트래픽 분배 역할
 
 ~~~
+
+## Volume - emptyDir, hostPath, PV/PVC
++ ![img.png](../../../../assets/img/kubernetes-trending/Volume-emptyDir-hostPath-PVPVC.png)
+
+### emptyDir
++ emptyDir은 컨테이너들끼리 데이터를 공유하기 위해서 볼륨을 사용하는 거고 최초 이 볼륨이 생성될 때는 항상 이 볼륨 안에 내용이 비어 있기 때문에 MTDI라고 명칭이 된 것이다.
++ ![img_1.png](../../../../assets/img/kubernetes-trending/Volume-emptyDir-hostPath-PVPVC1.png)
++ 만약에 컨테이너 1번이 웹 역할을 하는 서버이고 이 컨테이너 2번이 백엔드단을 처리해주는 서버라고 했을 때 이 웹서버로 받은 어떤 특정 파일을 마운트가 된 볼륨에 저장을 해 놓고요.
+  백엔드단에 있는 컨테이너 역시 이 볼륨을 마운트를 해 놓으면 이 두 서버가 이 볼륨을 자신의 로컬에 있는 파일처럼 사용을 하기 때문에 이 두 서버가 서로 파일을 주고 받을 필요 없이 편하게 사용을 할 수가 있다.
++ 볼륨은 그림에서처럼 파드 안에 생성이 되는 거기 때문에 그렇다라는 건 파드에 문제가 발생을 해서 재생성이 되면 데이터가 싹 없어진다는 걸 의미를 한다 그래서 이 볼륨에 쓰이는 데이터는 꼭 일시적인 하용 목적에 의한 데이터만 넣는 게 좋다
+
+~~~yaml
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-volume-1
+spec:
+  containers:
+    - name: container1
+      image: kubetm/init
+      volumeMounts:         # Volume mount
+        - name: empty-dir
+          mountPath: /mount1  # Container1 이 사용하는 path => /mount1
+    - name: container2
+      image: kubetm/init
+      volumeMounts:         # Volume mount
+        - name: empty-dir
+          mountPath: /mount2  # Container2 가 사용하는 path => /mount2
+  volumes:
+    - name : empty-dir
+      emptyDir: {}          # Volume 의 속성으로 emptyDir 을 지정
+
+# mountPath : Container 가 이 Path 로 Volume 을 연결함을 의미
+# mountPath 의 경로가 다르지만 Path 가 지정되는 Volume 의 이름이
+#  empty-dir 로 동일하기 때문에 container 마다 자신이 원하는 경로를 사용하고 있지만
+#  결국 같은 Volume 을 mount 하고 있다.
+
+~~~
+
+~~~shell
+
+mount | grep mount1
+echo "file context" >> file.txt
+
+~~~
+
++ yaml 내용을 보면 컨테이너에 두 컨테이너가 있고 둘 다 볼륨을 마운트하고 있다 근데 마운트할 패스를 보시면 컨테이너1은 mount1이라는 패스를 사용했고 그리고 컨테이너2는 mount2라는 패스를 사용을 했다
+  이 mount 패스의 의미는 이 컨테이너가 이 패스로 볼륨을 연결을 하겠다는 의미이지만 컨테이너2에서 패스의 이름이 틀리더라도 결국 각각의 패스가 지정되는 볼륨의 이름은 mtdir로 똑같은 이 볼륨을 지정을 하고 있기 때문에 컨테이너마다 자신의 원하는
+  경로를 사용을 하고 있지만 결국 한 볼륨을 마운트를 하고 있는 것이다
++ 볼륨의 속성으로 여기 empty-dir 라고 명시되어 있는 걸 볼 수가 있다.
+
+### hostPath
++ 이름에서 알 수 있듯 하나의 host 즉, Pod 들이 올라가 있는 Node 에 path 를 Volume 으로 사용한다.
++ ![img_2.png](../../../../assets/img/kubernetes-trending/Volume-emptyDir-hostPath-PVPVC2.png)
++ emptyDir과 다른 점은 패스를 각각의 파드들이 마운트해서 공유하기 때문에, 파드들이 죽어도 이 노드에 있는 데이터는 사라지지 않는다
+  그런 점에서 다소 좋아 보일 수 있지만, 파드 입장에서는 한가지 큰 문제가 있다. 
++ 만약 파드2가 죽어서 재생성이 될 때 꼭 해당 노드에 재생성될 이라는 보장이 없다 재생성되는 순간에 스케줄러가 자원 상황을 보고 이 노드2의 파드를 만들어 줄 수도 있고 또 노드1의 장애가 생겨서 다른 노드에 파드가 옮겨질 수도 있다
+  그래서 파드가 이 노드로 옮겨졌을 때 이 파드는 이 노드1에 있는 볼륨을 마운트를 할 수가 없게 된다
++ hostPath이기 때문에 자신의 파드가 올라가져 있는 이 노드의 볼륨만 사용을 할 수가 있다. 하지만 굳이 방법을 찾는다면 만약 이 노드2가 추가가 될 때마다 똑같은 이름의 경로를 만들어서 직접 노드에 있는 패스끼리 마운트를 시켜주면 문제는 없어진다
+  이렇게 구성하는 게 별로 어렵지는 않지만, 이거는 Kubernetes가 해주는 역할은 아니고 운영자가 직접 노드가 추가될 때마다 리눅스 시스템 별도의 마운트 기술을 사용을 해서 연결을 해줘야 된다.
+  이런 구성을 하는 게 별로 어렵지는 않지만, 뭔가를 자동화를 시키는데 있어서 사람의 개입이 들어간다는 것 자체가 실수를 발생할 여지를 주기 때문에 딱히 이런 방법은 추천하지 않는다 
++ 호스트 패스는 어떨 때 써야 되냐면 각각의 노드에는 기본적으로 각 노드 자신을 위해서 사용되는 파일들이 있다 시스템 파일들이나 여러 설정 파일들이 있는데 파드 자신이 할당되어 있는 호스트의 데이터를 읽거나 써야 될 때 사용을 하면 된다
+
+~~~yaml
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-volume-3
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: k8s-node1
+  containers:                 # Pod 를 만들 때 Conatiner 에서 
+  - name: container
+    image: kubetm/init
+    volumeMounts:             # Volume 을 mount 하는데
+    - name: host-path         # host-path 라는 이름의 Volume 을 사용 하고
+      mountPath: /mount1      # Path 는 mount1 이다.
+  volumes:
+  - name : host-path          # host-path 라는 이름의 Volume
+    hostPath:                 # hostPath 라는 속성을 사용한다.
+      path: /node-v           # Path 는 node-v 이고 
+      type: Directory         # type 은 Directory 이다.
+
+# 추가로 hostPaht 의 path: /node-v 는 이 Pod 가 만들어지기 전에 만들어져 있어야 한다.
+
+~~~
+
++ yaml 내용을 보면 하드를 만들 때 컨테이너에서 볼륨을 마운트를 할 건데 그 패스는 mount1 이고  패스에 대한 호스트 패스라는 이름의 볼륨이 있고 호스트 패스라는 볼륨은 이렇게 호스트 패스라는 속성이 들어가고
+  패스는 node-v 이다, 타입은 디렉토리 타입
++ 한가지 주의해야 될 점은 이 호스트에 있는 패스는 이 파드가 만들어지기 전에 사전에 만들어져 있어야지 파드가 생성이 될 때 에러가 나지 않는다 
++ hostPath는 데이터를 저장하기 위한 용도가 아니라 노드에 있는 데이터를 파드에서 쓰기 위한 용도이다
+
+### PV/PVC
++ PVC/PV 는 Pod 에 영속성 있는 Volume 을 제공하기 위한 기능이다.
++ ![img_3.png](../../../../assets/img/kubernetes-trending/Volume-emptyDir-hostPath-PVPVC3.png)
++ 실제 볼륨들의 형태는 다양하다, 로컬 볼륨도 있지만 외부의 원격으로 사용되는 형태의 볼륨들도 있다
++ 아마존이나 Git에 연결을 할 수도 있고 NFS를 써서 다른 서버와 연결을 할 수도 있다 그리고 스토리지 OS 같이 볼륨을 직접 만들고 관리할 수 있는 솔루션들도 있다 이런 것들을 각각 퍼시언트 볼륨을 정의를 하고 연결을 한다
++ Pod 는 이런 PV 에 바로 연결하지 않고 PVC 를 통해 PV 와 연결 된다. k8s 는 Volume 사용에 있어서 User 영역과 Admin 영역으로 나누었다. Admin 은 k8s 를 관리하는 운영자이고 User 는 Pod 에 Service 를 만들고 배포를 관리하는 서비스 담당자 이다.
++ 볼륨들의 종류는 많고 이 각각의 볼륨들을 연결하기 위한 설정들도 각각 틀리다. 볼륨을 정의를 하는데 각각의 볼륨에 따라 연결하기 위한 속성들이 이렇게 다르게 들어간다 그래서 전문적으로 이런 걸 관리하는 어드민이 pvc를 만들어 놓으면 유저는 이걸 사용을
+  하기 위해서 pvc를 만들어야 된다
+
+~~~yaml
+
+# 각 Volume 에 따라 서로 다른 설정 값이 사용 되는 예시 (nfs, iscsi, gitrepo)
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+	name: pv-01
+spec:
+	nfs:
+		server: 192.168.0.xxx
+		path: /sda/data
+	iscsi:
+		targetPortal: 163.180.11
+		iqn: iqn.200.qnap:...
+		lun: 0
+		fsType: ext4
+		readOnly: no
+		chapAuthSession: true
+	gitRepo:
+		repository: github.com...
+		revision: master
+		directory: .
+
+~~~
+
+~~~yaml
+
+# PV 를 사용하기 위한 User 의 PVC 설정 예시
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pvc-01
+spec:
+  accessModes:
+  - ReadWriteOnce          # 읽기 쓰기 모드가 가능한
+  resources:
+    requests:
+      storage: 1G          # 용량 1 기가인 Volume 을 요청
+  storageClassName: ""     # 공백으로 넣으면 현재 만들어진 PV 중 선택 된다
+                           # 이 값을 "" 대신 생략하게 되면 다른 동작을 할 수 있다.
+
+~~~
+
+~~~yaml
+
+# PVC 를 사용하는 Pod 설정 예시
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-volume-3
+spec:
+  containers:
+  - name: container
+    image: kubetm/init
+    volumeMounts:
+    - name: pvc-pv         # 만든어진 PVC 를 Container 에서 사용
+      mountPath: /mount3
+  volumes:
+  - name : pvc-pv
+    persistentVolumeClaim:
+      claimName: pvc-01     # 앞서 만든 PVC 이름을 연결
+
+~~~
+
++ 처리흐름
+  1. 최초 Admin 이 PV 를 만들어 둔다.
+  2. 사용자 (User) 가 PVC 를 만든다.
+  3. k8s 가 PVC 내용에 맞는 적정한 Volume 에 연결 해준다.
+  4. 이후 Pod 생성시 PVC 를 사용한다.
