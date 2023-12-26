@@ -396,22 +396,22 @@ spec:
 apiVersion: v1
 kind: PersistentVolume
 metadata:
-	name: pv-01
+  name: pv-01
 spec:
-	nfs:
-		server: 192.168.0.xxx
-		path: /sda/data
-	iscsi:
-		targetPortal: 163.180.11
-		iqn: iqn.200.qnap:...
-		lun: 0
-		fsType: ext4
-		readOnly: no
-		chapAuthSession: true
-	gitRepo:
-		repository: github.com...
-		revision: master
-		directory: .
+  nfs:
+    server: 192.168.0.xxx
+    path: /sda/data
+  iscsi:
+    targetPortal: 163.180.11
+    iqn: iqn.200.qnap:...
+    lun: 0
+    fsType: ext4
+    readOnly: no
+    chapAuthSession: true
+  gitRepo:
+    repository: github.com...
+    revision: master
+    directory: .
 
 ~~~
 
@@ -459,3 +459,154 @@ spec:
   2. 사용자 (User) 가 PVC 를 만든다.
   3. k8s 가 PVC 내용에 맞는 적정한 Volume 에 연결 해준다.
   4. 이후 Pod 생성시 PVC 를 사용한다.
+
+## ConfigMap, Secret - Env, Mount
++ ![img.png](../../../../assets/img/kubernetes-trending/ConfigMap-Secret-Env-Mount.png)
++ ![img_1.png](../../../../assets/img/kubernetes-trending/ConfigMap-Secret-Env-Mount1.png)
++ 개발 환경과 상용 환경이 있다. 
++ A라는 서비스가 있는데 이 서비스에는 일반 접근과 보안 접근을 지원하고 있다. 그래서 개발 환경에서는 이 보안 접근을 해제할 수 있는 옵션이 있고 보안 접근을 한다면 접근 유저와 키를 세팅할 수도 있다.
++ 상용 환경으로 배포를 해야 된다면 이 값이 바뀌어야된다 다시 보안 접속으로 설정을 해야 되고 유저와 키값도 변해야 된다.
++ 근데 이 값은 컨테이너 안에 있는 서비스 이미지에 들어있는 값이기 때문에 이 내용을 바꾼다는 건 이렇게 개발 환경과 상용 환경에 컨테이너 이미지를 각각 관리하겠다는 의미가 된다. 이 값 몇 개 때문에 큰 용량의 이미지를 별도로 관리한다는 건 정말 부담되는 일이다
++ 그래서 보통 이렇게 환경에 따라 변하는 값들은 외부에서 결정을 할 수 있게 하는데 그걸 도와주기 위한 게 ConfigMap과 Seclet이라는 오브젝트이다.
++ 분리해야 되는 일반적인 상수들을 모아서 이 ConfigMap을 만든다
++ 키와 같이 보안적인 관리가 필요한 값을 모아서 이 Secret울 만든다.
++ Pod 를 생성할 때 ConfigMap 과 Secret 오브젝트를 연결할 수 있는데 Container 의 환경변수에 이 데이터들이 들어가게 된다. A Service 의 입장에서는 Env (환경변수) 값을 읽어서 로직을 처리하게 된다.
++ 상용 환경에서는 이 ConfigMap과 Secret에 데이터만 바꿔주면 똑같은 컨테이너 이미지를 사용을 해서 원하는 기능을 사용할 수 있게 되는 것이다
++ ConfigMap과 Secret을 만들 때 데이터로 상수를 넣을 수가 있고 파일을 넣을 수가 있다 파일을 넣을 때는 환경 변수로 세팅하는 게 아닌 볼륨을 마운트해서 사용을 할 수가 았다
+
+### Env (Literal)
++ ![img_2.png](../../../../assets/img/kubernetes-trending/ConfigMap-Secret-Env-Mount2.png)
++ ConfigMap은 키와 밸류로 구성이 되어 있다.
++ 필요한 상수들을 정의를 해 놓으면 파드를 생성을 할 때 ConfigMap을 가져와서 컨테이너 안에 환경 변수에 세팅을 할 수가 있다.
++ Secret도 똑같은 역할을 하는데 이름에서 느껴지는 것처럼 뭔가 보완적인 요소의 값들을 저장하는 용도로 사용이 된다. 주로 패스워드라든지 인증키들은 Secret에 담는다 그리고 사용상 ConfigMap과 다른 점은 이 Value를 넣을 때 Base64
+  Encoding을 해서 만들어야 된다는 건데 이게 Secret의 보완적인 요소는 아니고 단순히 secret의 value를 만들어야 된다는 규칙이고 이게 pod로 주입이 될 때는 자동으로 decoding이 돼서 환경 변수에서는 원래의 값이 보이게 된다
++ secret은 평문으로 쿠버네티스 DB(etcd)에 저장된다.
++ secret의 보안적 요소는 secret를 pod에 파일로 마운팅해서 사용할 때 Pod 내부에서는 파일이 보이지만 이런 기능을 구현하기 위해서 쿠버네티스 입장에서는 workernode에 secret 파일을 만들어 놓고, Pod에 이 파일을 마운팅 한다
+  이때 workernode에 secret 파일을 인메모리 파일시스템(tmpfs)영역에 올려놓고 있다가 Pod가 삭제되면 지우는데 이렇게 민감한 데이터를 디스크에 저장해 놓지 않기 때문에 configmap보다 보안에 유리 할 수 있다
+
+[//]: # (+ secret의 보완적인 요소가 뭐냐면 일반적인 오브젝트 값들은 Kubernetes DB에 저장이 되는데 이 secret은 메모리에 저장이 된다 아무래도 파일에 저장되어 있는 것보다 메모리에 저장되어 있는 게 보안에 좋다)
+[//]: # (+ ConfigMap의 경우 키 밸류 리스트를 무한히 넣을 수 있는데에 반해 Secret은 1MB까지만 넣을 수가 있다.)
+[//]: # (+ Secret은 메모리를 사용해서 너무 많이 만들게 되면 시스템 자원에 영향을 끼치게 된다. 그렇기 때문에 주의가 필요하다.)
+
+~~~yaml
+
+# ConfigMap 설정 예시
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cm-dev
+data:
+  SSH: 'false'    # key: value 형태의 상수를 입력
+  User: dev
+
+~~~
+
++ ConfigMap을 만드는데 이름을 지정을 하고 이 데이터에 키 밸류 형태의 상수를 넣으면 된다.
+
+~~~yaml
+
+# Secret 설정 예시
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sec-dev
+data:
+  Key: MTIzNA==   # key: value 형태로 입력하되 value 는 BASE64 인코딩 한 값 사용
+
+~~~
+
++ Secret도 이름을 넣고 데이터에 키를 넣고 Value에는 값을 Base64로 변환을 해서 넣으면 된다.
+
+~~~yaml
+
+# ConfigMap 과 Secret 을 사용하는 Pod 설정 예시
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-1
+spec:
+  containers:
+  - name: container
+    image: kubetm/init
+    envFrom:            # envFrom 으로 사용 할 ConfigMap 과 Secret 을 참조
+    - configMapRef:
+        name: cm-dev
+    - secretRef:
+        name: sec-dev
+
+~~~
+
++ 파드를 만들 때 env-from 이라는 속성으로 ConfigMap 맵을 레퍼런스 할 거고 가져올 ConfigMap의 이름은 cm-dev 이다. Secret도 레퍼런스를 할 건데 그 이름은 sec-dev 이다.
+
+### Env (File) 
++ ![img_3.png](../../../../assets/img/kubernetes-trending/ConfigMap-Secret-Env-Mount3.png)
++ 파일을 ConfigMap 에 담을 경우 파일의 이름이 ConfigMap 의 이름이 key 가 되고 내용이 value 가 된다. 이것을 Pod 를 만들 때 환경변수로 넣을 때 그대로 넣게 될 경우 key 가 파일 이름이 되어 자연스럽지 않다. 그래서 key 를 새로 정의해서 Content 를 넣는 방법을 사용 한다.
++ file 을 ConfigMap 으로 만드는 것은 대시보드에서 지원하지 않기 때문에 master node 에서 kubectl 명령을 사용 한다.
+
+~~~shell
+
+# cm-file 이라는 ConfigMap 생성
+echo "Content" >> file.txt
+kubectl create configmap cm-file --from-file=./file.txt
+
+~~~
+
+~~~shell
+
+# sec-file 이라는 Secret 생성
+echo "Content" >> file.txt
+kubectl create secret generic sec-file --from-file=./file.txt
+
+~~~
+
++ Secret 생성시 file 의 내용이 BASE64 로 인코딩 된다. 그렇기 때문에 미리 내용을 BASE64 로 인코딩 하였다면 두 번 인코딩 될 수 있으므로 주의해야한다
+
+~~~yaml
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-file
+spec:
+  containers:              # Container 에
+  - name: container
+    image: kubetm/init
+    env:                   # 환경변수를 넣을 건데
+    - name: file           # 이 환경변수의 이름은 file 이다.
+      valueFrom:           # 이 파일의 값을 가져올건데
+        configMapKeyRef:   # 그 값은 ConfigMap 의 Key 를 참조 한다.
+          name: cm-file    # ConfigMap 의 이름은 cm-file 이고
+          key: file.txt    # cm-file 안에 있는 file.txt 라는 key 에 대한 value 입력
+
+~~~
+
++ 파드를 만들어 보면 컨테이너에 환경변수를 넣을 건데 이 환경변수의 이름은 file 이다. 이 파일의 값을 가져올건데 그 값은 ConfigMap 의 Key 를 참조 한다. ConfigMap 의 이름은 cm-file 이고 cm-file 안에 있는 file.txt 라는 key 에 대한 value 입력한다
+
+### Volume Mount (File)
++ ![img_4.png](../../../../assets/img/kubernetes-trending/ConfigMap-Secret-Env-Mount4.png)
++ file 을 ConfigMap 에 담는 것 까지는 앞서 본 것과 동일하다.
++ 파드를 만들 때 컨테이너 안에 마운트 패스를 정의를 하고 이 패스 안에 파일을 마운팅 할 수가 있다.
+
+~~~yaml
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-mount
+spec:
+  containers:              # Container 안에
+  - name: container
+    image: kubetm/init
+    volumeMounts:          # Volume 을 mount 하는데
+    - name: file-volume
+      mountPath: /mount    # 그 때 mount path 이고
+  volumes:
+  - name: file-volume      # maount 할 Volume 을 보면
+    configMap:             # 이 Vloume 안에는 configMap 을 담았고
+      name: cm-file        # configMap 의 이름은 cm-file 이다.
+
+~~~
+
++  Env (File) 과 Volume Mount (File) 방식은 큰 차이점이 있다.
+  + Env (File) 같은 경우 Pod 를 만들 때 환경변수 값을 한 번 주입하면 그것으로 끝이기 때문에 ConfigMap 의 데이터가 바뀌어도 Pod 의 환경변수 값은 바뀌지 않는다. Pod 가 다시 만들어질 경우에는 갱신이 된다.
+  + 반면 Volume Mount (File) 방식은 mount 자체가 원본과 연결해 준다는 것을 의미하기 때문에 ConfigMap 의 데이터가 바뀔 경우 Pod 에 mount 된 내용도 같이 바뀌게 된다.
