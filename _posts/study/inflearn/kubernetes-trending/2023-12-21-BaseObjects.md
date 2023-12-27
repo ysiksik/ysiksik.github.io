@@ -610,3 +610,123 @@ spec:
 +  Env (File) 과 Volume Mount (File) 방식은 큰 차이점이 있다.
   + Env (File) 같은 경우 Pod 를 만들 때 환경변수 값을 한 번 주입하면 그것으로 끝이기 때문에 ConfigMap 의 데이터가 바뀌어도 Pod 의 환경변수 값은 바뀌지 않는다. Pod 가 다시 만들어질 경우에는 갱신이 된다.
   + 반면 Volume Mount (File) 방식은 mount 자체가 원본과 연결해 준다는 것을 의미하기 때문에 ConfigMap 의 데이터가 바뀔 경우 Pod 에 mount 된 내용도 같이 바뀌게 된다.
+
+
+## Namespace, ResourceQuota, LimitRange
++ ![img.png](../../../../assets/img/kubernetes-trending/Namespace-ResourceQuota-LimitRange.png)
++ 쿠버네티스 클러스터라고 해서 전체 사용할 수 있는 자원이 있다. 일반적으로 메모리나 CPU가 있을 것이다
++ 클러스터 안에는 여러 네임 스페이스들을 만들 수가 있고 또 네임 스페이스 안에는 여러 파드들을 만들 수가 있다.
++ 각 파드는 필요한 자원을 클러스터 자원을 공유를 해서 사용을 하는데 만약 한 네임 스페이스 안에 있는 파드가 이 클러스터에 남은 자원을 모두 사용해 버리면 다른 파드 입장에서는 더 이상 쓸 자원이 없어서 자원이 필요할 때 문제가 발생하게 된다.
++ 이런 문제를 해결하기 위해서 ResourceQuota라는 게 존재를 하는데 이걸 naming space마다 달면 네임스페이스마다 최대 한계를 설정할 수가 있다. 그래서 파드 자원이 이 한계를 넘을 수가 없다
+  이 파드 입장에서 자원이 부족해서 문제가 될지언정 이 다른 네임스페이스에 있는 파드들에는 영향을 끼치지 않게 해준다
++ 한 파드가 자원 사용량을 너무 크게 해버리면 다른 파드들이 이 네임스페이스에 더 이상 들어올 수 없게 된다 이러지 못하게 관리를 하기 위해서 이렇게 LimitRange를 둬서 네임스페이스에 들어오는 파드의 크기를 제한할 수가 있다
++ 한 파드의 자원 사용량이 이 LimitRange에 설정된 값보다 낮아야지 이 네임스페이스에 들어올 수가 있다. 이보다 클 경우에는 이 파드가 네임스페이스 안에 들어올 수가 없다
+  참고로 이 두 오브젝트는 네임스페이스만 달 수 있는 게 아니라 클러스터에도 달아서 전체 자원에 대한 제한을 걸 수도 있다.
+
+### Namespace
++ ![img_1.png](../../../../assets/img/kubernetes-trending/Namespace-ResourceQuota-LimitRange1.png)
++ 한 네임스페이스 안에는 같은 타입의 오브젝트들은 이름이 중복될 수 없다는 특징을 가지고 있다  같은 파드의 이름을 중복해서 만들 수가 없다
++ 오브젝트들마다 별도의 UUID가 존재하기는 한데 한 네임스페이스 안에서는 같은 종류의 오브젝트라면 이름 또한 UUID 같이 유일한 키 역할을 할 수가 있는 셈이다
++ 네임스페이스의 대표적인 특징이 타 네임스페이스에 있는 자원과 분리가 돼서 관리가 된다는 건데 여기 다른 네임스페이스가 있고 그 안에는 서비스가 존재할 때 우리는 이 파드와 서비스 간의 연결을 파드에는 라벨을 달고 서비스에는 셀렉터를 달아서 연결을 하는데
+  근데 이건 타 네임스페이스에 있는 파드에는 연결이 되지 않는다 
++ 대부분의 자원들은 그 자원 안에서 만든 네임스페이스 안에서만 사용할 수가 있다.
++ 물론 노드나 퍼센트 볼륨과 같이 모든 네임스페이스에서 공용으로 사용되는 오브젝트도 있긴 하다.
++ 네임스페이스를 지우게 되면 그 안에 있는 자원들도 모두 지워지기 때문에 네임스페이스를 지울 때는 이 점을 유의해야 된다 
+
+~~~yaml
+
+# Namespace 생성 예시
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nm-1      # 이름 외에 특별한 설정값 없음
+
+~~~
+
+~~~yaml
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-1
+  namespace: nm-1       # Pod 를 만들 때 속할 Namespace 를 지정
+  labels:
+    app: pod
+spec:
+  containers:
+  - name: container
+    image: kubetm/app
+    ports:
+    - containerPort: 8080
+
+~~~
+
+~~~yaml
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: svc-1
+  namespace: nm-1
+spec:
+  selector:
+    app: pod
+  ports:
+  - port: 9000
+    targetPort: 8080
+
+~~~
+
+### ResourceQuota
++ ![img_2.png](../../../../assets/img/kubernetes-trending/Namespace-ResourceQuota-LimitRange%202.png)
++ 리소스 커터는 네임스페이스에 자원 한계를 설정하는 오브젝트
++ 네임스페이스에 들어갈 파드들의 전체 리퀘스트 자원들을 최대 3기가로 설정을 하겠다라는 거고 메모리의 리미치는 6기가로 하겠다라는 설정
++ 리소스 커터가 지정되어 있는 네임스페이스에 파드를 만들 때 이 파드는 무조건 스펙을 명시해야 된다 스펙 자체가 없으면 네임스페이스에 만들어지지 않는다 
++ 현재 총 3기가의 리퀘스트 중에 2기가를 사용하는 파드가 있는데 이 리퀘스트를 또 2기가를 더 사용을 하겠다라는 파드가 들어오면 만들어지지 않는다.
+
+~~~yaml
+
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: rq-1
+  namespace: nm-1          # 할당 할 namespace 설정
+spec:
+  hard:                    # hard 라는 속성에
+    requests.memory: 3Gi   # 제한 할 자원의 종류와 한계치를 설정
+    limits.memory: 6Gi
+
+~~~
+
++ 제한 가능한 자원 종류 : cpu, memory, storage
++ 오브젝트 생성 개수 제한 : Pod, Service, ConfigMap, PVC ...
+
+### LimitRange
++ ![img_3.png](../../../../assets/img/kubernetes-trending/Namespace-ResourceQuota-LimitRange3.png)
++ 리미트 렌즈의 기능은 각각의 파드마다 네임스페이스에 들어올 수 있는지 자원을 체크를 해준다 
++ 체크되는 항목은에서 min은 파드에서 설정되는 메모리의 리미트 값이 1기가가 넘어야 된다는 말이고 max는 4기가를 초과할 수 없다는 뜻이다
++ maxLimitRequestRatio는 equest 값과 limit 값의 비율이 최대 3 배를 넘을 수 없다.
++ Pod 의 경우 설정 된 max memory 가 0.4 기가 인데 0.5 기가를 설정 하였으므로 namespace 에 속할 수 없다
++ 추가로 defaultRequest 와 default 속성이 있는데, 3-3' 와 같이 Pod 에 아무 설정을 하지 않았을 경우 자동으로 request 값과 limit 값이 할당 된다.
+
+~~~yaml
+
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: nm-1               # 할당 할 namespace 명시
+spec:
+  limits:                  # limit 속성에
+  - type: Container        # type 을 Container 별로 제한
+    min:
+      memory: 1Gi
+    max:
+      memory: 4Gi
+    maxLimitRequestRatio:
+      memory: 3
+    defaultRequest:
+      memory: 1Gi
+    default:
+      memory: 2Gi
+
+~~~
