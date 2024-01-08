@@ -393,6 +393,29 @@ spec:
 + Replace 는 1min 에 Job 이 만들어 졌고 2min schedule 타임에 1min 의 Pod 가 running 중이라고 하면 새로운 Pod 를 만들면서 Job 과 연결 한다. 그렇기 때문에 2min 때 새로운 Job 은 생기지 않지만 새로운 Pod 가 생기면서 Job 과 연결 된다. 만약 Pod 가 자신의 schedule 타입에 종료 되었다면 3min 때 새로운 Job 이 만들어 지고 Pod 가 만들어 진다.
 + 이런 옵션 값을 가지고 CronJob 은 더욱 정교하게 Job 을 다룰 수 있다. 이 밖에도 실행중인 Job 을 일시 중지 (Suspend) 시킬 수 있고 Manual 로 Trigger 할 수 있다.
 
+~~~yaml
+
+apiVersion: batch/v1beta1
+kind: CronJob
+metadata:
+  name: cron-job-2
+spec:
+  schedule: "20,21,22 * * * *"
+  concurrencyPolicy: Replace
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+          - name: container
+            image: kubetm/init
+            command: ["sh", "-c", "echo 'job start';sleep 140; echo 'job end'"]
+          terminationGracePeriodSeconds: 0
+
+~~~
+
+
 >**1.19버전 이후 변경사항**
 > 
 >Replace 모드 : 2min이 되었을 시 기존 Job은 삭제되고 (기존 Pod도 같이 삭제됨), 새 Job이(새 pod 생성) 만들어집니다.
