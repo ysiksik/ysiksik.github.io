@@ -1,7 +1,7 @@
 ---
 layout: post
 bigtitle: '대세는 쿠버네티스 [초급~중급]'
-subtitle: Pod
+subtitle: Pod - 중급
 date: '2024-01-08 00:00:03 +0900'
 categories:
 - kubernetes-trending
@@ -9,9 +9,11 @@ comments: true
 
 ---
 
-# Pod
+# Pod - 중급
 
-# Pod
+
+# Pod - 중급
+
 
 * toc
 {:toc}
