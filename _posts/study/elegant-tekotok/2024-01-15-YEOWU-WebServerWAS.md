@@ -2,7 +2,7 @@
 layout: post
 bigtitle: '우아한테크코스 테코톡'
 subtitle: 여우의 Web Server와 WAS
-date: '2024-01-14 00:00:01 +0900'
+date: '2024-01-15 00:00:01 +0900'
 categories:
     - elegant-tekotok
 comments: true
