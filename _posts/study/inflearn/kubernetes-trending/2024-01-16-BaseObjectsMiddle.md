@@ -88,7 +88,7 @@ comments: true
   + Pod 의 경우 Pod 의 hostname 이 앞에 작성되어 있고, 뒤쪽은 Service 의 이름과 동일하여 간단하게 pod4.headless1 로 호출할 수 있다.
   + 그래서 이 Pod 들은 이름을 미리 정해놓고 DNS 서버를 통해 원하는 Pod 로 직접 통신할 수 있게 된다.
 
-+ ![img_1.png](../../../../assets/img/kubernetes-trending/ServiceHeadlessEndpointExternalName36.png)
++ ![VolumeDynamicProvisioningStorageClassStatusReclaimPolicy1.png](../../../../assets/img/kubernetes-trending/ServiceHeadlessEndpointExternalName36.png)
 
 ~~~yaml
 
@@ -238,7 +238,7 @@ curl pod-b.headless1:8080/hostname
   + 외부 ip 주소를 안다면 외부를 가리킬 수도 있다. 
   + 하지만 ip 는 바뀔 수 있기 때문에 도메인 이름을 사용한다. Github 의 ip 주소도 바뀔 수 있기 때문에 도메인 이름을 지정하는 방법도 필요한데, 이럴때 사용하는게 ExternalName 이다.
 
-+ ![img_2.png](../../../../assets/img/kubernetes-trending/ServiceHeadlessEndpointExternalName37.png)
++ ![VolumeDynamicProvisioningStorageClassStatusReclaimPolicy2.png](../../../../assets/img/kubernetes-trending/ServiceHeadlessEndpointExternalName37.png)
 
 ~~~yaml
 
@@ -279,7 +279,7 @@ kubectl describe endpoints endpoint1
 
 ~~~
 
-+ ![img_3.png](../../../../assets/img/kubernetes-trending/ServiceHeadlessEndpointExternalName38.png)
++ ![VolumeDynamicProvisioningStorageClassStatusReclaimPolicy3.png](../../../../assets/img/kubernetes-trending/ServiceHeadlessEndpointExternalName38.png)
 
 ~~~yaml
 
@@ -332,7 +332,7 @@ curl endpoint2:8080/hostname
 
 ~~~
 
-+ ![img_4.png](../../../../assets/img/kubernetes-trending/ServiceHeadlessEndpointExternalName39.png)
++ ![VolumeDynamicProvisioningStorageClassStatusReclaimPolicy4.png](../../../../assets/img/kubernetes-trending/ServiceHeadlessEndpointExternalName39.png)
 
 ~~~yaml
 
@@ -387,7 +387,7 @@ curl -O endpoint3/kubetm/kubetm.github.io/blob/master/sample/practice/intermedia
 + ![ServiceHeadlessEndpointExternalName33.png](../../../../assets/img/kubernetes-trending/ServiceHeadlessEndpointExternalName33.png)
   + 그래서 결국 Pod 는 Service 를 가리키고만 있으면 Service 에서 필요할 때마다 도메인 주소를 변경할 수 있어서 접속할 곳이 바뀌어도 Pod 를 수정하고 재배포 하는 일은 없게 된다.
 
-+ ![img_5.png](../../../../assets/img/kubernetes-trending/ServiceHeadlessEndpointExternalName40.png)
++ ![VolumeDynamicProvisioningStorageClassStatusReclaimPolicy5.png](../../../../assets/img/kubernetes-trending/ServiceHeadlessEndpointExternalName40.png)
 
 ~~~yaml
 
@@ -491,3 +491,478 @@ kubectl describe endpoints endpoint1
   + Kubernetes 버전 1.11 이전의 Kubernetes DNS 서비스는 kube-dns를 기반
   + 버전 1.11은 kube-dns의 일부 보안 및 안정성 문제를 해결하기 위해 CoreDNS 를 도입
 
+## Volume - Dynamic Provisioning, StorageClass, Status, ReclaimPolicy
++ ![img.png](../../../../assets/img/kubernetes-trending/VolumeDynamicProvisioningStorageClassStatusReclaimPolicy.png)
++ Volume 은 데이터를 안정적으로 유지하기 위해 사용 한다.
++ 그러기 위해 실제 데이터를 k8s Cluster 와 분리해서 관리 한다. 
++ 이런 방식으로 관리할 수 있는 Volume 의 종류가 많은데, 크게 내부망에서 관리하는 것과 외부망에서 관리하는 경우로 나눌 수 있다.
++ ![VolumeDynamicProvisioningStorageClassStatusReclaimPolicy1.png](../../../../assets/img/kubernetes-trending/VolumeDynamicProvisioningStorageClassStatusReclaimPolicy1.png)
+  + 외부망에는 amazon web service, google cloud platform service 그리고 microsoft azure 와 같은 cloud storage 를 두고 여기에 k8s Cluster 를 연결하여 사용할 수 있다.
++ ![VolumeDynamicProvisioningStorageClassStatusReclaimPolicy2.png](../../../../assets/img/kubernetes-trending/VolumeDynamicProvisioningStorageClassStatusReclaimPolicy2.png)
+  + 내부망에는 k8s 를 구성하는 Node 들이 있는데, 기본적으로 k8s 에서 이 Node 들의 실제 물리 공간에 데이터를 만들 수 있는 hostPath 나 local volume 이 있고, 별도의 On-Premise Storage Solution 들을 Node 들에 설치할 수도 있다.
+  + storageos, ceph 그리고 glusterFS 와 같은 종류가 있고 각 Solution 들이 알아서 Node 자원을 사용하여 Volume 을 관리 해준다.
+  + 추가로 NFS 를 사용해서 다른 서버를 Volume 자원으로 사용할 수 있는 등 다양한 종류의 Volume 서비스들이 있다.
++ ![VolumeDynamicProvisioningStorageClassStatusReclaimPolicy3.png](../../../../assets/img/kubernetes-trending/VolumeDynamicProvisioningStorageClassStatusReclaimPolicy3.png)
+  + k8s Cluster 밖에 실제 Volume 들이 마련되어 있다면, 관리자가 PV 를 만들 때 저장 용량과 AccessMode 를 정하고 선택한 Volume 과 연결 한다. 
+  + 그리고 사용자는 원하는 용량과 AccessMode 로 PVC 를 만들면 k8s 가 알아서 적절한 PV 와 연결하고, 이 PVC 를 Pod 에서 사용 하게 된다.
+  + AccessMode 는 하나의 Node 에서 읽기 및 쓰기가 되거나(RWO, ReadWriteOnce), 다수의 Node 에 읽기만 가능(ROM, ReadOnlyMany) 또는 읽기 및 쓰기가 가능(RWM, ReadWriteMany)한 총 세가지 종류가 있다.
++ ![VolumeDynamicProvisioningStorageClassStatusReclaimPolicy4.png](../../../../assets/img/kubernetes-trending/VolumeDynamicProvisioningStorageClassStatusReclaimPolicy4.png)
+  + 하지만 k8s 에 이런 AccessMode 가 있다고 하여 실제 Volume 들도 모두 이와 같이 지원 되는 것은 아니고 각 Volume 마다 실제 지원되는 AccessMode 가 다르다.
++ ![VolumeDynamicProvisioningStorageClassStatusReclaimPolicy5.png](../../../../assets/img/kubernetes-trending/VolumeDynamicProvisioningStorageClassStatusReclaimPolicy5.png)
+  + 위와 같은 방식으로 Volume 을 사용하면, Volume 이 필요할 때마다 PV 를 만들어야 하고 또 원하는 PV 와 연결하기 위해 Storage 와 AccessMode 를 확인하여 맞춰야 하는 등 해야할 것들이 너무 많아진다.
+  + 그래서 k8s 에는 Dynamic Provisioning 을 지원 한다. 이것은 사용자가 PVC 를 만들면 알아서 PV 를 만들고 실제 Volume 과 연결해주는 기능을 한다.
++ ![VolumeDynamicProvisioningStorageClassStatusReclaimPolicy6.png](../../../../assets/img/kubernetes-trending/VolumeDynamicProvisioningStorageClassStatusReclaimPolicy6.png)
+  + 각 PV 는 Pod 와 같이 상태가 존재 한다.
+  + 이 상태를 통해 현재 PV 가 PVC 에 연결 되어 있는지 또는 오류가 발생 했는지 등을 알 수 있다. 
+  + 추가로 PV 를 삭제할 때 정책적인 요소가 있다
+
++ StorageOS Operator 설치
+  + 스토리지 OS를 만들고 관리해 주는 역할을 한다
+
+~~~shell
+
+# 설치
+kubectl apply -f https://github.com/storageos/cluster-operator/releases/download/1.5.0/storageos-operator.yaml
+
+~~~
+
+~~~shell
+
+# 설치 확인
+kubectl get all -n storageos-operator
+
+~~~
+
+~~~shell
+
+# Depolyment 수정
+kubectl edit deployments.apps storageos-cluster-operator -n storageos-operator
+
+~~~
+
+~~~yaml
+
+# spec.containers.env의 DISABLE_SCHEDULER_WEBHOOK의 Value를 true로 설정
+# 이걸 안하면 나중에 이 pv를 만들 때 스토리지 클래스 네임에 더블 쿼테이션을 넣었을 때 pv를 못 찾고 에러가 난다
+
+spec:
+  containers:
+    - command:
+        - cluster-operator
+      env:
+        - name: DISABLE_SCHEDULER_WEBHOOK
+          value: "false"    # true 로 변경
+      image: storageos/cluster-operator:1.5.0
+      imagePullPolicy: IfNotPresent
+
+~~~
+
+~~~shell
+
+# 관리 계정을 위한 Secret 생성 (username 및 password를 Base64문자로 만들기)
+echo -n "admin" | base64
+echo -n "1234" | base64
+
+~~~
+
+~~~yaml
+
+# apiUsername 및 apiPassword 부분에 위 결과로 나온 문자 넣기
+kubectl create -f - <<END
+apiVersion: v1
+kind: Secret
+metadata:
+  name: "storageos-api"
+  namespace: "storageos-operator"
+  labels:
+    app: "storageos"
+type: "kubernetes.io/storageos"
+data:
+  apiUsername: YWRtaW4=  # admin
+  apiPassword: MTIzNA==  # 1234
+END
+
+~~~
+
++ StorageOS 설치
+
+~~~yaml
+
+# StorageOS 설치 트리거 생성
+kubectl apply -f - <<END
+apiVersion: "storageos.com/v1"
+kind: StorageOSCluster
+metadata:
+  name: "example-storageos"
+  namespace: "storageos-operator"
+spec:
+  secretRefName: "storageos-api" # Reference the Secret created in the previous step
+  secretRefNamespace: "storageos-operator"  # Namespace of the Secret
+  k8sDistro: "kubernetes"
+  images:
+    nodeContainer: "storageos/node:1.5.0" # StorageOS version
+  resources:
+    requests:
+    memory: "512Mi"
+END
+
+~~~
+
+~~~shell
+
+# 설치확인
+kubectl get all -n storageos
+
+~~~
+
+~~~shell
+
+# Dashboard 접속을 위한 Service 수정 (방법 1)
+kubectl edit service storageos -n storageos
+
+~~~
+
+~~~yaml
+
+# spec에 externalIPs와 Master IP 추가
+spec:
+  clusterIP: 10.109.77.121
+  externalIPs:     # 추가
+  - 192.168.0.30   # Master IP 추가
+  ports:
+
+~~~
+
+~~~http request
+
+# 접속
+http://192.168.0.30:5705/
+
+~~~
+
+~~~shell
+
+# Dashboard 접속을 위한 Service 수정 (방법 2)
+kubectl edit service storageos -n storageos
+
+~~~
+
+~~~yaml
+
+# type을 NodePort로 변경
+spec:
+  ports:
+    - name: storageos
+      port: 5705
+      protocol: TCP
+      targetPort: 5705
+      nodePort: 30705  # port 번호 추가
+  type: NodePort     # type 변경
+
+~~~
+
+~~~shell
+
+# 접속
+http://192.168.0.30:5705/
+
+~~~
+
++ Default StorageClass 추가
+
+~~~yaml
+
+kubectl apply -f - <<END
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: default # 스토리지 클래스의 이름은 default
+    storageclass.kubernetes.io/is-default-class: "true" # 어노테이션이 있는데 이 내용이 있기 때문에 이 스토리지 클래스가 디폴트로 작용을 할 수가 있게 된다
+provisioner: kubernetes.io/storageos
+parameters:
+  adminSecretName: storageos-api
+  adminSecretNamespace: storageos-operator
+  fsType: ext4
+  pool: default
+END
+
+~~~
+
+~~~shell
+
+# StorageClass 확인
+kubectl get storageclasses.storage.k8s.io
+
+~~~
+
+~~~shell
+
+NAME                PROVISIONER               AGE
+default (default)   kubernetes.io/storageos   3s    # 디폴트가 지금 방금 만든 스토리지 클래스
+fast                kubernetes.io/storageos   59s   # 패스트는 스토리지 OS를 설치하면서 자동으로 생성된 스토리지
+
+~~~
+
+### Dynamic Provisioning
++ ![VolumeDynamicProvisioningStorageClassStatusReclaimPolicy7.png](../../../../assets/img/kubernetes-trending/VolumeDynamicProvisioningStorageClassStatusReclaimPolicy7.png)
+  + 먼저 Dynamic Provisioning 을 지원해주는 Storage Solution 을 선택해서 설치해야 한다. 
+  + 다양한 Solution 중 예시에서는 storageos Solution 을 사용 한다.
+  + 설치하면 Service, Pod 등 다양한 오브젝트들이 생성 되지만, 중요한 것은 StorageClass 라는 오브젝트 이다.
++ ![VolumeDynamicProvisioningStorageClassStatusReclaimPolicy8.png](../../../../assets/img/kubernetes-trending/VolumeDynamicProvisioningStorageClassStatusReclaimPolicy8.png)
+  + StorageClass 를 사용해서 동적으로 PV 를 만들 수 있다. 
+  + PVC 를 만들 때 StorageClassName 이라는 부분이 있다
+  + 앞서 초급편에서는 local volume 을 사용해서 PV 를 만들었고 StorageClassName 에 공백 (””) 을 넣으면 적절한 PV 에 연결 되었었다.
++ ![VolumeDynamicProvisioningStorageClassStatusReclaimPolicy9.png](../../../../assets/img/kubernetes-trending/VolumeDynamicProvisioningStorageClassStatusReclaimPolicy9.png)
+  + 만약 여기에 앞서 만든 StorageClass 의 이름을 넣으면, 자동으로 storageos volume 을 가진 PV 가 만들어 진다.
++ ![VolumeDynamicProvisioningStorageClassStatusReclaimPolicy10.png](../../../../assets/img/kubernetes-trending/VolumeDynamicProvisioningStorageClassStatusReclaimPolicy10.png)
+  + StorageClass 는 추가도 만들 수 있고 Default 라는 것을 설정할 수 있는데, StorageClassName 에 아무 값도 설정하지 않으면 Default StorageClass 가 적용되어 PV 가 만들어 진다.
+
++ ![VolumeDynamicProvisioningStorageClassStatusReclaimPolicy20.png](../../../../assets/img/kubernetes-trending/VolumeDynamicProvisioningStorageClassStatusReclaimPolicy20.png)
+
+~~~yaml
+
+# PersistentVolume 
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-hostpath1
+spec:
+  capacity:
+    storage: 1G
+  accessModes:
+  - ReadWriteOnce
+  hostPath:
+    path: /mnt/hostpath
+    type: DirectoryOrCreate
+
+~~~
+
+~~~yaml
+
+# PersistentVolumeClaim 
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pvc-hostpath1
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1G 
+  storageClassName: "" #  PV를 만들 때 이렇게 넣으면 여기 스토리지 용량이 1GB이기 때문에 pv-hostpath1 PV와 연결이 될 것이다
+
+~~~
+
+~~~yaml
+
+# PersistentVolumeClaim 
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pvc-fast1
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1G
+  storageClassName: "fast"
+
+~~~
+
+~~~yaml
+
+# PersistentVolumeClaim 
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pvc-default1
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2G
+
+
+~~~
+
++ pv를 먼저 만들었을 때랑 pvc를 만들어서 pv가 만들어졌을 때와 차이점은 동적으로 pv가 만들어졌을 경우 바로 볼륨이 만들어지고 근데 pv를 먼저 만들었을 때는 이 볼륨이 먼저 만들어지지 않는다 
+
+### Status & ReclaimPolicy
++ ![VolumeDynamicProvisioningStorageClassStatusReclaimPolicy11.png](../../../../assets/img/kubernetes-trending/VolumeDynamicProvisioningStorageClassStatusReclaimPolicy11.png)
+  + Status 는 최초 PV 가 만들어졌을 때 Available 상태이다.
++ ![VolumeDynamicProvisioningStorageClassStatusReclaimPolicy12.png](../../../../assets/img/kubernetes-trending/VolumeDynamicProvisioningStorageClassStatusReclaimPolicy12.png)
+  + PVC 와 연결 되면 Bound 상태가 된다.
++ ![VolumeDynamicProvisioningStorageClassStatusReclaimPolicy13.png](../../../../assets/img/kubernetes-trending/VolumeDynamicProvisioningStorageClassStatusReclaimPolicy13.png)
+  + 하지만 이렇게 PV 를 직접 만드는 경우 아직 volume 에 실제 데이터가 만들어지기 전이며, Pod 가 PVC 를 사용해서 구동될 때 실제 volume 이 만들어 진다.
++ ![VolumeDynamicProvisioningStorageClassStatusReclaimPolicy14.png](../../../../assets/img/kubernetes-trending/VolumeDynamicProvisioningStorageClassStatusReclaimPolicy14.png)
+  + Pod 의 서비스가 구동되다가 Pod 가 삭제 될 경우 PVC 와 PV 에는 아무런 변화가 없기 때문에 데이터에는 문제가 없다.
++ ![VolumeDynamicProvisioningStorageClassStatusReclaimPolicy15.png](../../../../assets/img/kubernetes-trending/VolumeDynamicProvisioningStorageClassStatusReclaimPolicy15.png)
+  + PVC 를 삭제 해야 PV 와 연결이 끊어지면서 PV 의 상태는 Released 상태가 된다.
++ ![VolumeDynamicProvisioningStorageClassStatusReclaimPolicy16.png](../../../../assets/img/kubernetes-trending/VolumeDynamicProvisioningStorageClassStatusReclaimPolicy16.png)
+  + 이 과정 중에 PV 와 실제 데이터 간 연결에 문제가 발생하면 Failed 상태가 되기도 한다.
++ ![VolumeDynamicProvisioningStorageClassStatusReclaimPolicy17.png](../../../../assets/img/kubernetes-trending/VolumeDynamicProvisioningStorageClassStatusReclaimPolicy17.png)
+  + 이 상태들 중 PVC 가 삭제 된 상황에 대해 PV 에 설정한 ReclaimPolicy 에 따라 PV 의 상태가 달라진다. ReclaimPolicy 는 Retain, Delete 그리고 Recycle 이렇게 세가지가 있다.
+  + Retain
+    + Retain 의 경우 PVC 가 삭제 되면 PV 상태가 Released 가 되는데, PV 를 만들 때 ReclaimPolicy 를 별도로 설정하지 않았을 경우 기본 정책 이다.
+    + 이 상태일 때 실제 volume 의 데이터는 유지 되지만, 그렇다고 해서 이 PV 를 다른 PVC 에 다시 연결 할 수는 없다. 그래서 PV 를 수동으로 만든 것과 같이 삭제도 수동으로 해주어야 한다.
+  + Delete 
+    + Delete 의 경우 PVC 를 삭제하면 PV 도 같이 삭제 된다. 
+    + 이 정책은 StorageClass 를 사용해서 자동으로 만들어진 PV 인 경우 기본 정책 이다. volume 의 종류에 따라 실제 데이터가 삭제 될 수도 있다.
+  + Recycle 
+    + Recycle 의 경우 PV 의 상태가 Available 이 되면서 PVC 에서 다시 연결할 수 있는 상태가 된다.
+    + 하지만 현재 이 정책은 Deprecated 되었으며, 실제 데이터가 삭제 되면서 PV 를 재사용 할 수 있다.
+
++ ![VolumeDynamicProvisioningStorageClassStatusReclaimPolicy19.png](../../../../assets/img/kubernetes-trending/VolumeDynamicProvisioningStorageClassStatusReclaimPolicy19.png)
+
+~~~yaml
+
+# Pod 
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-hostpath1
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: k8s-node1
+  terminationGracePeriodSeconds: 0
+  containers:
+  - name: container
+    image: kubetm/init
+    volumeMounts:
+    - name: hostpath
+      mountPath: /mount1
+  volumes:
+  - name: hostpath
+    persistentVolumeClaim:
+      claimName: pvc-hostpath1
+
+~~~
+
+~~~shell
+
+cd /mount1
+touch file.txt
+
+~~~
+
+
+~~~http request
+
+#StorageOS Dashboard
+http://192.168.0.30:5705/
+
+~~~
+
++ ![VolumeDynamicProvisioningStorageClassStatusReclaimPolicy18.png](../../../../assets/img/kubernetes-trending/VolumeDynamicProvisioningStorageClassStatusReclaimPolicy18.png)
+
+~~~yaml
+
+# PersistentVolume
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-recycle1
+spec:
+  persistentVolumeReclaimPolicy: Recycle
+  capacity:
+    storage: 3G
+  accessModes:
+  - ReadWriteOnce
+  hostPath:
+    path: /tmp/recycle
+    type: DirectoryOrCreate
+
+~~~
+
+~~~yaml
+
+# PersistentVolumeClaim 
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pvc-recycle1
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 3G
+  storageClassName: ""
+
+~~~
+
+~~~yaml
+
+# Pod 
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-recycle1
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: k8s-node1
+  terminationGracePeriodSeconds: 0
+  containers:
+    - name: container
+      image: kubetm/init
+      volumeMounts:
+        - name: hostpath
+          mountPath: /mount1
+  volumes:
+    - name: hostpath
+      persistentVolumeClaim:
+        claimName: pvc-recycle1
+
+~~~
+
+~~~shell
+
+cd /mount1
+touch file.txt
+
+~~~
+
+### yaml
+
+~~~yaml
+
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: default
+  annotations:
+    # Default StorageClass로 선택 
+    storageclass.kubernetes.io/is-default-class: "true" 
+# 동적으로 PV생성시 PersistentVolumeReclaimPolicy 선택 (Default:Delete)
+reclaimPolicy: Retain, Delete, Recycle
+provisioner: kubernetes.io/storageos
+# provisioner 종류에 따라 parameters의 하위 내용 다름 
+parameters:                        
+
+~~~
+
+
+### kubectl
+
+~~~shell
+
+# Get All Objects in Namespaces, 네임스페이스의 모든 개체 가져오기 
+kubectl get all -n storageos-operator
+
+
+~~~
+
+~~~shell
+
+# Force Deletion 
+kubectl delete persistentvolumeclaims pvc-fast1 --namespace=default --grace-period 0 --force
+kubectl delete persistentvolume pvc-b53fd802-3919-4fb0-8c1f-02221a3e4bc0 --grace-period 0 --force
+
+~~~
+
+### Tips 
++ hostPath
+  + Recycle 정책은 /tmp/로 시작하는 Path에서만 됨
