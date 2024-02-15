@@ -995,3 +995,47 @@ kubectl delete persistentvolume pvc-b53fd802-3919-4fb0-8c1f-02221a3e4bc0 --grace
     + 이 부분은 Authorization 에 대한 부분이다.
   + 그리고 권한까지 문제가 없다면 마지막으로 Admission Control 이라는 것이 있는데, 예를 들어 PV 를 만들 때 관리자가 용량을 1Gb 이상 만들지 못하도록 설정 했다면, Pod 를 생성하라는 API 요청이 들어왔을 때 k8s 는 설정한 크기를 초과하지 못하도록 하는 것과 같은 내용 이다.
   + 본 과정에서는 Admission Control 에 대한 내용은 다루지 않는다.
+
+## Authentication - X509 Certs, kubectl, ServiceAccount
+
+### X509 Client Certs
++ ![Authentication-X509Certs-kubectl-ServiceAccount.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount.png)
+  + Cluster 에 6443 포트로 API 서버가 열려 있고, 사용자가 이곳으로 https 접속을 시도하는 상황이다. 
+  + k8s 를 설치할 때 kubeconfig 라고 하는 Cluster 에 접근할 수 있는 정보가 들어있는 파일이 있는데, 이 안에 인증서 내용이 포함되어 있다. 그래서 Client 가 인증서를 복사해서 가지고 오면 된다.
++ ![Authentication-X509Certs-kubectl-ServiceAccount1.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount1.png)
+  + 최초 발급 기관과 클라이언트에 대한 개인키를 만든다.
++ ![Authentication-X509Certs-kubectl-ServiceAccount2.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount2.png)
+  + 이 개인키를 가지고 인증서를 만들기 위한 인증 요청서라는 csr 파일을 만든다.
++ ![Authentication-X509Certs-kubectl-ServiceAccount3.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount3.png)
+  + CA 는 이 인증 요청서를 가지고 인증서를 만드는데, kubeconfig 에 있는 CA cert 가 이것에 해당 한다.
++ ![Authentication-X509Certs-kubectl-ServiceAccount4.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount4.png)
+  + 클라이언트 인증서의 경우 발급기관의 개인키와 인증서 그리고 클라이언트 인증 요청서를 모두 더해 만들어 진다. 
+  + 이렇게 만들어진 클라이언트 인증서는 kubeconfig 파일에 Client crt 파일로 들어 있다. 그리고 Client key 도 kubeconfig 파일 안에 같이 들어 있다.
++ ![Authentication-X509Certs-kubectl-ServiceAccount5.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount5.png)
+  + k8s 를 설치할 때 kubectl 을 설치하고, 설정 내용 중 kubeconfig 파일을 통째로 kubectl 에서 사용하도록 복사하는 과정이 있다. 
+  + 그 덕분에 사용자는 kubectl 로 k8s API 서버에 인증이 되어 리소스들을 조회할 수 있다.
+  + 또한 accept-hosts 옵션을 통해 8001 번 포트를 열어두면 외부에서 http 로 접근할 수 있게 되는데, 그러면 kubectl 이 인증서를 가지고 있기 때문에 사용자는 인증서 없이 접근할 수 있게 된다.
+
+### kubectl
++ ![Authentication-X509Certs-kubectl-ServiceAccount6.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount6.png)
+  + 외부 서버에 kubectl 을 설치해서 멀티 Cluster 에 접근하는 것에 대해 알아 본다.
+  + 사전에 각 Cluster 에 있는 kubeconfig 파일이 내 kubectl 에 있으면 사용자는 원하는 Cluster 에 접근해서 자원을 조회하고 만들 수 있다.
++ ![Authentication-X509Certs-kubectl-ServiceAccount7.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount7.png)
+  + kubeconfig 안에는 clusters 라는 항목으로 Cluster 를 등록할 수 있고, 내용은 이름과 연결 정보 그리고 CA 인증서가 있다.
+  + users 라는 항목으로 사용자를 등록할 수 있는데, 내용은 user 이름과 이 user 에 대한 개인키와 인증서가 있다.
++ ![Authentication-X509Certs-kubectl-ServiceAccount8.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount8.png)
+  + contexts 항목을 통해 clusters 와 users 를 연결할 수 있는데, 내용은 context 이름과 연결 할 cluster 그리고 user 이름이 있다. 위와 같이 cluster-A 에 대한 context 가 만들었다.
++ ![Authentication-X509Certs-kubectl-ServiceAccount9.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount9.png)
+  + 마찬가지로 cluster-B 에 대해서도 위와 같이 등록을 할 수 있다.
++ ![Authentication-X509Certs-kubectl-ServiceAccount10.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount10.png)
+  + 이렇게 kubeconfig 가 만들어 졌을 때 사용자가 cluster-A 에 연결하고 싶으면 ```kubectl config user-context context-A``` 명령으로 사용하고 싶은 context 를 지정할 수 있다. 
+  + 이렇게 지정 했을 때 ```kubectl get node``` 명령을 내리면 cluster-A 에 대한 node 정보들이 조회 된다.
+
+### Service Account
++ ![Authentication-X509Certs-kubectl-ServiceAccount11.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount11.png)
+  + k8s Cluster 와 k8s API 서버가 있고, namespace 를 만들면 기본적으로 default 라는 이름으로 ServiceAccount 가 자동으로 만들어 진다.
++ ![Authentication-X509Certs-kubectl-ServiceAccount12.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount12.png)
+  + 그리고 ServiceAccount 에는 Secret 이 하나 달려 있는데, 내용은 CA cert 정보와 token 값이 들어 있다.
++ ![Authentication-X509Certs-kubectl-ServiceAccount13.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount13.png)
+  + Pod 를 만들면 ServiceAccount 와 연결 되고, Pod 는 token 값을 통해 k8s API 서버에 연결할 수 있다. 
+  + 결국 token 값만 알면 사용자도 이 값을 가지고 k8s API 서버에 접근할 수 있다.
