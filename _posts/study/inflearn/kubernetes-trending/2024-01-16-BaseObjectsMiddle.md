@@ -633,7 +633,7 @@ spec:
 
 ~~~
 
-~~~http request
+~~~
 
 http://192.168.0.30:5705/
 
@@ -660,7 +660,7 @@ spec:
 
 ~~~
 
-~~~shell
+~~~
 
  접속
  
@@ -849,7 +849,7 @@ touch file.txt
 ~~~
 
 
-~~~http request
+~~~
 
 StorageOS Dashboard
 
@@ -997,6 +997,7 @@ kubectl delete persistentvolume pvc-b53fd802-3919-4fb0-8c1f-02221a3e4bc0 --grace
   + 본 과정에서는 Admission Control 에 대한 내용은 다루지 않는다.
 
 ## Authentication - X509 Certs, kubectl, ServiceAccount
++ ![img_1.png](img_1.png)
 
 ### X509 Client Certs
 + ![Authentication-X509Certs-kubectl-ServiceAccount.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount.png)
@@ -1015,6 +1016,30 @@ kubectl delete persistentvolume pvc-b53fd802-3919-4fb0-8c1f-02221a3e4bc0 --grace
   + k8s 를 설치할 때 kubectl 을 설치하고, 설정 내용 중 kubeconfig 파일을 통째로 kubectl 에서 사용하도록 복사하는 과정이 있다. 
   + 그 덕분에 사용자는 kubectl 로 k8s API 서버에 인증이 되어 리소스들을 조회할 수 있다.
   + 또한 accept-hosts 옵션을 통해 8001 번 포트를 열어두면 외부에서 http 로 접근할 수 있게 되는데, 그러면 kubectl 이 인증서를 가지고 있기 때문에 사용자는 인증서 없이 접근할 수 있게 된다.
++ ![img.png](img.png)
+
+#### 1-1) kubeconfig 인증서 확인
+Path : /etc/kubernetes/admin.conf
+
+~~~
+
+cluster.certificate-authority-data : CA.crt (Base64)
+user.client-certificate-data: Client.crt (Base64)
+user.client-key-data: Client.key (Base64)
+
+~~~
+
+~~~shell
+
+grep 'client-certificate-data' /etc/kubernetes/admin.conf | head -n 1 | awk '{print $2}' | base64 -d
+grep 'client-key-data' /etc/kubernetes/admin.conf | head -n 1 | awk '{print $2}' | base64 -d
+
+~~~
+
+#### 1-2) Https API (Client.crt, Client.key)
+
+
+
 
 ### kubectl
 + ![Authentication-X509Certs-kubectl-ServiceAccount6.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount6.png)
