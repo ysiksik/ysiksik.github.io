@@ -967,3 +967,31 @@ kubectl delete persistentvolume pvc-b53fd802-3919-4fb0-8c1f-02221a3e4bc0 --grace
 ### Tips 
 + hostPath
   + Recycle 정책은 /tmp/로 시작하는 Path에서만 됨
+
+## Accessing API - Overview
++ ![AccessingAPI-Overview.png](../../../../assets/img/kubernetes-trending/AccessingAPI-Overview.png) 
+  + Master Node 에 k8s API 서버가 있다. 
+  + 이 API 서버를 통해서만 k8s 에 자원을 만들거나 조회를 할 수 있다. 
+  + k8s 를 설치할 때 kubectl 도 설치하여 CLI 로 자원이 조회 가능한 것도 k8s API 서버에 접근해서 정보를 가져오는 것이다. 
++ ![AccessingAPI-Overview_1.png](../../../../assets/img/kubernetes-trending/AccessingAPI-Overview_1.png)
+  + 외부에서 이 API 서버에 접근 하려면 인증서를 가지고 있는 사용자만 https 로 보안 접근을 할 수 있다. 
+  + 하지만 만약 내부 관리자가 kubectl 명령으로 Proxy 를 열어 두었다면, 인증서 없이 http 로 API 서버에 접근할 수 있다.
++ ![AccessingAPI-Overview_2.png](../../../../assets/img/kubernetes-trending/AccessingAPI-Overview_2.png)
+  + kubectl 은 Master Node 에만 설치할 수 있는 것은 아니고, 외부 PC 에서도 설치하여 사용할 수 있다. 
+  + Config 기능을 활용하면, 만약 k8s Cluster 가 여러대가 있을 때 간단한 명령을 통해 접근 가능한 Cluster 에 연결을 유지할 수 있다. 
+  + 연결이 된 상태에서는 kubectl 명령으로 해당 Cluster 에 있는 Pod 정보들을 가지고 올 수 있다.
+  + 위와 같은 접근 방법은 사용자 입장에서 API 서버에 접근하는 방법이고, 이것을 User Account 라고 한다.
++ ![AccessingAPI-Overview_3.png](../../../../assets/img/kubernetes-trending/AccessingAPI-Overview_3.png)
+  + Pod 입장에서 k8s API 서버는 마음대로 접근할 수 없다. 왜냐하면 Pod 를 만들기만 하면 누구나 이 Pod 를 통해 k8s API 서버에 접근이 가능해지기 때문에 보안상 문제가 발생한다.
++ ![AccessingAPI-Overview_4.png](../../../../assets/img/kubernetes-trending/AccessingAPI-Overview_4.png)
+  + k8s 에서는 Service Account 라는 것을 통해 Pod 들이 k8s API 서버에 접근 한다.
++ ![AccessingAPI-Overview_5.png](../../../../assets/img/kubernetes-trending/AccessingAPI-Overview_5.png)
+  + 다시 말해서 k8s 에는 사용자들이 API 서버에 접근하기 위한 User Account 와 Pod 들이 접근하기 위한 Service Account 가 있다
+  + Service Account 도 사용 방법만 익히면 Cluster 외부에서도 접근 가능하다.
+  + 여기까지는 k8s API 서버에 접근하는 Authentication 에 대한 내용 이었고, 접근 이후 필요한 자원을 조회하는 권한에 대해서도 알아볼 예정이다.
++ ![AccessingAPI-Overview_6.png](../../../../assets/img/kubernetes-trending/AccessingAPI-Overview_6.png)
+  + 만약 Namespace 로 Pod 가 분리되어있는 상태에서 Namespace B 에 있는 Pod 가 k8s API 서버에 접근할 수 있다고 해서 Namespace A 이 있는 Pod 를 조회 할 수 있어야 할까?
+    + 이것은 권한 여부에 따라 가능할 수도 있고 불가능 할 수도 있다. 
+    + 이 부분은 Authorization 에 대한 부분이다.
+  + 그리고 권한까지 문제가 없다면 마지막으로 Admission Control 이라는 것이 있는데, 예를 들어 PV 를 만들 때 관리자가 용량을 1Gb 이상 만들지 못하도록 설정 했다면, Pod 를 생성하라는 API 요청이 들어왔을 때 k8s 는 설정한 크기를 초과하지 못하도록 하는 것과 같은 내용 이다.
+  + 본 과정에서는 Admission Control 에 대한 내용은 다루지 않는다.
