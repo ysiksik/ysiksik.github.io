@@ -997,7 +997,7 @@ kubectl delete persistentvolume pvc-b53fd802-3919-4fb0-8c1f-02221a3e4bc0 --grace
   + 본 과정에서는 Admission Control 에 대한 내용은 다루지 않는다.
 
 ## Authentication - X509 Certs, kubectl, ServiceAccount
-+ ![img_1.png](img_1.png)
++ ![img_1.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount15.png)
 
 ### X509 Client Certs
 + ![Authentication-X509Certs-kubectl-ServiceAccount.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount.png)
@@ -1016,7 +1016,7 @@ kubectl delete persistentvolume pvc-b53fd802-3919-4fb0-8c1f-02221a3e4bc0 --grace
   + k8s 를 설치할 때 kubectl 을 설치하고, 설정 내용 중 kubeconfig 파일을 통째로 kubectl 에서 사용하도록 복사하는 과정이 있다. 
   + 그 덕분에 사용자는 kubectl 로 k8s API 서버에 인증이 되어 리소스들을 조회할 수 있다.
   + 또한 accept-hosts 옵션을 통해 8001 번 포트를 열어두면 외부에서 http 로 접근할 수 있게 되는데, 그러면 kubectl 이 인증서를 가지고 있기 때문에 사용자는 인증서 없이 접근할 수 있게 된다.
-+ ![img.png](img.png)
++ ![img.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount14.png)
 
 #### 1-1) kubeconfig 인증서 확인
 Path : /etc/kubernetes/admin.conf
@@ -1038,10 +1038,168 @@ grep 'client-key-data' /etc/kubernetes/admin.conf | head -n 1 | awk '{print $2}'
 
 #### 1-2) Https API (Client.crt, Client.key)
 
++ v1.27
+
+~~~
+
+# case1) postman
+https://192.168.56.30:6443/api/v1/nodes
+
+Settings > General > SSL certificate verification > OFF
+Settings > Certificates > Client Certificates > Host, CRT file, KEY file
+
+# case2) curl
+curl -k --key ./Client.key --cert ./Client.crt https://192.168.56.30:6443/api/v1/nodes
+
+~~~
+
++ v1.15
+
+~~~
+
+# case1) postman
+https://192.168.0.30:6443/api/v1/nodes
+
+Settings > General > SSL certificate verification > OFF
+Settings > Certificates > Client Certificates > Host, CRT file, KEY file
+
+# case2) curl
+curl -k --key ./Client.key --cert ./Client.crt https://192.168.0.30:6443/api/v1/nodes
+
+~~~
+
+#### 1-3) kubectl config 세팅
+
++ v1.27
+
+~~~
+
+# kubeadm / kubectl / kubelet 설치
+yum install -y --disableexcludes=kubernetes kubelet-1.27.2-0.x86_64 kubeadm-1.27.2-0.x86_64 kubectl-1.27.2-0.x86_64
+
+# admin.conf 인증서 복사
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+# Kubectl Proxy 띄우기
+nohup kubectl proxy --port=8001 --address=192.168.56.30 --accept-hosts='^*$' >/dev/null 2>&1 &
+
+~~~
+
++ v1.15
+
+~~~
+
+# kubeadm / kubectl / kubelet 설치
+yum install -y --disableexcludes=kubernetes kubeadm-1.15.5-0.x86_64 kubectl-1.15.5-0.x86_64 kubelet-1.15.5-0.x86_64
+
+# admin.conf 인증서 복사
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+# Kubectl Proxy 띄우기
+nohup kubectl proxy --port=8001 --address=192.168.0.30 --accept-hosts='^*$' >/dev/null 2>&1 &
+
+~~~
 
 
+#### 1-4) HTTP API 호출 (Proxy)
+
++ v1.27
+
+~~~
+
+# case1) postman
+http://192.168.56.30:8001/api/v1/nodes
+
+# case2) curl
+curl http://192.168.56.30:8001/api/v1/nodes
+
+~~~
+
++ v1.15
+
+~~~
+
+# case1) postman
+http://192.168.0.30:8001/api/v1/nodes
+
+# case2) curl
+curl http://192.168.0.30:8001/api/v1/nodes
+
+~~~
+
+#### 2-1) Cluster A kubeconfig
++ path : /etc/kubernetes/admin.conf
+
+#### 2-2) Cluster B kubeconfig
++ path : /etc/kubernetes/admin.conf
+
+#### 2-3) kubeconfig
+
+~~~yaml
+
+apiVersion: v1
+clusters:
+- cluster:
+    certificate-authority-data: LS0tLS1KVEUtLS0tLQo=
+    server: https://192.168.0.30:6443
+  name: cluster-a
+- cluster:
+    certificate-authority-data: LS0tLS1KVEUtLS0tLQo=
+    server: https://192.168.0.50:6443
+  name: cluster-b
+contexts:
+- context:
+    cluster: cluster-a
+    user: admin-a
+  name: context-a
+- context:
+    cluster: cluster-b
+    user: admin-b
+  name: context-b
+current-context: context-a
+kind: Config
+preferences: {}
+users:
+- name: admin-a
+  user:
+    client-certificate-data: LS0tLS1KVEUtLS0tLQo=
+    client-key-data: LS0tLS1KVEUtLS0tLQo=
+- name: admin-b
+  user:
+    client-certificate-data: LS0tLS1KVEUtLS0tLQo=
+    client-key-data: LS0tLS1KVEUtLS0tLQo=
+
+~~~
+
+#### 2-4) kubectl CLI
++ kubectl download : [https://kubernetes.io/docs/tasks/tools/install-kubectl/](https://kubernetes.io/docs/tasks/tools/install-kubectl/)
++ windows
+
+~~~
+
+curl -LO https://storage.googleapis.com/kubernetes-release/release/v1.18.0/bin/windows/amd64/kubectl.exe
+
+~~~
+
+~~~
+
+C:\Users\taemin
+kubectl config use-context context-a
+
+~~~
+
+~~~
+
+kubectl get nodes
+
+~~~
 
 ### kubectl
++ ![img_2.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount17.png)
 + ![Authentication-X509Certs-kubectl-ServiceAccount6.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount6.png)
   + 외부 서버에 kubectl 을 설치해서 멀티 Cluster 에 접근하는 것에 대해 알아 본다.
   + 사전에 각 Cluster 에 있는 kubeconfig 파일이 내 kubectl 에 있으면 사용자는 원하는 Cluster 에 접근해서 자원을 조회하고 만들 수 있다.
@@ -1057,6 +1215,7 @@ grep 'client-key-data' /etc/kubernetes/admin.conf | head -n 1 | awk '{print $2}'
   + 이렇게 지정 했을 때 ```kubectl get node``` 명령을 내리면 cluster-A 에 대한 node 정보들이 조회 된다.
 
 ### Service Account
++ ![img_3.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount18.png)
 + ![Authentication-X509Certs-kubectl-ServiceAccount11.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount11.png)
   + k8s Cluster 와 k8s API 서버가 있고, namespace 를 만들면 기본적으로 default 라는 이름으로 ServiceAccount 가 자동으로 만들어 진다.
 + ![Authentication-X509Certs-kubectl-ServiceAccount12.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount12.png)
@@ -1064,3 +1223,74 @@ grep 'client-key-data' /etc/kubernetes/admin.conf | head -n 1 | awk '{print $2}'
 + ![Authentication-X509Certs-kubectl-ServiceAccount13.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount13.png)
   + Pod 를 만들면 ServiceAccount 와 연결 되고, Pod 는 token 값을 통해 k8s API 서버에 연결할 수 있다. 
   + 결국 token 값만 알면 사용자도 이 값을 가지고 k8s API 서버에 접근할 수 있다.
+
+#### 3-1) Namespace
+
+~~~
+
+kubectl create ns nm-01
+
+~~~
+
+#### 3-2) ServiceAccount & Secret 확인
+
+~~~
+
+kubectl describe -n nm-01 serviceaccounts
+kubectl describe -n nm-01 secrets
+
+~~~
+
+#### 3-3) Pod
+
+~~~
+
+cat <<EOF | kubectl create -f -
+apiVersion: v1
+kind: Pod
+metadata:
+name: pod-1
+namespace: nm-01
+labels:
+app: pod
+spec:
+containers:
+- name: container
+  image: kubetm/app
+  EOF
+  
+~~~
+
+#### 3-4) Https API 호출 (Token)
++ v1.27
+
+~~~
+
+# case1) http
+# [header] Authorization : Bearer TOKEN
+
+https://192.168.56.30:6443/api/v1
+https://192.168.56.30:6443/api/v1/namespaces/nm-01/pods/
+
+# case2) curl
+curl -k -H "Authorization: Bearer TOKEN" https://192.168.56.30:6443/api/v1
+curl -k -H "Authorization: Bearer TOKEN" https://192.168.56.30:6443/api/v1/namespaces/nm-01/pods/
+
+~~~
+
++ v1.15
+
+~~~
+
+# case1) http
+# [header] Authorization : Bearer TOKEN
+
+https://192.168.0.30:6443/api/v1
+https://192.168.0.30:6443/api/v1/namespaces/nm-01/pods/
+
+# case2) curl
+curl -k -H "Authorization: Bearer TOKEN" https://192.168.0.30:6443/api/v1
+curl -k -H "Authorization: Bearer TOKEN" https://192.168.0.30:6443/api/v1/namespaces/nm-01/pods/
+
+~~~
+
