@@ -997,7 +997,7 @@ kubectl delete persistentvolume pvc-b53fd802-3919-4fb0-8c1f-02221a3e4bc0 --grace
   + 본 과정에서는 Admission Control 에 대한 내용은 다루지 않는다.
 
 ## Authentication - X509 Certs, kubectl, ServiceAccount
-+ ![img_1.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount15.png)
++ ![Authorization-RBAC-Role-RoleBinding1.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount15.png)
 
 ### X509 Client Certs
 + ![Authentication-X509Certs-kubectl-ServiceAccount.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount.png)
@@ -1199,7 +1199,7 @@ kubectl get nodes
 ~~~
 
 ### kubectl
-+ ![img_2.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount17.png)
++ ![Authorization-RBAC-Role-RoleBinding2.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount17.png)
 + ![Authentication-X509Certs-kubectl-ServiceAccount6.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount6.png)
   + 외부 서버에 kubectl 을 설치해서 멀티 Cluster 에 접근하는 것에 대해 알아 본다.
   + 사전에 각 Cluster 에 있는 kubeconfig 파일이 내 kubectl 에 있으면 사용자는 원하는 Cluster 에 접근해서 자원을 조회하고 만들 수 있다.
@@ -1215,7 +1215,7 @@ kubectl get nodes
   + 이렇게 지정 했을 때 ```kubectl get node``` 명령을 내리면 cluster-A 에 대한 node 정보들이 조회 된다.
 
 ### Service Account
-+ ![img_3.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount18.png)
++ ![Authorization-RBAC-Role-RoleBinding3.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount18.png)
 + ![Authentication-X509Certs-kubectl-ServiceAccount11.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount11.png)
   + k8s Cluster 와 k8s API 서버가 있고, namespace 를 만들면 기본적으로 default 라는 이름으로 ServiceAccount 가 자동으로 만들어 진다.
 + ![Authentication-X509Certs-kubectl-ServiceAccount12.png](../../../../assets/img/kubernetes-trending/Authentication-X509Certs-kubectl-ServiceAccount12.png)
@@ -1294,3 +1294,216 @@ curl -k -H "Authorization: Bearer TOKEN" https://192.168.0.30:6443/api/v1/namesp
 
 ~~~
 
+## Authorization - RBAC, Role, RoleBinding
++ ![img.png](../../../../assets/img/kubernetes-trending/Authorization-RBAC-Role-RoleBinding.png)
++ ![Authorization-RBAC-Role-RoleBinding1.png](../../../../assets/img/kubernetes-trending/Authorization-RBAC-Role-RoleBinding1.png)
+
+### RBAC (Role, RoleBinding) Overview
++ k8s 가 자원에 대한 권한을 지원하는 방법에 대해서는 여러가지가 있지만, 가장 많이 사용하는 RBAC 에 대해 알아보려 한다.
++ 역할 기반으로 권한을 부여하는 방법으로 k8s 에서는 Role 과 RoleBinding 이라는 오브젝트가 그 기능을 한다.
++ ![Authorization-RBAC-Role-RoleBinding2.png](../../../../assets/img/kubernetes-trending/Authorization-RBAC-Role-RoleBinding2.png)
+  + k8s 에는 Node, PV 그리고 Namespace 등과 같이 Cluster 단위로 관리 되는 자원과, Pod, Service 와 같이 Namespace 단위로 관리 되는 자원으로 나누어 볼 수 있다.
+  + Namespace 를 만들면 자동으로 ServiceAccount 가 만들어 지기도 하고, 추가로 더 만들 수 있지만 ServiceAccount 에 Role 과 RoleBinding 을 어떻게 설정 하느냐에 따라 해당 ServiceAccount 는 Namespace 내의 자원에만 접근 가능하거나 Cluster 내의 자원에도 접근 가능하게 할 수 있다.
++ ![Authorization-RBAC-Role-RoleBinding3.png](../../../../assets/img/kubernetes-trending/Authorization-RBAC-Role-RoleBinding3.png)
+  + 먼저 Role 은 여러개를 만들 수 있고, 각 Role 에는 Namespace 내의 자원에 대해 조회만 가능 하거나 생성만 가능하도록 권한을 부여할 수 있다.
+  + RoleBinding 은 Role 과 ServiceAccount 를 연결해주는 역할을 하는데, Role 은 하나만 지정할 수 있고 ServiceAccount 는 여러개를 지정할 수 있다.
+  + 위와 같이 연결 되어 있으면 ServiceAccount (SA) 와 ServiceAccount1 (SA1) 은 Role1 에 지정 되어 있는 권한으로 k8s API 서버에 접근할 수 있게 된다.
+  + 이렇게 하나의 Namespace 내에서 권한을 부여 할 때는 Role 과 RoleBinding 을 여러개 만들어서 관리하면 된다.
++ ![Authorization-RBAC-Role-RoleBinding4.png](../../../../assets/img/kubernetes-trending/Authorization-RBAC-Role-RoleBinding4.png)
+  + ServiceAccount 에서 Cluster 자원에 접근하기 위해 먼저 ClusterRole 과 ClusterRoleBinding 이 만들어져 있어야 한다. 
+  + ClusterRole 은 Cluster 단위의 오브젝트 들을 지정할 수 있다는 게 Role 과의 다른 점이다. 그 외 기능은 동일하다.
+  + ClusterRoleBinding 에 ServiceAccount 를 추가하면 Namespace A 에는 ServiceAccount 에서도 Cluster 자원에 접근할 수 있는 권한을 얻게 된다.
++ ![Authorization-RBAC-Role-RoleBinding5.png](../../../../assets/img/kubernetes-trending/Authorization-RBAC-Role-RoleBinding5.png)
+  + 다른 경우로 Namespace 내의 RoleBinding 이 ServiceAccount 와 연결 되어 있고, Role 을 지정할 때 Namespace 내에 있는 Role 이 아닌 ClusterRole 을 지정 할 수도 있다.
+  + 이 경우 ServiceAccount 는 Cluster 자원에는 접근하지 못하고 자신이 속한 Namespace 내의 자원만 사용할 수 있다.
+  + 이 경우 그냥 Role 을 만들어 사용하는 것과 같은데, 굳이 ClusterRole 을 만들어 사용하는 이유는 모든 Namespace 마다 같은 Role 을 부여하고 관리해야하는 상황에서 각 Namespace 마다 같은 Role 을 만들게 되면, Role 이 변경 되어야 하는 경우 모든 Role 을 수정해야 하는 불편함이 있기 때문이다.
+
+### Role, RoleBinding Detail
++ ![Authorization-RBAC-Role-RoleBinding6.png](../../../../assets/img/kubernetes-trending/Authorization-RBAC-Role-RoleBinding6.png)
+  + 먼저 Namespace 에 Pod 와 Service 가 있고, Namespace 를 만들면 자동으로 생성 되는 ServiceAccount 와 token 이 담긴 Secret 이 있다. 그리고 Role 을 만드는데, 내용은 apiGroups, resources, verbs 속성이 있다.
+  + resources 속성은 Pod 인 경우 pods 로 설정 되는데, Pod 는 core api 이기 때문에 apiGroups 에 아무 내용을 넣지 않아도 된다.
+  + 만약 리소스가 Job 인 경우 해당 apiGroup 을 넣어줘야 한다. (지금 예시의 경우 “batch”) 위의 예시는 verbs 속성으로 조회만 가능하도록 get, list 만 설정했다.
++ ![Authorization-RBAC-Role-RoleBinding7.png](../../../../assets/img/kubernetes-trending/Authorization-RBAC-Role-RoleBinding7.png)
+  + 마지막으로 RoleBinding 을 만들고 roleRef 속성에 Role 을 연결하고 subjects 속성에 ServiceAccount 을 연결하면 된다. 
+  + 이렇게 연결되어 있다면 Secret 의 token 값을 가지고 k8s API 서버에 접근할 수 있고, token 에 대한 권한에 따라 Namespace 내의 Pod 를 조회할 수 있게 된다.
++ ![Authorization-RBAC-Role-RoleBinding8.png](../../../../assets/img/kubernetes-trending/Authorization-RBAC-Role-RoleBinding8.png)
+  + 다른 경우로, 새로운 Namespace 가 있고 이 Namespace 에는 ServiceAccount 를 관리자 권한 처럼 모든 Cluster 자원에 접근할 수 있도록 하기 위해 ClusterRole 을 * 로 설정하여 모든게 가능하도록 설정 했다.
++ ![Authorization-RBAC-Role-RoleBinding9.png](../../../../assets/img/kubernetes-trending/Authorization-RBAC-Role-RoleBinding9.png)
+  + ClusterRoleBinding 을 만들어서 ServiceAccount 를 연결 한다. 
+  + 그러면 token 으로 k8s API 서버에 접근 하면 다른 Namespace 에 있는 자원은 물론이고 Cluster 단위의 자원도 조회나 생성 할 수 있게 된다.
+
+### 자신의 Namespace 내에 Pod들만 조회할 수 있는 권한
++ ![Authorization-RBAC-Role-RoleBinding10.png](../../../../assets/img/kubernetes-trending/Authorization-RBAC-Role-RoleBinding10.png)
+
+#### 1-1) Role
+
+~~~yaml
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: r-01
+  namespace: nm-01
+rules:
+- apiGroups: [""]
+  verbs: ["get", "list"]
+  resources: ["pods"]
+
+~~~
+
+#### 1-2) RoleBinding
+
+~~~yaml
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rb-01
+  namespace: nm-01
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: r-01
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: nm-01
+
+~~~
+
+#### 1-3) Service
+
+~~~yaml
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: svc-1
+spec:
+  selector:
+    app: pod
+  ports:
+  - port: 8080
+    targetPort: 8080
+
+~~~
+
+#### 1-4) Https API 호출 (Token)
++ v1.27
+
+~~~shell
+
+# case1) postman
+# [header] Authorization : Bearer TOKEN
+
+https://192.168.56.30:6443/api/v1/namespaces/nm-01/pods/
+
+# case2) curl
+curl -k -H "Authorization: Bearer TOKEN" https://192.168.56.30:6443/api/v1/namespaces/nm-01/pods/
+
+~~~
+
+
++ v1.15
+
+~~~shell
+
+# case1) postman
+# [header] Authorization : Bearer TOKEN
+
+https://192.168.0.30:6443/api/v1/namespaces/nm-01/pods/
+
+# case2) curl
+curl -k -H "Authorization: Bearer TOKEN" https://192.168.0.30:6443/api/v1/namespaces/nm-01/pods/
+
+~~~
+
+### 2. 모든 Namespace 내에 Object들에 대해 모든 권한을 부여
++ ![Authorization-RBAC-Role-RoleBinding11.png](../../../../assets/img/kubernetes-trending/Authorization-RBAC-Role-RoleBinding11.png)
+
+#### 2-1) Namespaces
+
+~~~yaml
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nm-02
+
+~~~~
+
+#### 2-2) ServiceAccount 
+
+~~~yaml
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa-02
+  namespace: nm-02
+
+~~~
+
+#### 2-3) ClusterRole 
+
+~~~yaml
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cr-02
+rules:
+- apiGroups: ["*"]
+  verbs: ["*"]
+  resources: ["*"]
+
+~~~
+
+#### 2-4) ClusterRoleBinding
+
+~~~yaml
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: rb-02
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cr-02
+subjects:
+  - kind: ServiceAccount
+    name: sa-02
+    namespace: nm-02
+
+~~~
+
+#### 2-5) Https API 호출 (Token)
+
++ v1.27
+
+~~~shell
+
+# case1) postman
+# [header] Authorization : Bearer TOKEN
+
+https://192.168.56.30:6443/api/v1/namespaces/nm-01/service
+
+# case2) curl
+curl -k -H "Authorization: Bearer TOKEN" https://192.168.56.30:6443/api/v1/namespaces/nm-01/service
+
+~~~
+
++ v1.15
+
+~~~shell
+
+# case1) postman
+# [header] Authorization : Bearer TOKEN
+
+https://192.168.0.30:6443/api/v1/namespaces/nm-01/service
+
+# case2) curl
+curl -k -H "Authorization: Bearer TOKEN" https://192.168.0.30:6443/api/v1/namespaces/nm-01/service
+
+~~~
