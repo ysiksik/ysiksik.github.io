@@ -1509,6 +1509,7 @@ curl -k -H "Authorization: Bearer TOKEN" https://192.168.0.30:6443/api/v1/namesp
 ~~~
 
 ## Kubernetes Dashboard
++ ![img.png](img.png)
 
 ### AS-IS : v1.10.1
 
@@ -1538,3 +1539,187 @@ curl -k -H "Authorization: Bearer TOKEN" https://192.168.0.30:6443/api/v1/namesp
   + v1.10.1 과 마찬가지로 기존에 존재하는 cluster-admin ClusterRole 에 ClusterRoleBinding 을 추가해서 Dashboard 의 ServiceAccount 와 연결 한다. 그러면 이 ServiceAccount 에 연결 된 Secret 의 token 값이 있는데, 이 값을 통해 Dashboard 에서 Token 로그인을 할 수 있다.
   + 이렇게 하면 보안적으로 보다 안전한 접속을 하게 되는데, 다른 사람 입장에서는 v1.10.1 과 달리 ip 와 port 정보만으로 접속할 수 없다. 
   + 추가로 k8s 인증서도 있어야 하며 Dashboard 에 접근 하더라도 token 값을 알아야 하기 때문에 보안이 중요한 경우 위와 같이 Dashboard 를 설치하면 된다.
+
+
+### 1. Dashboard 설치
++ ![img_1.png](img_1.png)
+
+#### 1-1) Dashboard 설치
+
++ v1.27
+
+~~~shell
+
+# kubetm 가이드로 Dashboard대로 설치했을 경우 아래 명령으로 삭제
+kubectl delete -f https://raw.githubusercontent.com/k8s-1pro/install/main/ground/k8s-1.27/dashboard-2.7.0/dashboard.yaml
+
+# 다시 Dashboard (2.7.0) 설치 - <https://github.com/kubernetes/dashboard/releases/tag/v2.7.0>
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v2.7.0/aio/deploy/recommended.yaml
+
+~~~
+
++ v1.15
+
+~~~shell
+
+# kubetm 가이드로 Dashboard대로 설치했을 경우 아래 명령으로 삭제
+kubectl delete -f https://kubetm.github.io/documents/appendix/kubetm-dashboard-v1.10.1.yaml
+
+# 새 Dashboard (2.0.0) 설치 - <https://github.com/kubernetes/dashboard/releases/tag/v2.0.0>
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v2.0.0/aio/deploy/recommended.yaml
+
+~~~
+
+#### 1-2) ClusterRoleBinding 생성
+
++ v1.27
+
+~~~shell
+
+cat <<EOF | kubectl create -f -
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubernetes-dashboard2
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- kind: ServiceAccount
+  name: kubernetes-dashboard
+  namespace: kubernetes-dashboard
+EOF
+
+~~~
+
++ v1.15
+
+~~~shell
+
+cat <<EOF | kubectl create -f -
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: ClusterRoleBinding
+metadata:
+  name: kubernetes-dashboard2
+  labels:
+    k8s-app: kubernetes-dashboard
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- kind: ServiceAccount
+  name: kubernetes-dashboard
+  namespace: kubernetes-dashboard
+EOF
+
+~~~
+
+#### 1-3) Token 확인 
+
++ v1.27
+
+~~~shell
+
+// Secret 생성
+cat <<EOF | kubectl create -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kubernetes-dashboard-token
+  namespace: kubernetes-dashboard
+  annotations:
+    kubernetes.io/service-account.name: "kubernetes-dashboard"   
+type: kubernetes.io/service-account-token  
+EOF
+
+// Token 확인
+kubectl -n kubernetes-dashboard get secret kubernetes-dashboard-token -o jsonpath='{.data.token}' | base64 --decode
+
+~~~
+
++ v1.15
+
+~~~shell
+
+kubectl -n kubernetes-dashboard get secret kubernetes-dashboard-token- \-o jsonpath='{.data.token}' | base64 --decode
+
+~~~
+
+#### 1-4) 내 PC에 인증서 설치
+
+~~~shell
+
+grep 'client-certificate-data' ~/.kube/config | head -n 1 | awk '{print $2}' | base64 -d >> client.crt
+grep 'client-key-data' ~/.kube/config | head -n 1 | awk '{print $2}' | base64 -d >> client.key
+openssl pkcs12 -export -clcerts -inkey client.key -in client.crt -out client.p12 -name "k8s-master-30"
+
+~~~
+
++ kubecfg.p12 파일을 내 PC에서 인증서 등록
+  + Mac에서는 p12 파일을 cer파일로 한번 더 변환해 준 후 client.cer 파일을 PC에 등록해 주면 된다
+
+~~~shell
+
+
+openssl pkcs12 -in client.p12 -clcerts -nokeys -out client.cer
+
+~~~
+
++ 또한 아래와 같은 에러가 나올 시에는 “services "https:kubernetes-dashboard:" is forbidden: User "system:anonymous" cannot get resource "services/proxy" in API group "" in the namespace "kubernetes-dashboard"
++ 아래 두 리소스를 추가
+
+~~~shell
+
+cat <<EOF | kubectl apply -f -
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: kubernetes-dashboard-anonymous
+rules:
+- apiGroups: [""]
+  resources: ["services/proxy"]
+  resourceNames: ["https:kubernetes-dashboard:"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- nonResourceURLs: ["/ui", "/ui/*", "/api/v1/namespaces/kube-system/services/https:kubernetes-dashboard:/proxy/*"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+EOF
+
+~~~
+
+~~~shell
+
+cat <<EOF | kubectl apply -f -
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubernetes-dashboard-anonymous
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubernetes-dashboard-anonymous
+subjects:
+- kind: User
+  name: system:anonymous
+EOF
+
+~~~
+
+#### 1-5) Https 로 Dashboard 접근 후 Token 으로 로그인
+
++ v1.27
+
+~~~
+
+https://192.168.56.30:6443/api/v1/namespaces/kubernetes-dashboard/services/https:kubernetes-dashboard:/proxy/#/login
+
+~~~
+
++ v1.15
+
+~~~
+
+https://192.168.0.30:6443/api/v1/namespaces/kubernetes-dashboard/services/https:kubernetes-dashboard:/proxy/#/login
+
+~~~
