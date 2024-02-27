@@ -1509,7 +1509,7 @@ curl -k -H "Authorization: Bearer TOKEN" https://192.168.0.30:6443/api/v1/namesp
 ~~~
 
 ## Kubernetes Dashboard
-+ ![img.png](img.png)
++ ![img.png](../../../../assets/img/kubernetes-trending/KubernetesDashboard8.png)
 
 ### AS-IS : v1.10.1
 
@@ -1542,7 +1542,7 @@ curl -k -H "Authorization: Bearer TOKEN" https://192.168.0.30:6443/api/v1/namesp
 
 
 ### 1. Dashboard 설치
-+ ![img_1.png](img_1.png)
++ ![img_1.png](../../../../assets/img/kubernetes-trending/KubernetesDashboard9.png)
 
 #### 1-1) Dashboard 설치
 
