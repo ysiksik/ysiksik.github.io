@@ -1507,3 +1507,34 @@ https://192.168.0.30:6443/api/v1/namespaces/nm-01/service
 curl -k -H "Authorization: Bearer TOKEN" https://192.168.0.30:6443/api/v1/namespaces/nm-01/service
 
 ~~~
+
+## Kubernetes Dashboard
+
+### AS-IS : v1.10.1
+
++ ![img.png](../../../../assets/img/kubernetes-trending/KubernetesDashboard.png)
+  + 설치하면  kube-system Namespace 에 Deployment 로 Dashboard Pod 가 설치 되고 Service 와도 연결 되어 있다.
++ ![KubernetesDashboard1.png](../../../../assets/img/kubernetes-trending/KubernetesDashboard1.png)
+  + 설치할 때 kubectl 명령으로 Proxy 를 올려놨기 때문에 사용자는 이 Proxy 를 통해 보안 없이 http 로 Dashboard 에 접근 할 수 있었다.
+  + 그러면 Dashboard 화면에서 SKIP 버튼을 눌러 별도의 인증 없이 로그인 해서 Dashboard 를 통해 k8s 오브젝트들을 조회하고 생성할 수 있었다. 
+  + 이것은 Dashboard Pod 가 API 서버에 접근했을 때 Cluster 자원에 대한 권한을 가지고 있었기 때문에 가능했던 것이다.
++ ![KubernetesDashboard2.png](../../../../assets/img/kubernetes-trending/KubernetesDashboard2.png)
+  + Dashboard Pod 는 ServiceAccount 에 연결 되어 있고, ServiceAccount 에는 RoleBinding 을 통해 Role 에 연결 되어 있는데, 이 Role 에 대한 권한은 Namespace 내에서만 사용 가능하기 때문에 위와 같은 상태에서는 Dashboard Pod 가 모든 자원에 접근할 수 없다.
++ ![KubernetesDashboard3.png](../../../../assets/img/kubernetes-trending/KubernetesDashboard3.png)
+  + k8s 를 설치하면 기본적으로 만들어지는 Role 중에 cluster-admin 이라는 ClusterRole 이 있다. 
+  + 이 때 ClusterRoleBinding 을 새로 만들어 cluster-admin 과 ServiceAccount 를 연결하면 Dashboard 는 cluster-admin 의 권한으로 API 서버에 접근할 수 있게 된다.
+  + 그래서 Dashboard Pod 를 통해 Cluster 의 모든 자원에 접근해서 사용할 수 있었다. 그리고 Proxy 서버를 열어두었기 때문에 누구든 Proxy 서버의 ip 와 port 번호만 알면 Cluster 에 접근할 수 있어 위험하다.
+
+### TO-BE : v2.0.0
++ ![KubernetesDashboard4.png](../../../../assets/img/kubernetes-trending/KubernetesDashboard4.png)
+  + Proxy 를 중간에 두지 않고 API 서버로 바로 접근 하기 위해 k8s 에 있는 kubeconfig 파일에 Client key 와 Client crt (인증서) 가 필요하다.
+  + 이 두 파일을 합쳐 client p12 파일을 만들고 사용자 PC 에 인증서 등록을 한다. 그러면 https 로 API 서버에 접근 가능해진다.
++ ![KubernetesDashboard5.png](../../../../assets/img/kubernetes-trending/KubernetesDashboard5.png)
+  + v2.0.0 의 Dashboard 를 설치하면 마찬가지로 Dashboard 관련 오브젝트들이 만들어져서 사용자는 API 서버를 통해 Dashboard 에 접근할 수 있고 Dashboard 는 사용자가 필요한 자원을 조회하거나 만들 때마다 API 서버로 요청하게 된다.
++ ![KubernetesDashboard6.png](../../../../assets/img/kubernetes-trending/KubernetesDashboard6.png)
+  + v2.0.0 에는 추가로 설치되는 Pod 가 있다. 만약 사전에 metrics 서버가 설치되어 있다면 Node 나 Pod 의 성능 정보를 그래프 형태로 Dashboard 에 보여주는 역할을 한다. 
+  + 이 때 같이 생기는 ClusterRoleBinding 과 ClusterRole 은 이 Pod 의 Node 나 Pod 에 대한 조회 권한을 주기 위한 용도이다.
++ ![KubernetesDashboard7.png](../../../../assets/img/kubernetes-trending/KubernetesDashboard7.png)
+  + v1.10.1 과 마찬가지로 기존에 존재하는 cluster-admin ClusterRole 에 ClusterRoleBinding 을 추가해서 Dashboard 의 ServiceAccount 와 연결 한다. 그러면 이 ServiceAccount 에 연결 된 Secret 의 token 값이 있는데, 이 값을 통해 Dashboard 에서 Token 로그인을 할 수 있다.
+  + 이렇게 하면 보안적으로 보다 안전한 접속을 하게 되는데, 다른 사람 입장에서는 v1.10.1 과 달리 ip 와 port 정보만으로 접속할 수 없다. 
+  + 추가로 k8s 인증서도 있어야 하며 Dashboard 에 접근 하더라도 token 값을 알아야 하기 때문에 보안이 중요한 경우 위와 같이 Dashboard 를 설치하면 된다.

@@ -292,7 +292,7 @@ spec:
 + ![img.png](../../../../assets/img/kubernetes-trending/Volume-emptyDir-hostPath-PVPVC.png)
 
 ### emptyDir
-+ emptyDir은 컨테이너들끼리 데이터를 공유하기 위해서 볼륨을 사용하는 거고 최초 이 볼륨이 생성될 때는 항상 이 볼륨 안에 내용이 비어 있기 때문에 MTDI라고 명칭이 된 것이다.
++ emptyDir은 컨테이너들끼리 데이터를 공유하기 위해서 볼륨을 사용하는 거고 최초 이 볼륨이 생성될 때는 항상 이 볼륨 안에 내용이 비어 있기 때문에 emptyDir라고 명칭이 된 것이다.
 + ![img_1.png](../../../../assets/img/kubernetes-trending/Volume-emptyDir-hostPath-PVPVC1.png)
 + 만약에 컨테이너 1번이 웹 역할을 하는 서버이고 이 컨테이너 2번이 백엔드단을 처리해주는 서버라고 했을 때 이 웹서버로 받은 어떤 특정 파일을 마운트가 된 볼륨에 저장을 해 놓고요.
   백엔드단에 있는 컨테이너 역시 이 볼륨을 마운트를 해 놓으면 이 두 서버가 이 볼륨을 자신의 로컬에 있는 파일처럼 사용을 하기 때문에 이 두 서버가 서로 파일을 주고 받을 필요 없이 편하게 사용을 할 수가 있다.
