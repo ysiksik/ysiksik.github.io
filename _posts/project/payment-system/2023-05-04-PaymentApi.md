@@ -17,7 +17,7 @@ comments: true
   
 ## 개요
 + 당사의 결제 서비스는 JAVA 11, Spring Boot 2.7.7, Springframework 5.3.24, Spring Security, JWT, MariaDB, MyBatis, Swagger, Git, Jenkins 등 다양한 기술 스택을 활용하여 개발되었습니다. 이 서비스는 온라인 결제 서비스의 기능을 제공하며, 정산 내역 조회, 회원 가입, 인증 등 다양한 기능을 제공합니다. 서비스 개발 및 유지보수 과정에서는 API 문서화 및 테스트를 위해 Swagger가 활용되었고, 코드 관리 및 빌드 프로세스에는 Git과 Jenkins가 사용되었습니다. 또한, 보안 강화를 위해 Spring Security와 JWT가 도입되어 인증 및 권한 부여 기능을 구현하였습니다     
-+ 기간: 2021.04 ~ 진행중
++ 기간: 2021.04 ~ 2023.07
 + 인원: 4명
 
 ## 기술 스택
