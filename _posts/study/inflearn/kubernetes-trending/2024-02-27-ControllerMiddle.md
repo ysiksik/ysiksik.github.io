@@ -289,6 +289,66 @@ kubectl delete -f https://raw.githubusercontent.com/kubetm/kubetm.github.io/mast
 
 ~~~
 
+## Ingress - Nginx
++ Ingress 의 대표적인 사용 목적은 Service LoadBalancing 과 Canary Upgrade 가 있다.
++ ![Ingress-Nginx.png](../../../../assets/img/kubernetes-trending/Ingress-Nginx.png)
+  + Service LoadBalancing 은 만약 쇼핑몰을 운영중이라고 가정 하고, Shopping Page 와 Customer Center 그리고 Order Service 를 Pod 별로 각각 만들었다.
+  + 이렇게 Application 을 구분하면 Shopping Page 에 장애가 발생해도 고객 응대나 주문 관리를 하는데는 영향이 없다는 장점이 있다.
++ ![Ingress-Nginx1.png](../../../../assets/img/kubernetes-trending/Ingress-Nginx1.png)
+  + 그리고 외부에서 연결할 수 있도록 각각 Service 를 연결하고 사용자로 하여금 Shogging Page 에 접속하기 위해 www.mall.com 을, Customer Center 에 접속 하려면 path 에 /customer 를, 그리고 /order 를 붙이면 Order Service 에 접속 하도록 하고 싶은데,
+  일반적으로 각 path 에 따라 각 Service 의 ip 를 연결해줄 수 있는 L4 나 스위치같은 장비가 있어야 한다.
++ ![Ingress-Nginx2.png](../../../../assets/img/kubernetes-trending/Ingress-Nginx2.png)
+  + k8s 에서는 Ingress 오브젝트가 그 역할을 대신 해준다. root path 로 접속하면 Shopping Page 가 있는 Pod 로 연결 해주고, /customer 가 있으면 Customer Center Pod 가 있는 Service 로 각각 연결 될 수 있도록 해준다.
+    그래서 별도로 ip load balancing 해주는 장비가 필요 없다.
++ ![Ingress-Nginx3.png](../../../../assets/img/kubernetes-trending/Ingress-Nginx3.png)
+  + 다른 사용 예로 Ingress 를 사용하면 Canary Upgrade 를 쉽게 할 수 있다.
+  + V1 의 Application 들이 구동되어 운영되는 상태에서 테스트 할 V2 의 Application 을 구동 시킨다.
+  + Ingress 를 만들어서 두가지 버전의 Service 를 연결 하면, 사용자가 Ingress 를 통해 접속 했을 때 10% 의 트래픽만 V2 로 유입 되도록 할 수 있다.
+  + 그리고 유입량에 대한 % 수치를 변경 하거나 연결 될 때 들어있는 Header 값들로 트래픽을 조절할 수도 있다.
++ ![Ingress-Nginx4.png](../../../../assets/img/kubernetes-trending/Ingress-Nginx4.png)
+  + Ingress 오브젝트는 k8s 가 설치 되어 있으면 바로 만들 수 있다.
+  + Ingress 에는 Host로 도메인을 설정할 수 있고, 이 도메인으로 유입되는 트래픽은 path 에 따라 원하는 Service 로 연결하라는 내용이 주 된 내용이다.
+  + 하지만 이렇게 Ingress 를 만들었다고 해서 작동하는 것은 아무것도 없다. 왜냐하면 이 규칙을 실행 할 구현체가 없기 때문이다. k8s 에서 이 구현체를 만들기 위한 플러그인을 설치 해야 한다.
++ ![Ingress-Nginx5.png](../../../../assets/img/kubernetes-trending/Ingress-Nginx5.png)
+  + 그 플러그인 들을 Ingress Controller 라고 하고 대표적으로 Nginx, Kong 등이 있다. 
+  + 만약 Nginx 를 설치하게 되면 nginx 에 대한 Namespace 가 생기고, 이 위에 Deployment 와 ReplicaSet 이 만들어 지면서 실제 Ingress 의 구현체인 nginx Pod 가 만들어 진다.
++ ![Ingress-Nginx6.png](../../../../assets/img/kubernetes-trending/Ingress-Nginx6.png)
+  + 이 Pod 가 Ingress 규칙이 있는지 확인하고, 존재한다면 그 규칙에 맞춰 Service 에 연결하는 역할을 한다. 
+  + 이 규칙에 따라 Service 에 트래픽이 유입 되려면, 외부에서 접속하는 사용자들의 트래픽은 nginx Pod 를 지나야 하기 때문에 외부에서 접근 가능한 Service 를 하나 만들어서 Pod 에 연결 해줘야 한다.
+  + 직접 k8s 를 설치 했다면 NodePort 를 만들어서 외부에 연결할 수 있고, cloud 서비스를 이용하고 있다면 LoadBalancer 를 만들어서 연결할 수 있다.
+  + Ingress 규칙에서 지정한 도메인으로 접속하면 Service 를 통해 nginx Pod 로 트래픽이 유입 되어 Ingress 규칙에 따라 지정된 Service 와 Pod 에 접속할 수 있게 된다.
++ ![Ingress-Nginx7.png](../../../../assets/img/kubernetes-trending/Ingress-Nginx7.png)
+  + Ingress 를 더 추가할 수 있는데, 다른 도메인을 설정하고 path 없이 바로 Service 로 연결도 가능하다. 
+  + 예시에서 nginx 가 설치 되어 있기 때문에 바로 Ingress 가 인식 되어 지정한 Service 에 연결 된다.
+  + 그래서 사용자가 Ingress 에 지정된 도메인으로 접속 하면 해당 Service 에 연결 될 수 있고, 더 많이 만들어 추가할 수도 있다.
+  + Ingress 의 세 가지 기능인 Service Loadbalancing, Canary Upgrade, Https 에 대해 정리 한다.
 
+### Service Loadbalancing
++ ![Ingress-Nginx8.png](../../../../assets/img/kubernetes-trending/Ingress-Nginx8.png)
+  + 각 업무별로 Pod 와 Service 를 만든다. 미리 nginx Controller 가 설치 되어 있고, 이 Pod 가 외부에서 연결 가능하도록 NodePort Service 에도 연결 되어 있기 때문에 Master 의 host ip 인 192.168.0.30:30431 로 접속 하면 Pod 의 80 번 포트로 트래픽이 유입 된다.
++ ![Ingress-Nginx9.png](../../../../assets/img/kubernetes-trending/Ingress-Nginx9.png)
+  + 이 상태에서 Ingress 를 만들고, path 에 따라 의도하는 Service 에 매칭하는 규칙을 설정하면 준비는 끝난다.
++ ![Ingress-Nginx10.png](../../../../assets/img/kubernetes-trending/Ingress-Nginx10.png)
+  + 별도의 도메인 이름을 주지 않았기 때문에 사용자가 192.168.0.30:30431 로 접속 하면 Service Page 에 접속 하고, /svc-order path 로 접속하면 주문 관리 페이지로 접속 하게 된다.
 
+### Canary Upgrade
++ ![Ingress-Nginx11.png](../../../../assets/img/kubernetes-trending/Ingress-Nginx11.png)
+  + www.app.com 이라는 도메인 이름으로 사용자가 접속하면 svc-v1 이라는 이름의 Service 로 연결이 되도록 구성 되어 있다. 현재 사용자들에게 Application 이 운영 중인 상황이다.
++ ![Ingress-Nginx12.png](../../../../assets/img/kubernetes-trending/Ingress-Nginx12.png)
+  + 이 상태에서 Canary Upgrade 를 테스트 할 Pod 와 Service 를 구동시키고 Ingress 를 하나 더 만드는데, host 이름은 www.app.com 으로 동일하고, serviceName 을 v2 로 설정하면 위와 같이 구성 된다.
++ ![Ingress-Nginx13.png](../../../../assets/img/kubernetes-trending/Ingress-Nginx13.png)
+  + 새로 만든 Ingress 에 @weight 라는 annotation 을 설정할 수 있는데, 10% 로 설정하면, 이 도메인으로 유입되는 트래픽의 10% 는 svc-v2 Pod 로 들어가 테스트 하게 된다.
++ ![Ingress-Nginx14.png](../../../../assets/img/kubernetes-trending/Ingress-Nginx14.png)
+  + 만약 특정 국가 별로 테스트 하고 싶은 경우 @header 옵션을 사용하면, 이 사이트에 접속하는 언어가 kr 일 때 100% 트래픽으로 svc-v2 Pod 에 유입 된다.
+  + 이 밖에도 다양한 annotation 을 사용하면 nginx 의 다양한 기능들을 사용 할 수 있다.
 
+### Https
++ Ingress 를 통해서 https 로 연결할 수 있도록 인증서 관리도 가능하다. Pod 자체에서 인증서 기능을 제공하기 어려울 때 사용하면 좋다.
++ ![Ingress-Nginx15.png](../../../../assets/img/kubernetes-trending/Ingress-Nginx15.png)
+  + nginx Pod 로 https 를 사용하려면 443 포트로 연결 해야 한다.
++ ![Ingress-Nginx16.png](../../../../assets/img/kubernetes-trending/Ingress-Nginx16.png)
+  + 그리고 Ingress 를 만들 때 host 도메인 이름과 Service 를 연결하고, tls 옵션에 secretName 으로 실제 Secret 오브젝트를 연결한다. 
+  + 이 Secret 오브젝트 안에는 data 값으로 인증서를 가지고 있다. 이렇게 구성하면 사용자는 도메인 이름 앞에 https:// 를 붙여야 접속할 수 있게 된다.
+
+### 실습
++ [https://kubetm.github.io/k8s/08-intermediate-controller/ingress/](https://kubetm.github.io/k8s/08-intermediate-controller/ingress/)
