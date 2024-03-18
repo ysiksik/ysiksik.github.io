@@ -18,7 +18,7 @@ comments: true
 ## HTTP란 무엇일까?
 + Hypertext Transfer Protocol에 줄임말인데 하이퍼 미디어 문서를 전송하기 위한 애플리케이션 레이어의 프로토콜
 + 하이퍼 미디어 문서란 웹상에서 돌아다니는 정보들, HTML이 될 수도 있고,이미지 파일이 될 수도 있고,CS 파일이 될 수도 있다
-+ ![img.png](img.png)
++ ![img.png](../../../assets/img/elegant-tekotok/POI-HTTP-HTTP2-QUIC.png)
     + 네트워크를 4개층으로 나눈 TCP/IP 4계층이다
     + 어플리케이션 레이어 같은 경우에는 최상층에 위치해 있는데 정보를 주고, 받고 하기 위해서는 하위계층을 반드시 지나야한다
 + 전송 계층
