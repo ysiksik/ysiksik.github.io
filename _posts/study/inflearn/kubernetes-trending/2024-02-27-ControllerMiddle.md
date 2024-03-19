@@ -352,3 +352,99 @@ kubectl delete -f https://raw.githubusercontent.com/kubetm/kubetm.github.io/mast
 
 ### 실습
 + [https://kubetm.github.io/k8s/08-intermediate-controller/ingress/](https://kubetm.github.io/k8s/08-intermediate-controller/ingress/)
+
+## Autoscaler - HPA
++ k8s 의 Authscaler 에는 세 가지 종류가 있다.
++ Pod 의 개수를 늘리는 HPA (Horizontal Pod Autoscaler)
++ Pod 의 리소스를 증가시키는 VPA (Vertical Pod Autoscaler)
++ Cluster 에 Node 를 추가하는 CA (Cluster Autoscaler)
+
+### HPA (Horizontal Pod Autoscaler)
++ ![Autoscaler-HPA.png](../../../../assets/img/kubernetes-trending/Autoscaler-HPA.png)
+  + Controller 가 있고, replicas 설정에 따라 Pod 가 만들어져서 운영이 되고 있다. Service 도 연결 되어 모든 트래픽이 이 Pod 에 유입되고 있는 상황이다.
++ ![Autoscaler-HPA1.png](../../../../assets/img/kubernetes-trending/Autoscaler-HPA1.png)
+  + 트래픽이 증가하여 어느 순간 Pod 내의 리소스를 모두 사용하게 되었고, 조금 더 트래픽이 증가하면 Pod 는 다운이 될 수도 있다.
++ ![Autoscaler-HPA2.png](../../../../assets/img/kubernetes-trending/Autoscaler-HPA2.png)
+  + 만약 미리 HPA 를 만들고 Controller 에 연결 해두었다면, HPA 가 Pod 의 리소스 상태를 감지하고 있다가 위험한 상황이 오게 되면 Controller 의 replicas 를 올려 준다.
++ ![Autoscaler-HPA3.png](../../../../assets/img/kubernetes-trending/Autoscaler-HPA3.png)
+  + Controller 는 Pod 를 하나 더 생성하고 Pod 는 수평으로 증가하는데, 이것을 Scale Out 이라고 한다.
+  + 반대로 트래픽이 감소해서 리소스 사용량이 줄어들면 Pod 는 삭제 되는데, 이것을 Scale In 이라고 한다. 
+  + Pod 의 수가 늘어남에 따라 트래픽이 분산되어 자원 사용량이 분담하여 안정적으로 서비스를 유지할 수 있게 된다.
+  + 이 기능은 장애 상황에 대비한 개념으로 장애 발생시 빠른 복구가 중요하기 때문에 Application 자체의 기동 시간이 오래 걸리면 안된다. 
+  + 그래서 기동이 빠르게 되는 Application 에 권장하고 또한 Stateless Application 이어야 한다.
+  + 만약 Stateful Application 에 사용하게 되면 HPA 는 Master 와 Slave 중 어떤 Pod 를 늘려야 하는지 판단할 수 없기 때문에 권장하지 않는다.
+
+### VPA (Vertical Pod Autoscaler)
++ Stateful Application 에 대한 Autoscaler 이다.
++ ![Autoscaler-HPA4.png](../../../../assets/img/kubernetes-trending/Autoscaler-HPA4.png)
+  + Controller 에 replicas 가 1로 Pod 가 하나 만들어져 있다. Pod 는 memory 1G, cpu 1C (core) 로 정의 되어 있다.
++ ![Autoscaler-HPA5.png](../../../../assets/img/kubernetes-trending/Autoscaler-HPA5.png)
+  + 운영 중 Pod 의 리소스를 모두 사용하는 상황이 발생하면 Pod 가 다운 될 수 있지만, Controller 에 VPA 를 설정 해두었다면 VPA 가 리소스 상태를 감지하고 Pod 를 Restart 시키면서 리소스를 증가시켜 준다. 
+  + 이렇게 리소스의 양이 수직 증가하는 것을 Scale Up 이라고 한다. 반대로 감소하는 경우 Scale Down 이라고 한다.
+  + VPA 는 Stateful Application 에 대한 Autoscaling 할 때 사용하면 되고, 주의할 점은 한 Controller 에 VPA 와 HPA 를 동시에 사용하면 기능이 동작하지 않는다.
+
+### CA (Cluster Autoscaler)
++ Cluster 에 있는 모든 Node 에 자원이 없을 경우 동적으로 worker node 를 추가해 준다.
++ ![Autoscaler-HPA6.png](../../../../assets/img/kubernetes-trending/Autoscaler-HPA6.png)
+  + 두 개의 Node 가 있고, Pod 가 운영 중이다. 그리고 새로운 Pod 를 만들면 Scheduler 가 할당 해주는 Node 에 배치 된다.
++ ![Autoscaler-HPA7.png](../../../../assets/img/kubernetes-trending/Autoscaler-HPA7.png)
+  + 운영 중 worker node 들의 자원이 모두 소모가 된 상태에서 Pod 를 하나 더 만들려고 하면, Scheduler 는 더 이상 어느 Node 에도 Pod 배치가 불가능하다는 것을 확인하고 CA 에게 worker node 생성을 요청 한다.
++ ![Autoscaler-HPA8.png](../../../../assets/img/kubernetes-trending/Autoscaler-HPA8.png)
+  + 만약 CA 를 미리 Cloud Provider 에 연결 해두었다면, Node 생성 요청이 들어왔을 때 해당 Provider 에 Node 를 하나 만들고 Scheduler 는 Pod 를 이곳에 배치 한다.
++ ![Autoscaler-HPA9.png](../../../../assets/img/kubernetes-trending/Autoscaler-HPA9.png)
+  + 운영 중 기존에 사용하던 Pod 의 수가 줄어 Local Node 의 자원에 여유가 생기면 Scheduler 는 이것을 감지 하고 CA 에게 Node 삭제 요청을 보낸다. 
+  + 그러면 Node 가 삭제 되면서 Cloud Provider 에 있던 Pod 가 Local Node 로 옮겨지게 된다.
+  + 왜냐하면 일반적으로 Cloud Provider 는 사용시간에 따라 과금이 되기 때문에 필요할 때만 사용하는 것이 좋기 때문이다.
+
+### HPA Architecture
++ ![Autoscaler-HPA10.png](../../../../assets/img/kubernetes-trending/Autoscaler-HPA10.png)
+  + Master, Worker Node 들이 있고, Master 에 Control Plane Component 라고 하는 k8s 의 주요 기능을 하는 Component 들이 Pod 형태로 띄워져 동작하고 있다.
+  + 그 중 Controller Manager 는 우리가 사용하고 있는 Controller (Deployment, ReplicaSet, DaemonSet, HPA, VPA, CA 등) 기능들이 Thread 형태로 동작하고 있다.그 중 Controller Manager 는 우리가 사용하고 있는 Controller (Deployment, ReplicaSet, DaemonSet, HPA, VPA, CA 등) 기능들이 Thread 형태로 동작하고 있다.
+  + kube-apiserver 가 있는데 이것은 k8s 의 모든 통신의 길목이라고 생각하면 된다. 사용자가 k8s 에 접근 할 때도 사용 하지만 k8s 내부 Component 들도 kube-apiserver 를 통하게 된다.
++ ![Autoscaler-HPA11.png](../../../../assets/img/kubernetes-trending/Autoscaler-HPA11.png)
+  + Node 에는 Worker Node Component 라고 하는 kubelet 이 k8s 를 설치할 때 같이 설치 된다. 
+  + 이것은 각 Node 마다 설치 되고 Node 를 대표하는 Agent 역할을 한다.
+  + 자신의 Node 에 있는 Pod 를 관리 한다. 그렇다고 kubelet 이 직접 Container 를 만드는 것은 아니다.
+  + Controller Runtime 이라고 하는 실제 Conatainer 를 생성하고 삭제하는 구현체가 있다. 
+  + Docker 외에도 Container 를 만들어 주는 것은 rkt, CoreOS 등 다양한 종류가 있다.
++ ![Autoscaler-HPA12.png](../../../../assets/img/kubernetes-trending/Autoscaler-HPA12.png)
+  + 사용자가 ReplicaSet 을 만들 때의 과정을 알아본다. ReplicaSet 을 담당하는 Thread 는 replicas 가 1 일 때 Pod 를 하나 생성해 달라고 kube-apiserver 를 통해 kubelet 에게 요청 한다.
++ ![Autoscaler-HPA13.png](../../../../assets/img/kubernetes-trending/Autoscaler-HPA13.png)
+  + 그러면 kubelet 은 Pod 는 k8s 의 개념이고, 이 안에 있는 Container 만 빼서 Docker 에 만들어 달라고 요청 한다. 
+  + Docker 는 Node 위에 Container 를 생성하는데, 여기까지가 ReplicaSet 을  만들었을 때 Pod 하나가 만들어지는 절차이다.
++ ![Autoscaler-HPA14.png](../../../../assets/img/kubernetes-trending/Autoscaler-HPA14.png)
+  + Resource Estimator 인 cAdvisor 가 Docker 로부터 Memory 와 CPU 에 대한 성능 정보를 측정하는데, 이 정보를 kubelet 을 통해 가져갈 수 있도록 해두었다.
++ ![Autoscaler-HPA15.png](../../../../assets/img/kubernetes-trending/Autoscaler-HPA15.png)
+  + AddOn Component 로 metrics-server 를 설치해야 하는데, 설치하고 나면 metrics-server 가 각 Node 들에 있는 kubelet 에게 Memory 와 CPU 정보를 가져와서 저장 해둔다.
+  + 그리고 이 데이터들을 다른 Component 들이 사용할 수 있도록 kube-apiserver 에 등록을 해둔다.
++ ![Autoscaler-HPA16.png](../../../../assets/img/kubernetes-trending/Autoscaler-HPA16.png)
+  + 그럼 HPA 가 Memory 와 CPU 정보를 kube-apiserver 를 통해서 가져올 수 있게 되고 HPA 는 15 초 마다 체크하고 있다가 Pod 의 리소스 사용률이 높아졌을 때, ReplicaSet 에 replicas 를 증가 시킨다. 
+  + 그리고 kubectl top 명령으로 Resource API 를 통해 Pod 와 Node 의 리소스 상태를 조회해 볼 수 있다.
++ ![Autoscaler-HPA17.png](../../../../assets/img/kubernetes-trending/Autoscaler-HPA17.png)
+  + 추가로 Prometheus 를 설치하면 단순 Memory 나 CPU 외 다양한 매트릭 정보를 수집할 수 있다.
+
+### HPA Detail
++ ![Autoscaler-HPA18.png](../../../../assets/img/kubernetes-trending/Autoscaler-HPA18.png)
+  + replicas 를 2 로 설정해서 Deployment 를 만들면 ReplicaSet 이 만들어 지면서 두 개의 Pod 가 생성 된다. 
+  +  Pod 의 resources 가 위와 같이 설정한 상황으로 가정 하고, 이것을 scale in, out 하는 HPA 를 구성하는 방법을 알아 본다.
++ ![Autoscaler-HPA19.png](../../../../assets/img/kubernetes-trending/Autoscaler-HPA19.png)
+  + 먼저 target Controller 를 지정하는 부분이 있고, 증감하는 replicas 에 대해 최솟값과 최댓값을 지정해야 한다. 
+  + metrics 는 매트릭 정보의 어떤 조건을 통해 replicas 값을 증가시킬지에 대한 부분으로 type 을 Resource 라고 설정 하면 Pod 의 resource 부분을 가리키게 된다. 
+  + 세부적으로는 name 에 memory 를 바라 볼 것인지 cpu 를 바라 볼 것인지 정할 수 있다.
+  + 마지막으로 어떤 조건으로 증가 할 것인지에 대한 부분으로, 가장 기본으로 사용하는 옵션인 Utilization 이 있고 평균을 50% 라고 했다면 Pod 의 requests 값을 기준으로 평균 사용량이 50% 를 넘으면 replicas 를 증가 시켜 준다.
+  + 이 수치를 넘었다고 무조건 Pod 가 하나씩 만들어 지는 것은 아니고, 정해진 공식을 가지고 한 번에 몇 개를 증가 할지 결정하게 된다.
++ ![Autoscaler-HPA20.png](../../../../assets/img/kubernetes-trending/Autoscaler-HPA20.png)
+  + resource 를 cpu 로 정하고, 이 두 Pod 의 평균 cpu 는 200m 이다. Utilization 을 50% 로 설정 했기 때문에 실제 cpu 사용률이 100m 을 초과하면 HPA 는 replicas 를 증가 시킨다.
++ ![Autoscaler-HPA21.png](../../../../assets/img/kubernetes-trending/Autoscaler-HPA21.png)
+  + scale out 이 발생하는 상황을 가정해 보자. 현재 cpu 평균 사용량이 300m 이 되었다. limits cpu 가 500m 이기 때문에 Pod 는 종료되지 않는다.
+  + 몇개의 Pod 를 증가 할지 공식에 대입 해보면, 현재 replicas 는 2 에 평균 cpu 를 곱하고 지정한 target 값인 100m 으로 나누면 6 이 되는데 이게 증가 실킬 replicas 값이 된다.
++ ![Autoscaler-HPA22.png](../../../../assets/img/kubernetes-trending/Autoscaler-HPA22.png)
+  + 반대로 replicas 가 6 으로 scale out 된 상태에서 평균 cpu 가 50m 으로 떨어졌다고 가정하고 동일하게 공식을 적용 해보면 변경 시킬 replicas 값은 3이 되어 replicas 를 감소 한다. (current replicas 6 * 50m / 100m = 3)
+  + 현재 사용량인 50m 에 대해 다시 한 번 계산 해보면 (current replicas 3 * 50m / 100m = 1.5 → 2) 2 가 되어 다시 한 번 replicas 수를 줄이게 된다. 그리고 이 값은 설정한 최솟값이기 때문에 더이상 Pod 의 수가 줄어들지 않는다.
++ ![Autoscaler-HPA23.png](../../../../assets/img/kubernetes-trending/Autoscaler-HPA23.png)
+  + HPA 에 설정하는 target 의 type 종류에는 % 가 아닌 실제 평균 수치를 넣는 AverageValue 와 그냥 Value 가 있다. 그리고 Pod 에 Service 와 Ingress 가 설정 되어 있다고 했을 때, metric type 의 종류도 Custom API 를 통해 type 이 Pods 면 Pod 와 관련 된 정보를 사용해서 scale in, out 할 수 있다. 
+  + Pod 외에 Ingress 와 같은 다른 오브젝트에 대한 매트릭 정보는 Object 타입을 사용하면 된다.
+  + Custom API 를 사용하려면 앞서 언급한 Prometheus 와 같은 플러그인이 설치 되어 있어야 한다.
+
+### 실습
++ [https://kubetm.github.io/k8s/08-intermediate-controller/hpa/](https://kubetm.github.io/k8s/08-intermediate-controller/hpa/)
