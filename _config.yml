@@ -100,6 +100,8 @@ menu:
             url:      /effective-java1/
           - title: 대세는 쿠버네티스 [초급~중급]
             url:      /kubernetes-trending/
+          - title: 멀티OS 사용을 위한 가상화 환경 구축 가이드 (Docker + Kubernetes)
+            url:      /build-virtualized-environment/
       - title: 패스트 캠퍼스
         url: /fast-campus/
         submenu:
