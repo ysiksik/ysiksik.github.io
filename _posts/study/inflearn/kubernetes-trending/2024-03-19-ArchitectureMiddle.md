@@ -256,5 +256,102 @@ comments: true
 ### 실습
 + [https://kubetm.github.io/k8s/09-intermediate-architecture/storage/](https://kubetm.github.io/k8s/09-intermediate-architecture/storage/)
 
+## Logging - PLG Stack
++ k8s 아키택처에서 말하는 logging 은 Application 의 로그 데이터를 말하고 monitoring 은 cpu 나 memory 와 같은 자원을 얘기 한다.
++ 이런 기능들에 대해 k8s 자체적으로 제공되는 Core Pipeline 이 있고, 추가로 플러그인을 설치해서 기능을 추가할 수 있는 Service Pipeline 이 있다.
 
+### Core Pipeline (Logging / Monitoring)
++ ![Logging-PLGStack.png](../../../../assets/img/kubernetes-trending/Logging-PLGStack.png)
+  + Worker Node 에는 Kubelet 과 Container Runtime 영역이 있고, 실제 이 Node 의 자원인 CPU/Memory 와 데이터를 저장하는 Disk 가 있다.
++ ![Logging-PLGStack1.png](../../../../assets/img/kubernetes-trending/Logging-PLGStack1.png)
+  + k8s 로 Pod 생성 요청을 받으면, Node 위에 띄워져 있는 Kubelet 은 Pod 를 만들고 그 안에 있는 Container 는 Container Runtime 에게 맡긴다.
+  + 다양한 종류의 Container Runtime 을 만들어주는 솔루션들이 있지만 그 중 Docker 가 설치되어 있다.
++ ![Logging-PLGStack2.png](../../../../assets/img/kubernetes-trending/Logging-PLGStack2.png)
+  + Docker 가 Worker Node 의 Disk 를 사용 하면서 데이터를 사용하고 로그를 생성 한다. 뿐만 아니라 서비스가 기동 되면서 cpu 와 memory 자원도 사용 한다.
++ ![Logging-PLGStack3.png](../../../../assets/img/kubernetes-trending/Logging-PLGStack3.png)
+  + 이 상태에서 monitoring 에 대한 Core Pipeline 은 (앞서 HPA 에 대해 정리할 때도 보았던 내용이지만) 각 Node 에 있는 kubelet 은 별도로 설치 되어 있는 리소스에 찍힌 cAdvisor 를 통해 Docker 로부터 cpu, memory 정보를 가지고 올 수 있다.
++ ![Logging-PLGStack4.png](../../../../assets/img/kubernetes-trending/Logging-PLGStack4.png)
+  + 각 Node 의 모니터링 정보는 metric 서버로 모인다. 그러면 사용자는 kubectl top 명령으로 kube-apiserver 를 통해 이 정보를 조회할 수 있다.
++ ![Logging-PLGStack5.png](../../../../assets/img/kubernetes-trending/Logging-PLGStack5.png)
+  + 그리고 kubectl log 명령으로 Container 의 로그 정보를 조회할 수 있다. 그러면 kubelet 을 통해 바로 해당 Container 의 로그 파일을 볼 수 있다. 위 이미지의 구조가 k8s 에서 제공하는 Core Pipeline 이다.
 
+### Service Pipeline (Logging / Monitoring)
++ 별도의 플러그인을 설치하는 Service Pipeline 을 정리 한다.
++ ![Logging-PLGStack6.png](../../../../assets/img/kubernetes-trending/Logging-PLGStack6.png)
+  + 데이터 수집을 위해 DaemonSet 을 사용한 Agent 영역이 kubelet 처럼 모든 Node 에 있다. 
+  + 이 Agent 가 cAdvisor 나 Container Runtime 또는 Worker Node 를 통해 Log 와 Resource 자원을 수집 한다.
++ ![Logging-PLGStack7.png](../../../../assets/img/kubernetes-trending/Logging-PLGStack7.png)
+  + 별도의 Worker Node 에 Metric 서버와 같이 각 Node 의 Metric 을 수집하고 분석하는 서버 영역이 있다. 
+  + 이 서버에는 많은 데이터가 저장 되기 때문에 별도의 저장소를 구성하는 것이 권장 된다. 
+  + 마지막으로 Web UI 가 수집 서버로 질의 하면서 필요한 정보를 사용자에게 보여주는게 Service Pipeline 의 기본 구조 이다.
+  + 대표적인 오픈소스로 Elastic, Loki, Prometheus 등이 있다.
+
+### Node-level Logging (단일 Node 안에서 이루어지는 로깅)
++ ![Logging-PLGStack8.png](../../../../assets/img/kubernetes-trending/Logging-PLGStack8.png)
+  + 단일 Node 에서 로그 파일이 생기는 구조를 보면, Kubelet, Docker, Worker Node 영역이 있다.
++ ![Logging-PLGStack9.png](../../../../assets/img/kubernetes-trending/Logging-PLGStack9.png)
+  + Pod 안의 Container 에서 Application 자체 로그를 /log/app/app.log  파일을 생성한다고 가정 하자.
++ ![Logging-PLGStack10.png](../../../../assets/img/kubernetes-trending/Logging-PLGStack10.png)
+  + Container 는 Docker 가 만들기 때문에 Docker 의 로깅 드라이브를 통해 로그가 생성 된다. 
+  + 이 설정은 /etc/docker path 에 daemon.json 파일 안에 들어 있다. 
+  + 그 내용을 보면 Container 당 최대 3 개의 로그 파일이 생기고, 각 파일은 100 mb 씩 저장 되도록 하고 있다.  그 이상 만들어질 경우 이전 파일들이 지워진다.
++ ![Logging-PLGStack11.png](../../../../assets/img/kubernetes-trending/Logging-PLGStack11.png)
+  + Docker 에 이렇게 설정 되어있는 상태에서 단순히 application 에서 log 를 쌓는다고 해서 Docker 에 로그 파일이 생기는 것은 아니다.
+  + 로그는 반드시 표준 출력(이하 stdout)이나 표준 에러(이하 stderr)로 출력해야 한다. 
+  + 각 프로그래밍 언어 마다 표준 출력을 사용하는 방법이 상이하기 때문에 별도로 알아봐야 한다.
+  + stdout 또는 stderr 로 출력한 로그는 /var/lib/docker 경로에 containers 폴더가 있고, 이곳에 Container 별로 ID 폴더가 만들어 지면서 {Container_ID}-json.log 파일로 만들어 진다.
+  + 여기까지가 Docker 자체의 로깅 드라이브를 통해 Container 안의 로그가 Worker Node 에 만들어지는 과정이다.
++ ![Logging-PLGStack12.png](../../../../assets/img/kubernetes-trending/Logging-PLGStack12.png)
+  + k8s 는 /var/log 폴더에 pods 폴더를 만들고 네이밍룰에 따라 Docker 에서 만든 로그 파일을 링크로 연결 해준다. 그리고 이 링크 된 파일을 가지고 containers 폴더에 파일을 링크 한다.
++ ![Logging-PLGStack13.png](../../../../assets/img/kubernetes-trending/Logging-PLGStack13.png)
+  + 이 상태에서 만약 Pod 가 삭제 되면 Container 도 삭제 되면서 폴더가 삭제 된다. 그러면 링크와 로그파일 모두 삭제 되어 더 이상 로그를 확인 할 수 없게 된다.
+  + 다시 말해 Node 레벨의 로깅은 Pod 가 살아있는 동안 유지 되는 것이고, 이 때 kubectl 명령으로 Pod 의 실시간 로그를 볼 수 있는데, Pod 가 죽으면 더 이상 해당 Pod 의 로그를 볼 수 없다.
+  + 만약 이런 경우에도 로그를 보고 싶은 경우에는 Cluster 레벨의 로깅이 필요 하다.
++ ![Logging-PLGStack14.png](../../../../assets/img/kubernetes-trending/Logging-PLGStack14.png)
+  + 추가로 Termination Message Path 가 있다. default 로 Container 안 /dev 폴더 아래 termination-log 파일이 설정 되어 있다. 
+  + 이 파일은 application 에 오류가 생기거나 livenessProbe 문제시 Pod 가 restart 되는데, 이런 경우 restart 의 원인을 파악하기 위해 로그 파일을 찾게 된다. 
+  + 하지만 로그 파일을 하나씩 찾을 필요 없이 error 로그를 이 파일로 쌓게 되면 k8s 가 이 파일을 읽고 Pod 의 상세 상태에 출력 해준다.
+  + 또한 application 의 로그 뿐만 아니라 Pod 의 restart, scale out 등의 상태를 볼 수 있다.
+
+### Cluster-level Logging (k8s Cluster 안의 모든 Node 에 있는 로깅)
++ k8s 에서 제공하는 기능은 아니고 아키택처만 제공 하고 있다. 실제 다양한 모니터링 플러그인들이 이 아키택처를 사용하고 있다.
++ ![Logging-PLGStack15.png](../../../../assets/img/kubernetes-trending/Logging-PLGStack15.png)
+  + 가장 기본적으로 Node Level Logging 을 기반으로 각 Node 에 Agent 를 두는 방식이 있다.
+  + 각 Node 에 DaemonSet 으로 Agent 를 두어 Worker Node 에 만들어지는 로그들을 조회하는 형태이다.
++ ![Logging-PLGStack16.png](../../../../assets/img/kubernetes-trending/Logging-PLGStack16.png)
+  + Docker Log Driver 를 수정해서 Agent 에 바로 Log 를 쓰도록 할 수 있다. 이렇게 읽은 로그를 수집 서버로 전송하는 패턴이 Node Logging Agent 구조 이다.
++ ![Logging-PLGStack17.png](../../../../assets/img/kubernetes-trending/Logging-PLGStack17.png)
+  + Sidecar Container Streaming 이라고 하여 하나의 Container 에서 access.log, app.log 라는 두 종류의 로그 파일이 쌓인다고 가정 하자.
+  + 이 두 로그 파일을 stdout 으로 전송하면 Worker Node 에 파일이 쌓일 때 로그가 섞이게 된다.
+  + 이런 경우 우선 Container 에서 stdout 으로 바로 전송 하지 않고 파일로만 저장 한다. 그리고 access.log 파일을 stdout 을 전송 할 별도의 Container 를 하나 더 만들어 준다.
+  + 그러면 로그 파일 이름이 Container 단위로 저장 되기 때문에 Pod 이름에 access Container 이름으로 로그 파일이 생긴다. 
+  + app.log 도 마찬가지로 별도의 Container 를 만들어서 stdout 으로 출력하면 로그 파일이 분리되어 저장하는 구조가 된다.
++ ![Logging-PLGStack18.png](../../../../assets/img/kubernetes-trending/Logging-PLGStack18.png)
+  + 마지막으로 Log Agent 를 Sidecar 형태로 Pod 안에 넣는 방법이 있다. 
+  + 이렇게 하면 app Container 는 stdout 으로 출력하지 않아도 Logging Agent Container 에 의해 로그가 수집 되고, 그 로그는 수집 서버로 바로 보내줄 수 있다.
+
+### Logging / Monitoring Plugin
++ ![Logging-PLGStack19.png](../../../../assets/img/kubernetes-trending/Logging-PLGStack19.png)
+  + 대부분의 Logging, Monitoring Plugin 들은 Web UI / Aggregator, Analytics / Agent 스택을 가지고 있다. 
+  + 대표적인 오픈 소스로는 Elastic 에서 제공하는 솔루션이다. 
+  + UI 를 담당하는 Kibana, 조회와 분석으로 유명한 Elasticsearch 그리고 Agent Log 로 Logstash 의 조합으로 ELK 스택이라고 부른다.
++ ![Logging-PLGStack20.png](../../../../assets/img/kubernetes-trending/Logging-PLGStack20.png)
+  + 유명한 수집 Agent 중 하나로 Fluentd 가 있고, 이것을 k8s 용으로 가볍게 나온 Fluent-bit 솔루션이 있다. 
+  + 보통 Logstash 보다 Fluent-bit 를 Elasticsearch 와 연결 해서 사용 하고 EFK 스택 이라고 부른다.
++ ![Logging-PLGStack21.png](../../../../assets/img/kubernetes-trending/Logging-PLGStack21.png)
+  + 대표적인 모니터링 시스템으로 유명한 Prometheus 가 있는데, 이것도 Prometheus 자체 Dashboard 보다 Grafana 라는 UI 가 유명하기 때문에 대체해서 사용하는 편이다. 또한 Loki 등을 사용한 PLG 스택도 있다.
+
+### PLG Stack
++ ![Logging-PLGStack22.png](../../../../assets/img/kubernetes-trending/Logging-PLGStack22.png)
+  + Master Node 와 Worker Node 에는 Pod 단위로 로그가 쌓이고 있다.
++ ![Logging-PLGStack23.png](../../../../assets/img/kubernetes-trending/Logging-PLGStack23.png)
+  + PLG Stack 을 설치하면 DaemonSet 으로 Promtail 이라는 Agent 가 모든 Node 에 설치되고  ConfigMap 으로 Promtail 이 해당 Pod 의 log path 를 읽도록 설정 된다.
++ ![Logging-PLGStack24.png](../../../../assets/img/kubernetes-trending/Logging-PLGStack24.png)
+  + StatefulSet 으로 Loki 가 설치 되고, Loki 로 들어오는 서비스를 통해 모든 Promtail 에서 Service 로 Log 파일을 Push 한다.
++ ![Logging-PLGStack25.png](../../../../assets/img/kubernetes-trending/Logging-PLGStack25.png)
+  + Deployment 로 Grafana 가 설치 된다. 원래 NodePort 가 아닌 ClusterIP 로 Service 가 생기는데, 외부에서 접속이 가능하도록 하기 위해 실습에서는 NodePort 로 변경 할 예정이다.
++ ![Logging-PLGStack26.png](../../../../assets/img/kubernetes-trending/Logging-PLGStack26.png)
+  + 그림의 예시로 30,000 번 포트로 접근해서 UI 로 로그를 조회하면, Grafana 에서 Loki 로 API Query 를 전송 하면서 원하는 로그를 볼 수 있게 된다.
+
+### 실습 
++ [https://kubetm.github.io/k8s/09-intermediate-architecture/logging/](https://kubetm.github.io/k8s/09-intermediate-architecture/logging/)
