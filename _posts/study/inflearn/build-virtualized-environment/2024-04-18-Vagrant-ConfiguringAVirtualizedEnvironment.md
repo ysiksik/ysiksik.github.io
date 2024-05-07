@@ -45,3 +45,26 @@ comments: true
 + 호스트 pc를 가지고 있는 상태에서 버츄얼 박스하고 그리고 베이그란트 두가지를 설치해서 전체의 가상환경이 필요한 내용들을 설치
 + Vagrant가 먼저 호스트 pc 위에 설치가 되고 이 Vagrant를 통해서 Virtual Box를 관리
 + Vagrant라는 툴이 없다 하더라도 하이퍼바이저를 지원해주는 솔루션만 있다고 하면 가상화 구축하시는데 문제는 없다. 그런데 그 관리하는 측면을 조금 더 수월하게 하기 위해서 베이그란트라는 도구를 설치할 거다
+
+## Vagrant를 이용하여 VM 제어하기
++ Vagrant: 버츄얼 박스와 같이 가상환경을 구축할 수 있고 다룰 수 있도록 지원되는 어플리케이션을 조금은 더 편하게 사용할 수 있도록 조금은 다룰 수 있도록 도와주는 어플리케이션
++ 베이그란트는 이 자체만으로는 가상화 환경을 구축할 수는 없고 버처박스라든가 VM웨어가 있어야지만 그것 둘과 조합을 해서 사용할 수 있다
+
+### Vagrant 동작
++ Box 이미지 다운로드 -> Box 이미지를 이용하여 프로젝트 생성
++ 프로젝트 최상위 디렉토리에 Vagrantfile 파일 생성/수정
++ 프로젝트를 위한 Vagrant 가상 인스턴스(VM) 시작
++ 가상 인스턴스 접속 및 작업
++ 가상 인스턴스 종료
+
+### Box 이미지
++ Box 파일 조회 [https://app.vagrantup.com/boxes/search](https://app.vagrantup.com/boxes/search)ㅏ
+
+### Box 다운로드
++ [https://app.vagrantup.com/boxes/search](https://app.vagrantup.com/boxes/search) 에서 사용할 이미지 검색
++ 작업 디렉토리) vagrant init
+
+### Vagrantfile
++ Rudy 언어로 작성 된 Vagrant 설정 스크립트
++ Vagrant 인스턴스로 생성 될 내용(설정) 등의 내용을 작성
++ vagrant init 명령어 실행 시 기본 Vagrantfile 생성 
