@@ -107,6 +107,8 @@ menu:
         submenu:
           - title: 한 번에 끝내는 Spring 완.전.판 초격차 패키지 Online.
             url: /spring-complete-edition-super-gap-package-online/
+          - title: 실무까지 한 번에 끝내는 DevOps를 위한 Docker & Kubernetes feat. aws EKS
+            url: /finish-docker-and-kubernetes/
       - title:    우아한 테코톡
         url:    /elegant-tekotok/
       - title: 독서

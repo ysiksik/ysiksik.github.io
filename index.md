@@ -24,7 +24,7 @@ SIKSIK
 
 <center>Backend: Java & Spring </center>
 
-<center>Frontend: JavaScript. jQuery, ReactJs, Thymeleaf</center>
+<center>Frontend: JavaScript, jQuery, Thymeleaf</center>
 
 <center>DevOps: 금융보안데이터센터(FSDC) 클라우드 운영 및 관리</center>
 
@@ -73,13 +73,13 @@ SIKSIK
 
 ## 개인 정보 / Personal Data
 ---
-> 1994.10.11 출생
+<!-- > 1994.10.11 출생 -->
 
 > 연락처: appie6069@naver.com
 
 <!-- > Portfolio Site : <a href="https://choyunsik.github.io">https://choyunsik.github.io</a> -->
 
-
+<!--
 ## 학력 / Education
 ---
 > 2017.05 ~ 2018.03 국가평생교육진흥원
@@ -89,6 +89,7 @@ SIKSIK
 > 2013.03 ~ 2017.02 동원 대학교
 >
 > 스마트 IT 콘텐츠학과 졸업
+ -->
 
 ## 연구 관심 / Research Interest
 ---
@@ -112,9 +113,13 @@ SIKSIK
 
 * MSA 
 
+<!--
+
 * JPA
 
 * QueryDSL
+
+-->
 
 * 정보관리 기술사
 
@@ -186,6 +191,7 @@ mobileNet을 이용한 classification으로 버섯을 구별해주는 인공지�
 
 - 입상
 
+<!--
 
 ## 경력 사항 / Work Experiences
 ---
@@ -198,7 +204,10 @@ mobileNet을 이용한 classification으로 버섯을 구별해주는 인공지�
 | 2018.03 ~ 2019.08 | 코엔코코리아 | 개발팀 / 대리  | 코엔코코리아에서는 비트코인 거래소 개발을 주로 담당하였습니다. 각 코인들의 지갑 서버와 거래소 서버 등을 FSDC 클라우드에 구성하고 ISMS 인증을 위해 보안 구축 및 관리를 수행하였습니다. 이를 통해 서버 인프라 구축과 보안에 대한 전반적인 이해를 넓혔습니다. |
 | 2017.01 ~ 2018.03  | 솔비텍 | 기술지원 / 사원  | 솔비텍에서는 리포팅 툴 유지보수와 기술 지원 개발을 담당하였습니다. 이를 통해 개발에 대한 경험과 역량을 쌓았으며, 문제 해결 능력을 향상시켰습니다. |
 
+-->
+
 ## 자격증 / Certification
+<!--
 ---
 <div class="certifi">
     <div>정보 처리 기사 (2019. 08 취득)<img src= "/assets/img/Certification/6.png"></div>
@@ -208,15 +217,18 @@ mobileNet을 이용한 classification으로 버섯을 구별해주는 인공지�
     <div><img src= "/assets/img/Certification/2.png"></div>
     <div><img src= "/assets/img/Certification/1.png"></div>
 </div>
+-->
 
 - 정보 처리 기사 (2019. 08 취득)
 - 네트워크관리사2급 (2018. 12 취득)
 - 컴퓨터활용능력 2 급 (2017. 12 취득)
 - Oracle Certified Java Programmer(OCJP) (2016. 10 취득)
 
-## 수료증 / Certificates
----
 
+
+## 수료 
+---
+<!--
 <div class="certifi">
     <div>10개 프로젝트로 완성하는 백엔드 웹개발(Java Spring) 초격차 패키지 Online.<img src= "/assets/img/Certificates/24.png"></div>
     <div>한 번에 끝내는 코딩테스트 365 Java편 초격차 패키지<img src= "/assets/img/Certificates/23.png"></div>
@@ -243,6 +255,7 @@ mobileNet을 이용한 classification으로 버섯을 구별해주는 인공지�
     <div>2020.06 ~ 2021.06 Angular 프론트엔드 웹 개발<img src= "/assets/img/Certificates/2.png"></div>
     <div>2020.05 ~ 2021.05 데이터베이스 모델링 실무<img src= "/assets/img/Certificates/1.png"></div>
 </div>
+-->
 
 - 10개 프로젝트로 완성하는 백엔드 웹개발(Java Spring) 초격차 패키지 Online.
 - 한 번에 끝내는 코딩테스트 365 Java편 초격차 패키지
@@ -271,7 +284,7 @@ mobileNet을 이용한 classification으로 버섯을 구별해주는 인공지�
 
 ## 독서 / Reading
 ---
-
+<!--
 <div class="certifi">
     <div>클린코드<img src= "/assets/img/Reading/5.jpg"></div>
     <div>업무에 바로 쓰는 SQL 튜닝<img src= "/assets/img/Reading/4.jpg"></div>
@@ -280,7 +293,7 @@ mobileNet을 이용한 classification으로 버섯을 구별해주는 인공지�
     <div>Java의 정석<img src= "/assets/img/Reading/2.jpg"></div>
     <div>비전공자를 위한 이해할 수 있는 IT 지식<img src= "/assets/img/Reading/1.png"></div>
 </div>
-
+-->
 - 클린코드
 - 업무에 바로 쓰는 SQL 튜닝
 - Do it! 자료구조와 함께 배우는 알고리즘 입문 자바 편
@@ -289,7 +302,7 @@ mobileNet을 이용한 classification으로 버섯을 구별해주는 인공지�
 - 비전공자를 위한 이해할 수 있는 IT 지식
 
 
-
+<!--
   <script>
     $(document).ready(function(){
       $('.certifi').slick({
@@ -309,3 +322,4 @@ mobileNet을 이용한 classification으로 버섯을 구별해주는 인공지�
         });
     });
   </script>
+-->
