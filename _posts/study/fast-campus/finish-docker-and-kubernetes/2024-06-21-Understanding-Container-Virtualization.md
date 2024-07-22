@@ -103,3 +103,17 @@ comments: true
 
 #### dockerd 기능
 + ![containerVirtualizationVMvirtualization_3.png](../../../../assets/img/finish-docker-and-kubernetes/containerVirtualizationVMvirtualization_3.png)
+
+## PWD(Play with Docker)
+
+### PWD 사용해 보기 
++ Doker 컨테이너 놀이터 (Play with Docker)
++ Docker는 웹에서 제공하는 인스턴스 형태의 Docker 랩실을 제공
++ 한 인스턴스 당 4시간의 시간을 제공하며, 언제든 무료로 사용 가능
++ 외부에서 접근 가능한 웹 주소 제공
++ [https://www.docker.com/play-with-docker/](https://www.docker.com/play-with-docker/)
++ Lab Environment 선택 (hub.docker,com 계정 요구)
++ ![PlaywithDocker1.png](../../../../assets/img/finish-docker-and-kubernetes/PlaywithDocker1.png)
++ ![PlaywithDocker2.png](../../../../assets/img/finish-docker-and-kubernetes/PlaywithDocker2.png)
++ ![PlaywithDocker3.png](../../../../assets/img/finish-docker-and-kubernetes/PlaywithDocker3.png)
++ ![PlaywithDocker4.png](../../../../assets/img/finish-docker-and-kubernetes/PlaywithDocker4.png)
