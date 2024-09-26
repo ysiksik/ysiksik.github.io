@@ -5,11 +5,6 @@
 {% assign end_with = include.end_with %}
 
 {% assign content = '' %}
-<ins class="kakao_ad_area" style="display:none;"
-     data-ad-unit = "DAN-FcUTUGAessjXmqKc"
-     data-ad-width = "250"
-     data-ad-height = "250"></ins>
-<script type="text/javascript" src="//t1.daumcdn.net/kas/static/ba.min.js" async></script>
 {% if tags.size > 0 %}
   {% assign content = start_with %}
   {% for tag_slug in tags %}
