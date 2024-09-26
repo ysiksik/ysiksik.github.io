@@ -31,10 +31,6 @@ layout: base
 {% for post in posts %}
   {% assign currentdate = post.date | date:list_group_by %}
   {% if currentdate != date %}
-<ins class="kakao_ad_area" style="display:none;"
-     data-ad-unit = "DAN-FcUTUGAessjXmqKc"
-     data-ad-width = "250"
-     data-ad-height = "250"></ins>
     {% unless forloop.first %}</ul>{% endunless %}
     <h2 id="{{ list_group_by | slugify }}-{{ currentdate | slugify }}" class="hr">{{ currentdate }}</h2>
     <ul class="related-posts">

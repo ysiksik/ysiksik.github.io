@@ -32,31 +32,55 @@ Left here for reference, feel free to delete.
 <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.1.1/jquery.min.js"></script>
 <script src="/assets/css/jquery.bxslider.min.js"></script>
 
+<!--<ins className="kakao_ad_area" style="display:none;"
+     data-ad-unit="DAN-FcUTUGAessjXmqKc"
+     data-ad-width="250"
+     data-ad-height="250"></ins>
+     <script type="text/javascript" src="//t1.daumcdn.net/kas/static/ba.min.js" async></script>
+     -->
 <!-- for my toc affix -->
 <script type="module">
   document.querySelector('hy-push-state').addEventListener('load', () => {
     let tocElement = document.getElementById("markdown-toc");
 
-    if(tocElement){
+    if (tocElement) {
+
+      // 광고 코드 삽입
+      let adElement = document.createElement("ins");
+      adElement.className = "kakao_ad_area";
+      adElement.style.display = "none";
+      adElement.setAttribute("data-ad-unit", "DAN-FcUTUGAessjXmqKc");
+      adElement.setAttribute("data-ad-width", "250");
+      adElement.setAttribute("data-ad-height", "250");
+
+      // 광고 스크립트 삽입
+      let adScript = document.createElement("script");
+      adScript.type = "text/javascript";
+      adScript.src = "//t1.daumcdn.net/kas/static/ba.min.js";
+      adScript.async = true;
       let affixedDiv = document.createElement("div");
       affixedDiv.style.position = "relative";
       affixedDiv.style.top = "-1rem";
       tocElement.parentNode.insertBefore(affixedDiv, tocElement);
 
       let headerList = document.getElementsByClassName("permalink");
-      if(headerList){
+      if (headerList) {
         let prevElement;
         window.addEventListener("scroll", () => {
           let hurdleTop = affixedDiv.getBoundingClientRect().top;
-          if(hurdleTop <= 0) tocElement.classList.add("affix");
-          else tocElement.classList.remove("affix");
+          if (hurdleTop <= 0) {
+            tocElement.classList.add("affix");
+          } else {
+            tocElement.classList.remove("affix");
+          }
 
-          for(let i=0;i<headerList.length;i++){
-            if(headerList[i].getBoundingClientRect().top >= 0){
+          for (let i = 0; i < headerList.length; i++) {
+            if (headerList[i].getBoundingClientRect().top >= 0) {
               prevElement?.style.removeProperty("font-weight");
               let tocId = "markdown-toc-" + headerList[i].parentNode.id;
               prevElement = document.getElementById(tocId);
-              prevElement.style.fontWeight = "bold";;
+              prevElement.style.fontWeight = "bold";
+              ;
 
               break;
             }
