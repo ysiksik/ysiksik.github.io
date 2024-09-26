@@ -50,12 +50,6 @@
         {% assign alt = false %}
         {% unless hide_image %}{% if post.image %}
         {% unless no_link_title %}<a href="{{ post.url | relative_url }}" class="no-hover no-print-link {% unless post.hide_image %}flip-project{% endunless %}" tabindex="-1">{% endunless %}
-        <div class="lead aspect-ratio sixteen-nine flip-project-img">
-            <ins class="kakao_ad_area" style="display:none;"
-                 data-ad-unit = "DAN-FcUTUGAessjXmqKc"
-                 data-ad-width = "250"
-                 data-ad-height = "250"></ins>
-            <script type="text/javascript" src="//t1.daumcdn.net/kas/static/ba.min.js" async></script>
             {% include_cached components/hy-img.html img=post.image alt=post.title width=864 height=486 %}
         </div>
         {% unless no_link_title %}</a>{% endunless %}
@@ -66,12 +60,6 @@
         <!--상단버튼-->
         {% include page-button.html %}
         <!--게시물 생성시 hits생성-->
-        <div style="text-align:right; text-align: center">
-            <ins class="kakao_ad_area" style="display:none;"
-                 data-ad-unit = "DAN-FcUTUGAessjXmqKc"
-                 data-ad-width = "250"
-                 data-ad-height = "250"></ins>
-            <script type="text/javascript" src="//t1.daumcdn.net/kas/static/ba.min.js" async></script>
             <!-- <a href="https://hits.seeyoufarm.com/{{ site.url | remove_first: 'https://' | remove_first: 'http://' }}{{ page.url }}"
               target="_blank"> -->
             <img
