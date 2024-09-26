@@ -46,7 +46,11 @@
             {% assign post_format = "%Y년 %m월 %d일 글" | default:"%Y %m %d" %}
             <time datetime="{{ post.date | date_to_xmlschema }}">{{ post.date | date:post_format }}</time>
         </div>
-
+        <ins class="kakao_ad_area" style="display:none;"
+             data-ad-unit = "DAN-FcUTUGAessjXmqKc"
+             data-ad-width = "250"
+             data-ad-height = "250"></ins>
+        <script type="text/javascript" src="//t1.daumcdn.net/kas/static/ba.min.js" async></script>
         {% assign alt = false %}
         {% unless hide_image %}{% if post.image %}
         {% unless no_link_title %}<a href="{{ post.url | relative_url }}" class="no-hover no-print-link {% unless post.hide_image %}flip-project{% endunless %}" tabindex="-1">{% endunless %}
@@ -56,7 +60,11 @@
         {% unless no_link_title %}</a>{% endunless %}
         {% assign alt = '' %}
         {% endif %}{% endunless %}
-
+        <ins class="kakao_ad_area" style="display:none;"
+             data-ad-unit = "DAN-SHs42w0uPVS2qqCO"
+             data-ad-width = "160"
+             data-ad-height = "600"></ins>
+        <script type="text/javascript" src="//t1.daumcdn.net/kas/static/ba.min.js" async></script>
         {% include components/message.html text=post.description hide=hide_description alt=alt %}
         <!--상단버튼-->
         {% include page-button.html %}
