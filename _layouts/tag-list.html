@@ -17,7 +17,7 @@
 layout: base
 ---
 {% include_cached components/post.html post=page no_link_title=true no_excerpt=true hide_image=page.hide_image hide_description=page.hide_description %}
-
+<script type="text/javascript" src="//t1.daumcdn.net/kas/static/ba.min.js" async></script>
 <div class="markdown-body">
   {{ content }}
 </div>
@@ -31,6 +31,10 @@ layout: base
 {% for post in posts %}
   {% assign currentdate = post.date | date:list_group_by %}
   {% if currentdate != date %}
+<ins class="kakao_ad_area" style="display:none;"
+     data-ad-unit = "DAN-FcUTUGAessjXmqKc"
+     data-ad-width = "250"
+     data-ad-height = "250"></ins>
     {% unless forloop.first %}</ul>{% endunless %}
     <h2 id="{{ list_group_by | slugify }}-{{ currentdate | slugify }}" class="hr">{{ currentdate }}</h2>
     <ul class="related-posts">
