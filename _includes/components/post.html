@@ -61,11 +61,7 @@
         {% unless no_link_title %}</a>{% endunless %}
         {% assign alt = '' %}
         {% endif %}{% endunless %}
-        <ins class="kakao_ad_area" style="display:none;"
-             data-ad-unit = "DAN-SHs42w0uPVS2qqCO"
-             data-ad-width = "160"
-             data-ad-height = "600"></ins>
-        <script type="text/javascript" src="//t1.daumcdn.net/kas/static/ba.min.js" async></script>
+
         {% include components/message.html text=post.description hide=hide_description alt=alt %}
         <!--상단버튼-->
         {% include page-button.html %}

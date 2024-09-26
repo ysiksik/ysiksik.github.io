@@ -45,23 +45,38 @@ Left here for reference, feel free to delete.
 
     if (tocElement) {
 
-      // 광고 코드 삽입
-      let adElement = document.createElement("ins");
-      adElement.className = "kakao_ad_area";
-      adElement.style.display = "none";
-      adElement.setAttribute("data-ad-unit", "DAN-FcUTUGAessjXmqKc");
-      adElement.setAttribute("data-ad-width", "250");
-      adElement.setAttribute("data-ad-height", "250");
+      // 목차 위에 광고 코드 삽입
+      let adElementTop = document.createElement("ins");
+      adElementTop.className = "kakao_ad_area";
+      adElementTop.style.display = "none";
+      adElementTop.setAttribute("data-ad-unit", "DAN-FcUTUGAessjXmqKc");
+      adElementTop.setAttribute("data-ad-width", "250");
+      adElementTop.setAttribute("data-ad-height", "250");
 
-      // 광고 스크립트 삽입
-      let adScript = document.createElement("script");
-      adScript.type = "text/javascript";
-      adScript.src = "//t1.daumcdn.net/kas/static/ba.min.js";
-      adScript.async = true;
-      let affixedDiv = document.createElement("div");
-      affixedDiv.style.position = "relative";
-      affixedDiv.style.top = "-1rem";
-      tocElement.parentNode.insertBefore(affixedDiv, tocElement);
+      let adScriptTop = document.createElement("script");
+      adScriptTop.type = "text/javascript";
+      adScriptTop.src = "//t1.daumcdn.net/kas/static/ba.min.js";
+      adScriptTop.async = true;
+
+      tocElement.parentNode.insertBefore(adElementTop, tocElement);
+      tocElement.parentNode.insertBefore(adScriptTop, tocElement);
+
+      // 목차 아래에 광고 코드 삽입
+      let adElementBottom = document.createElement("ins");
+      adElementBottom.className = "kakao_ad_area";
+      adElementBottom.style.display = "none";
+      adElementBottom.setAttribute("data-ad-unit", "DAN-SHs42w0uPVS2qqCO");
+      adElementBottom.setAttribute("data-ad-width", "160");
+      adElementBottom.setAttribute("data-ad-height", "600");
+
+      let adScriptBottom = document.createElement("script");
+      adScriptBottom.type = "text/javascript";
+      adScriptBottom.src = "//t1.daumcdn.net/kas/static/ba.min.js";
+      adScriptBottom.async = true;
+
+      // 목차 아래에 광고 삽입
+      tocElement.parentNode.insertBefore(adElementBottom, tocElement.nextSibling);
+      tocElement.parentNode.insertBefore(adScriptBottom, tocElement.nextSibling);
 
       let headerList = document.getElementsByClassName("permalink");
       if (headerList) {
