@@ -28,4 +28,11 @@
       {% endif %}
     {% endfor %}
   </ul>
+  {% capture post_title %}<a class="heading flip-title" href="{{ post.url | relative_url }}">{{ post.title }}</a>{% endcapture %}
+  {% assign text = site.data.strings.continue_reading | default:"Continue reading <!--post_title-->" %}
+  <ins class="kakao_ad_area" style="display:none;"
+       data-ad-unit = "DAN-oid6aOEjJ5YhFkJT"
+       data-ad-width = "320"
+       data-ad-height = "100"></ins>
+  <script type="text/javascript" src="//t1.daumcdn.net/kas/static/ba.min.js" async></script>
 </aside>
