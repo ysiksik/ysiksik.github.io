@@ -5,36 +5,6 @@
 {% assign hide_description = include.hide_description %}
 
 <!--제목-->
-<ins class="kakao_ad_area" style="display:none;"
-     data-ad-unit = "DAN-AWn5suxm4YwAxPYR"
-     data-ad-width = "728"
-     data-ad-height = "90"></ins>
-<script type="text/javascript" src="//t1.daumcdn.net/kas/static/ba.min.js" async></script>
-
-<ins class="kakao_ad_area" style="display:none;"
-     data-ad-unit = "DAN-oid6aOEjJ5YhFkJT"
-     data-ad-width = "320"
-     data-ad-height = "100"></ins>
-<script type="text/javascript" src="//t1.daumcdn.net/kas/static/ba.min.js" async></script>
-
-<ins class="kakao_ad_area" style="display:none;"
-     data-ad-unit = "DAN-uIcdGNFTaRQVOY4u"
-     data-ad-width = "300"
-     data-ad-height = "250"></ins>
-<script type="text/javascript" src="//t1.daumcdn.net/kas/static/ba.min.js" async></script>
-
-
-<ins class="kakao_ad_area" style="display:none;"
-     data-ad-unit = "DAN-FcUTUGAessjXmqKc"
-     data-ad-width = "250"
-     data-ad-height = "250"></ins>
-<script type="text/javascript" src="//t1.daumcdn.net/kas/static/ba.min.js" async></script>
-
-<ins class="kakao_ad_area" style="display:none;"
-     data-ad-unit = "DAN-SHs42w0uPVS2qqCO"
-     data-ad-width = "160"
-     data-ad-height = "600"></ins>
-<script type="text/javascript" src="//t1.daumcdn.net/kas/static/ba.min.js" async></script>
 <article id="post{{ post.id | replace:'/','-' }}" class="page post mb6" role="article">
     <header>
         <script>
@@ -108,6 +78,11 @@
         {{ post.content }}
         {% else %}
         {{ post.excerpt }}
+        <ins class="kakao_ad_area" style="display:none;"
+             data-ad-unit = "DAN-oid6aOEjJ5YhFkJT"
+             data-ad-width = "320"
+             data-ad-height = "100"></ins>
+        <script type="text/javascript" src="//t1.daumcdn.net/kas/static/ba.min.js" async></script>
     </div>
 
     {% capture post_title %}<a class="heading flip-title" href="{{ post.url | relative_url }}">{{ post.title }}</a>{% endcapture %}
@@ -117,10 +92,27 @@
         <p class="read-more">
             {{ text | replace:"<!--post_title--> ", post_title }}
         </p>
-
+        <ins class="kakao_ad_area" style="display:none;"
+             data-ad-unit = "DAN-AWn5suxm4YwAxPYR"
+             data-ad-width = "728"
+             data-ad-height = "90"></ins>
+        <script type="text/javascript" src="//t1.daumcdn.net/kas/static/ba.min.js" async></script>
     </footer>
     {% endif %}
     </div>
+
+
+    <ins class="kakao_ad_area" style="display:none;"
+         data-ad-unit = "DAN-FcUTUGAessjXmqKc"
+         data-ad-width = "250"
+         data-ad-height = "250"></ins>
+    <script type="text/javascript" src="//t1.daumcdn.net/kas/static/ba.min.js" async></script>
+
+    <ins class="kakao_ad_area" style="display:none;"
+         data-ad-unit = "DAN-SHs42w0uPVS2qqCO"
+         data-ad-width = "160"
+         data-ad-height = "600"></ins>
+    <script type="text/javascript" src="//t1.daumcdn.net/kas/static/ba.min.js" async></script>
 </article>
 
 <script>
