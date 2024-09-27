@@ -1,7 +1,39 @@
 {% assign provider = site.comments.provider | default: "disqus" %}
-<div style="display: flex; flex-direction: row; justify-content: space-between;">
+<style>
+    /* 기본 레이아웃 (PC, 태블릿 등 큰 화면에서 댓글과 광고 나란히 표시) */
+    .comment-ad-container {
+        display: flex;
+        flex-direction: row;
+        justify-content: space-between;
+    }
+
+    .comment-container {
+        flex: 1;
+        margin-right: 20px;
+    }
+
+    .ad-container {
+        flex: 0 0 300px;
+        margin-left: 20px;
+    }
+
+    /* 모바일 버전 레이아웃 (광고가 댓글 아래로 이동) */
+    @media screen and (max-width: 768px) {
+        .comment-ad-container {
+            flex-direction: column;
+        }
+
+        .ad-container {
+            margin-left: 0;
+            margin-top: 20px; /* 댓글과 광고 사이 여백 추가 */
+            flex: none; /* 광고 영역 크기를 고정하지 않음 */
+        }
+    }
+</style>
+
+<div class="comment-ad-container">
     <!-- 댓글 영역 -->
-    <div style="flex: 1; margin-right: 20px;">
+    <div class="comment-container">
         {% if provider == "disqus" %}
         {% assign disqus = site.disqus | default:site.disqus_shortname %}
         {% if disqus %}
@@ -44,7 +76,7 @@
     </div>
 
     <!-- 광고 영역 -->
-    <div style="flex: 0 0 300px; margin-left: 20px;">
+    <div class="ad-container">
         <ins class="kakao_ad_area" style="display:none;"
              data-ad-unit="DAN-uIcdGNFTaRQVOY4u"
              data-ad-width="300"
