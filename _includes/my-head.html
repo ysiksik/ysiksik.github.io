@@ -85,11 +85,10 @@ Left here for reference, feel free to delete.
         adScriptTop.src = "//t1.daumcdn.net/kas/static/ba.min.js";
         adScriptTop.async = true;
 
-        // 목차의 ul 태그 위에 광고 삽입
+
         tocElement.insertBefore(adElementTop, ulElement);
         tocElement.insertBefore(adScriptTop, ulElement);
 
-        // 목차의 ul 태그 아래에 광고 코드 삽입
         let adElementBottom = document.createElement("ins");
         adElementBottom.className = "kakao_ad_area";
         adElementBottom.style.display = "none";
