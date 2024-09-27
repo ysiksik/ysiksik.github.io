@@ -20,16 +20,14 @@
                     }
                 }
 
-            });
-        </script>
-
-        <script>
-            document.addEventListener('DOMContentLoaded', () => {
+                console.log('aaaa');
                 // 목차 요소를 찾아서 처리
                 let tocElement = document.getElementById("markdown-toc");
                 let ulElement = tocElement ? tocElement.querySelector('ul') : null; // 목차 내부의 ul 태그 찾기
+
                 console.log(tocElement, 'tocElement');
                 console.log(tocElement, 'ulElement');
+
                 if (tocElement && ulElement) {
                     // 목차의 ul 태그 위에 광고 코드 삽입
                     let adElementTop = document.createElement("ins");
@@ -66,8 +64,11 @@
                     tocElement.insertBefore(adElementBottom, ulElement.nextSibling);
                     tocElement.insertBefore(adScriptBottom, ulElement.nextSibling);
                 }
+
             });
         </script>
+
+
 
 
         <h1 class="post-title flip-project-title">
