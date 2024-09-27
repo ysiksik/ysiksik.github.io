@@ -61,54 +61,45 @@ Left here for reference, feel free to delete.
               prevElement = document.getElementById(tocId);
               prevElement.style.fontWeight = "bold";
 
-
               break;
             }
           }
         });
       }
 
+      let adElementTop = document.createElement("ins");
+      adElementTop.className = "kakao_ad_area";
+      adElementTop.style.display = "none";
+      adElementTop.setAttribute("data-ad-unit", "DAN-FcUTUGAessjXmqKc");
+      adElementTop.setAttribute("data-ad-width", "250");
+      adElementTop.setAttribute("data-ad-height", "250");
 
-      let ulElement = tocElement ? tocElement.querySelector('ul') : null;
+      let adScriptTop = document.createElement("script");
+      adScriptTop.type = "text/javascript";
+      adScriptTop.src = "//t1.daumcdn.net/kas/static/ba.min.js";
+      adScriptTop.async = true;
 
-      if (tocElement && ulElement) {
+      tocElement.prepend(adElementTop);
+      tocElement.prepend(adScriptTop);
 
-        let adElementTop = document.createElement("ins");
-        adElementTop.className = "kakao_ad_area";
-        adElementTop.style.display = "none";
-        adElementTop.setAttribute("data-ad-unit", "DAN-FcUTUGAessjXmqKc");
-        adElementTop.setAttribute("data-ad-width", "250");
-        adElementTop.setAttribute("data-ad-height", "250");
+      let adElementBottom = document.createElement("ins");
+      adElementBottom.className = "kakao_ad_area";
+      adElementBottom.style.display = "none";
+      adElementBottom.setAttribute("data-ad-unit", "DAN-SHs42w0uPVS2qqCO");
+      adElementBottom.setAttribute("data-ad-width", "160");
+      adElementBottom.setAttribute("data-ad-height", "600");
 
-        let adScriptTop = document.createElement("script");
-        adScriptTop.type = "text/javascript";
-        adScriptTop.src = "//t1.daumcdn.net/kas/static/ba.min.js";
-        adScriptTop.async = true;
+      let adScriptBottom = document.createElement("script");
+      adScriptBottom.type = "text/javascript";
+      adScriptBottom.src = "//t1.daumcdn.net/kas/static/ba.min.js";
+      adScriptBottom.async = true;
 
-        ulElement.prepend(adElementTop);
-        ulElement.prepend(adScriptTop);
+      tocElement.appendChild(adElementBottom);
+      tocElement.appendChild(adScriptBottom);
 
-
-        let adElementBottom = document.createElement("ins");
-        adElementBottom.className = "kakao_ad_area";
-        adElementBottom.style.display = "none";
-        adElementBottom.setAttribute("data-ad-unit", "DAN-SHs42w0uPVS2qqCO");
-        adElementBottom.setAttribute("data-ad-width", "160");
-        adElementBottom.setAttribute("data-ad-height", "600");
-
-        let adScriptBottom = document.createElement("script");
-        adScriptBottom.type = "text/javascript";
-        adScriptBottom.src = "//t1.daumcdn.net/kas/static/ba.min.js";
-        adScriptBottom.async = true;
-
-
-        ulElement.appendChild(adElementBottom);
-        ulElement.appendChild(adScriptBottom);
-      }
     }
   });
 </script>
-
 
 
 <script type="module">
@@ -122,16 +113,22 @@ Left here for reference, feel free to delete.
         await p;
         if (!window.GumroadEmbed) {
           await new Promise(function check1(res) {
-            if ('createGumroadEmbed' in window) res(window.createGumroadEmbed());
-            else setTimeout(() => check1(res), 200);
+            if ('createGumroadEmbed' in window) {
+              res(window.createGumroadEmbed());
+            } else {
+              setTimeout(() => check1(res), 200);
+            }
           });
         }
         await new Promise(function check2(res) {
-          if ('GumroadEmbed' in window) res(GumroadEmbed.reload());
-          else setTimeout(() => check2(res), 200);
+          if ('GumroadEmbed' in window) {
+            res(GumroadEmbed.reload());
+          } else {
+            setTimeout(() => check2(res), 200);
+          }
         });
       }
-    }, { rootMargin: '1440px' });
+    }, {rootMargin: '1440px'});
     document.querySelectorAll('.gumroad-product-embed').forEach(el => io.observe(el));
   });
 </script>
@@ -146,12 +143,15 @@ Left here for reference, feel free to delete.
         await p;
         if (!window.GumroadOverlay) {
           await new Promise(function check(res) {
-            if ('createGumroadOverlay' in window) res(window.createGumroadOverlay());
-            else setTimeout(() => check(res), 200);
+            if ('createGumroadOverlay' in window) {
+              res(window.createGumroadOverlay());
+            } else {
+              setTimeout(() => check(res), 200);
+            }
           });
         }
       }
-    }, { rootMargin: '300px' });
+    }, {rootMargin: '300px'});
     document.querySelectorAll('.gumroad-button').forEach(el => io.observe(el));
   });
 </script>
@@ -179,11 +179,16 @@ Left here for reference, feel free to delete.
 <!-- <script type="text/javascript" src="/assets/js/mermaid.min.js"></script> -->
 <!-- <script>mermaid.initialize({startOnLoad:true});</script> -->
 
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.12.0/dist/katex.min.css" integrity="sha384-AfEj0r4/OFrOo5t7NnNe46zW/tFgW6x/bCJG8FqQCEo3+Aro6EYUG4+cU+KJWu/X" crossorigin="anonymous">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.12.0/dist/katex.min.css"
+      integrity="sha384-AfEj0r4/OFrOo5t7NnNe46zW/tFgW6x/bCJG8FqQCEo3+Aro6EYUG4+cU+KJWu/X" crossorigin="anonymous">
 <!-- The loading of KaTeX is deferred to speed up page rendering -->
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.12.0/dist/katex.min.js" integrity="sha384-g7c+Jr9ZivxKLnZTDUhnkOnsh30B4H0rpLUpJ4jAIKs4fnJI+sEnkvrMWph2EDg4" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.12.0/dist/katex.min.js"
+        integrity="sha384-g7c+Jr9ZivxKLnZTDUhnkOnsh30B4H0rpLUpJ4jAIKs4fnJI+sEnkvrMWph2EDg4"
+        crossorigin="anonymous"></script>
 <!-- To automatically render math in text elements, include the auto-render extension: -->
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.12.0/dist/contrib/auto-render.min.js" integrity="sha384-mll67QQFJfxn0IYznZYonOWZ644AWYC+Pt2cHqMaRhXVrursRwvLnLaebdGIlYNa" crossorigin="anonymous" onload="renderMathInElement(document.body);"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.12.0/dist/contrib/auto-render.min.js"
+        integrity="sha384-mll67QQFJfxn0IYznZYonOWZ644AWYC+Pt2cHqMaRhXVrursRwvLnLaebdGIlYNa" crossorigin="anonymous"
+        onload="renderMathInElement(document.body);"></script>
 
 <!-- <script>
   var config = {
