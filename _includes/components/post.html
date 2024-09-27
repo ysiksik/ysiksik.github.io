@@ -9,18 +9,60 @@
     <header>
         <script>
             $(function () {
-                if(window.location.pathname.includes('database-modeling')){
+                if (window.location.pathname.includes('database-modeling')) {
                     console.log(window.location.pathname);
                     const queryString = window.location.search;
                     const urlParams = new URLSearchParams(queryString);
                     const check = urlParams.get("key");
                     const check2 = localStorage.getItem("key");
-                    if (check !== 'siksik' && check2 !== 'siksik'){
+                    if (check !== 'siksik' && check2 !== 'siksik') {
                         history.back();
                     }
                 }
 
             });
+            document.addEventListener('DOMContentLoaded', () => {
+                // 목차 요소를 찾아서 처리
+                let tocElement = document.getElementById("markdown-toc");
+                let ulElement = tocElement ? tocElement.querySelector('ul') : null; // 목차 내부의 ul 태그 찾기
+
+                if (tocElement && ulElement) {
+                    // 목차의 ul 태그 위에 광고 코드 삽입
+                    let adElementTop = document.createElement("ins");
+                    adElementTop.className = "kakao_ad_area";
+                    adElementTop.style.display = "none";
+                    adElementTop.setAttribute("data-ad-unit", "DAN-FcUTUGAessjXmqKc");
+                    adElementTop.setAttribute("data-ad-width", "250");
+                    adElementTop.setAttribute("data-ad-height", "250");
+
+                    let adScriptTop = document.createElement("script");
+                    adScriptTop.type = "text/javascript";
+                    adScriptTop.src = "//t1.daumcdn.net/kas/static/ba.min.js";
+                    adScriptTop.async = true;
+
+                    // 목차의 ul 태그 위에 광고 삽입
+                    tocElement.insertBefore(adElementTop, ulElement);
+                    tocElement.insertBefore(adScriptTop, ulElement);
+
+                    // 목차의 ul 태그 아래에 광고 코드 삽입
+                    let adElementBottom = document.createElement("ins");
+                    adElementBottom.className = "kakao_ad_area";
+                    adElementBottom.style.display = "none";
+                    adElementBottom.setAttribute("data-ad-unit", "DAN-AWn5suxm4YwAxPYR");
+                    adElementBottom.setAttribute("data-ad-width", "728");
+                    adElementBottom.setAttribute("data-ad-height", "90");
+
+                    let adScriptBottom = document.createElement("script");
+                    adScriptBottom.type = "text/javascript";
+                    adScriptBottom.src = "//t1.daumcdn.net/kas/static/ba.min.js";
+                    adScriptBottom.async = true;
+
+                    // 목차의 ul 태그 아래에 광고 삽입
+                    tocElement.insertBefore(adElementBottom, ulElement.nextSibling);
+                    tocElement.insertBefore(adScriptBottom, ulElement.nextSibling);
+                }
+            })
+            ;
         </script>
 
         <h1 class="post-title flip-project-title">
@@ -39,8 +81,10 @@
             {% assign tag_start = " tag #" | default:" - " %}
             {% assign category_separator = site.data.strings.category_separator | default:" >> " %}
             {% assign tag_separator = " #" | default:". " %}
-            {% include components/tag-list.html tags=post.categories meta=site.featured_categories start_with=category_start separator=category_separator %}
-            {% include components/tag-list.html tags=post.tags meta=site.featured_tags start_with=tag_start separator=tag_separator %}
+            {% include components/tag-list.html tags=post.categories meta=site.featured_categories
+            start_with=category_start separator=category_separator %}
+            {% include components/tag-list.html tags=post.tags meta=site.featured_tags start_with=tag_start
+            separator=tag_separator %}
             <br>
             <!--년월일-->
             {% assign post_format = "%Y년 %m월 %d일 글" | default:"%Y %m %d" %}
@@ -49,8 +93,10 @@
 
         {% assign alt = false %}
         {% unless hide_image %}{% if post.image %}
-        {% unless no_link_title %}<a href="{{ post.url | relative_url }}" class="no-hover no-print-link {% unless post.hide_image %}flip-project{% endunless %}" tabindex="-1">{% endunless %}
-            {% include_cached components/hy-img.html img=post.image alt=post.title width=864 height=486 %}
+        {% unless no_link_title %}<a href="{{ post.url | relative_url }}"
+                                     class="no-hover no-print-link {% unless post.hide_image %}flip-project{% endunless %}"
+                                     tabindex="-1">{% endunless %}
+        {% include_cached components/hy-img.html img=post.image alt=post.title width=864 height=486 %}
         </div>
         {% unless no_link_title %}</a>{% endunless %}
         {% assign alt = '' %}
