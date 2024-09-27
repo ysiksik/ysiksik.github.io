@@ -60,7 +60,7 @@ Left here for reference, feel free to delete.
               let tocId = "markdown-toc-" + headerList[i].parentNode.id;
               prevElement = document.getElementById(tocId);
               prevElement.style.fontWeight = "bold";
-              ;
+
 
               break;
             }
@@ -85,7 +85,6 @@ Left here for reference, feel free to delete.
         adScriptTop.src = "//t1.daumcdn.net/kas/static/ba.min.js";
         adScriptTop.async = true;
 
-
         tocElement.insertBefore(adElementTop, ulElement);
         tocElement.insertBefore(adScriptTop, ulElement);
 
@@ -101,10 +100,9 @@ Left here for reference, feel free to delete.
         adScriptBottom.src = "//t1.daumcdn.net/kas/static/ba.min.js";
         adScriptBottom.async = true;
 
-        // 목차의 ul 태그 아래에 광고 삽입
         tocElement.insertBefore(adElementBottom, ulElement.nextSibling);
         tocElement.insertBefore(adScriptBottom, ulElement.nextSibling);
-
+      }
     }
   });
 </script>
