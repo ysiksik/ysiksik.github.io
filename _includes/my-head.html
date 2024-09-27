@@ -103,39 +103,39 @@ Left here for reference, feel free to delete.
         });
       }
 
-      let ulElement = tocElement.querySelector('ul');
-      let adElementTop = document.createElement("ins");
-      adElementTop.className = "kakao_ad_area";
-      adElementTop.style.display = "none";
-      adElementTop.setAttribute("data-ad-unit", "DAN-FcUTUGAessjXmqKc");
-      adElementTop.setAttribute("data-ad-width", "250");
-      adElementTop.setAttribute("data-ad-height", "250");
-
-      let adScriptTop = document.createElement("script");
-      adScriptTop.type = "text/javascript";
-      adScriptTop.src = "//t1.daumcdn.net/kas/static/ba.min.js";
-      adScriptTop.async = true;
-
-      // 목차의 ul 태그 위에 광고 삽입
-      tocElement.insertBefore(adElementTop, ulElement);
-      tocElement.insertBefore(adScriptTop, ulElement);
-
-      // 목차의 ul 태그 아래에 광고 코드 삽입
-      let adElementBottom = document.createElement("ins");
-      adElementBottom.className = "kakao_ad_area";
-      adElementBottom.style.display = "none";
-      adElementBottom.setAttribute("data-ad-unit", "DAN-SHs42w0uPVS2qqCO");
-      adElementBottom.setAttribute("data-ad-width", "160");
-      adElementBottom.setAttribute("data-ad-height", "600");
-
-      let adScriptBottom = document.createElement("script");
-      adScriptBottom.type = "text/javascript";
-      adScriptBottom.src = "//t1.daumcdn.net/kas/static/ba.min.js";
-      adScriptBottom.async = true;
-
-      // 목차의 ul 태그 아래에 광고 삽입
-      tocElement.insertBefore(adElementBottom, ulElement.nextSibling);
-      tocElement.insertBefore(adScriptBottom, ulElement.nextSibling);
+      // let ulElement = tocElement.querySelector('ul');
+      // let adElementTop = document.createElement("ins");
+      // adElementTop.className = "kakao_ad_area";
+      // adElementTop.style.display = "none";
+      // adElementTop.setAttribute("data-ad-unit", "DAN-FcUTUGAessjXmqKc");
+      // adElementTop.setAttribute("data-ad-width", "250");
+      // adElementTop.setAttribute("data-ad-height", "250");
+      //
+      // let adScriptTop = document.createElement("script");
+      // adScriptTop.type = "text/javascript";
+      // adScriptTop.src = "//t1.daumcdn.net/kas/static/ba.min.js";
+      // adScriptTop.async = true;
+      //
+      // // 목차의 ul 태그 위에 광고 삽입
+      // tocElement.insertBefore(adElementTop, ulElement);
+      // tocElement.insertBefore(adScriptTop, ulElement);
+      //
+      // // 목차의 ul 태그 아래에 광고 코드 삽입
+      // let adElementBottom = document.createElement("ins");
+      // adElementBottom.className = "kakao_ad_area";
+      // adElementBottom.style.display = "none";
+      // adElementBottom.setAttribute("data-ad-unit", "DAN-SHs42w0uPVS2qqCO");
+      // adElementBottom.setAttribute("data-ad-width", "160");
+      // adElementBottom.setAttribute("data-ad-height", "600");
+      //
+      // let adScriptBottom = document.createElement("script");
+      // adScriptBottom.type = "text/javascript";
+      // adScriptBottom.src = "//t1.daumcdn.net/kas/static/ba.min.js";
+      // adScriptBottom.async = true;
+      //
+      // // 목차의 ul 태그 아래에 광고 삽입
+      // tocElement.insertBefore(adElementBottom, ulElement.nextSibling);
+      // tocElement.insertBefore(adScriptBottom, ulElement.nextSibling);
 
     }
   });
@@ -190,6 +190,51 @@ Left here for reference, feel free to delete.
       }
     }, { rootMargin: '300px' });
     document.querySelectorAll('.gumroad-button').forEach(el => io.observe(el));
+  });
+</script>
+
+
+<script type="module">
+  document.addEventListener('DOMContentLoaded', () => {
+    // 목차 요소를 찾아서 처리
+    let tocElement = document.getElementById("markdown-toc");
+    let ulElement = tocElement ? tocElement.querySelector('ul') : null; // 목차 내부의 ul 태그 찾기
+
+    if (tocElement && ulElement) {
+      // 목차의 ul 태그 위에 광고 코드 삽입
+      let adElementTop = document.createElement("ins");
+      adElementTop.className = "kakao_ad_area";
+      adElementTop.style.display = "none";
+      adElementTop.setAttribute("data-ad-unit", "DAN-FcUTUGAessjXmqKc");
+      adElementTop.setAttribute("data-ad-width", "250");
+      adElementTop.setAttribute("data-ad-height", "250");
+
+      let adScriptTop = document.createElement("script");
+      adScriptTop.type = "text/javascript";
+      adScriptTop.src = "//t1.daumcdn.net/kas/static/ba.min.js";
+      adScriptTop.async = true;
+
+      // 목차의 ul 태그 위에 광고 삽입
+      tocElement.insertBefore(adElementTop, ulElement);
+      tocElement.insertBefore(adScriptTop, ulElement);
+
+      // 목차의 ul 태그 아래에 광고 코드 삽입
+      let adElementBottom = document.createElement("ins");
+      adElementBottom.className = "kakao_ad_area";
+      adElementBottom.style.display = "none";
+      adElementBottom.setAttribute("data-ad-unit", "DAN-AWn5suxm4YwAxPYR");
+      adElementBottom.setAttribute("data-ad-width", "728");
+      adElementBottom.setAttribute("data-ad-height", "90");
+
+      let adScriptBottom = document.createElement("script");
+      adScriptBottom.type = "text/javascript";
+      adScriptBottom.src = "//t1.daumcdn.net/kas/static/ba.min.js";
+      adScriptBottom.async = true;
+
+      // 목차의 ul 태그 아래에 광고 삽입
+      tocElement.insertBefore(adElementBottom, ulElement.nextSibling);
+      tocElement.insertBefore(adScriptBottom, ulElement.nextSibling);
+    }
   });
 </script>
 
