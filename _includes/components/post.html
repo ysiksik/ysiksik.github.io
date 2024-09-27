@@ -19,7 +19,7 @@
                         history.back();
                     }
                 }
-
+                alert('aaaa');
                 console.log('aaaa');
                 // 목차 요소를 찾아서 처리
                 let tocElement = document.getElementById("markdown-toc");
@@ -170,23 +170,3 @@
     mermaid.init(undefined, '.language-mermaid');
 </script>
 
-
- <!--<script>
-  // setTimeout(function(){
-  // location.reload();
-  // },3000); // 3000밀리초 = 3초
-
-  $(function () {
-      if(window.location.pathname.includes('database-modeling')){
-
-          const queryString = window.location.search;
-          const urlParams = new URLSearchParams(queryString);
-          const check = urlParams.get("key");
-
-          if (check !== 'siksik'){
-              history.back();
-          }
-      }
-
-  });
-  </script>-->
