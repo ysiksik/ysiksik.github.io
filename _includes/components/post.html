@@ -19,50 +19,6 @@
                         history.back();
                     }
                 }
-                alert('aaaa');
-                console.log('aaaa');
-                let tocElement = document.getElementById("markdown-toc");
-                let ulElement = tocElement ? tocElement.querySelector('ul') : null;
-
-                console.log(tocElement, 'tocElement');
-                console.log(tocElement, 'ulElement');
-
-                if (tocElement && ulElement) {
-
-                    let adElementTop = document.createElement("ins");
-                    adElementTop.className = "kakao_ad_area";
-                    adElementTop.style.display = "block";
-                    adElementTop.setAttribute("data-ad-unit", "DAN-FcUTUGAessjXmqKc");
-                    adElementTop.setAttribute("data-ad-width", "250");
-                    adElementTop.setAttribute("data-ad-height", "250");
-
-
-                    let adScriptTop = document.createElement("script");
-                    adScriptTop.type = "text/javascript";
-                    adScriptTop.src = "//t1.daumcdn.net/kas/static/ba.min.js";
-                    adScriptTop.async = true;
-
-
-                    tocElement.insertBefore(adElementTop, ulElement);
-                    tocElement.insertBefore(adScriptTop, ulElement);
-
-
-                    let adElementBottom = document.createElement("ins");
-                    adElementBottom.className = "kakao_ad_area";
-                    adElementBottom.style.display = "block";
-                    adElementBottom.setAttribute("data-ad-unit", "DAN-AWn5suxm4YwAxPYR");
-                    adElementBottom.setAttribute("data-ad-width", "728");
-                    adElementBottom.setAttribute("data-ad-height", "90");
-
-                    let adScriptBottom = document.createElement("script");
-                    adScriptBottom.type = "text/javascript";
-                    adScriptBottom.src = "//t1.daumcdn.net/kas/static/ba.min.js";
-                    adScriptBottom.async = true;
-
-                    tocElement.insertBefore(adElementBottom, ulElement.nextSibling);
-                    tocElement.insertBefore(adScriptBottom, ulElement.nextSibling);
-                }
-
             });
         </script>
 
