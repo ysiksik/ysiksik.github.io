@@ -21,20 +21,25 @@
                 }
 
             });
+        </script>
+
+        <script>
             document.addEventListener('DOMContentLoaded', () => {
                 // 목차 요소를 찾아서 처리
                 let tocElement = document.getElementById("markdown-toc");
                 let ulElement = tocElement ? tocElement.querySelector('ul') : null; // 목차 내부의 ul 태그 찾기
-
+                console.log(tocElement, 'tocElement');
+                console.log(tocElement, 'ulElement');
                 if (tocElement && ulElement) {
                     // 목차의 ul 태그 위에 광고 코드 삽입
                     let adElementTop = document.createElement("ins");
                     adElementTop.className = "kakao_ad_area";
-                    adElementTop.style.display = "none";
+                    adElementTop.style.display = "block";  // 광고가 표시되도록 변경
                     adElementTop.setAttribute("data-ad-unit", "DAN-FcUTUGAessjXmqKc");
                     adElementTop.setAttribute("data-ad-width", "250");
                     adElementTop.setAttribute("data-ad-height", "250");
 
+                    // 광고 스크립트 동적으로 삽입
                     let adScriptTop = document.createElement("script");
                     adScriptTop.type = "text/javascript";
                     adScriptTop.src = "//t1.daumcdn.net/kas/static/ba.min.js";
@@ -47,7 +52,7 @@
                     // 목차의 ul 태그 아래에 광고 코드 삽입
                     let adElementBottom = document.createElement("ins");
                     adElementBottom.className = "kakao_ad_area";
-                    adElementBottom.style.display = "none";
+                    adElementBottom.style.display = "block";  // 광고가 표시되도록 변경
                     adElementBottom.setAttribute("data-ad-unit", "DAN-AWn5suxm4YwAxPYR");
                     adElementBottom.setAttribute("data-ad-width", "728");
                     adElementBottom.setAttribute("data-ad-height", "90");
@@ -61,9 +66,9 @@
                     tocElement.insertBefore(adElementBottom, ulElement.nextSibling);
                     tocElement.insertBefore(adScriptBottom, ulElement.nextSibling);
                 }
-            })
-            ;
+            });
         </script>
+
 
         <h1 class="post-title flip-project-title">
             {% unless no_link_title %}<a href="{{ post.url | relative_url }}" class="flip-title">{% endunless %}
