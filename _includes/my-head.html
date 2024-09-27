@@ -85,23 +85,25 @@ Left here for reference, feel free to delete.
         adScriptTop.src = "//t1.daumcdn.net/kas/static/ba.min.js";
         adScriptTop.async = true;
 
-        tocElement.insertBefore(adElementTop, ulElement);
-        tocElement.insertBefore(adScriptTop, ulElement);
+        ulElement.prepend(adElementTop);
+        ulElement.prepend(adScriptTop);
+
 
         let adElementBottom = document.createElement("ins");
         adElementBottom.className = "kakao_ad_area";
         adElementBottom.style.display = "none";
-        adElementBottom.setAttribute("data-ad-unit", "DAN-AWn5suxm4YwAxPYR");
-        adElementBottom.setAttribute("data-ad-width", "728");
-        adElementBottom.setAttribute("data-ad-height", "90");
+        adElementBottom.setAttribute("data-ad-unit", "DAN-SHs42w0uPVS2qqCO");
+        adElementBottom.setAttribute("data-ad-width", "160");
+        adElementBottom.setAttribute("data-ad-height", "600");
 
         let adScriptBottom = document.createElement("script");
         adScriptBottom.type = "text/javascript";
         adScriptBottom.src = "//t1.daumcdn.net/kas/static/ba.min.js";
         adScriptBottom.async = true;
 
-        tocElement.insertBefore(adElementBottom, ulElement.nextSibling);
-        tocElement.insertBefore(adScriptBottom, ulElement.nextSibling);
+
+        ulElement.appendChild(adElementBottom);
+        ulElement.appendChild(adScriptBottom);
       }
     }
   });
