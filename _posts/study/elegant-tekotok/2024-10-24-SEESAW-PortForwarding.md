@@ -2,10 +2,11 @@
 layout: post
 bigtitle: '우아한테크코스 테코톡'
 subtitle: 시소의 포트포워딩 그랬구나
-date: '2024-10-22 00:00:00 +0900'
+date: '2024-10-24 00:00:00 +0900'
 categories:
     - elegant-tekotok
 comments: true
+
 ---
 
 # 시소의 포트포워딩 그랬구나
