@@ -109,6 +109,8 @@ menu:
             url: /spring-complete-edition-super-gap-package-online/
           - title: 실무까지 한 번에 끝내는 DevOps를 위한 Docker & Kubernetes feat. aws EKS
             url: /finish-docker-and-kubernetes/
+          - title: 백엔드 개발자를 위한 Kubernetes 클라우드 네이티브 프로그래밍 초격차 패키지
+            url: /for-backend-developers-kubernetes/
       - title:    우아한 테코톡
         url:    /elegant-tekotok/
       - title: 독서

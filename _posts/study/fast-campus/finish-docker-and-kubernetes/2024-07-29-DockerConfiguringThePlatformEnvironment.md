@@ -1,6 +1,6 @@
 ---
 layout: post
-bigtitle: '실무까지 한 번에 끝내는 DevOps를 위한 Docker & Kubernetes feat. aws EKS'
+bigtitle: 'Part 1. Docker 컨테이너 빌드업!'
 subtitle: docker 플랫폼 환경 구성
 date: '2024-07-29 00:00:00 +0900'
 categories:
@@ -8,7 +8,7 @@ categories:
 comments: true
 ---
 
-# docker 플랫폼 환경 구성
+# docker 플랫폼 환경 구성 
 
 # docker 플랫폼 환경 구성
 * toc

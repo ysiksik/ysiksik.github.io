@@ -1,6 +1,6 @@
 ---
 layout: post
-bigtitle: '실무까지 한 번에 끝내는 DevOps를 위한 Docker & Kubernetes feat. aws EKS'
+bigtitle: 'Part 1. Docker 컨테이너 빌드업!'
 subtitle: 컨테이너 가상화 이해
 date: '2024-06-21 00:00:00 +0900'
 categories:
