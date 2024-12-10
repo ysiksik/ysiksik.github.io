@@ -2,7 +2,7 @@
 layout: post
 bigtitle: 'Part 1. 개발자를 위한 Kubernetes 입문'
 subtitle: Ch 1. Kubernetes의 등장 배경
-date: '2024-07-29 00:00:00 +0900'
+date: '2024-12-09 00:00:01 +0900'
 categories:
     - for-backend-developers-kubernetes
 comments: true
