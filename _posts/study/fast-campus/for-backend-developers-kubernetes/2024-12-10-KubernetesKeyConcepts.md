@@ -177,3 +177,88 @@ $ docker run -p 8080:8080 my-app
   8. 컨테이너 생성이 완료되가지고 정상적인 상태가 됐으면은 kubelet은 상태를 계속 모니터링 하면서 API Server를 톻해서 상태 업데이트를 하게 된다 
 + 쿠버네티스의 구성요소들을 크게 살펴보면은 Control Plane이랑 노드로 구성되어 있고 Control Plane은 쿠버네티스를 관리해주는 역할을 하고 노드는 컨테이너가 실행될 수 있는 공간을 제공해준다 
 
+## 03. Reconciliation과 Self-Healing
+
+### etcd의 존재 의문
++ ![Reconciliation-SelfHealing.png](../../../../assets/img/for-backend-developers-kubernetes/Reconciliation-SelfHealing.png)
++ 전체적인 과정에서는 etcd가 스펙이나 상태를 저장하는 보조적인 역할을 수행하는 것처럼 보인다
++ etcd가 없어도 동작에 별 문제가 없을 것 처럼 보인다 
++ ![Reconciliation-SelfHealing_1.png](../../../../assets/img/for-backend-developers-kubernetes/Reconciliation-SelfHealing_1.png)
++ 만약에 쿠버네티스 비슷하게 만든가고 하면은 이렇게 사용자가 API 서버에다가 컨테이너를 만들어달라고 요청하고 API 서버가 요청을 큐블렛 전달하고 
+  도커런 같은 명령어로 컨테이너를 실행하고 이런 일반적인 백엔드 개발할 때 API 서버를 이용해서 실행하는 프로그램을 만들때 사주 사용하는 패턴중 
+  하나이다 
++ 이과정에서 etcd가 상태를 백업하는 용도로 쓸 수는 있지만 코어한 이패스에서는 그렇게 중요한 역할을 수행하기가 어렵기도 하다 
++ 결국에는 사용자 요청을 API 서버가 받아서 큐블렛에서 실행을 해주면 사용자 요청이 결과적으로는 노드에서 도커런 명령으로 이어질 수 있게 된다 
+ 
+### Imperative System - 명령형 시스템 
++ 명령을 통해 원하는 작업을 수행하는 방식
++ 대부분의 프로그램과 서비스가 이 방식으로 수행됨
++ ```$ docker run my-sql```
+
+### Declarative System - 선언적 시스템 
++ 프로그램에 명령을 주는 것이 아니라 목표로 하는 상태를 제시해주는 방식
++ 그 상태에 도달하기 위한 방법은 프로그램에 위임
++ 컨테이너를 2개 생성해라 Imperative
++ 컨테이너를 2개 있어야 한다 Declarative
+
+### Imperative vs Declarative
++ 컨테이너를 2개 생성해라 
+  + 지금 컨테이너가 몇 개 생성되어 있든 상관하지 말고 2개를 추가로 생성해라
++ 컨테이너를 2개 있어야 한다 
+  + 지금 컨테이너가 없으면 2개 생성, 1개만 있다면 하나 더 생성, 3개 있다면 하나 종료 시켜라
+    
+### Reconciliation 패턴
++ ![Reconciliation-SelfHealing_3.png](../../../../assets/img/for-backend-developers-kubernetes/Reconciliation-SelfHealing_3.png)
++ 사용자는 쿠버네티스한태 원하는 상태를 전달한다 
++ 쿠버네티스는 지속적으로 현재 클러스터 상태를 모니터링을 계속한다 
++ 만약에 사용자가 원하는 상태랑 쿠버네티스의 현재 상태 사이에서 불일치가 발생하면은 조정을 해서 두 상태가 일치하도록 만든다  
++ Reconciliation 단어가 조정이라는 뜻을 가지고 있다 이런 패턴이 Reconciliation 패턴이다 
++ ![Reconciliation-SelfHealing_4.png](../../../../assets/img/for-backend-developers-kubernetes/Reconciliation-SelfHealing_4.png)
++ 사용자가 원하는 상태는 2개여야 한다고 요청을 하면 해당 상태로 기록  
++ 쿠버네티스가 현재 상태를 모니터링하고 현재 컨테이너는 1개다 확인을하고 원하는 상태는 컨테이너가 2개 여서 불이치가 발생하면 조정 과정에서 하나를 추가로 실행을 한다 
++ ![Reconciliation-SelfHealing_5.png](../../../../assets/img/for-backend-developers-kubernetes/Reconciliation-SelfHealing_5.png)
++ 사용자는 아무 요청을 하지 않았지만 실행 중인 컨테이너 하나가 out of memory 에러가 발생해서 종료가 돼버렸을 때 쿠버네티스는 목표를 일치 시키기 위해서 다시 컨테이너 하나를 추가로 실행
+
+
+### Self-healing
++ 쿠버네티스의 선언적 특징에서 나타나는 기능
++ 컨테이너의 상태가 목표에서 벗어난다면 이를 자동으로 수정
++ 프로세스가 종료거나 컨테이너가 비정상이라면 새로운 컨테이너로 교체
++ 운영 환경에서 활용하면 굉장히 강력한 기능
++ ![Reconciliation-SelfHealing_7.png](../../../../assets/img/for-backend-developers-kubernetes/Reconciliation-SelfHealing_7.png)
++ 현재 1.0.0 컨테이너가 실행 중인데 1.0.1 버전으로 목표 상태를 업데이트를 하게 되면은 쿠버네티스는 교체를 진행한다 
++ 종료가 먼저, 실행이 먼저 또는 두개 동시에 이루지는지는 스펙에서 조정을 해줄 수 있는데 일반적으로는 새로운 컨테이너를 먼저 실행을 시키고 
+  완료가 되면은 그 이전 버전의 컨테이너를 제거하는 설정으로 진행
++ 1.0.1 버전의 이미지가 없으면 목표 상태가 맞추기 위해서 계속 재시도를 진행한다 사용자가 목표 상태를 1.0.0으로 돌리거나 1.0.1을 이미지 저장소에 푸시하기 전까지
+  계속 리트라일하고 루프를 돌면서 반복한다 
+
+### Restarting the container
++ 컨테이너를 '재시작'하는 명령은 쿠버네티스에서 조금 애매함
++ 컨테이너를 재시작 시킨다는 개념 자체가 선언적으로는 정의되기 어렵기 때문
++ 쿠버네티스에서도 명령형 커맨드를 지원하기 때문에 이를 이용해 재시작 가능
++ 혹은 컨테이너 수량을 0으로 지정했다가 다시 늘려주는 방식으로 재시작
+
+### 컨테이너 실행 과정
++ ![Reconciliation-SelfHealing_8.png](../../../../assets/img/for-backend-developers-kubernetes/Reconciliation-SelfHealing_8.png)
++ ![Reconciliation-SelfHealing_9.png](../../../../assets/img/for-backend-developers-kubernetes/Reconciliation-SelfHealing_9.png)
++ 쿠버네티를 사용하면서 할 일은 원하는 스펙을 쿠버네티스에 전달해주는 것이다 
++ 스펙을 etcd에가가 목표 상태를 저장하게 된다 
++ ![Reconciliation-SelfHealing_10.png](../../../../assets/img/for-backend-developers-kubernetes/Reconciliation-SelfHealing_10.png)
++ 목표 상태를 현재 상태에 맞추기 위해서 컨테이너를 하나 실행하게 되는데 이과정에서 스케줄러가 노드를 찾고 큐블렛이 컨테이너를 실행해주고 
+  컨테이너 상태를 모니터링해서 상태를 계속 갱신하는 작업들을 진행한다
++ ![Reconciliation-SelfHealing_11.png](../../../../assets/img/for-backend-developers-kubernetes/Reconciliation-SelfHealing_11.png)
++ 컨테이너가 이상핸 동작을해서 상태가 브릿지하게 된다 그러면은 큐블렛이 컨테이너 상태가 정상이 아님을 확인하게 된다 그러면 API 서버를 통해서
+  현재 상태가 정상이 아님을 업데이트 한다 
++ 컨트롤러 매니저 역시 API 서버를 통해서 상태가 브릿지 한다는 걸 확인하고 해결하기 위한 해결책을 생각을 하고 해결 책을 API 서버에다가 예약을 하게 된다 
+
+### Reconciliation for Application Developer
++ Declarative: 모든 동작이 선언적으로 이루어짐
++ Idempotency: 같은 정의를 여러 번 적용해도 항상 같은 결과가 나옴
++ Self-Healing: 현재 상태에 예상하지 못한 불일치가 생겨도 스스로 이를 복구하는 것
++ Consistency: 쿠버네티스의 현재 상태나 동작과 관계 없이 최종 스펙에 상태를 맞추는 것
+
+### 개발자들이 신경써야 할 것들
++ 쿠버네티스가 관측하기 좋은 애플리케이션을 만들기
++ 목표로 하는 상태를 잘 정의하기
++ 체계적인 버전 관리 혹은 자동화 된 빌드와 배포
++ 갑자기 종료되거나 새로 실행되어도 동작에 문제가 없는 애플리케이션
