@@ -22,20 +22,13 @@ SIKSIK
 </span>
 </center>
 
-<center>Backend: Java & Spring </center>
-
-<center>Frontend: JavaScript, jQuery, Thymeleaf</center>
-
-<center>DevOps: 금융보안데이터센터(FSDC) 클라우드 운영 및 관리</center>
-
-
 * toc
 {:toc .large-only}
 
 ## 소개
 ---
 
-안녕하세요! 👋 저는 Github Pages 블로그를 운영하며 현재는 JAVA Backend 개발자로 활동 중인 SIKSIK입니다. 💻
+안녕하세요! 👋 저는 Github Pages 블로그를 운영하며 현재는 Backend 개발자로 활동 중 입니다. 💻
 
 개발자로서 열심히 공부하며 기술적인 역량을 향상시키고, 최신 트렌드와 기술을 적용하여 높은 품질의 소프트웨어를 개발하기 위해 노력하고 있습니다. ✏️✒️
 
