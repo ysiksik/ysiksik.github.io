@@ -249,22 +249,26 @@ mobileNet을 이용한 classification으로 버섯을 구별해주는 인공지�
 </div>
 -->
 
-- 10개 프로젝트로 완성하는 백엔드 웹개발(Java Spring) 초격차 패키지 Online.
-- 한 번에 끝내는 코딩테스트 365 Java편 초격차 패키지
-- 이펙티브 자바 완벽 공략 2부
-- 이펙티브 자바 완벽 공략 1부
-- 코딩으로 학습하는 리펙토링
-- 스프링 MVC 2편 - 백엔드 웹 개발 핵심 기술
-- 스프링 MVC 1편 - 백엔드 웹 개발 핵심 기술
-- 모든 개발자를 위한 HTTP 웹 기본 지식
-- 코딩으로 학습하는 GoF의 디자인 패턴
-- Spring Cloud로 개발하는 마이크로서비스 어플리케이션(MSA)
-- Spring boot를 이용한 RESTful Web Services 개발
-- 더 자바, Java 8
-- 더 자바, 애플리케이션을 테스트하는 다양한 방법
-- 더 자바, 코드를 조작하는 다양한 방법
-- 한 번에 끝내는 Spring 완.전.판 초격차 패키지
-- 자바(Java) 알고리즘 문제풀이
+- 스프링 핵심 원리 - 고급편/inflearn
+- 스프링 DB 2편 - 데이터 접근 활용 기술/inflearn
+- 스프링 DB 1편 - 데이터 접근 핵심 원리/inflearn
+- 백엔드 개발자를 위한 한 번에 끝내는 대용량 데이터 & 트래픽 처리 초격차 패키지 Online./fastcampus
+- 10개 프로젝트로 완성하는 백엔드 웹개발(Java Spring) 초격차 패키지 Online./fastcampus
+- 한 번에 끝내는 코딩테스트 365 Java편 초격차 패키지/fastcampus
+- 이펙티브 자바 완벽 공략 2부/inflearn
+- 이펙티브 자바 완벽 공략 1부/inflearn
+- 코딩으로 학습하는 리펙토링/inflearn
+- 스프링 MVC 2편 - 백엔드 웹 개발 핵심 기술/inflearn
+- 스프링 MVC 1편 - 백엔드 웹 개발 핵심 기술/inflearn
+- 모든 개발자를 위한 HTTP 웹 기본 지식/inflearn
+- 코딩으로 학습하는 GoF의 디자인 패턴/inflearn
+- Spring Cloud로 개발하는 마이크로서비스 어플리케이션(MSA)/inflearn
+- Spring boot를 이용한 RESTful Web Services 개발/inflearn
+- 더 자바, Java 8/inflearn
+- 더 자바, 애플리케이션을 테스트하는 다양한 방법/inflearn
+- 더 자바, 코드를 조작하는 다양한 방법/inflearn
+- 한 번에 끝내는 Spring 완.전.판 초격차 패키지/fastcampus
+- 자바(Java) 알고리즘 문제풀이/inflearn
 - 2021.02 ~ 2021.02 Java12 프로그래밍/ktds
 - 2021.02 ~ 2021.02 Spring boot API Service 개발/ktds
 - 2020.11 ~ 2021.11 실무 적용 SQL 성능 튜닝/ktds
