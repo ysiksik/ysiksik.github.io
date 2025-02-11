@@ -119,14 +119,11 @@ SIKSIK
 ---
 
 
-| 구분 | Skill |
-| -- | -- |
-| Programing Languages | Java(1.8~), JavaScript(ES6), HTML5 |
-| Framework / Library | SpringFramework, ReactJs, Bootstrap, JQuery, Spring Boot, Spring Batch,Thymeleaf, JSP, JPA, QueryDSL|  
-| Server | Tomcat, Nginx |
-| Tooling / DevOps | Git, SVN, JenKins |
-| Environment | Linux, Window |
-| DB | MySQL, PostgreSQL |
+| 구분 | Skill                                                                     |
+| -- |---------------------------------------------------------------------------|
+| Programing Languages | Java                                                                      |
+| Framework / Library | SpringFramework, Spring Boot, Spring Batch, Thymeleaf, JSP, JPA, QueryDSL |
+| DB | MySQL, PostgreSQL, Mssql                                                  |
 
 
 
