@@ -8,9 +8,7 @@ author1:
   # Used at the bottom of each page and at the top of the `about` layout
   # Markdown enabled, can use multiple paragraphs (enabled by `|`)
   about:             |
-    안녕하세요, SIKSIK 개발자입니다.
-    저는 백엔드 개발 분야에서 꾸준히 성장하며 새로운 기술을 습득하고 적용하는 것을 즐기고 있습니다. 
-    이 블로그에서는 제가 배운 내용들과 개발 경험을 공유하며, 다른 개발자들과 함께 성장하는 공간을 만들고자 합니다.
+    안녕하세요, SIKSIK 개발자입니다. 백엔드 개발자로서 꾸준히 배우고 성장하며, 개발 경험과 기술을 공유하는 공간을 만들고자 합니다. 함께 발전해 나가요!
 #    Please check my [Portfolio]
   #  Please check my [Portfolio](https://choyunsik.github.io/)
 
