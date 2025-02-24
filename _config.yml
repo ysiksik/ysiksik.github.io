@@ -128,6 +128,8 @@ menu:
         url: /coupon-service/
       - title: 비트코인 거래소
         url: /coin-exchange/
+      - title: 물류
+        url: /logistics/
 
 
 #  - title:             Blog
