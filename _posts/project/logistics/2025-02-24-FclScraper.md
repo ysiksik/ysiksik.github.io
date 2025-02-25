@@ -1,6 +1,6 @@
 ---
 layout: post
-bigtitle: 'SCRAPER'
+bigtitle: 'FCL SCRAPER'
 subtitle: FCL SCRAPER
 date: '2025-02-24 00:00:02 +0900'
 categories:
