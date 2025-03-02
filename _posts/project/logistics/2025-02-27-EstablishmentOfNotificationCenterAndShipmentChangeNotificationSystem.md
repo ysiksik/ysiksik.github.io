@@ -133,8 +133,8 @@ B/L을 기반으로 선적 데이터 변경 사항을 추적하고, 이를 사�
 ~~~mermaid
 
 sequenceDiagram
-    participant CD as "선적 데이터 변경 히스토리 저장"
-    participant SU as "선적 데이터 변경 알람 히스토리 저장"
+    participant CD as "선적 변경 히스토리"
+    participant SU as "선적 변경 알람 히스토리"
     participant BC as "Batch 처리"
     participant AC as "알림 센터"
     participant MS as "메세지 전송"
@@ -160,8 +160,8 @@ sequenceDiagram
   participant BT as "BATCH"
   participant TI as "타임존 정보"
   participant UL as "유저 정보"
-  participant AL as "[SHIPGO] 변경 알람 목록 정보"
-  participant MP as "선적 데이터 변경 사항 조회 API"
+  participant AL as "변경 알람 정보"
+  participant MP as "선적 변경 조회 API"
   participant AC as "알림 센터"
   BT->>TI: UTC 정보로 국가 코드 조회
   TI->>BT: 국가 코드 응답
@@ -184,21 +184,21 @@ sequenceDiagram
 ~~~mermaid
 
 sequenceDiagram
-    participant A as "Crawler]
-    participant B as "[Shipment] consumer-collect-data-processor"
-    participant C as "[Database] MS-SQL
-    participant D as "[ShipGO] consumer-cargotrack-management"
-    A ->> B : 수집된 데이터 전송, [Topic] shipment / [Subscription] processor
+    participant A as "Crawler"
+    participant B as "data processor"
+    participant C as "Database"
+    participant D as "Consumer management"
+    A ->> B : 수집된 데이터 전송
     B ->> B : 데이터 프로세싱
     B ->> C : 변경 사항이 있다면 변경 사항 저장
-    B ->> D : 수집 이후 알림 내역 업데이트 [Topic] shipment-command / [Subscription] cargo-track-management
+    B ->> D : 수집 이후 알림 내역 업데이트
     D ->> D : 변경 사항 데이터를 알림 내역으로 가공
     D ->> C : 알림 내역 저장
 
 ~~~
-+ 크롤러 기반 데이터 수집: Crawler(A)에서 선적 변경 데이터를 주기적으로 가져옴
-+ 데이터 정제 및 저장: Processor(B)에서 변경된 운송 상태를 감지하고, DB에 저장
-+ 알림 내역 변환: Consumer(D)에서 알림 데이터를 가공하여 알림 센터(AC)에 전달
++ 크롤러 기반 데이터 수집: Crawler에서 선적 변경 데이터를 주기적으로 가져옴
++ 데이터 정제 및 저장: Processor에서 변경된 운송 상태를 감지하고, DB에 저장
++ 알림 내역 변환: Consumer에서 알림 데이터를 가공하여 알림 센터에 전달
 + Batch 트리거: 선적 변경 데이터가 특정 조건을 만족하면 배치 실행
 
 ## 선적 변경 알림 관련 API
