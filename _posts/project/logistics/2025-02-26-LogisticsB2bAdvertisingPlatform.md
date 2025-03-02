@@ -2,7 +2,7 @@
 layout: post
 bigtitle: '물류 B2B 광고 플랫폼'
 subtitle: 물류 B2B 광고 플랫폼
-date: '2025-02-25 00:00:01 +0900'
+date: '2025-02-26 00:00:01 +0900'
 categories:
 - logistics
 comments: true
