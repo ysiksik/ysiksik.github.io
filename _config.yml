@@ -603,4 +603,4 @@ tipue_search:
     tags: []
 
 mermaid:
-  src: '_includes/scripts/mermaid.min.js'
+  src: '_includes/scripts/mermaid.js'
