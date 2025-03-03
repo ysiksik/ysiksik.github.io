@@ -100,53 +100,6 @@ comments: true
 
 ### 구독 생성 Flow Chart
 
-~~~mermaid
-
-flowchart TD
-  A[Front Page]:::yellow
-  B[Backend API]:::red
-  C[PayPal SDK/API]:::gray
-
-  D[구독 결제]
-  E[구독 소개 페이지]:::yellow
-  F[구독 주문 페이지]:::yellow
-  G[플랜 조회 API]:::red
-
-  H[PayPal 구독 생성 요청]:::gray
-  I{"PayPal 구독 성공?"}:::black
-  J[구독 생성 API 호출]:::red
-  K[PayPal 구독 활성화]:::gray
-  L[PayPal 결제 확인]:::gray
-  M{"결제 성공?"}:::black
-
-  N[구독 성공 페이지]:::yellow
-  O[구독 실패 페이지]:::yellow
-  P[PayPal 구독 취소]:::gray
-
-  %% 흐름 연결
-  D --> E
-  E -->|조회 요청| G
-  G --> F
-  F --> H
-  H --> I
-  I -- No --> O
-  I -- Yes --> J
-
-  J --> K
-  K --> L
-  L --> M
-
-  M -- Yes --> N
-  M -- No --> P
-  P --> O
-
-
-  classDef yellow fill:#FFD700,stroke:#333,stroke-width:2px;
-  classDef red fill:#FF6666,stroke:#333,stroke-width:2px;
-  classDef gray fill:#BEBEBE,stroke:#333,stroke-width:2px;
-  classDef black fill:#444,stroke:#fff,stroke-width:2px,color:#fff;
-
-~~~
 
 ### 구독 생성 Sequence Diagram
 
@@ -221,7 +174,6 @@ flowchart TD
   O[구독 실패 페이지]:::yellow
   P[PayPal 구독 취소]:::gray
 
-  %% 흐름 연결
   D --> E
   E -->|조회 요청| G
   G --> F
