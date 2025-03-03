@@ -24,7 +24,7 @@ comments: true
   + REST API를 통해 클라이언트 및 내부 서비스와 연동하여 실시간 정보 제공
 + **기술 스택:**
   + **백엔드:** Java, Spring Boot
-  + **API 설계:** RESTful API
+  + **API 설계:** RESTful API, REST Docs 문서화
   + **데이터베이스:** MSSQL, Redis
   + **배포 및 운영:** Azure DevOps
   + **보안:**  Spring Security, API Key 인증 
