@@ -140,14 +140,11 @@ flowchart TD
   M -- No --> P
   P --> O
 
-  %% 스타일 지정
+
   classDef yellow fill:#FFD700,stroke:#333,stroke-width:2px;
   classDef red fill:#FF6666,stroke:#333,stroke-width:2px;
   classDef gray fill:#BEBEBE,stroke:#333,stroke-width:2px;
   classDef black fill:#444,stroke:#fff,stroke-width:2px,color:#fff;
-
-
-
 
 ~~~
 
