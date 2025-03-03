@@ -100,9 +100,10 @@ comments: true
 
 ### 구독 생성 Flow Chart
 
-<div class="language-mermaid">
+~~~mermaid
 
 flowchart TD
+
   A[Front Page]:::yellow
   B[Backend API]:::red
   C[PayPal SDK/API]:::gray
@@ -144,7 +145,7 @@ flowchart TD
   classDef gray fill:#BEBEBE,stroke:#333,stroke-width:2px;
   classDef black fill:#444,stroke:#fff,stroke-width:2px,color:#fff;
 
-</div>
+~~~
 
 ### 구독 생성 Sequence Diagram
 
@@ -180,8 +181,8 @@ sequenceDiagram
   alt 결제 성공
     PAYMENT_API-->>SaaS: 구독 결제 정보 응답
     SaaS-->>FRONT: 성공 응답
-    PAYMENT_API-)ALARM_CENTER: 구독 시작 메일 발송 (비동기)
-    PAYMENT_API-)SLACK: 구독 시작 알림 (비동기)
+    PAYMENT_API-) ALARM_CENTER: 구독 시작 메일 발송 (비동기)
+    PAYMENT_API-) SLACK: 구독 시작 알림 (비동기)
   else 결제 실패
     PAYMENT_API->>PAYPAL: 구독 취소 요청 (상태: cancel)
     PAYMENT_API-->>SaaS: 실패 응답
