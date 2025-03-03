@@ -100,82 +100,46 @@ comments: true
 
 ### 구독 생성 Flow Chart
 
-[//]: # (~~~mermaid)
+~~~mermaid
 
-[//]: # ()
-[//]: # (flowchart TD; )
+flowchart TD
+    A[Front Page]:::yellow
+    B[Backend API]:::red
+    C[PayPal SDK/API]:::gray
+    D[구독 결제]
+    E[구독 소개 페이지]:::yellow
+    F[구독 주문 페이지]:::yellow
+    G[플랜 조회 API]:::red
+    H[PayPal 구독 생성 요청]:::gray
+    I{"PayPal 구독 성공?"}:::black
+    J[구독 생성 API 호출]:::red
+    K[PayPal 구독 활성화]:::gray
+    L[PayPal 결제 확인]:::gray
+    M{"결제 성공?"}:::black
+    N[구독 성공 페이지]:::yellow
+    O[구독 실패 페이지]:::yellow
+    P[PayPal 구독 취소]:::gray
+    D --> E
+    E -->|조회 요청| G
+    G --> F
+    F --> H
+    H --> I
+    I -- No --> O
+    I -- Yes --> J
+    J --> K
+    K --> L
+    L --> M
+    M -- Yes --> N
+    M -- No --> P
+    P --> O
+    classDef yellow fill:#FFD700,stroke:#333,stroke-width:2px;
+    classDef red fill:#FF6666,stroke:#333,stroke-width:2px;
+    classDef gray fill:#BEBEBE,stroke:#333,stroke-width:2px;
+    classDef black fill:#444,stroke:#fff,stroke-width:2px,color:#fff;
 
-[//]: # (    A[Front Page]:::yellow)
-
-[//]: # (    B[Backend API]:::red)
-
-[//]: # (    C[PayPal SDK/API]:::gray)
-
-[//]: # (    D[구독 결제])
-
-[//]: # (    E[구독 소개 페이지]:::yellow)
-
-[//]: # (    F[구독 주문 페이지]:::yellow)
-
-[//]: # (    G[플랜 조회 API]:::red)
-
-[//]: # (    H[PayPal 구독 생성 요청]:::gray)
-
-[//]: # (    I{"PayPal 구독 성공?"}:::black)
-
-[//]: # (    J[구독 생성 API 호출]:::red)
-
-[//]: # (    K[PayPal 구독 활성화]:::gray)
-
-[//]: # (    L[PayPal 결제 확인]:::gray)
-
-[//]: # (    M{"결제 성공?"}:::black)
-
-[//]: # (    N[구독 성공 페이지]:::yellow)
-
-[//]: # (    O[구독 실패 페이지]:::yellow)
-
-[//]: # (    P[PayPal 구독 취소]:::gray)
-
-[//]: # (    D --> E)
-
-[//]: # (    E -->|조회 요청| G)
-
-[//]: # (    G --> F)
-
-[//]: # (    F --> H)
-
-[//]: # (    H --> I)
-
-[//]: # (    I -- No --> O)
-
-[//]: # (    I -- Yes --> J)
-
-[//]: # (    J --> K)
-
-[//]: # (    K --> L)
-
-[//]: # (    L --> M)
-
-[//]: # (    M -- Yes --> N)
-
-[//]: # (    M -- No --> P)
-
-[//]: # (    P --> O)
-
-[//]: # (    classDef yellow fill:#FFD700,stroke:#333,stroke-width:2px;)
-
-[//]: # (    classDef red fill:#FF6666,stroke:#333,stroke-width:2px;)
-
-[//]: # (    classDef gray fill:#BEBEBE,stroke:#333,stroke-width:2px;)
-
-[//]: # (    classDef black fill:#444,stroke:#fff,stroke-width:2px,color:#fff;)
-
-[//]: # ()
-[//]: # (~~~)
+~~~
 
 ### 구독 생성 Sequence Diagram
-
 
 ~~~mermaid
 
@@ -187,11 +151,9 @@ sequenceDiagram
   participant PAYPAL
   participant ALARM_CENTER
   participant SLACK
-
   FRONT->>PAYPAL: 구독 생성 요청 (상태: continue)
   PAYPAL-->>FRONT: 구독 성공 응답 (상태: continue)
-  FRONT->>SaaS: 구독 데이터 생성 요청 
-
+  FRONT->>SaaS: 구독 데이터 생성 요청
   SaaS->>MEMBERSHIP_API: 구독 생성 요청
   alt 기존 구독 있음
     MEMBERSHIP_API-->>SaaS: 구독 실패 응답
@@ -201,7 +163,6 @@ sequenceDiagram
   else 신규 구독
     MEMBERSHIP_API-->>SaaS: 구독 생성 결과 응답
   end
-
   SaaS->>PAYMENT_API: 구독 결제 정보 저장
   PAYMENT_API->>PAYPAL: 구독 상태 활성화 (상태: active)
   PAYMENT_API->>PAYPAL: 결제 상태 확인
@@ -209,8 +170,8 @@ sequenceDiagram
   alt 결제 성공
     PAYMENT_API-->>SaaS: 구독 결제 정보 응답
     SaaS-->>FRONT: 성공 응답
-    PAYMENT_API-) ALARM_CENTER: 구독 시작 메일 발송 (비동기)
-    PAYMENT_API-) SLACK: 구독 시작 알림 (비동기)
+    PAYMENT_API-)ALARM_CENTER: 구독 시작 메일 발송 (비동기)
+    PAYMENT_API-)SLACK: 구독 시작 알림 (비동기)
   else 결제 실패
     PAYMENT_API->>PAYPAL: 구독 취소 요청 (상태: cancel)
     PAYMENT_API-->>SaaS: 실패 응답
@@ -231,23 +192,18 @@ flowchart TD
   A[Front Page]:::yellow
   B[Backend API]:::red
   C[PayPal SDK/API]:::gray
-
   D[구독 변경]
   E[구독 변경 페이지]:::yellow
   F[구독 주문 페이지]:::yellow
   G[플랜 조회 API]:::red
-
   H[PayPal 구독 변경 요청]:::gray
   I{"PayPal 구독 성공?"}:::black
   J[구독 변경 API 호출]:::red
   K[기존 구독 취소 & 변경 구독 활성화]:::gray
-
   M{"변경 성공?"}:::black
-
   N[구독 성공 페이지]:::yellow
   O[구독 실패 페이지]:::yellow
   P[PayPal 구독 취소]:::gray
-
   D --> E
   E -->|조회 요청| G
   G --> F
@@ -255,16 +211,11 @@ flowchart TD
   H --> I
   I -- No --> O
   I -- Yes --> J
-
   J --> K
   K --> M
-  
-
   M -- Yes --> N
   M -- No --> P
   P --> O
-
-  %% 스타일 지정
   classDef yellow fill:#FFD700,stroke:#333,stroke-width:2px;
   classDef red fill:#FF6666,stroke:#333,stroke-width:2px;
   classDef gray fill:#BEBEBE,stroke:#333,stroke-width:2px;
@@ -284,11 +235,9 @@ sequenceDiagram
   participant PAYPAL
   participant ALARM_CENTER
   participant SLACK
-
   FRONT->>PAYPAL: 구독 생성 요청 (상태: continue, 시작일: 기존 구독 끝나는 시점)
   PAYPAL-->>FRONT: 구독 성공 응답 (상태: continue, 시작일: 기존 구독 끝나는 시점)
-  FRONT->>SaaS: 구독 변경 요청 
-
+  FRONT->>SaaS: 구독 변경 요청
   SaaS->>MEMBERSHIP_API: 구독 변경 요청
   alt 기존 구독이 트라이얼 플랜
     MEMBERSHIP_API-->>SaaS: 구독 변경 불가 응답
@@ -299,7 +248,6 @@ sequenceDiagram
   else 기존 구독 있음
     MEMBERSHIP_API-->>SaaS: 기존 구독 만료, 변경 구독 생성 결과 응답
   end
-
   SaaS->>PAYMENT_API: 변경 구독 결제 정보 저장 요청
   PAYMENT_API->>PAYPAL: 기존 구독 취소 요청
   PAYPAL-->>PAYMENT_API: 기존 구독 취소 응답
@@ -331,16 +279,12 @@ flowchart TD
   D[End]
   E[구독 해지 API]:::red
   F[PayPal 구독 취소]:::gray
-
-  %% 연결 관계
   A --> B
   B --> C
   C -- NO --> B
   C -- YES --> D
   C --> E
   E -.-> F
-
-  %% 스타일 지정
   classDef yellow fill:#FFD700,stroke:#333,stroke-width:2px;
   classDef red fill:#FF6666,stroke:#333,stroke-width:2px;
   classDef gray fill:#BEBEBE,stroke:#333,stroke-width:2px;
@@ -359,7 +303,6 @@ sequenceDiagram
   participant MEMBERSHIP_API
   participant PAYMENT_API
   participant PAYPAL
-
   FRONT->>SaaS: 구독 해제 요청
   SaaS->>PAYMENT_API: 구독 해제 요청
   PAYMENT_API->>PAYPAL: 구독 취소 요청
@@ -380,10 +323,8 @@ sequenceDiagram
   participant PAYMENT_API
   participant ALARM_CENTER
   participant SLACK
-
   PAYPAL--)PAYMENT_API: 결제 성공 웹훅 이벤트 전송
   PAYMENT_API->>PAYMENT_API: 웹훅 검증 (구독 결제 여부 확인)
-
   alt 구독 결제 성공
     PAYMENT_API->>PAYMENT_API: 결제 내역 저장
     PAYMENT_API-)ALARM_CENTER: 결제 성공 메일 발송 (비동기)
@@ -401,7 +342,6 @@ sequenceDiagram
   participant PAYPAL
   participant PAYMENT_API
   participant SLACK
-
   PAYPAL--)PAYMENT_API: 인보이스 결제 성공 웹훅 이벤트 전송
   PAYMENT_API->>PAYMENT_API: 인보이스 아이템 타입에 맞는 결제 내역 저장
   PAYMENT_API-)SLACK: 인보이스 결제 성공 알림 전송 (비동기)
@@ -421,7 +361,6 @@ sequenceDiagram
   participant AZURE_SERVICE_BUS
   participant ALARM_CENTER
   participant SLACK
-
   PAYPAL->>PAYPAL: 결제 실패 감지 (1차 시도)
   PAYPAL--)PAYMENT_API: 결제 실패 웹훅 이벤트 전송
   PAYMENT_API-)SLACK: 결제 실패 알림 전송 (비동기)
@@ -431,19 +370,15 @@ sequenceDiagram
   PAYPAL->>PAYPAL: 5일 후 재결제 시도 (3차 시도)
   PAYPAL--)PAYMENT_API: 결제 실패 웹훅 이벤트 전송
   PAYMENT_API-)SLACK: 결제 실패 알림 전송 (비동기)
-
   alt 모든 결제 시도 실패
     PAYPAL->>PAYPAL: 구독 상태를 SUSPEND로 변경
     PAYPAL--)PAYMENT_API: 웹훅 이벤트 전송 (구독 상태: SUSPEND)
-    
     PAYMENT_API->>PAYPAL: 구독 취소 요청
     PAYPAL--)PAYMENT_API: 구독 취소 완료 응답
-    
     PAYMENT_API->>PAYMENT_API: 구독 결제 정보 삭제
     PAYMENT_API->>AZURE_SERVICE_BUS: 구독 해제 메시지 큐에 전송
     PAYMENT_API-)ALARM_CENTER: 구독 해제 메일 전송 (비동기)
     PAYMENT_API-)SLACK: 구독 해제 알림 전송 (비동기)
-    
     MEMBERSHIP_API--)AZURE_SERVICE_BUS: 구독 해제 요청 메시지 수신
     MEMBERSHIP_API->>MEMBERSHIP_API: 구독 해제 처리 (구독 만료일 업데이트)
   end
@@ -462,12 +397,10 @@ sequenceDiagram
   participant PAYMENT_API
   participant PAYPAL
   participant MEMBERSHIP_API
-
   BACKOFFICE->>SaaS: 구독 취소 요청
   SaaS->>PAYMENT_API: 구독 취소 요청
   PAYMENT_API->>PAYPAL: 구독 취소 요청
   PAYPAL--)PAYMENT_API: 구독 취소 완료 응답
-
   PAYMENT_API-->>SaaS: 구독 취소 성공 응답
   SaaS->>MEMBERSHIP_API: 구독 정보 취소 요청
   MEMBERSHIP_API->>MEMBERSHIP_API: 구독 상태를 '취소'로 업데이트
@@ -486,13 +419,10 @@ sequenceDiagram
   participant AZURE_SERVICE_BUS
   participant ALARM_CENTER
   participant SLACK
-
   PAYPAL--)PAYMENT_API: 웹훅 이벤트 전송 (구독 상태: CANCEL)
-        
   PAYMENT_API->>PAYMENT_API: 구독 결제 정보 삭제
   PAYMENT_API->>AZURE_SERVICE_BUS: 구독 취소 메시지 큐에 전송
   PAYMENT_API-)SLACK: 구독 취소 알림 전송 (비동기)
-    
   MEMBERSHIP_API--)AZURE_SERVICE_BUS: 구독 취소 요청 메시지 수신
   MEMBERSHIP_API->>MEMBERSHIP_API: 구독 취소 처리 
   
@@ -507,9 +437,7 @@ sequenceDiagram
 
 sequenceDiagram
   participant PAYPAL
-  participant PAYMENT_API
-
-  %% 환불 처리
+  participant PAYMENT_AP
   PAYPAL--)PAYMENT_API: 환불 웹훅 이벤트 전송
   PAYMENT_API->>PAYMENT_API: 웹훅 검증 (환불 여부 확인)
   PAYMENT_API->>PAYMENT_API: 기존 결제 내역 조회
