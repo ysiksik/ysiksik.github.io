@@ -151,34 +151,42 @@ sequenceDiagram
   participant PAYPAL
   participant ALARM_CENTER
   participant SLACK
+
   FRONT->>PAYPAL: 구독 생성 요청 (상태: continue)
   PAYPAL-->>FRONT: 구독 성공 응답 (상태: continue)
   FRONT->>SaaS: 구독 데이터 생성 요청
   SaaS->>MEMBERSHIP_API: 구독 생성 요청
+
   alt 기존 구독 있음
     MEMBERSHIP_API-->>SaaS: 구독 실패 응답
     SaaS-->>FRONT: 구독 실패 응답
-  else 기존 구독이 트라이얼 플랜
-    MEMBERSHIP_API-->>SaaS: 크레딧 400 충전 후 신규 구독 생성 응답
-  else 신규 구독
-    MEMBERSHIP_API-->>SaaS: 구독 생성 결과 응답
-  end
-  SaaS->>PAYMENT_API: 구독 결제 정보 저장
-  PAYMENT_API->>PAYPAL: 구독 상태 활성화 (상태: active)
-  PAYMENT_API->>PAYPAL: 결제 상태 확인
-  PAYPAL-->>PAYMENT_API: 결제 상태 응답
-  alt 결제 성공
-    PAYMENT_API-->>SaaS: 구독 결제 정보 응답
-    SaaS-->>FRONT: 성공 응답
-    PAYMENT_API-)ALARM_CENTER: 구독 시작 메일 발송 (비동기)
-    PAYMENT_API-)SLACK: 구독 시작 알림 (비동기)
-  else 결제 실패
-    PAYMENT_API->>PAYPAL: 구독 취소 요청 (상태: cancel)
-    PAYMENT_API-->>SaaS: 실패 응답
-    SaaS->>MEMBERSHIP_API: 구독 롤백 요청
-    MEMBERSHIP_API-->>SaaS: 구독 롤백 응답
-    SaaS-->>FRONT: 실패 응답
-    PAYMENT_API-)SLACK: 구독 실패 알림 (비동기)
+  else
+    alt 기존 구독이 트라이얼 플랜
+      MEMBERSHIP_API-->>SaaS: 크레딧 400 충전 후 신규 구독 생성 응답
+    else 신규 구독
+      MEMBERSHIP_API-->>SaaS: 구독 생성 결과 응답
+    end
+
+    SaaS->>PAYMENT_API: 구독 결제 정보 저장
+    PAYMENT_API->>PAYPAL: 구독 상태 활성화 (상태: active)
+    PAYMENT_API->>PAYPAL: 결제 상태 확인
+    PAYPAL-->>PAYMENT_API: 결제 상태 응답
+
+    alt 결제 성공
+      PAYMENT_API-->>SaaS: 구독 결제 정보 응답
+      SaaS-->>FRONT: 성공 응답
+      par
+        PAYMENT_API-)ALARM_CENTER: 구독 시작 메일 발송
+        PAYMENT_API-)SLACK: 구독 시작 알림
+      end
+    else 결제 실패
+      PAYMENT_API->>PAYPAL: 구독 취소 요청 (상태: cancel)
+      PAYMENT_API-->>SaaS: 실패 응답
+      SaaS->>MEMBERSHIP_API: 구독 롤백 요청
+      MEMBERSHIP_API-->>SaaS: 구독 롤백 응답
+      SaaS-->>FRONT: 실패 응답
+      PAYMENT_API-)SLACK: 구독 실패 알림
+    end
   end
 
 
@@ -235,35 +243,42 @@ sequenceDiagram
   participant PAYPAL
   participant ALARM_CENTER
   participant SLACK
+
   FRONT->>PAYPAL: 구독 생성 요청 (상태: continue, 시작일: 기존 구독 끝나는 시점)
   PAYPAL-->>FRONT: 구독 성공 응답 (상태: continue, 시작일: 기존 구독 끝나는 시점)
   FRONT->>SaaS: 구독 변경 요청
   SaaS->>MEMBERSHIP_API: 구독 변경 요청
+
   alt 기존 구독이 트라이얼 플랜
-    MEMBERSHIP_API-->>SaaS: 구독 변경 불가 응답
+    MEMBERSHIP_API-->>SaaS: 구독 변경 불가 응답 (트라이얼 플랜 변경 불가)
     SaaS-->>FRONT: 구독 변경 실패 응답
   else 기존 구독 없음
-    MEMBERSHIP_API-->>SaaS: 구독 변경 불가 응답
+    MEMBERSHIP_API-->>SaaS: 구독 변경 불가 응답 (변경할 기존 구독 없음)
     SaaS-->>FRONT: 구독 변경 실패 응답
   else 기존 구독 있음
-    MEMBERSHIP_API-->>SaaS: 기존 구독 만료, 변경 구독 생성 결과 응답
+    MEMBERSHIP_API-->>SaaS: 기존 구독 만료 후 변경 구독 생성 완료 응답
+
+    SaaS->>PAYMENT_API: 변경 구독 결제 정보 저장 요청
+    PAYMENT_API->>PAYPAL: 기존 구독 취소 요청
+    PAYPAL-->>PAYMENT_API: 기존 구독 취소 응답
+
+    alt 기존 구독 취소 성공
+      PAYMENT_API->>PAYPAL: 변경 구독 상태 활성화 (상태: active)
+      PAYMENT_API-->>SaaS: 변경 구독 결제 정보 생성 응답
+      SaaS-->>FRONT: 성공 응답
+      par
+        PAYMENT_API-)ALARM_CENTER: 구독 변경 메일 발송
+        PAYMENT_API-)SLACK: 구독 변경 알림
+      end
+    else 기존 구독 취소 실패
+      PAYMENT_API-->>SaaS: 실패 응답
+      SaaS->>MEMBERSHIP_API: 구독 롤백 요청
+      MEMBERSHIP_API-->>SaaS: 구독 롤백 응답
+      SaaS-->>FRONT: 실패 응답
+      PAYMENT_API-)SLACK: 구독 실패 알림
+    end
   end
-  SaaS->>PAYMENT_API: 변경 구독 결제 정보 저장 요청
-  PAYMENT_API->>PAYPAL: 기존 구독 취소 요청
-  PAYPAL-->>PAYMENT_API: 기존 구독 취소 응답
-  alt 기존 구독 취소 성공
-    PAYMENT_API->>PAYPAL: 변경 구독 상태 활성화 (상태: active)
-    PAYMENT_API-->>SaaS: 변경 구독 결제 정보 생성 응답
-    SaaS-->>FRONT: 성공 응답
-    PAYMENT_API-)ALARM_CENTER: 구독 변경 메일 발송 (비동기)
-    PAYMENT_API-)SLACK: 구독 변경 알림 (비동기)
-  else 기존 구독 취소 실패
-    PAYMENT_API-->>SaaS: 실패 응답
-    SaaS->>MEMBERSHIP_API: 구독 롤백 요청
-    MEMBERSHIP_API-->>SaaS: 구독 롤백 응답
-    SaaS-->>FRONT: 실패 응답
-    PAYMENT_API-)SLACK: 구독 실패 알림 (비동기)
-  end
+
 
 
 ~~~
@@ -376,11 +391,11 @@ sequenceDiagram
     PAYMENT_API->>PAYPAL: 구독 취소 요청
     PAYPAL--)PAYMENT_API: 구독 취소 완료 응답
     PAYMENT_API->>PAYMENT_API: 구독 결제 정보 삭제
-    PAYMENT_API->>AZURE_SERVICE_BUS: 구독 해제 메시지 큐에 전송
-    PAYMENT_API-)ALARM_CENTER: 구독 해제 메일 전송 (비동기)
-    PAYMENT_API-)SLACK: 구독 해제 알림 전송 (비동기)
-    MEMBERSHIP_API--)AZURE_SERVICE_BUS: 구독 해제 요청 메시지 수신
-    MEMBERSHIP_API->>MEMBERSHIP_API: 구독 해제 처리 (구독 만료일 업데이트)
+    PAYMENT_API->>AZURE_SERVICE_BUS: 구독 취소 메시지 큐에 전송
+    PAYMENT_API-)ALARM_CENTER: 구독 취소 메일 전송 (비동기)
+    PAYMENT_API-)SLACK: 구독 취소 알림 전송 (비동기)
+    MEMBERSHIP_API--)AZURE_SERVICE_BUS: 구독 취소 요청 메시지 수신
+    MEMBERSHIP_API->>MEMBERSHIP_API: 구독 취소 처리 (구독 만료일 업데이트)
   end
 
 
@@ -445,6 +460,7 @@ sequenceDiagram
 
 ~~~
 
+
 ## API 
 
 ### 구독 결제 및 플랜 관리
@@ -470,3 +486,4 @@ sequenceDiagram
 + PayPal API를 활용한 자동 결제 및 구독 관리 시스템 도입
 + 결제 실패 복구 및 구독 유지 기능을 통한 고객 만족도 향상
 + Webhook 기반 결제 상태 동기화 및 결제 실패 예외 처리 로직 구현
+

@@ -133,18 +133,18 @@ B/L을 기반으로 선적 데이터 변경 사항을 추적하고, 이를 사�
 ~~~mermaid
 
 sequenceDiagram
-    participant CD as "선적 변경 히스토리"
-    participant SU as "선적 변경 알람 히스토리"
-    participant BC as "Batch 처리"
-    participant AC as "알림 센터"
-    participant MS as "메세지 전송"
-    participant TR as "전송 기록 저장"
-    SU-->>CD: 데이터 참조
-    BC->>SU: 데이터 조회
-    SU->>BC: 데이터
-    BC->>AC: 알림 전송 요청
-    AC->>MS: 메세지 전송
-    AC->>TR: 전송 기록 저장
+  participant CD as "선적 변경 히스토리"
+  participant SU as "선적 변경 알람 히스토리"
+  participant BC as "Batch 처리"
+  participant AC as "알림 센터"
+  participant MS as "메세지 전송"
+  participant TR as "전송 기록 저장"
+  SU-->>CD: 데이터 참조
+  BC->>SU: 데이터 조회
+  SU-->>BC: 데이터
+  BC->>AC: 알림 전송 요청
+  AC-)MS: 메세지 전송
+  AC->>TR: 전송 기록 저장
 
 ~~~
 + 변경 사항 감지: 선적 데이터 변경 알람 히스토리 에서 데이터 변경 여부 확인
@@ -164,14 +164,15 @@ sequenceDiagram
   participant MP as "선적 변경 조회 API"
   participant AC as "알림 센터"
   BT->>TI: UTC 정보로 국가 코드 조회
-  TI->>BT: 국가 코드 응답
+  TI-->>BT: 국가 코드 응답
   BT->>UL: 국가 코드에 해당하는 유저 조회
-  UL->>BT: 유저 응답
+  UL-->>BT: 유저 응답
   BT->>AL: 유저 정보에 해당 하는 변경 알림 정보 조회
-  AL->>BT: 변경 알림 정보 응답
+  AL-->>BT: 변경 알림 정보 응답
   BT->>MP: 변경 사항 정보 API 요청
-  MP->>BT: 변경 사항 응답
-  BT->>AC: 메세지 가공후 전달
+  MP-->>BT: 변경 사항 응답
+  BT-)AC: 메세지 가공후 전달
+
 
 ~~~
 + 타임존 고려: 국가별 UTC 기준으로 사용자 그룹 분류 후 알림 배치 실행
