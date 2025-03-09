@@ -341,6 +341,11 @@ sequenceDiagram
 ~~~mermaid
 
 flowchart TD
+    
+    1["Front Page"]:::front
+    2["Backend API"]:::backend
+    3["Stripe"]:::stripe
+    
   A[구독 해지]
   B[구독 변경 페이지]:::front
   C{"구독 해지?"}:::front
