@@ -130,7 +130,7 @@ SIKSIK
 ## 프로젝트 / Project
 ---
 
-* [**물류**](https://ysiksik.github.io/logistics/)
+* [**물류 시스템**](https://ysiksik.github.io/logistics/)
   * 총 8 개 프로젝트 위에 링크를 확인해 주세요
 
 트레드링스에서 물류 데이터 수집 및 관리 시스템 개발을 담당하였으며, 결제 시스템, 실시간 알림 시스템, 광고 플랫폼, API 연동 및 데이터 수집 자동화 등의 프로젝트를 수행하였습니다.
