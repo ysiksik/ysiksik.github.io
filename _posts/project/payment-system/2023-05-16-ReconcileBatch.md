@@ -2,7 +2,7 @@
 layout: post
 bigtitle: '결제 시스템 (PG)'
 subtitle: 대사 처리 배치 
-date: '2023-05-16 00:00:02 +0900'
+date: '2023-05-16 00:00:01 +0900'
 categories:
 - payment-system
 comments: true

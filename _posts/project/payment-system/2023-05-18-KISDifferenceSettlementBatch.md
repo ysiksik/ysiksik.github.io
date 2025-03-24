@@ -2,7 +2,7 @@
 layout: post
 bigtitle: '결제 시스템 (PG)'
 subtitle: KIS PG에 차액 정산 연동 배치
-date: '2023-05-17 00:00:01 +0900'
+date: '2023-05-18 00:00:01 +0900'
 categories:
 - payment-system
 comments: true
