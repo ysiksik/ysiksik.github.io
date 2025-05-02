@@ -85,9 +85,8 @@ comments: true
 - API 변경 사항이 자동 반영되므로 유지보수 용이
 
 ## 6. 프로젝트 성과 및 기여도
-+ 터미널 스케줄 API 구축  
-+ API 데이터 판매를 통한 수익 모델 확립 및 고객사 확보  
-+ Swagger & REST Docs 병행 사용으로 API 활용성과 문서 유지보수 용이  
-+ API Key 인증 및 Role-Based Access Control 적용으로 보안 강화  
-+ 페이징 최적화 및 Redis 캐싱을 통해 API 응답 속도 개선  
-+ API 기반으로 터미널 운영 시스템과 연동하여 데이터 활용 가능  
++ Terminal 스케줄 API 구축으로 매출 채널 확보
++ 외부 고객사 2곳 도입 문의 및 기능 테스트 진행
++ Redis 도입으로 평균 응답 속도 약 40% 향상
++ API Key 기반 권한 분리로 보안 및 서비스 안정성 강화
++ Swagger & REST Docs 기반 API 문서 자동화로 개발·운영 협업 효율 개선
