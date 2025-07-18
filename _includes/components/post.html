@@ -57,7 +57,7 @@
                                      class="no-hover no-print-link {% unless post.hide_image %}flip-project{% endunless %}"
                                      tabindex="-1">{% endunless %}
         {% include_cached components/hy-img.html img=post.image alt=post.title width=864 height=486 %}
-        </div>
+<!--        </div>-->
         {% unless no_link_title %}</a>{% endunless %}
         {% assign alt = '' %}
         {% endif %}{% endunless %}
@@ -66,7 +66,7 @@
         <!--상단버튼-->
         {% include page-button.html %}
         <!--게시물 생성시 hits생성-->
-<!--        <div style="text-align:right; text-align: center">
+       <!-- <div style="text-align:right; text-align: center">
             &lt;!&ndash; <a href="https://hits.seeyoufarm.com/{{ site.url | remove_first: 'https://' | remove_first: 'http://' }}{{ page.url }}"
               target="_blank"> &ndash;&gt;
             <img
