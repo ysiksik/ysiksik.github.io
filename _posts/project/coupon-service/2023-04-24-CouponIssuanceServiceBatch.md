@@ -77,9 +77,11 @@ comments: true
 + 보관기간 설정정보에 따른 보관기간 만기 데이터 파티션명이 존재하는 경우 파티션명, 테이블명 기준으로 해당파티션 삭제 배치
 
 
-## BATCH 클래스 다이어그램
-+ ![img.png](../../../assets/img/coupon-service/Batch.png)
-+ ![img_1.png](../../../assets/img/coupon-service/Batch_1.png)
+[//]: # (## BATCH 클래스 다이어그램)
+
+[//]: # (+ ![img.png]&#40;../../../assets/img/coupon-service/Batch.png&#41;)
+
+[//]: # (+ ![img_1.png]&#40;../../../assets/img/coupon-service/Batch_1.png&#41;)
 
 
 ## 관리자 페이지
