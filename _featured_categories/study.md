@@ -19,7 +19,7 @@ hide_description: false
 * [KT개발컨소시엄]{:.heading.flip-title}
 * [인프런]{:.heading.flip-title}
 * [패스트 캠퍼스]{:.heading.flip-title}
-* [우아한 테코톡]{:.heading.flip-title}
+* [유튜브]{:.heading.flip-title}
 * [스터디 랩]{:.heading.flip-title}
 
   
