@@ -27,5 +27,5 @@ hide_description: false
 [KT개발컨소시엄]: /kt-development-consortium/
 [인프런]: /inflearn/
 [패스트 캠퍼스]: /fast-campus/
-[우아한 테코톡]: /elegant-tekotok/
+[유튜브]: /study-youtube/
 [스터디 랩]: /study-lab/
