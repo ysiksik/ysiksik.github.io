@@ -113,6 +113,8 @@ menu:
             url: /for-backend-developers-kubernetes/
       - title:    우아한 테코톡
         url:    /elegant-tekotok/
+      - title: 스터디 랩
+        url: /study-lab/
 #      - title: 독서
 #        url:    /book/
 #      - title:    페이먼츠

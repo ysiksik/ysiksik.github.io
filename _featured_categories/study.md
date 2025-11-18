@@ -20,6 +20,7 @@ hide_description: false
 * [인프런]{:.heading.flip-title}
 * [패스트 캠퍼스]{:.heading.flip-title}
 * [우아한 테코톡]{:.heading.flip-title}
+* [스터디 랩]{:.heading.flip-title}
 
   
 [알고리즘]: /algorithm/
@@ -27,3 +28,4 @@ hide_description: false
 [인프런]: /inflearn/
 [패스트 캠퍼스]: /fast-campus/
 [우아한 테코톡]: /elegant-tekotok/
+[스터디 랩]: /study-lab/
