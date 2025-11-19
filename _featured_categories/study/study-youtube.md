@@ -1,5 +1,5 @@
 ---
-layout: list
+layout: page
 category: study
 bigtitle: 유튜브
 description: >
@@ -8,8 +8,14 @@ list: true
 order: 5
 menu: true
 submenu: true
+sitemap: true
+related_posts:
+  - 
 ---
 # 유튜브
 
+## 카테고리
 
+* [우아한테크코스 테코톡]{:.heading.flip-title}
 
+[우아한테크코스 테코톡]: /elegant-tekotok/
