@@ -450,3 +450,149 @@ DB, 메시지 큐, 파일 저장 서비스 같은 **Stateful 애플리케이션*
 
 ---
 
+## 07. CRD를 이용한 Kubernetes의 확장과 플러그인
+
+쿠버네티스는 기본적으로 애플리케이션을 운영하는 데 필요한 대부분의 자원을 잘 제공한다. CPU, 메모리, 네트워크, 스토리지 같은 핵심 리소스를 합리적으로 추상화해주기 때문에, 많은 서비스는 기본 기능만으로도 충분히 운영할 수 있다.
+
+하지만 실제 운영에 익숙해질수록 “조금 더 세밀하게 제어하고 싶은 부분”이 생긴다.
+예를 들어,
+
+* 서비스 간 트래픽을 단순 라운드 로빈이 아니라 가중치 기반으로 라우팅하고 싶다
+* 클라우드에서 새로운 저장소 타입을 내렸는데 Kubernetes가 아직 이를 지원하지 않는다
+* 특정 조건(CPU 사용률 등)에 따라 특정 작업(Job)을 자동으로 실행하고 싶다
+
+이런 요구들은 쿠버네티스의 기본 기능만으로는 해결할 수 없다.
+그래서 쿠버네티스는 처음부터 **확장 가능한 구조**를 목표로 설계되었다.
+심지어 쿠버네티스의 소스 코드를 건드리지 않고도 새로운 기능을 추가할 수 있다.
+
+---
+
+### Kubernetes 확장의 기본 개념
+
+쿠버네티스는 다음과 같은 철학으로 확장을 지원한다.
+
+* 기본 제공 객체 외에도 **새로운 리소스 타입을 만들어 사용할 수 있다**
+* 새로운 리소스도 기존 쿠버네티스 객체처럼 **선언형(Declarative)** 으로 관리할 수 있다
+* Kubernetes 코드를 직접 수정하지 않고 기능을 추가할 수 있다
+* 이렇게 만들어진 확장은 다양한 오픈소스 생태계와 결합되어 빠르게 성장하는 중이다
+
+확장 방식은 크게 세 가지로 나뉜다:
+
+1. **Custom Resource (CRD 기반)**
+2. **API Aggregation**
+3. **Plugins (CSI, CNI, Device Plugin 등)**
+
+---
+
+### Custom Resource: 쿠버네티스 객체를 직접 확장하기
+
++ ![crd.png](../../../../assets/img/for-backend-developers-kubernetes/crd.png)
++ ![crd_1.png](../../../../assets/img/for-backend-developers-kubernetes/crd_1.png)
++ ![crd_2.png](../../../../assets/img/for-backend-developers-kubernetes/crd_2.png)
+
+Custom Resource는 말 그대로 “사용자가 직접 정의한 쿠버네티스 객체”다.
+Deployment, Pod, Service처럼 생겼지만, 사용자 도메인에 맞는 전혀 새로운 타입의 리소스를 만들 수 있다.
+
+예를 들어보자.
+
+“노드의 CPU가 일정 수준 이하일 때만 동작하는 작업(Job)을 만들고 싶다”고 가정해보자.
+이 객체는 다음과 같은 정보를 필요로 한다.
+
+* 실제로 실행할 작업의 정의
+* CPU가 어느 임계값 이하일 때 실행할지
+* CPU가 계속 바쁘면 얼마나 기다리다가 포기할지
+
+이런 요구사항을 Custom Resource Definition(CRD)으로 선언해두면, 쿠버네티스는 이 새로운 리소스를 기존 객체처럼 다룬다.
+
+즉,
+
+* 사용자가 YAML로 객체를 생성하면
+* 해당 객체는 Kubernetes API 안에서 정식 리소스처럼 취급된다
+* kubectl로 조회·적용·삭제까지 모두 가능하다
+
+하지만 여기까지는 “데이터 구조는 만들어졌지만 행동은 없는 상태”다.
+
+---
+
+### Operator: Custom Resource에 ‘동작’을 부여하는 존재
++ ![crd_3.png](../../../../assets/img/for-backend-developers-kubernetes/crd_3.png)
++ ![crd_4.png](../../../../assets/img/for-backend-developers-kubernetes/crd_4.png)
+
+Custom Resource가 데이터(스펙)를 정의한다면,
+Operator는 그 데이터를 ‘보고 판단해서 행동하는 로직’을 담당한다.
+
+Operator는 다음 역할을 한다.
+
+* CR이 생성되거나 변경될 때 이를 관찰
+* 스펙을 확인하고 필요한 작업을 자동으로 수행
+* Kubernetes API를 호출해 리소스를 생성/변경/삭제
+
+즉, **CRD는 새로운 객체를 정의하는 것이고, Operator는 그 객체가 실제로 원하는 동작을 수행하도록 만드는 컨트롤러**다.
+
+앞의 예시라면 Operator는 이런 행동을 한다.
+
+* 노드들의 CPU 상태를 지속적으로 모니터링
+* 조건을 만족하면 Job을 생성
+* 조건을 만족하지 않으면 Job 생성을 대기 또는 취소
+* 사용자가 CR 스펙을 수정하면 즉시 반영
+
+Kubernetes의 많은 고급 기능(예: Cert-Manager, ArgoCD, Prometheus Operator 등)이 모두 CRD + Operator 조합으로 구현돼 있다.
+이 조합이 쿠버네티스 확장 생태계를 폭발적으로 키운 핵심 요소다.
+
+---
+
+### API Aggregation: API Server를 직접 확장하는 방식
+
+API Aggregation은 조금 더 깊은 단계의 확장이다.
+
+Custom Resource는 “기존 API Server에 새로운 객체 타입을 추가”하는 것이라면,
+API Aggregation은 **별도의 API Server를 띄우고 이를 쿠버네티스의 API 체인에 편입시키는 방식**이다.
+
+그래서 다음과 같이 동작한다.
+
+* kubectl이 API 요청을 보냄
+* 메인 API Server가 일부 요청을 외부 확장 API Server로 프록시
+* 외부 API Server가 자신만의 로직을 처리하여 응답
+
+Custom Resource보다 더 깊숙한 확장을 가능하게 하지만,
+그만큼 복잡하고 운영 난이도도 높다.
+
+일반적으로는 **특수 목적의 기능을 쿠버네티스와 거의 동등 수준으로 확장해야 할 때** 사용된다.
+
+---
+
+### Custom Resource VS API Aggregation
++ Custom Resource
+  + 선언적으로 동작
++ API Aggregation
+  + 확장된 API를 명령어 형태로 사용
+
+### Plugin: 하드웨어·네트워크·스토리지를 Kubernetes에 연결하기
+
+Plugin은 CRD/Operator와는 존재 목적이 다르다.
+
+Plugin은 “쿠버네티스에 하드웨어나 인프라 자원을 연결할 수 있게 만드는 확장”이다.
+
+예를 들면:
+
+* **CSI (Container Storage Interface)**
+  → 쿠버네티스의 볼륨을 실제 스토리지 하드웨어와 연결하는 드라이버
+  → EBS, NFS, Ceph, iSCSI 등 다양한 스토리지가 CSI 플러그인 기반
+* **CNI (Container Network Interface)**
+  → 쿠버네티스 네트워킹 구현체 (Calico, Flannel, Cilium 등)
+* **Device Plugin**
+  → GPU, TPU 등 특수 하드웨어를 Kubernetes에서 자원으로 사용하게 하는 드라이버
+
+개발자는 “볼륨을 사용한다”, “GPU를 요청한다”는 선언만 하면 된다.
+그 뒤에서 실제 하드웨어와 연결해주는 역할을 Plugin이 담당한다.
+
+즉,
+
+* Custom Resource / Operator는 “쿠버네티스 기능 자체를 확장하는 구조”
+* Plugin은 “쿠버네티스가 외부 하드웨어를 활용할 수 있도록 하는 구조”
+
+라고 이해하면 구분이 명확해진다.
+
+---
+
+
