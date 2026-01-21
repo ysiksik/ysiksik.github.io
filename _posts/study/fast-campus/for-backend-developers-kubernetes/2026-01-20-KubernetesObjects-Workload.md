@@ -409,3 +409,395 @@ spec:
 
 ---
 
+
+## 05. Pod Scheduling
+
+Kubernetes 클러스터는 일반적으로 **여러 개의 노드(Node)** 로 구성된다.
+Pod가 새로 생성되거나, 재시작·재배치가 필요해지면 Kubernetes는 다음 질문에 답해야 한다.
+
+> “이 Pod를 **어느 노드에 배치할 것인가?**”
+
+이 결정을 담당하는 컴포넌트가 **kube-scheduler**이며,
+이 판단 과정 전체를 **Pod Scheduling**이라고 부른다.
+
+---
+
+### Pod Scheduling의 기본 구조
+
+스케줄러는 다음 두 단계를 거쳐 노드를 결정한다.
+
+#### 1️⃣ Filtering
+
+> 이 Pod를 **절대 배치할 수 없는 노드**를 제거
+
+#### 2️⃣ Scoring
+
+> 배치 가능한 노드 중 **가장 적합한 노드**를 선택
+
+즉,
+
+```
+불가능한 노드 제거 → 가능한 노드 점수 계산 → 최고 점수 노드 선택
+```
+
+---
+
+### 모든 노드는 동일하지 않다
+
+실제 클러스터에서는 다음과 같은 상황이 매우 흔하다.
+
+* 일부 노드에만 GPU가 있음
+* 고비용 / 저비용 노드가 섞여 있음
+* ARM / x86 아키텍처 혼합
+
+그래서 Kubernetes는
+**“Pod를 어디에 배치할지”를 제어할 수 있는 YAML 설정들**을 제공한다.
+
+이제부터 하나씩 본다.
+
+---
+
+### 1. Node Selector
+
+#### 개념
+
+**노드의 label을 기준으로 Pod가 배치될 노드를 제한**하는 가장 단순한 방식이다.
+
+---
+
+#### 노드에 label 추가
+
+```bash
+kubectl label node node-02 hw-type=gpu
+```
+
+* `hw-type=gpu`
+  → node-02에 “GPU 노드”라는 의미의 label 부여
+
+---
+
+#### Pod에 nodeSelector 적용
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-pod
+spec:
+  nodeSelector:
+    hw-type: gpu
+    cost: high
+  containers:
+  - name: my-container
+    image: ai-learning:latest
+```
+
+##### YAML 필드 상세 설명
+
+* `apiVersion: v1`
+  → Pod 리소스의 API 버전
+
+* `kind: Pod`
+  → 생성 대상 객체 타입
+
+* `metadata.name`
+  → Pod 이름
+
+* `spec.nodeSelector`
+  → **Pod가 배치될 노드 조건**
+
+  * 노드의 label과 **정확히 일치**해야 함
+  * 여러 조건은 **AND 조건**
+
+  ```
+  hw-type=gpu AND cost=high
+  ```
+
+* 조건을 만족하는 노드가 없으면
+  → Pod는 `Pending` 상태로 대기
+
+📌 **특징 요약**
+
+* 강제 조건
+* 단순하지만 표현력은 낮음
+
+---
+
+### 2. Taint & Toleration
+
+#### 개념
+
+* **Taint**: 노드가 Pod를 밀어내는 장치
+* **Toleration**: Pod가 그 거부를 무시하는 허가증
+
+---
+
+#### 노드에 taint 설정
+
+```bash
+kubectl taint node node-02 hw-type=gpu:NoSchedule
+```
+
+##### 의미 해석
+
+* `hw-type=gpu` → taint의 key/value
+* `NoSchedule` → toleration 없는 Pod는 절대 배치 불가
+
+##### Effect 종류
+
+* `NoSchedule` : 새 Pod 스케줄 불가
+* `PreferNoSchedule` : 가능하면 피함
+* `NoExecute` : 기존 Pod도 제거
+
+---
+
+#### Pod에서 toleration 설정
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-pod
+spec:
+  tolerations:
+  - key: "hw-type"
+    operator: "Equal"
+    value: "gpu"
+    effect: "NoSchedule"
+  containers:
+  - name: my-container
+    image: ai-learning:latest
+```
+
+##### YAML 필드 상세 설명
+
+* `spec.tolerations`
+  → Pod가 감내할 수 있는 taint 정의
+
+* `key`
+  → node taint의 key와 일치해야 함
+
+* `operator: Equal`
+  → key + value가 정확히 같아야 함
+  (`Exists`면 value 비교 생략)
+
+* `value`
+  → node taint의 value
+
+* `effect`
+  → 허용할 taint effect
+
+📌 **핵심 포인트**
+
+* taint는 **노드 기준**
+* toleration은 **Pod 기준**
+* 항상 쌍으로 이해해야 한다
+
+---
+
+### 3. Node Affinity
+
+#### 개념
+
+Node Selector보다 **훨씬 표현력이 높은 노드 선택 방식**이다.
+
+---
+
+#### requiredDuringSchedulingIgnoredDuringExecution
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-pod
+spec:
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: hw-type
+            operator: In
+            values:
+            - gpu
+```
+
+##### YAML 구조 해설
+
+```
+nodeSelectorTerms  → OR
+ └─ matchExpressions → AND
+```
+
+##### 필드 설명
+
+* `requiredDuringSchedulingIgnoredDuringExecution`
+
+  * 스케줄 시점에는 **반드시 만족**
+  * 실행 중에는 깨져도 Pod 제거 안 함
+
+* `matchExpressions`
+
+  * 실제 조건 집합
+
+* `operator`
+
+  * `In`, `NotIn`
+  * `Exists`
+  * `Gt`, `Lt` (숫자 비교)
+
+📌 **특징**
+
+* nodeSelector의 상위 호환
+* 조건 조합 가능
+
+---
+
+#### preferredDuringSchedulingIgnoredDuringExecution
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: another-pod
+spec:
+  affinity:
+    nodeAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 10
+        preference:
+          matchExpressions:
+          - key: cpu-type
+            operator: In
+            values:
+            - arm
+```
+
+##### 필드 설명
+
+* `preferredDuringSchedulingIgnoredDuringExecution`
+
+  * 만족하면 좋지만 **필수는 아님**
+
+* `weight`
+
+  * 선호도 점수 (1~100)
+  * 여러 조건이면 합산
+
+📌 **의미**
+
+> “가능하면 이런 노드면 좋겠다”
+
+---
+
+#### 4. Pod Affinity / Anti-Affinity
+
+##### 개념
+
+Pod의 배치를 **다른 Pod의 위치 기준으로 제어**한다.
+
+---
+
+##### Pod Anti-Affinity 예시
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-pod
+spec:
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+            - key: type
+              operator: In
+              values:
+              - frontend
+          topologyKey: "kubernetes.io/hostname"
+```
+
+##### YAML 필드 상세 설명
+
+* `labelSelector`
+  → 비교 대상 Pod (`type=frontend`)
+
+* `topologyKey`
+  → 같은 노드 기준 (`hostname`)
+  → zone, region도 가능
+
+* `weight`
+  → 강하게 피하려는 정도
+
+📌 **주 용도**
+
+* 고가용성(HA)
+* 장애 전파 방지
+
+---
+
+### 5. Pod Disruption Budget (PDB)
+
+#### 개념
+
+**자발적인 종료 상황에서도 반드시 유지할 Pod 수**를 정의한다.
+
+---
+
+#### PDB YAML
+
+```yaml
+apiVersion: policy/v1beta1
+kind: PodDisruptionBudget
+metadata:
+  name: my-pdb
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: my-app
+```
+
+##### 필드 설명
+
+* `minAvailable`
+
+  * 항상 살아 있어야 하는 Pod 수
+  * 숫자 / 퍼센트 가능
+
+* `selector`
+
+  * 적용 대상 Pod 집합
+  * Deployment와 label 일치 필수
+
+📌 `minAvailable: 100%`
+
+* 노드 드레인 불가
+* 매우 강력하지만 운영 리스크 큼
+
+---
+
+#### 최종 정리
+
+| 기능               | 역할           |
+| ---------------- | ------------ |
+| nodeSelector     | 가장 단순한 노드 제한 |
+| taint/toleration | 노드 출입 통제     |
+| nodeAffinity     | 조건 기반 노드 선택  |
+| podAffinity      | Pod 간 거리 조절  |
+| PDB              | 운영 중 가용성 보호  |
+
+Pod Scheduling은 단순히
+**“Pod를 어디에 올릴까?”** 가 아니라,
+
+> **“이 시스템을 어떤 철학으로 운영할 것인가”**
+
+를 YAML로 표현하는 영역이다.
+
+---
+
+
+
