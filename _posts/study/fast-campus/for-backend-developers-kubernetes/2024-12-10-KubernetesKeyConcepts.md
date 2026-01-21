@@ -1,7 +1,7 @@
 ---
 layout: post
 bigtitle: 'Part 1. 개발자를 위한 Kubernetes 입문'
-subtitle: Ch 2. Kubernetes의 주요 컨셉
+subtitle: Part 1. Ch 2. Kubernetes의 주요 컨셉
 date: '2024-12-10 00:00:01 +0900'
 categories:
     - for-backend-developers-kubernetes

@@ -1,7 +1,7 @@
 ---
 layout: post
 bigtitle: 'Part 1. 개발자를 위한 Kubernetes 입문'
-subtitle: Ch 4. Kubernetes 실습 환경 구성
+subtitle: Part 1. Ch 4. Kubernetes 실습 환경 구성
 date: '2026-01-20 00:00:02 +0900'
 categories:
     - for-backend-developers-kubernetes

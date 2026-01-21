@@ -1,7 +1,7 @@
 ---
 layout: post
 bigtitle: 'Part 1. 개발자를 위한 Kubernetes 입문'
-subtitle: Ch 3. Kubernetes가 백엔드 개발자에게 제공하는 것들
+subtitle: Part 1. Ch 3. Kubernetes가 백엔드 개발자에게 제공하는 것들
 date: '2026-01-20 00:00:01 +0900'
 categories:
     - for-backend-developers-kubernetes
