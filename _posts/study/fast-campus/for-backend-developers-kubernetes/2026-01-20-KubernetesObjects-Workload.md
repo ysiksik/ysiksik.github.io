@@ -799,26 +799,41 @@ Pod Scheduling은 단순히
 
 ---
 
-## 05. ReplicaSet과 Deployment
 
-~~~
+## Ch 5. Kubernetes 객체 – Workload
 
-$ kubectl apply -f my-simple-pod.yaml
+### 05. ReplicaSet과 Deployment
+
+Kubernetes를 처음 접하면 가장 먼저 이런 실습을 하게 된다.
+
+```bash
+kubectl apply -f my-simple-pod.yaml
+```
+
+그리고 Pod가 하나 생성된다.
+
+```bash
 pod/my-simple-pod created
+```
 
-~~~
+다시 같은 명령을 실행하면:
 
-~~~
-
-$ kubectl apply -f my-simple-pod.yaml
-pod/my-simple-pod created
-$ kubectl apply -f my-simple-pod.yaml
+```bash
 pod/my-simple-pod unchanged
+```
 
-~~~
+이 지점에서 중요한 사실 하나가 드러난다.
 
-~~~yaml
+> **Pod는 “한 번 만들어지면 그대로인 객체”**
+> → 스케일링, 업데이트, 복구를 직접 관리해야 한다
 
+---
+
+### Pod를 직접 여러 개 만들면 생기는 문제
+
+Pod를 여러 개 실행하고 싶다면 다음처럼 만들 수도 있다.
+
+```yaml
 apiVersion: v1
 kind: Pod
 metadata:
@@ -827,32 +842,52 @@ spec:
   containers:
   - name: my-container
     image: nginx:1.24
-    
+---
 apiVersion: v1
 kind: Pod
 metadata:
   name: my-simple-pod-02
 spec:
   containers:
-    - name: my-container
-      image: nginx:1.24
-      
+  - name: my-container
+    image: nginx:1.24
+---
 apiVersion: v1
 kind: Pod
 metadata:
   name: my-simple-pod-03
 spec:
   containers:
-    - name: my-container
-      image: nginx:1.24
+  - name: my-container
+    image: nginx:1.24
+```
 
-~~~
+하지만 이 방식에는 치명적인 한계가 있다.
+
+* Pod 하나가 죽어도 자동 복구되지 않는다
+* Pod 개수를 늘리거나 줄이기 어렵다
+* 이미지 버전을 바꿔도 자동으로 업데이트되지 않는다
+
+그래서 Kubernetes는 **Pod를 직접 관리하지 말라고** 말한다.
+그 역할을 대신하는 객체가 바로 **ReplicaSet과 Deployment**다.
+
+---
 
 ### ReplicaSet
-+ 여러 파드의 복제본을 생성하고 관리할 수 있는 객체
 
-~~~yaml
+#### ReplicaSet이란?
 
+ReplicaSet은
+**“지정한 개수만큼 Pod를 항상 유지해주는 객체”** 다.
+
+> Pod가 줄어들면 다시 만들고
+> Pod가 많아지면 제거한다
+
+---
+
+#### ReplicaSet YAML 예시
+
+```yaml
 apiVersion: apps/v1
 kind: ReplicaSet
 metadata:
@@ -866,18 +901,120 @@ spec:
     metadata:
       labels:
         app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.17
+```
+
+---
+
+#### YAML 필드 상세 설명
+
+##### ReplicaSet 자체 정보
+
+* `apiVersion: apps/v1`
+  → ReplicaSet이 속한 API 그룹
+
+* `kind: ReplicaSet`
+  → 생성할 객체 타입
+
+* `metadata.name`
+  → ReplicaSet 이름
+
+---
+
+##### spec.replicas
+
+```yaml
+replicas: 3
+```
+
+* **항상 유지해야 할 Pod 개수**
+* 하나라도 줄어들면 즉시 다시 생성됨
+
+---
+
+##### selector.matchLabels
+
+```yaml
+selector:
+  matchLabels:
+    app: nginx
+```
+
+* **ReplicaSet이 관리할 Pod를 식별하는 기준**
+* 이 label을 가진 Pod는 모두 관리 대상
+
+⚠️ 매우 중요
+ReplicaSet은 “자기가 만든 Pod”를 따로 기억하지 않는다.
+**label로만 판단한다.**
+
+그래서 만약:
+
+* 다른 Pod가 우연히 `app: nginx` 라벨을 가지면
+* ReplicaSet은 그 Pod까지 **자기 관리 대상**으로 인식한다
+
+👉 실무에서는 **ReplicaSet 전용 고유 label 규칙**을 반드시 사용한다.
+
+---
+
+##### template (Pod 템플릿)
+
+```yaml
+template:
+  metadata:
+    labels:
+      app: nginx
   spec:
     containers:
     - name: nginx
       image: nginx:1.17
+```
 
-~~~
+* ReplicaSet이 **새로운 Pod를 만들 때 사용하는 설계도**
+* 여기서 정의한 내용이 Pod spec이 된다
+
+---
+
+#### ReplicaSet의 한계
+
+ReplicaSet은 **Pod 개수 유지**에는 매우 충실하지만,
+다음 상황에서는 우리가 기대하는 동작을 하지 않는다.
+
+##### ❌ 이미지 버전 변경
+
+* `nginx:1.17` → `nginx:1.18`로 수정
+* `kubectl apply`
+
+👉 이미 실행 중인 Pod는 **전혀 바뀌지 않는다**
+
+ReplicaSet은:
+
+* Pod 수만 맞추지
+* **Pod spec 변경에 따른 업데이트는 책임지지 않는다**
+
+단,
+
+* 기존 Pod를 수동으로 삭제하면
+* 새 Pod를 만들 때는 **변경된 템플릿을 사용**한다
+
+---
 
 ### Deployment
-+ ReplicaSet의 버전을 관리해주는 객체
 
-~~~yaml
+#### Deployment란?
 
+Deployment는
+**ReplicaSet의 “버전 관리 + 업데이트 전략”을 담당하는 상위 객체**다.
+
+> 실무에서는 **ReplicaSet을 직접 쓰지 않고 Deployment만 사용**한다
+
+---
+
+#### Deployment YAML 예시
+
+```yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -900,42 +1037,150 @@ spec:
       containers:
       - name: my-container
         image: nginx:1.17
+```
 
-~~~
+---
+
+#### YAML 필드 설명
+
+##### replicas / selector / template
+
+* 구조는 **ReplicaSet과 거의 동일**
+* Deployment가 내부적으로 ReplicaSet을 생성하고 관리한다
+
+---
+
+### Deployment 전략 (strategy)
+
+Deployment의 핵심은 **업데이트 전략**이다.
+
+```yaml
+strategy:
+  type: RollingUpdate
+```
+
+---
 
 ### Recreate 전략
-+ 모든 파드를 한 번에 교체하는 전략
 
-### RollingUpdate 전략
-+ 각각의 파드를 순차적으로 업데이트 하는 전략
-+ maxSurge : 업데이트 하는 동안 Pod가 얼마나 더 생성될 수 있는지
-+ maxUnavailable : 업데이트 하는 동안 Pod가 얼마나 줄어들 수 있는지
-+ 업데이트 구간 Pod 수 : replicas - maxUnavailable ~ replicas + maxSurge
+```yaml
+strategy:
+  type: Recreate
+```
 
-~~~
+* 모든 기존 Pod를 **한 번에 종료**
+* 새 Pod를 다시 생성
+* **서비스 다운타임 발생 가능**
 
+👉 내부 서비스, 배치 작업에는 가능
+👉 외부 트래픽 서비스에는 거의 사용하지 않음
+
+---
+
+#### RollingUpdate 전략 (기본값)
+
+```yaml
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 1
+```
+
+##### 필드 설명
+
+* `maxSurge`
+
+  * 업데이트 중 **추가로 생성 가능한 Pod 수**
+* `maxUnavailable`
+
+  * 업데이트 중 **일시적으로 줄어들 수 있는 Pod 수**
+
+##### 업데이트 중 Pod 개수 범위
+
+```
+replicas - maxUnavailable
+~
+replicas + maxSurge
+```
+
+이 설정 덕분에:
+
+* 무중단 배포
+* 점진적 트래픽 전환
+  이 가능해진다.
+
+---
+
+### Deployment Rollout 명령어
+
+#### 배포 상태 확인
+
+```bash
 kubectl rollout status deployment/my-deployment
+```
 
-~~~
-+ 마지막 배포 상태를 조회
+* 현재 배포가 진행 중인지
+* 완료되었는지 확인
 
-~~~
+---
 
-$ kubectl rollout history deployment/my-deployment
+#### 배포 이력 확인
 
-~~~
-+ 배포 기록과 Revision을 확인
+```bash
+kubectl rollout history deployment/my-deployment
+```
 
-~~~
+* Revision 번호
+* 과거 배포 기록 확인
 
-$ kubectl rollout undo deployment/my-deployment --to-revision=2
+---
 
-~~~
-+ 배포를 이전 Revision으로 롤백 
+#### 특정 Revision으로 롤백
 
-~~~
+```bash
+kubectl rollout undo deployment/my-deployment --to-revision=2
+```
 
-$ kubectl rollout restart deployment/my-deployment
+* 이전 버전으로 즉시 되돌림
+* 운영 안정성에서 매우 중요한 기능
 
-~~~
-+ 전체 파드를 현재 버전으로 재시작
+---
+
+#### 동일 버전으로 재시작
+
+```bash
+kubectl rollout restart deployment/my-deployment
+```
+
+* 이미지 변경 없이 Pod 전체 재시작
+* 설정 변경 반영, 캐시 초기화 등에 자주 사용
+
+---
+
+### 핵심 정리
+
+* **Pod**
+
+  * 실행 단위
+  * 직접 관리 대상 ❌
+
+* **ReplicaSet**
+
+  * Pod 개수 유지
+  * 스케일링 담당
+  * 업데이트 기능 부족
+
+* **Deployment**
+
+  * ReplicaSet 관리
+  * 버전 관리
+  * 무중단 배포
+  * 롤백 지원
+
+👉 **실무에서 Pod나 ReplicaSet을 직접 다루는 일은 거의 없다**
+👉 Deployment가 Kubernetes 애플리케이션 배포의 표준이다.
+
+---
+
+
