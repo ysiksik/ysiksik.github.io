@@ -410,7 +410,7 @@ spec:
 ---
 
 
-## 05. Pod Scheduling
+## 04. Pod Scheduling
 
 Kubernetes 클러스터는 일반적으로 **여러 개의 노드(Node)** 로 구성된다.
 Pod가 새로 생성되거나, 재시작·재배치가 필요해지면 Kubernetes는 다음 질문에 답해야 한다.
@@ -690,15 +690,15 @@ spec:
 
 ---
 
-#### 4. Pod Affinity / Anti-Affinity
+### 4. Pod Affinity / Anti-Affinity
 
-##### 개념
+#### 개념
 
 Pod의 배치를 **다른 Pod의 위치 기준으로 제어**한다.
 
 ---
 
-##### Pod Anti-Affinity 예시
+#### Pod Anti-Affinity 예시
 
 ```yaml
 apiVersion: v1
@@ -720,7 +720,7 @@ spec:
           topologyKey: "kubernetes.io/hostname"
 ```
 
-##### YAML 필드 상세 설명
+#### YAML 필드 상세 설명
 
 * `labelSelector`
   → 비교 대상 Pod (`type=frontend`)
@@ -799,5 +799,143 @@ Pod Scheduling은 단순히
 
 ---
 
+## 05. ReplicaSet과 Deployment
 
+~~~
 
+$ kubectl apply -f my-simple-pod.yaml
+pod/my-simple-pod created
+
+~~~
+
+~~~
+
+$ kubectl apply -f my-simple-pod.yaml
+pod/my-simple-pod created
+$ kubectl apply -f my-simple-pod.yaml
+pod/my-simple-pod unchanged
+
+~~~
+
+~~~yaml
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-simple-pod-01
+spec:
+  containers:
+  - name: my-container
+    image: nginx:1.24
+    
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-simple-pod-02
+spec:
+  containers:
+    - name: my-container
+      image: nginx:1.24
+      
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-simple-pod-03
+spec:
+  containers:
+    - name: my-container
+      image: nginx:1.24
+
+~~~
+
+### ReplicaSet
++ 여러 파드의 복제본을 생성하고 관리할 수 있는 객체
+
+~~~yaml
+
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: nginx-replicaset
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+  spec:
+    containers:
+    - name: nginx
+      image: nginx:1.17
+
+~~~
+
+### Deployment
++ ReplicaSet의 버전을 관리해주는 객체
+
+~~~yaml
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-deployment
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: my-app
+  template:
+    metadata:
+      labels:
+        app: my-app
+    spec:
+      containers:
+      - name: my-container
+        image: nginx:1.17
+
+~~~
+
+### Recreate 전략
++ 모든 파드를 한 번에 교체하는 전략
+
+### RollingUpdate 전략
++ 각각의 파드를 순차적으로 업데이트 하는 전략
++ maxSurge : 업데이트 하는 동안 Pod가 얼마나 더 생성될 수 있는지
++ maxUnavailable : 업데이트 하는 동안 Pod가 얼마나 줄어들 수 있는지
++ 업데이트 구간 Pod 수 : replicas - maxUnavailable ~ replicas + maxSurge
+
+~~~
+
+kubectl rollout status deployment/my-deployment
+
+~~~
++ 마지막 배포 상태를 조회
+
+~~~
+
+$ kubectl rollout history deployment/my-deployment
+
+~~~
++ 배포 기록과 Revision을 확인
+
+~~~
+
+$ kubectl rollout undo deployment/my-deployment --to-revision=2
+
+~~~
++ 배포를 이전 Revision으로 롤백 
+
+~~~
+
+$ kubectl rollout restart deployment/my-deployment
+
+~~~
++ 전체 파드를 현재 버전으로 재시작
