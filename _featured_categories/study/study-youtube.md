@@ -17,5 +17,7 @@ related_posts:
 ## 카테고리
 
 * [우아한테크코스 테코톡]{:.heading.flip-title}
+* [개발자 유미]{:.heading.flip-title}
 
 [우아한테크코스 테코톡]: /elegant-tekotok/
+[개발자 유미]: /developer-yumi/

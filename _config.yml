@@ -116,6 +116,8 @@ menu:
         submenu:
           - title:    우아한 테코톡
             url:    /elegant-tekotok/
+          - title:    개발자 유미
+            url:    /developer-yumi/
       - title: 스터디 랩
         url: /study-lab/
 #      - title: 독서
