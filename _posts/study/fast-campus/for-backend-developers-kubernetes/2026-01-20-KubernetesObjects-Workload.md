@@ -800,9 +800,7 @@ Pod Scheduling은 단순히
 ---
 
 
-## Ch 5. Kubernetes 객체 – Workload
-
-### 05. ReplicaSet과 Deployment
+## 05. ReplicaSet과 Deployment
 
 Kubernetes를 처음 접하면 가장 먼저 이런 실습을 하게 된다.
 
@@ -1182,5 +1180,311 @@ kubectl rollout restart deployment/my-deployment
 👉 Deployment가 Kubernetes 애플리케이션 배포의 표준이다.
 
 ---
+
+## 06. DaemonSet과 StatefulSet
+
+앞에서 살펴본 Deployment와 ReplicaSet은 공통된 전제를 가진다.
+
+> Pod는 **서로 동등하고**,
+> 언제든지 **대체 가능**하며,
+> 개별 Pod의 정체성(identity)은 중요하지 않다.
+
+이 전제는 **대부분의 웹 서비스, API 서버**에는 매우 잘 맞는다.
+하지만 모든 워크로드가 이 전제에 들어맞는 것은 아니다.
+
+이번 챕터에서는
+이 기본 전제에서 **의도적으로 벗어난 두 가지 객체**,
+**DaemonSet**과 **StatefulSet**을 살펴본다.
+
+---
+
+### DaemonSet
+
+#### DaemonSet의 역할
+
+DaemonSet은 Kubernetes에서
+**“노드마다 하나씩 반드시 실행되어야 하는 Pod”** 를 관리하는 객체다.
+
+여기서 말하는 Daemon은:
+
+* 백그라운드에서 계속 실행되며
+* 시스템 전체에 필요한 일을 수행하는 서비스
+
+를 의미한다.
+
+---
+
+#### “컨테이너 안의 데몬”이 아닌 이유
+
+컨테이너에는 중요한 원칙이 있다.
+
+> **하나의 컨테이너 = 하나의 주요 프로세스**
+
+그래서:
+
+* 컨테이너 내부에서
+* 백그라운드 프로세스를 하나 더 띄우는 방식은
+* 컨테이너 철학에 어긋난다
+
+DaemonSet은 이 문제를 이렇게 해결한다.
+
+> “컨테이너 안에서 데몬을 돌리지 말고,
+> **노드마다 데몬 역할을 하는 Pod를 하나씩 띄우자**”
+
+즉,
+
+* DaemonSet은 Pod 내부의 백그라운드가 아니라
+* **노드의 백그라운드 역할을 수행하는 Pod**를 만든다.
+
+---
+
+#### DaemonSet의 특징
+
+* 각 노드마다 **정확히 하나의 Pod** 실행
+* 노드가 추가되면 → 자동으로 Pod 추가
+* 노드가 제거되면 → Pod 자동 제거
+* 필요하다면 **특정 노드에만 선택적 배포 가능**
+
+선택적 배포는:
+
+* nodeSelector
+* nodeAffinity
+* taint / toleration
+
+등을 사용해 제어한다.
+
+이 설정들은 **동적으로 반영**되기 때문에,
+
+* 노드가 바뀌거나
+* 클러스터 구조가 변해도
+
+DaemonSet은 조건에 맞게 자동으로 조정된다.
+
+---
+
+#### DaemonSet YAML 예시
+
+```yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluentd-daemonset
+spec:
+  selector:
+    matchLabels:
+      name: fluentd
+  template:
+    metadata:
+      labels:
+        name: fluentd
+    spec:
+      containers:
+      - name: fluentd
+        image: fluent/fluentd:latest
+```
+
+#### YAML 필드 설명
+
+* `kind: DaemonSet`
+  → 노드 단위로 Pod를 배치하는 객체
+
+* `spec.selector.matchLabels`
+  → DaemonSet이 관리할 Pod 식별 기준
+  (ReplicaSet / Deployment와 동일한 개념)
+
+* `spec.template`
+  → 각 노드에 생성될 Pod의 설계도
+
+* `containers.image`
+  → 노드 로그 수집, 모니터링, 에이전트 등에 자주 사용됨
+
+📌 **대표적인 DaemonSet 사용 사례**
+
+* 로그 수집기 (fluentd, fluent-bit)
+* 모니터링 에이전트 (node-exporter)
+* 보안 / 네트워크 플러그인
+
+---
+
+### StatefulSet
+
+#### StatefulSet이 특별한 이유
+
+StatefulSet은 Kubernetes 객체들 중에서도
+**가장 이질적인 성격**을 가진 객체라고 볼 수 있다.
+
+왜냐하면 Kubernetes의 기본 철학과 정반대되는 개념을 도입하기 때문이다.
+
+---
+
+#### Kubernetes 기본 Pod 철학
+
+기본적으로 Kubernetes의 Pod는:
+
+* 개미나 벌처럼 **군집의 일원**
+* 개별 Pod의 정체성은 중요하지 않음
+* 언제든지 제거되고 다시 생성될 수 있음
+* 외부에서는
+
+  * Pod 하나를 직접 호출하지 않고
+  * label + selector로 **집단 단위**로 접근
+
+이 설계는:
+
+* stateless 애플리케이션
+* 수평 확장
+* 분산 처리
+
+에 매우 잘 어울린다.
+
+---
+
+#### 하지만 모든 워크로드가 평등할 수는 없다
+
+현실에는 다음과 같은 애플리케이션도 존재한다.
+
+* 데이터베이스
+* 메시지 브로커
+* 상태 기반 분산 시스템
+
+예를 들어 데이터베이스는:
+
+* Primary (쓰기 담당)
+* Replica (읽기 담당)
+
+처럼 **역할이 다르다**.
+
+이런 시스템을:
+
+* “모두 동등하게”
+* “아무 Pod나 대체 가능하게”
+
+만들도록 강요하는 것은
+현실적으로 어려운 설계다.
+
+---
+
+#### StatefulSet의 핵심 개념
+
+StatefulSet은 Pod에 다음을 보장한다.
+
+* **고유한 아이덴티티**
+* **고정된 이름과 호스트네임**
+* **순서 보장된 생성 / 삭제**
+
+---
+
+#### StatefulSet YAML 예시
+
+```yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-set
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis
+```
+
+---
+
+#### StatefulSet Pod의 특징
+
+StatefulSet으로 생성된 Pod는:
+
+* 이름이 다음과 같이 고정된다
+
+  ```
+  redis-set-0
+  redis-set-1
+  redis-set-2
+  ```
+* 호스트네임도 동일하게 유지된다
+* Pod가 재생성되어도 **번호와 정체성은 유지**된다
+
+---
+
+#### 스케일링 시 동작 방식
+
+```bash
+kubectl scale statefulsets redis-set --replicas=2
+```
+
+* 줄어들 때:
+
+  * `redis-set-2` → 제거
+* 늘어날 때:
+
+  * `redis-set-2` → 다시 생성
+
+👉 **항상 순서를 지킨다**
+
+Deployment / ReplicaSet처럼
+랜덤한 해시 이름을 사용하지 않는다.
+
+---
+
+#### StatefulSet의 장점과 한계
+
+##### 장점
+
+* Pod를 명확하게 식별 가능
+* 역할 분담이 필요한 워크로드에 적합
+* 순서가 중요한 시스템에 사용 가능
+
+##### 한계
+
+* 운영 복잡도가 매우 높음
+* 스토리지, 네트워크, 복구 전략을 함께 고려해야 함
+* Kubernetes의 강점인 “무차별 스케일링”과는 어울리지 않음
+
+그래서 실제 운영 환경에서는:
+
+* Kubernetes 클러스터 **내부**
+  → stateless 서비스
+* 데이터베이스 / 메시지 큐
+  → 클러스터 **외부의 전용 서비스 또는 VM**
+
+구성이 더 선호된다.
+
+---
+
+#### StatefulSet의 현실적인 사용 위치
+
+* ❌ 대규모 운영 DB (운영 환경)
+* ⚠️ 제한적 내부 서비스
+* ✅ 개발 / 테스트 환경
+* ✅ 로컬 / 스테이징 환경에서의 실습용 DB
+
+StatefulSet은:
+
+* 많이 쓰이지는 않지만
+* **왜 쿠버네티스가 이렇게 설계되었는지 이해하게 만드는 객체**다.
+
+---
+
+### 한 문장 정리
+
+* **DaemonSet**
+  → “모든 노드에 하나씩 필요한 시스템 Pod”
+* **StatefulSet**
+  → “Pod 하나하나의 정체성이 중요한 워크로드”
+
+Deployment까지 이해했다면,
+DaemonSet과 StatefulSet은
+**쿠버네티스 설계 철학의 경계를 보여주는 사례**라고 보면 된다.
+
+---
+
 
 
