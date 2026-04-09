@@ -120,6 +120,11 @@ menu:
             url:    /developer-yumi/
       - title: 스터디 랩
         url: /study-lab/
+      - title: 스파르타
+        url: /sparta/
+        submenu:
+          - title: 실무에 바로 쓰는 DDD기반으로 유연성과 확정성 있게 MSA 설계하기
+            url: /designing-an-msa/
 #      - title: 독서
 #        url:    /book/
 #      - title:    페이먼츠
