@@ -1486,5 +1486,389 @@ DaemonSet과 StatefulSet은
 
 ---
 
+## 08. Job과 CronJob
 
+지금까지 살펴본 Kubernetes 워크로드는 대부분 이런 형태였다.
+
+* Deployment
+* ReplicaSet
+* DaemonSet
+
+이들은 공통적으로
+👉 **“계속 실행되는 서버형 워크로드”** 를 위한 구조다.
+
+---
+
+### Kubernetes는 서버만 돌리는 플랫폼일까?
+
+많은 사람들이 Kubernetes를 이렇게 이해한다.
+
+> “컨테이너 서버를 띄우는 플랫폼”
+
+하지만 실제로는 그렇지 않다.
+
+* Kubernetes의 Pod는
+  👉 **단순히 컴퓨팅 리소스를 제공하는 실행 단위**일 뿐이다
+
+즉,
+
+* 서버를 띄워도 되고
+* 배치를 돌려도 되고
+* 한 번 실행하고 끝내도 된다
+
+---
+
+### 왜 Job / CronJob이 필요할까?
+
+Pod만으로도 배치는 돌릴 수 있다.
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: batch-pod
+spec:
+  restartPolicy: OnFailure
+  containers:
+  - name: batch-job
+    image: my-batch
+```
+
+---
+
+### 이 방식의 한계
+
+* 성공 / 실패 여부 관리 어려움
+* 재시도 정책 제어 부족
+* 반복 실행 관리 불가능
+* 종료된 Pod 자동 정리 안됨
+
+👉 결국 운영에서 쓰기 어렵다
+
+그래서 Kubernetes는
+👉 **배치 전용 객체**를 따로 제공한다.
+
+* Job
+* CronJob
+
+---
+
+### Job
+
+#### Job의 역할
+
+Job은:
+
+> “작업을 수행하고 종료되는 Pod를 관리하는 객체”
+
+즉,
+
+* 서버처럼 계속 실행되지 않고
+* **작업 완료를 목표로 하는 워크로드**
+
+---
+
+#### Job YAML 예시
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: my-simple-job
+spec:
+  activeDeadlineSeconds: 60
+  ttlSecondsAfterFinished: 20
+  parallelism: 2
+  completions: 5
+  backoffLimit: 4
+  template:
+    spec:
+      containers:
+      - name: my-container
+        image: busybox
+        command: ["sh", "-c", "sleep 10"]
+      restartPolicy: OnFailure
+```
+
+---
+
+#### 핵심 필드 설명
+
+##### parallelism
+
+```yaml
+parallelism: 2
+```
+
+* 동시에 실행 가능한 Pod 수
+* 병렬 처리 개수
+
+👉 “한 번에 몇 개 돌릴지”
+
+---
+
+##### completions
+
+```yaml
+completions: 5
+```
+
+* 전체 작업 횟수
+
+👉 “총 몇 번 실행할지”
+
+---
+
+##### 조합 의미
+
+* parallelism: 2
+* completions: 5
+
+👉 최대 2개씩 동시에 실행하면서
+👉 총 5번 작업 완료하면 끝
+
+---
+
+##### backoffLimit
+
+```yaml
+backoffLimit: 4
+```
+
+* 실패 시 재시도 횟수
+
+👉 컨테이너 / Pod 재시작 횟수 제한
+
+---
+
+##### restartPolicy
+
+```yaml
+restartPolicy: OnFailure
+```
+
+Job에서는 다음 두 개만 가능하다:
+
+* OnFailure
+* Never
+
+👉 Always는 사용할 수 없음
+
+---
+
+##### activeDeadlineSeconds
+
+```yaml
+activeDeadlineSeconds: 60
+```
+
+* Job 전체 실행 제한 시간
+
+👉 시간 초과 시 강제 종료
+
+---
+
+##### ttlSecondsAfterFinished
+
+```yaml
+ttlSecondsAfterFinished: 20
+```
+
+* Job 종료 후 자동 삭제 시간
+
+👉 운영 환경에서는 필수 설정
+
+---
+
+#### Job에서 중요한 핵심 개념
+
+##### 1. “종료되어야 정상”
+
+Job의 Pod는 반드시:
+
+* exit code 0으로 종료
+
+해야 한다.
+
+👉 서버처럼 계속 돌면 안 된다
+
+---
+
+##### 2. 잘못된 사용 예
+
+```yaml
+# ❌ 잘못된 사용
+nginx 서버를 Job으로 실행
+```
+
+→ Job은 절대 끝나지 않음
+
+---
+
+##### 3. 올바른 사용 예
+
+* 데이터 정산 배치
+* 파일 처리
+* 데이터 마이그레이션
+* 크롤링 작업
+
+
+---
+
+### CronJob
+
+#### CronJob의 역할
+
+CronJob은:
+
+> “스케줄 기반으로 Job을 생성하는 객체”
+
+---
+
+#### CronJob YAML 예시
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: my-cronjob
+spec:
+  startingDeadlineSeconds: 200
+  concurrencyPolicy: Forbid
+  schedule: "0 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: my-container
+            image: busybox
+            command: ["echo", "sleep 10"]
+          restartPolicy: OnFailure
+```
+
+---
+
+#### 핵심 필드 설명
+
+##### schedule
+
+```yaml
+schedule: "0 * * * *"
+```
+
+* 크론 표현식
+
+👉 매 시간 0분마다 실행
+
+---
+
+##### jobTemplate
+
+```yaml
+jobTemplate:
+```
+
+* 내부적으로 생성할 Job 정의
+
+👉 Job spec이 그대로 들어간다
+
+---
+
+##### concurrencyPolicy
+
+```yaml
+concurrencyPolicy: Forbid
+```
+
+동시 실행 정책
+
+* Allow (기본)
+  → 기존 실행 중이어도 새 Job 실행
+
+* Forbid
+  → 이전 Job 끝날 때까지 대기
+
+* Replace
+  → 기존 Job 죽이고 새 Job 실행
+
+---
+
+##### startingDeadlineSeconds
+
+```yaml
+startingDeadlineSeconds: 200
+```
+
+* 스케줄을 놓쳤을 때 대기 시간
+
+👉 이 시간 안에 실행 못 하면 skip
+
+---
+
+#### CronJob의 핵심 포인트
+
+##### 1. 내부적으로 Job을 만든다
+
+CronJob → Job → Pod
+
+구조
+
+---
+
+##### 2. 운영에서 매우 중요
+
+* 정산 배치
+* 로그 집계
+* 통계 처리
+* 데이터 동기화
+
+👉 거의 모든 서비스에서 필수
+
+---
+
+### Kubernetes에서 배치를 돌리는 진짜 장점
+
+#### 1. 자원 활용 극대화
+
+> “남는 리소스로 배치 돌린다”
+
+* 서버 트래픽이 적을 때
+* 동일 노드에서 배치 실행
+
+👉 인프라 효율 극대화
+
+---
+
+#### 2. 자동 재시도 / 장애 복구
+
+* 실패 시 자동 재시도
+* Pod 재스케줄링
+
+👉 안정성 확보
+
+---
+
+#### 3. 확장성
+
+* parallelism으로 병렬 처리
+* 노드 증가 → 자동 확장
+
+---
+
+#### 4. 운영 자동화
+
+* CronJob으로 완전 자동화
+
+---
+
+### 한 문장 정리
+
+* **Job**
+  → “한 번 실행하고 끝나는 작업”
+
+* **CronJob**
+  → “시간 기반으로 반복 실행되는 Job”
+
+---
 
