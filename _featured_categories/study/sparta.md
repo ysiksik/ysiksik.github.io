@@ -1,5 +1,5 @@
 ---
-layout: list
+layout: page
 category: study
 bigtitle: 스파르타
 description: >
@@ -8,6 +8,9 @@ list: true
 order: 7
 menu: true
 submenu: true
+sitemap: true
+related_posts:
+  - 
 ---
 # 스파르타
 
