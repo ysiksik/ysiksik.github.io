@@ -29,3 +29,4 @@ hide_description: false
 [패스트 캠퍼스]: /fast-campus/
 [유튜브]: /study-youtube/
 [스터디 랩]: /study-lab/
+[스파르타]: /sparta/
