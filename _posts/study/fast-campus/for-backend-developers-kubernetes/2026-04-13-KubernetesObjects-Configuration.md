@@ -37,7 +37,7 @@ comments: true
 
 ---
 
-## 환경 변수란?
+### 환경 변수란?
 
 환경 변수(Environment Variable)는
 운영체제 또는 Shell 수준에서 설정되는 변수다.
@@ -57,7 +57,7 @@ export DB_PASSWORD=password
 
 ---
 
-## Kubernetes에서의 환경 변수
+### Kubernetes에서의 환경 변수
 
 쿠버네티스에서는 환경 변수를 다음과 같이 본다:
 
@@ -103,14 +103,14 @@ export DB_PASSWORD=password
 
 ---
 
-## Kubernetes에서 환경 변수 정의
+### Kubernetes에서 환경 변수 정의
 
 환경 변수는
 👉 **컨테이너 단위로 정의된다 (중요)**
 
 ---
 
-### YAML 예시
+#### YAML 예시
 
 ```yaml
 apiVersion: v1
@@ -133,9 +133,9 @@ spec:
 
 ---
 
-## YAML 상세 설명
+### YAML 상세 설명
 
-### env
+#### env
 
 ```yaml
 env:
@@ -146,7 +146,7 @@ env:
 
 ---
 
-### 기본 값 설정
+#### 기본 값 설정
 
 ```yaml
 - name: SAMPLE_ENV
@@ -157,7 +157,7 @@ env:
 
 ---
 
-### valueFrom (동적 주입)
+#### valueFrom (동적 주입)
 
 ```yaml
 - name: POD_NAME
@@ -170,13 +170,13 @@ env:
 
 ---
 
-## fieldRef / fieldPath 의미
+### fieldRef / fieldPath 의미
 
-### fieldRef
+#### fieldRef
 
 * Kubernetes 리소스 필드 참조
 
-### fieldPath
+#### fieldPath
 
 * 실제 참조할 경로
 
@@ -190,15 +190,15 @@ env:
 
 ---
 
-## 중요한 포인트 (실무 핵심)
+### 중요한 포인트 (실무 핵심)
 
-### 1. 환경 변수는 “컨테이너 레벨”
+#### 1. 환경 변수는 “컨테이너 레벨”
 
 👉 Pod 전체가 아니라 각 컨테이너마다 따로 설정됨
 
 ---
 
-### 2. 이미지 정보는 환경 변수로 못 가져옴
+#### 2. 이미지 정보는 환경 변수로 못 가져옴
 
 예:
 
@@ -232,7 +232,7 @@ HOSTNAME
 
 ---
 
-## 실제 주입 결과 예시
+### 실제 주입 결과 예시
 
 ```bash
 KUBERNETES_SERVICE_PORT=443
@@ -246,7 +246,7 @@ POD_NAME=env-test-pod
 
 ---
 
-## 왜 환경 변수가 중요한가 (실무 관점)
+### 왜 환경 변수가 중요한가 (실무 관점)
 
 여기서 한 단계 더 중요한 포인트가 있다.
 
@@ -278,11 +278,286 @@ POD_NAME=env-test-pod
 
 ---
 
-## 한 줄 핵심 정리
+### 한 줄 핵심 정리
 
 👉 환경 변수는 Kubernetes에서
 **“코드와 설정을 분리하는 가장 기본이자 중요한 메커니즘”**
 
 ---
 
+## 02. ConfigMap & Secret
+
+앞에서 환경 변수를 통해 설정을 주입하는 방법을 살펴봤다.
+하지만 실제 서비스에서는 다음과 같은 요구가 생긴다.
+
+* 설정 값이 많아짐
+* 환경별 설정 분리 필요
+* 민감 정보(DB 비밀번호 등) 보호 필요
+
+이 문제를 해결하기 위해 Kubernetes는
+👉 **ConfigMap과 Secret**이라는 설정 전용 객체를 제공한다.
+
+---
+
+### ConfigMap vs Secret
+
+| 구분 | ConfigMap        | Secret               |
+| -- | ---------------- | -------------------- |
+| 용도 | 일반 설정값           | 민감 정보                |
+| 예시 | DB_HOST, profile | DB_PASSWORD, API_KEY |
+| 보안 | 없음               | 제한적 보호               |
+
+---
+
+### ConfigMap
+
+ConfigMap은
+👉 **외부에 공개되어도 괜찮은 설정값을 저장하는 객체**다.
+
+---
+
+### ConfigMap YAML 예시
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: my-config
+data:
+  profile: "dev"
+  db_host: "10.20.30.40"
+  welcome-script: |
+    echo Hello!
+    echo DB is $db_host
+```
+
+---
+
+### ConfigMap 필드 설명
+
+* `data`
+  → key-value 형태의 설정값 저장
+
+* 멀티라인 데이터 (`|`)
+  → 파일 형태의 설정 가능
+
+```yaml
+welcome-script: |
+  echo Hello!
+  echo DB is $db_host
+```
+
+👉 스크립트, 설정 파일 저장에 유용
+
+---
+
+### Secret
+
+Secret은
+👉 **외부에 노출되면 안 되는 민감 정보를 저장하는 객체**다.
+
+---
+
+### Secret 생성 (CLI)
+
+```bash
+kubectl create secret generic my-db --from-literal=DB_PW=mypassword
+```
+
+---
+
+### Secret YAML 예시
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: my-secret
+type: Opaque
+data:
+  DB_PW: bXlwYXNzd29yZAo=
+stringData:
+  API_KEY: ABCD-1234-5678-ZYX
+```
+
+---
+
+### Secret 필드 설명
+
+* `data`
+  → base64 인코딩된 값
+
+* `stringData`
+  → 평문 입력 (자동 인코딩됨)
+
+* `type: Opaque`
+  → 일반적인 Key-Value Secret
+
+---
+
+### Secret 보안 특징 (중요)
+
+Secret은 완전한 암호화 저장소가 아니다.
+
+#### 기본 특징
+
+* etcd에 저장됨
+* base64 인코딩 (암호화 아님)
+* CLI에서 기본적으로 값 숨김
+
+#### 위험 요소
+
+* etcd 접근 가능 → 모든 Secret 조회 가능
+* base64 → 쉽게 복호화 가능
+
+#### 보안 강화 방법
+
+* etcd encryption 활성화
+* RBAC 접근 제어
+* Secret 접근 최소화
+
+---
+
+### 설정 주입 방법
+
+ConfigMap과 Secret은 Pod에 두 가지 방식으로 주입할 수 있다.
+
+---
+
+### 1. 환경 변수 방식
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-config-app
+spec:
+  containers:
+  - name: my-container
+    image: my-app:1.0.0
+    env:
+    - name: SPRING_PROFILES_ACTIVE
+      valueFrom:
+        configMapKeyRef:
+          name: my-config
+          key: profile
+    - name: DB_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: my-secret
+          key: DB_PW
+```
+
+---
+
+### 환경 변수 방식 설명
+
+* `configMapKeyRef`
+  → ConfigMap에서 값 가져오기
+
+* `secretKeyRef`
+  → Secret에서 값 가져오기
+
+* `name`
+  → ConfigMap/Secret 이름
+
+* `key`
+  → 해당 설정 값의 키
+
+👉 가장 간단하고 많이 사용하는 방식
+
+---
+
+### 2. Volume Mount 방식
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-pod
+spec:
+  containers:
+  - name: my-container
+    image: my-image
+    volumeMounts:
+    - name: config-volume
+      mountPath: /config-files
+  volumes:
+  - name: config-volume
+    configMap:
+      name: my-config
+      items:
+      - key: welcome-script
+        path: "welcome.sh"
+```
+
+---
+
+### Volume 방식 설명
+
+* `volumes.configMap`
+  → ConfigMap을 볼륨으로 연결
+
+* `volumeMounts.mountPath`
+  → 컨테이너 내부 경로
+
+* `items`
+  → 특정 key만 파일로 매핑
+
+---
+
+### 결과
+
+컨테이너 내부:
+
+```
+/config-files/welcome.sh
+```
+
+👉 파일 내용 = ConfigMap 값
+
+---
+
+### 언제 어떤 방식을 사용할까?
+
+| 방식     | 사용 상황       |
+| ------ | ----------- |
+| 환경 변수  | 간단한 설정값     |
+| 파일 마운트 | 설정 파일, 스크립트 |
+
+---
+
+### 실무 핵심 포인트
+
+#### 1. ConfigMap = 일반 설정
+
+* profile
+* host
+* feature flag
+
+---
+
+#### 2. Secret = 민감 정보
+
+* DB 비밀번호
+* API Key
+* 인증 토큰
+
+---
+
+#### 3. 코드와 설정 분리
+
+👉 가장 중요한 설계 원칙
+
+* 이미지 → 코드
+* ConfigMap/Secret → 설정
+
+---
+
+### 한 줄 핵심 정리
+
+👉 ConfigMap과 Secret은
+**“코드와 설정을 분리하고 환경별 구성을 가능하게 하는 핵심 메커니즘”**
+
+---
 
