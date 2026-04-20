@@ -295,4 +295,310 @@ Ephemeral Volume은
 
 ---
 
+## Kubernetes 객체 PersistentVolume과 PersistentVolumeClaim
+
+앞에서 살펴본 Volume (특히 emptyDir)은
+👉 **Pod와 함께 생성되고 사라지는 임시 저장소(Ephemeral Volume)**였다.
+
+하지만 실제 서비스에서는 다음과 같은 요구가 반드시 존재한다.
+
+* Pod가 재시작되어도 데이터가 유지되어야 함
+* 노드가 변경되어도 데이터가 유지되어야 함
+* 데이터베이스, 파일 저장소처럼 **영구 데이터 관리 필요**
+
+이 요구를 해결하기 위해 Kubernetes는
+👉 **PersistentVolume(PV)** 와 **PersistentVolumeClaim(PVC)** 구조를 제공한다.
+
+---
+
+### Persistent Volume (PV)
+
+PersistentVolume은
+👉 **Pod의 생명주기와 무관하게 유지되는 영구 저장소**다.
+
+---
+
+### PV의 특징
+
+* Pod 삭제와 관계없이 데이터 유지
+* 노드와 독립적으로 동작
+* 대부분 네트워크 기반 스토리지 사용
+
+예:
+
+* NFS
+* AWS EBS / GCP Persistent Disk
+* EFS 같은 파일 스토리지
+
+---
+
+### Static Provisioning vs Dynamic Provisioning
+
+#### Static Provisioning
+
+👉 미리 저장소를 만들어두는 방식
+
+* 관리자가 PV를 사전에 생성
+* Pod는 준비된 PV 중 하나를 선택
+
+📌 특징
+
+* 관리 비용 높음
+* 유연성 낮음
+
+---
+
+#### Dynamic Provisioning
+
+👉 필요할 때 자동 생성
+
+* PVC 요청 시 PV 자동 생성
+* StorageClass 기반 동작
+
+📌 특징
+
+* 클라우드 환경에서 표준
+* 확장성 뛰어남
+
+---
+
+### 왜 PV를 직접 사용하지 않을까?
+
+👉 Pod가 직접 PV를 선택하지 않는다
+
+이유:
+
+* Pod 생성 시점에 PV가 없을 수도 있음
+* 동적 생성에서는 PV가 나중에 만들어짐
+* 저장소 관리와 애플리케이션을 분리하기 위함
+
+---
+
+### PersistentVolumeClaim (PVC)
+
+PVC는
+👉 **“이런 저장소를 주세요”라고 요청하는 객체**다.
+
+---
+
+### 구조
+
+```
+Pod → PVC → PV
+```
+
+* Pod → PVC 사용
+* PVC → PV를 할당받음
+
+👉 역할 분리
+
+* Pod = 소비자
+* PVC = 요청자
+* PV = 실제 저장소
+
+---
+
+### PersistentVolume YAML 예시
+
+```yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: my-pv-500
+spec:
+  capacity:
+    storage: 500Mi
+  accessModes:
+  - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  hostPath:
+    path: "/my-pv/data/pv1"
+```
+
+---
+
+### PV YAML 상세 설명
+
+#### capacity
+
+```yaml
+capacity:
+  storage: 500Mi
+```
+
+* 저장소 크기 정의
+* 실제 스토리지 용량과 일치해야 함
+
+---
+
+#### accessModes
+
+```yaml
+accessModes:
+- ReadWriteMany
+```
+
+접근 방식 정의
+
+* ReadWriteOnce (RWO) → 하나의 노드에서 읽기/쓰기
+* ReadOnlyMany (ROX) → 여러 노드에서 읽기만
+* ReadWriteMany (RWX) → 여러 노드에서 읽기/쓰기
+* ReadWriteOncePod → 하나의 Pod만 접근
+
+---
+
+#### persistentVolumeReclaimPolicy
+
+```yaml
+persistentVolumeReclaimPolicy: Retain
+```
+
+* Retain → 데이터 유지 (운영에서 많이 사용)
+* Delete → PV와 데이터 삭제
+* Recycle → 현재 거의 사용 안 함
+
+---
+
+#### hostPath (주의)
+
+```yaml
+hostPath:
+  path: "/my-pv/data/pv1"
+```
+
+* 노드의 로컬 경로 사용
+
+⚠️ 운영 환경에서는 비추천
+👉 노드 변경 시 데이터 유실 위험
+
+👉 개발/테스트 환경에서만 사용
+
+---
+
+### PersistentVolumeClaim YAML 예시
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: my-pvc-100
+spec:
+  accessModes:
+  - ReadWriteMany
+  resources:
+    requests:
+      storage: 100Mi
+```
+
+---
+
+### PVC 동작 방식
+
+PVC는 다음 조건으로 PV를 찾는다.
+
+1. accessModes 일치
+2. 요청 용량 이상
+3. selector가 있다면 label 일치
+
+---
+
+### 할당 규칙
+
+* 여러 PV 존재 → 가장 작은 PV 선택
+* 적합한 PV 없음 → Pending 상태 유지
+
+---
+
+### Pod에서 PVC 사용
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-pod
+spec:
+  containers:
+  - name: my-container
+    image: nginx
+    volumeMounts:
+    - name: my-storage
+      mountPath: /data
+  volumes:
+  - name: my-storage
+    persistentVolumeClaim:
+      claimName: my-pvc-100
+```
+
+---
+
+### YAML 설명
+
+#### persistentVolumeClaim
+
+```yaml
+persistentVolumeClaim:
+  claimName: my-pvc-100
+```
+
+* PVC를 참조
+* Pod는 PV를 직접 알지 못함
+
+---
+
+#### mountPath
+
+```yaml
+mountPath: /data
+```
+
+👉 컨테이너 내부에서 `/data`가 실제 저장소
+
+---
+
+### 정적 프로비저닝 활용 전략
+
+#### 적합한 경우
+
+* 공유 스토리지 (RWX)
+* 공통 파일 저장
+
+---
+
+#### 제한적인 경우
+
+* Pod별 독립 스토리지
+* 자동 확장 환경
+
+---
+
+### 대안
+
+* 임시 데이터 → emptyDir
+* 상태 저장 → StatefulSet + PV
+* 일반 서비스 → Stateless + 외부 DB
+
+---
+
+### 핵심 정리
+
+* PV = 실제 저장소
+* PVC = 저장소 요청
+* Pod = PVC 사용
+
+```
+Pod → PVC → PV → Storage
+```
+
+---
+
+### 한 줄 핵심 정리
+
+👉 PersistentVolume은
+**“Pod와 독립적으로 유지되는 영구 저장소”**
+
+👉 PersistentVolumeClaim은
+**“그 저장소를 요청하는 인터페이스”**
+
+---
+
 
