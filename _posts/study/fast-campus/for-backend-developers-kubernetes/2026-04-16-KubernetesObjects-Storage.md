@@ -601,4 +601,299 @@ Pod → PVC → PV → Storage
 
 ---
 
+## Kubernetes 객체 StorageClass와 Dynamic Provisioning
 
+앞에서 살펴본 PersistentVolume(PV)과 PersistentVolumeClaim(PVC)은
+👉 **영구 저장소를 사용하는 기본 구조**였다.
+
+하지만 실제 운영 환경에서는 다음과 같은 문제가 발생한다.
+
+* 저장소를 미리 만들어두는 것이 번거롭다
+* Pod마다 다른 크기의 스토리지가 필요하다
+* 자동 확장 환경에서 수동 관리가 불가능하다
+
+이 문제를 해결하기 위해 Kubernetes는
+👉 **Dynamic Provisioning + StorageClass** 구조를 제공한다.
+
+---
+
+### Dynamic Provisioning
+
+Dynamic Provisioning은
+
+> **필요한 시점에 필요한 만큼 저장소를 자동 생성하는 기술**
+
+이다.
+
+---
+
+### 기존 구조 vs Dynamic 구조
+
+기존 (Static):
+
+```id="7n4hff"
+Pod → PVC → 미리 만들어둔 PV
+```
+
+Dynamic:
+
+```id="79cmxk"
+Pod → PVC → StorageClass → PV 자동 생성
+```
+
+👉 자료에서도 이 구조가 단계적으로 확장되는 형태로 설명된다
+
+---
+
+### StorageClass
+
+StorageClass는
+
+👉 **“어떤 방식으로 저장소를 만들 것인지 정의하는 객체”**
+
+다.
+
+즉,
+
+* 어떤 스토리지를 사용할지
+* 어떤 옵션으로 생성할지
+
+를 정의한다.
+
+---
+
+### StorageClass YAML (클라우드 스토리지 예시)
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ebs-storage
+provisioner: kubernetes.io/aws-ebs
+parameters:
+  type: gp3
+```
+
+---
+
+### YAML 필드 설명
+
+#### provisioner
+
+```yaml
+provisioner: kubernetes.io/aws-ebs
+```
+
+* 어떤 스토리지 제공자를 사용할지 정의
+* 예:
+
+    * AWS EBS
+    * GCE PD
+    * Azure Disk
+
+---
+
+#### parameters
+
+```yaml
+parameters:
+  type: gp3
+```
+
+* 스토리지 생성 시 필요한 옵션
+* 스토리지 종류 / 성능 설정 등
+
+---
+
+### StorageClass (로컬 스토리지 예시)
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-storage
+provisioner: rancher.io/local-path
+volumeBindingMode: WaitForFirstConsumer
+```
+
+---
+
+### volumeBindingMode
+
+```yaml
+volumeBindingMode: WaitForFirstConsumer
+```
+
+👉 볼륨이 실제로 생성되는 시점 정의
+
+---
+
+#### Immediate
+
+* PVC 생성 즉시 볼륨 생성
+
+---
+
+#### WaitForFirstConsumer
+
+* Pod가 실제로 스케줄될 때 생성
+
+👉 왜 필요할까?
+
+* 노드 위치 고려 필요
+* 잘못된 노드에 볼륨 생성 방지
+
+👉 특히 local storage에서 매우 중요
+
+---
+
+### PVC에서 StorageClass 사용
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: my-dynamic-pvc
+spec:
+  storageClassName: local-storage
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Mi
+```
+
+---
+
+### 핵심 포인트
+
+```yaml
+storageClassName: local-storage
+```
+
+👉 이 한 줄이 Dynamic Provisioning을 트리거한다
+
+---
+
+### 동작 흐름
+
+```id="pfk1nm"
+1. PVC 생성
+2. StorageClass 확인
+3. PV 자동 생성
+4. PVC와 바인딩
+5. Pod에서 사용
+```
+
+---
+
+### Pod에서 사용
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-pod
+spec:
+  containers:
+  - name: my-container
+    image: nginx
+    volumeMounts:
+    - name: my-storage
+      mountPath: /data
+  volumes:
+  - name: my-storage
+    persistentVolumeClaim:
+      claimName: my-dynamic-pvc
+```
+
+---
+
+### StatefulSet + Dynamic Provisioning
+
+```yaml
+apiVersion: apps/v1
+kind: StatefulSet
+spec:
+  containers:
+  - name: redis
+    image: redis
+    volumeMounts:
+    - name: dynamic-volume
+      mountPath: /tmp/dynamic
+  volumeClaimTemplates:
+  - metadata:
+      name: dynamic-volume
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      storageClassName: local-storage
+      resources:
+        requests:
+          storage: 100Gi
+```
+
+---
+
+### volumeClaimTemplates 핵심
+
+👉 StatefulSet에서 매우 중요한 기능
+
+* Pod 생성 시마다 PVC 자동 생성
+* 각 Pod마다 독립적인 저장소 제공
+
+---
+
+### 실제 동작 구조
+
+```id="7pph2u"
+StatefulSet-0 → PVC-0 → PV-0
+StatefulSet-1 → PVC-1 → PV-1
+```
+
+👉 자료에서도 Pod마다 PVC가 생성되는 구조로 설명됨
+
+---
+
+### 왜 이 구조가 중요한가?
+
+👉 Stateful 서비스에서 핵심
+
+* DB
+* Kafka
+* Redis Cluster
+
+각 Pod는:
+
+* 서로 다른 데이터
+* 독립적인 스토리지 필요
+
+---
+
+### 핵심 정리
+
+* StorageClass = “스토리지 생성 방법 정의”
+* Dynamic Provisioning = “필요할 때 자동 생성”
+* PVC = “요청 트리거”
+* StatefulSet = “Pod별 스토리지 자동 생성”
+
+---
+
+### 한 줄 핵심 정리
+
+👉 StorageClass는
+**“스토리지를 자동으로 생성하는 규칙”**
+
+👉 Dynamic Provisioning은
+**“PVC 요청 시 자동으로 PV를 생성하는 구조”**
+
+---
+
+### 전체 흐름 정리
+
+지금까지 스토리지 흐름은 이렇게 완성된다:
+
+```id="6y8bcz"
+Pod → PVC → StorageClass → PV → Storage
+```
+
+---
