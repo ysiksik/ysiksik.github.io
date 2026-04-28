@@ -244,3 +244,265 @@ Container B → port 8080 ❌ (충돌)
 ---
 
 
+## 02. Service
+
+### Service
+
+Kubernetes에서 Service는
+👉 **Pod 간 통신을 안정적으로 만들어주는 네트워크 추상화 객체**다.
+
+---
+
+### 왜 Service가 필요할까?
+
+Pod는 다음과 같은 특징이 있다.
+
+* IP가 계속 변경됨
+* 언제든 삭제/생성됨
+* 스케일링 시 개수가 변함
+
+👉 그래서 Pod IP로 직접 통신하면 문제가 발생한다.
+
+```text
+❌ Pod IP 변경 → 연결 끊김
+❌ Pod 증가 → 트래픽 분산 불가
+```
+
+---
+
+### Service의 역할
+
+* 고정된 IP 제공
+* DNS 이름 제공
+* 로드밸런싱 제공
+* Pod 변경에도 안정적인 연결 유지
+
+---
+
+### Service 기본 구조
+
+```mermaid
+graph LR
+    Client --> Service
+    Service --> Pod1
+    Service --> Pod2
+    Service --> Pod3
+```
+
+👉 Service는 여러 Pod를 하나의 엔드포인트로 묶는다.
+
+---
+
+### Service 타입 구조 (전체 그림)
+
+```mermaid
+graph LR
+    ExternalUser --> Ingress
+    ExternalUser --> NodePort
+    ExternalUser --> LoadBalancer
+
+    Ingress --> Service
+    NodePort --> Service
+    LoadBalancer --> Service
+
+    Service --> PodA
+    Service --> PodB
+
+    PodA --> ExternalService
+    PodB --> ExternalService
+```
+
+👉 외부/내부 흐름을 한 번에 이해할 수 있는 구조
+
+---
+
+### Service 타입 정리
+
+#### ClusterIP (기본)
+
+👉 내부 통신용
+
+```mermaid
+graph LR
+    Frontend --> Service
+    Service --> Backend1
+    Service --> Backend2
+```
+
+---
+
+#### NodePort
+
+👉 노드 IP + 포트로 외부 접근
+
+```mermaid
+graph LR
+    User --> NodeIP:Port
+    NodeIP:Port --> Service
+    Service --> Pod
+```
+
+---
+
+#### LoadBalancer
+
+👉 클라우드 LB 연동
+
+```mermaid
+graph LR
+    User --> LoadBalancer
+    LoadBalancer --> Service
+    Service --> Pod
+```
+
+---
+
+#### ExternalName
+
+👉 외부 서비스 연결
+
+```mermaid
+graph LR
+    Pod --> Service(ExternalName)
+    Service --> ExternalDB
+```
+
+---
+
+#### Headless Service
+
+👉 직접 Pod 선택 (로드밸런싱 없음)
+
+```mermaid
+graph LR
+    Client --> Pod1
+    Client --> Pod2
+```
+
+---
+
+### Service YAML (ClusterIP)
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-service
+spec:
+  type: ClusterIP
+  selector:
+    app: my-app
+  ports:
+  - protocol: TCP
+    port: 8080
+```
+
+---
+
+### selector의 의미 (중요)
+
+```mermaid
+graph LR
+    Service -->|app=my-app| Pod1
+    Service -->|app=my-app| Pod2
+    Service -->|app=my-app| Pod3
+```
+
+👉 label 기반으로 Pod 선택
+
+---
+
+### Deployment와 연결 구조
+
+```mermaid
+graph LR
+    Deployment --> ReplicaSet
+    ReplicaSet --> Pod1
+    ReplicaSet --> Pod2
+    Service --> Pod1
+    Service --> Pod2
+```
+
+👉 Service는 Deployment가 아니라 Pod를 바라본다
+
+---
+
+### 실제 요청 흐름
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Service
+    participant Pod1
+    participant Pod2
+
+    Client->>Service: 요청
+    Service->>Pod1: 전달
+    Client->>Service: 요청
+    Service->>Pod2: 전달
+```
+
+👉 기본적으로 라운드 로빈 방식
+
+---
+
+### Session Affinity
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Service
+    participant Pod1
+
+    Client->>Service: 요청
+    Service->>Pod1: 전달
+
+    Client->>Service: 요청
+    Service->>Pod1: 계속 전달
+```
+
+👉 같은 클라이언트 → 같은 Pod
+
+---
+
+### ExternalName 흐름
+
+```mermaid
+graph LR
+    Pod --> Service
+    Service -->|DNS CNAME| external.domain.com
+```
+
+---
+
+### 핵심 정리
+
+* Service = Pod 앞에 있는 네트워크 게이트웨이
+* selector = Pod 선택 기준
+* 내부적으로 EndpointSlice로 Pod 관리
+* DNS + LB + 안정성 제공
+
+---
+
+### 한 줄 핵심 정리
+
+👉 Service는
+**“변하는 Pod를 대신하는 고정된 네트워크 진입점”**
+
+---
+
+### 전체 흐름 연결
+
+```mermaid
+graph TD
+    PodInternal[Pod 내부 localhost 통신]
+    Service[Service 통한 Pod 간 통신]
+    Ingress[Ingress 통한 외부 접근]
+
+    PodInternal --> Service
+    Service --> Ingress
+```
+
+---
+
+
