@@ -21,6 +21,7 @@ hide_description: false
 * [패스트 캠퍼스]{:.heading.flip-title}
 * [유튜브]{:.heading.flip-title}
 * [스터디 랩]{:.heading.flip-title}
+* [스파르타]{:.heading.flip-title}
 
   
 [알고리즘]: /algorithm/
