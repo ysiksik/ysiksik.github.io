@@ -506,3 +506,356 @@ graph TD
 ---
 
 
+## 03. Ingress
+
+### Ingress
+
+Kubernetes에서는
+👉 **클러스터 외부 → 내부로 들어오는 트래픽을 처리하는 방식이 여러 가지 존재한다**
+
+대표적으로:
+
+* NodePort
+* LoadBalancer
+* Ingress
+
+---
+
+### NodePort 방식
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-nodeport-service
+spec:
+  type: NodePort
+  selector:
+    app: my-api-gateway
+  ports:
+  - port: 8080
+    targetPort: 8080
+    nodePort: 30007
+```
+
+---
+
+### NodePort 동작 구조
+
+```mermaid
+graph LR
+    User --> Node1:30007
+    User --> Node2:30007
+    Node1 --> Pod
+    Node2 --> Pod
+```
+
+---
+
+### 핵심 설명
+
+* Node의 특정 포트를 외부에 개방
+* 모든 노드에서 동일 포트 사용
+* selector로 Pod 식별
+
+---
+
+### 주요 특징
+
+* `nodePort`: 외부에서 접근할 포트
+* 생략 시 자동 할당 (30000 ~ 32767)
+* 테스트 / 간단한 환경에 적합
+
+---
+
+### LoadBalancer 방식
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: myapp-service
+spec:
+  type: LoadBalancer
+  selector:
+    app: myapp
+  ports:
+  - protocol: TCP
+    port: 8080
+    targetPort: 8080
+```
+
+---
+
+### LoadBalancer 구조
+
+```mermaid
+graph LR
+    User --> LoadBalancer
+    LoadBalancer --> Node1
+    LoadBalancer --> Node2
+    Node1 --> Pod
+    Node2 --> Pod
+```
+
+---
+
+### 특징
+
+* 외부 로드밸런서 사용
+* 클라우드 환경에서 많이 사용
+* L4 레벨 트래픽 처리
+
+---
+
+### NodePort / LoadBalancer의 한계
+
+둘 다 공통적으로:
+
+* Path 기반 라우팅 ❌
+* 도메인 기반 라우팅 ❌
+* TLS 처리 제한 ❌
+
+👉 그래서 등장한 것이 Ingress
+
+---
+
+### Ingress
+
+Ingress는
+
+👉 **외부에서 들어오는 HTTP/HTTPS 요청을 내부 서비스로 라우팅하는 L7 리버스 프록시**
+
+다.
+
+---
+
+### Ingress 구조
+
+```mermaid
+graph LR
+    User --> Ingress
+    Ingress --> ServiceA
+    Ingress --> ServiceB
+    ServiceA --> PodA
+    ServiceB --> PodB
+```
+
+---
+
+### 핵심 특징
+
+* Service 단위 라우팅 (Pod 직접 X)
+* HTTP / HTTPS만 처리
+* 도메인 기반 라우팅
+* Path 기반 라우팅
+* TLS 인증 처리 가능
+
+---
+
+### Ingress 구성 요소
+
+Ingress는 2가지로 나뉜다:
+
+1. **Ingress Resource (설정)**
+2. **Ingress Controller (실행 엔진)**
+
+---
+
+### 대표 Controller
+
+* Nginx Ingress
+* 클라우드 LB 기반 Controller
+
+---
+
+### Ingress YAML 기본 구조
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: my-ingress
+spec:
+  tls:
+  - hosts:
+    - myapp.example.com
+    secretName: myapp-tls
+  rules:
+```
+
+---
+
+### TLS 설정
+
+```yaml
+tls:
+- hosts:
+  - myapp.example.com
+  secretName: myapp-tls
+```
+
+---
+
+### TLS 동작
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Ingress
+    participant Service
+    participant Pod
+
+    User->>Ingress: HTTPS 요청
+    Ingress->>Service: HTTP 전달
+    Service->>Pod: 요청 전달
+```
+
+---
+
+### 핵심 포인트
+
+* HTTPS는 Ingress에서 종료
+* Pod는 HTTP만 처리
+
+👉 인증서 관리가 단순해짐
+
+---
+
+### Path 기반 라우팅
+
+```yaml
+rules:
+- host: myapp.example.com
+  http:
+    paths:
+    - path: /user
+      pathType: Prefix
+      backend:
+        service:
+          name: user-service
+          port:
+            number: 8080
+    - path: /product
+      pathType: Prefix
+      backend:
+        service:
+          name: product-service
+          port:
+            number: 8080
+```
+
+---
+
+### 라우팅 구조
+
+```mermaid
+graph LR
+    User -->|/user| Ingress
+    User -->|/product| Ingress
+
+    Ingress --> user-service
+    Ingress --> product-service
+```
+
+---
+
+### pathType 설명
+
+#### Prefix
+
+```text
+/user/list  → 매칭 O
+/user/123   → 매칭 O
+/user-list  → 매칭 X
+```
+
+---
+
+#### Exact
+
+```text
+/user → 정확히 일치해야만 매칭
+```
+
+---
+
+#### ImplementationSpecific
+
+* Controller 구현에 따라 다름
+
+---
+
+### host 설정
+
+```yaml
+host: myapp.example.com
+```
+
+* 도메인 기준 라우팅
+
+👉 생략 시:
+
+* 모든 요청 수신
+
+---
+
+### backend 설정
+
+```yaml
+backend:
+  service:
+    name: user-service
+    port:
+      number: 8080
+```
+
+---
+
+### 의미
+
+* 트래픽이 전달될 Service 지정
+
+---
+
+### defaultBackend
+
+조건이 매칭되지 않을 경우:
+
+```yaml
+defaultBackend:
+  service:
+    name: default-service
+    port:
+      number: 80
+```
+
+---
+
+### 핵심 비교 정리
+
+| 방식           | 레벨 | 특징            |
+| ------------ | -- | ------------- |
+| NodePort     | L4 | 단순 포트 노출      |
+| LoadBalancer | L4 | 외부 LB         |
+| Ingress      | L7 | 도메인/경로 기반 라우팅 |
+
+---
+
+### 한 줄 핵심 정리
+
+👉 Ingress는
+**“외부 요청을 도메인과 경로 기준으로 Service에 라우팅하는 L7 게이트웨이”**
+
+---
+
+### 전체 흐름
+
+```mermaid
+graph TD
+    User --> Ingress
+    Ingress --> Service
+    Service --> Pod
+```
+
+---
