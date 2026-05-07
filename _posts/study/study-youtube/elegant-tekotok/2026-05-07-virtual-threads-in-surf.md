@@ -44,7 +44,7 @@ Project Loom은 여기서 새로운 질문을 던진다.
 
 이 Platform Thread는 OS의 Kernel Thread와 1:1로 매핑된다.
 
-```text id="o6u9dq"
+```text
 Java Thread 1 ↔ Kernel Thread 1
 Java Thread 2 ↔ Kernel Thread 2
 Java Thread 3 ↔ Kernel Thread 3
@@ -73,7 +73,7 @@ Java Thread 3 ↔ Kernel Thread 3
 
 즉:
 
-```text id="jlwmv9"
+```text
 처리량 증가 = 스레드 증가
 ```
 
@@ -92,7 +92,7 @@ OS 커널 스레드는 다음 비용이 매우 크다.
 
 즉:
 
-```text id="y7fjlwm"
+```text
 무한히 스레드를 늘릴 수 없다
 ```
 
@@ -113,7 +113,7 @@ OS 커널 스레드는 다음 비용이 매우 크다.
 
 즉 스레드 대부분은:
 
-```text id="h4mq1w"
+```text
 "일하는 중"이 아니라 "기다리는 중"
 ```
 
@@ -136,13 +136,13 @@ OS 커널 스레드는 다음 비용이 매우 크다.
 
 ### 기존 방식
 
-```text id="n7o9sa"
+```text
 IO 요청 → 스레드 BLOCK
 ```
 
 ### 비동기 방식
 
-```text id="czd16k"
+```text
 IO 요청 → 스레드 반환 → 다른 작업 수행
 ```
 
@@ -190,7 +190,7 @@ try {
 
 Project Loom은 여기서 새로운 목표를 세운다.
 
-```text id="v7l7wg"
+```text
 "동기 코드처럼 작성하면서
 비동기 수준의 처리량을 만들자"
 ```
@@ -203,7 +203,7 @@ Project Loom은 여기서 새로운 목표를 세운다.
 
 핵심은 단 하나다.
 
-```text id="5r7m8g"
+```text
 Platform Thread ↔ Kernel Thread
 1:1 매핑을 끊자
 ```
@@ -225,7 +225,7 @@ Carrier Thread는 사실상 기존 Platform Thread다.
 
 구조는 이렇게 된다.
 
-```text id="r2ifzf"
+```text
 Virtual Thread 수천 개
         ↓
 Carrier Thread 몇 개
@@ -255,13 +255,13 @@ Virtual Thread의 진짜 핵심은 Continuation이다.
 
 기존 방식:
 
-```text id="25fh4r"
+```text
 IO 요청 → Thread BLOCK
 ```
 
 Virtual Thread 방식:
 
-```text id="hrwwf6"
+```text
 IO 요청 → 작업 중단(yield)
           → Carrier Thread 반환
           → 다른 작업 실행
@@ -278,7 +278,7 @@ IO 요청 → 작업 중단(yield)
 
 Continuation은 쉽게 말하면:
 
-```text id="3i1iw5"
+```text
 "중단 가능한 실행 흐름"
 ```
 
@@ -286,7 +286,7 @@ Continuation은 쉽게 말하면:
 
 예시 흐름:
 
-```text id="7ayz7j"
+```text
 run()
   ↓
 작업 수행
@@ -313,7 +313,7 @@ yield()
 
 Virtual Thread 실행
 
-```text id="x2bn9j"
+```text
 VT1 → Carrier Thread 점유
 ```
 
@@ -323,7 +323,7 @@ VT1 → Carrier Thread 점유
 
 DB IO 요청 발생
 
-```text id="p9l0kq"
+```text
 VT1 → yield()
 ```
 
@@ -337,7 +337,7 @@ Carrier Thread는 해방된다.
 
 다른 작업 실행
 
-```text id="0xqow5"
+```text
 VT2 실행
 VT3 실행
 VT4 실행
@@ -353,7 +353,7 @@ IO 기다리는 동안 다른 작업 수행 가능.
 
 IO 응답 도착
 
-```text id="k9fqj0"
+```text
 VT1 resume()
 ```
 
@@ -367,13 +367,13 @@ VT1 resume()
 
 기존 모델:
 
-```text id="xmh1aj"
+```text
 스레드가 IO 동안 놀고 있음
 ```
 
 Virtual Thread:
 
-```text id="ukzskv"
+```text
 IO 동안 다른 작업 수행 가능
 ```
 
@@ -426,7 +426,7 @@ Carrier Thread 자체가 block되면 심각하다.
 
 왜냐하면:
 
-```text id="q1ddwj"
+```text
 Carrier Thread 앞 대기열 전체 정지
 ```
 
@@ -444,7 +444,7 @@ Virtual Thread는 매우 가볍다.
 
 예:
 
-```text id="u3l00w"
+```text
 Virtual Thread 10만 개
 ↓
 DB Connection Pool 20개
@@ -465,7 +465,7 @@ Virtual Thread는 단순한 경량 스레드가 아니다.
 
 본질은:
 
-```text id="p7nt44"
+```text
 "IO 대기 동안 스레드를 놀리지 않는 구조"
 ```
 
@@ -506,7 +506,7 @@ Virtual Thread는 Java 동시성 역사에서 매우 큰 변화다.
 
 왜냐하면 처음으로 Java가:
 
-```text id="j9dbq1"
+```text
 "동기 코드의 단순함"
 +
 "비동기의 처리량"
