@@ -417,3 +417,445 @@ graph TD
 ---
 
 
+## NetworkPolicy
+
+Kubernetes 클러스터 내부의 Pod들은 기본적으로
+👉 Namespace를 넘어 서로 자유롭게 통신할 수 있다.
+
+이 구조는 일반적인 Private Network처럼 동작하기 때문에 자연스러운 동작이지만,
+클러스터 규모가 커지고 여러 팀이나 서비스가 함께 사용하는 환경에서는 문제가 될 수 있다.
+
+예를 들면:
+
+```text
+- 다른 서비스 Pod 호출 가능
+- 내부 API 무단 접근 가능
+- 민감한 시스템 접근 가능
+- 보안 정책 적용 어려움
+```
+
+같은 문제들이 발생할 수 있다.
+
+---
+
+### NetworkPolicy란?
+
+NetworkPolicy는
+
+👉 **Pod 간 네트워크 통신 허용 여부를 제어하는 보안 정책 객체**
+
+다.
+
+---
+
+### 핵심 역할
+
+* 특정 Pod만 접근 허용
+* 특정 Namespace만 접근 허용
+* 특정 포트만 허용
+* 들어오는 트래픽(Ingress) 제어
+* 나가는 트래픽(Egress) 제어
+
+---
+
+### 기본 특징
+
+NetworkPolicy는
+
+👉 **화이트리스트 방식**
+
+으로 동작한다.
+
+즉:
+
+```text
+명시적으로 허용하지 않은 트래픽은 차단
+```
+
+된다.
+
+---
+
+### 기본 구조
+
+```mermaid
+graph LR
+    DevPod[Pod in dev]
+    GatewayPod[Gateway Pod]
+    AppPod[app=my-app]
+
+    DevPod --> AppPod
+    GatewayPod --> AppPod
+```
+
+👉 특정 Pod로 들어오는 트래픽만 허용 가능
+
+---
+
+### Ingress 정책 예시
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: my-netpol
+spec:
+  podSelector:
+    matchLabels:
+      app: my-app
+
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          profile: dev
+
+    - podSelector:
+        matchLabels:
+          role: gateway
+
+    ports:
+    - protocol: TCP
+      port: 8080
+```
+
+---
+
+### 전체 구조
+
+```mermaid
+graph LR
+    DevPod[dev Namespace Pod]
+    GatewayPod[role=gateway]
+    FrontPod[role=front]
+    AppPod[app=my-app]
+
+    DevPod -->|허용| AppPod
+    GatewayPod -->|허용| AppPod
+    FrontPod -. 차단 .-> AppPod
+```
+
+---
+
+### YAML 핵심 설명
+
+#### podSelector
+
+```yaml
+podSelector:
+  matchLabels:
+    app: my-app
+```
+
+👉 정책이 적용될 대상 Pod 선택
+
+즉:
+
+```text
+app=my-app Pod에 대한 접근 정책
+```
+
+을 의미한다.
+
+---
+
+### ingress
+
+```yaml
+ingress:
+```
+
+👉 들어오는 트래픽 제어
+
+---
+
+### from
+
+```yaml
+from:
+```
+
+👉 어떤 대상이 접근 가능한지 정의
+
+---
+
+### namespaceSelector
+
+```yaml
+namespaceSelector:
+  matchLabels:
+    profile: dev
+```
+
+👉 특정 Namespace 허용
+
+---
+
+### 중요 포인트
+
+NamespaceSelector는:
+
+```text
+Namespace의 label 기준
+```
+
+으로 동작한다.
+
+즉 Namespace에도 label이 필요하다.
+
+예:
+
+```bash
+kubectl label namespace dev profile=dev
+```
+
+---
+
+### podSelector
+
+```yaml
+podSelector:
+  matchLabels:
+    role: gateway
+```
+
+👉 특정 Pod 허용
+
+---
+
+### ports
+
+```yaml
+ports:
+- protocol: TCP
+  port: 8080
+```
+
+👉 허용할 포트 지정
+
+---
+
+### 포트 제한 의미
+
+```text
+8080 포트만 허용
+```
+
+다른 포트는 차단된다.
+
+---
+
+### 포트 생략 시
+
+```text
+모든 포트 허용
+```
+
+---
+
+### 허용/차단 흐름
+
+```mermaid
+graph LR
+    DevPod -->|8080 허용| AppPod
+    Gateway -->|8080 허용| AppPod
+    Front -->|차단| AppPod
+```
+
+---
+
+### AND / OR 조건
+
+이 부분이 매우 중요하다.
+
+---
+
+### OR 조건
+
+```yaml
+- namespaceSelector:
+    matchLabels:
+      profile: dev
+
+- podSelector:
+    matchLabels:
+      role: gateway
+```
+
+👉 서로 다른 항목으로 나뉘어 있으면 OR 조건
+
+즉:
+
+```text
+dev Namespace 이거나
+gateway Pod 이면 허용
+```
+
+---
+
+### AND 조건
+
+```yaml
+- namespaceSelector:
+    matchLabels:
+      profile: production
+
+  podSelector:
+    matchLabels:
+      role: front
+```
+
+👉 같은 항목 내부에 있으면 AND 조건
+
+즉:
+
+```text
+production Namespace 이면서
+role=front Pod
+```
+
+만 허용
+
+---
+
+### Egress 정책
+
+Ingress는 들어오는 트래픽 제어였다면,
+
+Egress는:
+
+👉 나가는 트래픽 제어
+
+다.
+
+---
+
+### Egress 예시
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: my-netpol
+
+spec:
+  podSelector:
+    matchLabels:
+      app: my-app
+
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          profile: production
+
+      podSelector:
+        matchLabels:
+          role: front
+```
+
+---
+
+### Egress 구조
+
+```mermaid
+graph LR
+    AppPod[app=my-app]
+
+    ProdFront[production + role=front]
+    DevPod[dev Pod]
+    Gateway[role=gateway]
+
+    AppPod -->|허용| ProdFront
+    AppPod -. 차단 .-> DevPod
+    AppPod -. 차단 .-> Gateway
+```
+
+---
+
+### ingress vs egress
+
+| 정책      | 의미          |
+| ------- | ----------- |
+| ingress | 들어오는 트래픽 제한 |
+| egress  | 나가는 트래픽 제한  |
+
+---
+
+### NetworkPolicy 적용 조건
+
+중요한 점:
+
+```text
+CNI(Network Plugin)가 지원해야 동작
+```
+
+대표적으로:
+
+* Calico
+* Cilium
+
+등이 지원한다.
+
+---
+
+### 실제 운영 패턴
+
+실무에서는 보통:
+
+```text
+Deployment ↔ Deployment
+```
+
+형태로 정책을 만든다.
+
+즉:
+
+* frontend → backend 허용
+* backend → database 허용
+
+같은 구조
+
+---
+
+### 전체 구조 예시
+
+```mermaid
+graph TD
+    Frontend --> Backend
+    Backend --> Database
+
+    UnknownPod -. 차단 .-> Database
+```
+
+---
+
+### 핵심 정리
+
+* 기본 Kubernetes 네트워크는 모두 연결 가능
+* NetworkPolicy로 제한 가능
+* 화이트리스트 기반
+* ingress / egress 분리 가능
+* Namespace + Pod 기준 제어 가능
+
+---
+
+### 한 줄 핵심 정리
+
+👉 NetworkPolicy는
+**“Kubernetes Pod 간 통신을 제어하는 네트워크 방화벽 정책”**
+
+---
+
+### 전체 흐름
+
+```mermaid
+graph TD
+    Namespace --> Service
+    Service --> Pod
+    NetworkPolicy --> Pod
+```
+
+---
+
+
