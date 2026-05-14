@@ -858,4 +858,547 @@ graph TD
 
 ---
 
+## 03.ServiceAccount와 RBAC
+
+### ServiceAccount와 RBAC
+
+Kubernetes에서는 사람뿐 아니라
+애플리케이션도 Kubernetes API를 호출할 수 있다.
+
+예를 들어:
+
+* Pod 목록 조회
+* ConfigMap 읽기
+* Secret 조회
+* Deployment 생성
+
+같은 작업들을 프로그램이 자동으로 수행할 수 있다.
+
+이때 Kubernetes는:
+
+```text
+누가 어떤 권한으로 API를 호출하는가?
+```
+
+를 매우 중요하게 관리한다.
+
+---
+
+### Account 종류
+
+Kubernetes에는 크게 두 가지 계정 개념이 있다.
+
+| 종류             | 설명                     |
+| -------------- | ---------------------- |
+| User Account   | 사람이 사용하는 계정            |
+| ServiceAccount | 애플리케이션이나 프로세스가 사용하는 계정 |
+
+---
+
+### ServiceAccount란?
+
+ServiceAccount는:
+
+👉 Pod 내부 애플리케이션이 Kubernetes API를 호출할 때 사용하는 계정
+
+이다.
+
+예를 들면:
+
+* Operator
+* Controller
+* CI/CD 시스템
+* 모니터링 시스템
+
+같은 것들이 ServiceAccount를 사용한다.
+
+---
+
+### 기본 구조
+
+```mermaid
+graph LR
+    Pod --> ServiceAccount
+    ServiceAccount --> KubernetesAPI[Kubernetes API]
+```
+
+---
+
+### ServiceAccount 생성
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: my-service-account
+  namespace: dev
+```
+
+---
+
+### YAML 설명
+
+#### kind: ServiceAccount
+
+```yaml
+kind: ServiceAccount
+```
+
+👉 ServiceAccount 객체 생성
+
+---
+
+#### metadata.name
+
+```yaml
+name: my-service-account
+```
+
+👉 ServiceAccount 이름
+
+---
+
+#### metadata.namespace
+
+```yaml
+namespace: dev
+```
+
+👉 ServiceAccount가 속할 Namespace
+
+ServiceAccount는 Namespace 단위 객체다.
+
+---
+
+### RBAC란?
+
+RBAC는:
+
+👉 Role-Based Access Control
+
+의 약자다.
+
+즉:
+
+```text
+역할(Role) 기반 권한 관리
+```
+
+를 의미한다.
+
+---
+
+### Kubernetes RBAC 구조
+
+```mermaid
+graph LR
+    ServiceAccount --> RoleBinding
+    RoleBinding --> Role
+    Role --> Resource
+```
+
+---
+
+### 핵심 흐름
+
+```text
+ServiceAccount
+→ RoleBinding
+→ Role
+→ 권한 획득
+```
+
+---
+
+### Role
+
+Role은:
+
+👉 특정 리소스에 대한 권한 집합
+
+이다.
+
+예:
+
+* Pod 조회
+* Secret 읽기
+* ConfigMap 수정
+
+등
+
+---
+
+### Role 생성
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: dev
+  name: pod-reader
+
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "watch", "list"]
+```
+
+---
+
+### 전체 구조
+
+```mermaid
+graph LR
+    SA[ServiceAccount]
+    Role[Role]
+    Pod[Pods]
+
+    SA --> Role
+    Role -->|get/list/watch| Pod
+```
+
+---
+
+### YAML 핵심 설명
+
+#### kind: Role
+
+```yaml
+kind: Role
+```
+
+👉 Namespace 범위 권한 정의
+
+---
+
+### ClusterRole
+
+Role과 비슷하지만:
+
+👉 클러스터 전체 범위 권한
+
+을 가진다.
+
+예:
+
+* Node 조회
+* Namespace 조회
+* 전체 Pod 조회
+
+등
+
+---
+
+### Role vs ClusterRole
+
+| 객체          | 범위           |
+| ----------- | ------------ |
+| Role        | 특정 Namespace |
+| ClusterRole | 클러스터 전체      |
+
+---
+
+### rules
+
+```yaml
+rules:
+```
+
+👉 권한 규칙 정의
+
+---
+
+### apiGroups
+
+```yaml
+apiGroups: [""]
+```
+
+👉 Core API 그룹 의미
+
+대표적으로:
+
+* pods
+* services
+* configmaps
+
+등
+
+---
+
+### resources
+
+```yaml
+resources: ["pods"]
+```
+
+👉 어떤 리소스에 대한 권한인지 지정
+
+---
+
+### verbs
+
+```yaml
+verbs: ["get", "watch", "list"]
+```
+
+👉 허용할 작업 정의
+
+---
+
+### 주요 verbs
+
+| verb   | 의미    |
+| ------ | ----- |
+| get    | 단일 조회 |
+| list   | 목록 조회 |
+| watch  | 변경 감시 |
+| create | 생성    |
+| update | 수정    |
+| delete | 삭제    |
+
+---
+
+### RoleBinding
+
+Role만 만든다고 권한이 적용되지는 않는다.
+
+👉 누구에게 Role을 연결할지 지정해야 한다.
+
+그 역할이 바로:
+
+```text
+RoleBinding
+```
+
+이다.
+
+---
+
+### RoleBinding 생성
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+
+metadata:
+  name: read-pods
+  namespace: dev
+
+subjects:
+- kind: ServiceAccount
+  name: my-service-account
+
+roleRef:
+  kind: Role
+  name: pod-reader
+  apiGroup: rbac.authorization.k8s.io
+```
+
+---
+
+### 전체 흐름
+
+```mermaid
+graph LR
+    SA[my-service-account]
+    RB[RoleBinding]
+    Role[pod-reader]
+    Pod[pods]
+
+    SA --> RB
+    RB --> Role
+    Role -->|get/list/watch| Pod
+```
+
+---
+
+### subjects
+
+```yaml
+subjects:
+```
+
+👉 권한을 부여받을 대상
+
+---
+
+### ServiceAccount 연결
+
+```yaml
+- kind: ServiceAccount
+  name: my-service-account
+```
+
+👉 해당 ServiceAccount에 Role 연결
+
+---
+
+### roleRef
+
+```yaml
+roleRef:
+```
+
+👉 어떤 Role을 연결할지 지정
+
+---
+
+### roleRef.kind
+
+```yaml
+kind: Role
+```
+
+* Role 연결 가능
+* ClusterRole 연결 가능
+
+---
+
+### roleRef.name
+
+```yaml
+name: pod-reader
+```
+
+👉 연결할 Role 이름
+
+---
+
+### Pod에서 ServiceAccount 사용
+
+ServiceAccount를 만들었다고 자동으로 사용되지는 않는다.
+
+Pod에서 직접 지정해야 한다.
+
+---
+
+### Pod 설정
+
+```yaml
+apiVersion: v1
+kind: Pod
+
+metadata:
+  name: my-pod
+  namespace: default
+
+spec:
+  serviceAccountName: my-service-account
+
+  containers:
+  - name: my-container
+    image: my-image
+```
+
+---
+
+### 핵심 설정
+
+```yaml
+serviceAccountName: my-service-account
+```
+
+👉 Pod가 사용할 ServiceAccount 지정
+
+---
+
+### 전체 동작 흐름
+
+```mermaid
+graph TD
+    Pod --> ServiceAccount
+    ServiceAccount --> RoleBinding
+    RoleBinding --> Role
+    Role --> KubernetesAPI
+```
+
+---
+
+### 왜 중요한가?
+
+만약 모든 Pod가 관리자 권한을 가진다면:
+
+```text
+- Secret 조회 가능
+- 다른 Pod 삭제 가능
+- Deployment 수정 가능
+- 클러스터 전체 접근 가능
+```
+
+같은 심각한 보안 문제가 발생할 수 있다.
+
+---
+
+### Least Privilege 원칙
+
+Kubernetes RBAC의 핵심은:
+
+👉 최소 권한 원칙
+
+이다.
+
+즉:
+
+```text
+필요한 권한만 부여
+```
+
+하는 것이 중요하다.
+
+---
+
+### 실무 패턴
+
+실무에서는 보통:
+
+```text
+Pod → ServiceAccount → RoleBinding → Role
+```
+
+구조를 사용한다.
+
+그리고:
+
+* Namespace 단위 권한 제한
+* 읽기 전용 Role 분리
+* 관리자 권한 최소화
+
+같은 방식으로 운영한다.
+
+---
+
+### 핵심 정리
+
+* ServiceAccount는 애플리케이션 계정
+* Role은 권한 정의
+* RoleBinding은 권한 연결
+* Pod는 ServiceAccount 사용 가능
+* RBAC는 최소 권한 원칙 기반
+
+---
+
+### 한 줄 핵심 정리
+
+👉 RBAC는
+**“누가 어떤 Kubernetes 리소스에 어떤 작업을 할 수 있는지 제어하는 권한 시스템”**
+
+---
+
+### 전체 흐름 요약
+
+```mermaid
+graph LR
+    Pod --> ServiceAccount
+    ServiceAccount --> RoleBinding
+    RoleBinding --> Role
+    Role --> Pods
+```
+
+---
+
+
+
+---
+
 
