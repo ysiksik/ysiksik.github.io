@@ -16,6 +16,7 @@ related_posts:
 
 ## 카테고리
 * [실무에 바로 쓰는 DDD기반으로 유연성과 확정성 있게 MSA 설계하기]{:.heading.flip-title}
+* [Redis와 Kafka를 활용한 대규모 트래픽 처리 시스템 설계하기]{:.heading.flip-title}
 
 [실무에 바로 쓰는 DDD기반으로 유연성과 확정성 있게 MSA 설계하기]: /designing-an-msa/
-
+[Redis와 Kafka를 활용한 대규모 트래픽 처리 시스템 설계하기]: /designing-with-redis-and-kafka/

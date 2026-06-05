@@ -891,3 +891,475 @@ graph LR
 ```
 
 Dockerfile 방식도 가능하지만, Java/Spring 애플리케이션에서는 Gradle Jib를 사용하면 훨씬 간단하게 이미지를 만들고 Registry에 Push할 수 있다.
+
+## 03. 스프링 애플리케이션을 쿠버네티스에 올리기
+
+### 스프링 애플리케이션을 쿠버네티스에 올리기
+
+컨테이너 이미지를 생성하고 이미지 저장소(Docker Hub, ECR, ACR 등)에 업로드했다면, 이제 Kubernetes에서 해당 이미지를 이용해 애플리케이션을 실행할 수 있다.
+
+일반적인 배포 과정은 다음과 같다.
+
+```text
+Container Image 생성
+↓
+Image Repository Push
+↓
+Namespace 생성
+↓
+Deployment 생성
+↓
+Pod 실행
+↓
+Service 연결
+↓
+Ingress 연결
+↓
+외부 서비스 제공
+```
+
+---
+
+### Namespace 생성
+
+애플리케이션을 배포하기 전에 먼저 Namespace를 생성하는 경우가 많다.
+
+Namespace는 Kubernetes 클러스터 내부를 논리적으로 분리하기 위한 단위이다.
+
+예를 들어 다음과 같이 환경별로 Namespace를 나눌 수 있다.
+
+```text
+dev
+staging
+production
+```
+
+---
+
+#### Namespace 생성
+
+```yaml
+apiVersion: v1
+kind: Namespace
+
+metadata:
+  name: my-app
+```
+
+적용
+
+```shell
+kubectl apply -f namespace.yaml
+```
+
+또는
+
+```shell
+kubectl create namespace my-app
+```
+
+명령어를 사용할 수도 있다.
+
+---
+
+### Deployment 생성
+
+이미지 저장소에 업로드된 이미지를 이용하여 Deployment를 생성한다.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: my-app
+  namespace: my-app
+
+spec:
+  replicas: 2
+
+  selector:
+    matchLabels:
+      app: my-app
+
+  template:
+    metadata:
+      labels:
+        app: my-app
+
+    spec:
+      containers:
+      - name: my-app
+        image: my-repo/my-app:0.0.1
+
+        ports:
+        - containerPort: 8080
+
+        env:
+        - name: SPRING_PROFILES_ACTIVE
+          value: "dev"
+```
+
+---
+
+#### 주요 설정 설명
+
+##### replicas
+
+```yaml
+replicas: 2
+```
+
+동시에 실행할 Pod 개수이다.
+
+```text
+Pod 2개 생성
+```
+
+---
+
+##### image
+
+```yaml
+image: my-repo/my-app:0.0.1
+```
+
+실행할 컨테이너 이미지를 지정한다.
+
+Kubernetes는 이미지 저장소에서 해당 이미지를 다운로드한 후 컨테이너를 생성한다.
+
+---
+
+##### env
+
+```yaml
+env:
+- name: SPRING_PROFILES_ACTIVE
+  value: "dev"
+```
+
+환경 변수를 주입한다.
+
+Spring Boot에서는 활성 프로파일을 지정할 때 자주 사용한다.
+
+---
+
+### Deployment 적용
+
+작성한 Deployment를 클러스터에 적용한다.
+
+```shell
+kubectl apply -f deployment.yaml
+```
+
+---
+
+### 배포 상태 확인
+
+Deployment가 정상적으로 생성되었는지 확인한다.
+
+```shell
+kubectl get deployment -n my-app
+```
+
+---
+
+실행 중인 Pod 확인
+
+```shell
+kubectl get pods -n my-app
+```
+
+---
+
+상세 정보 확인
+
+```shell
+kubectl describe pod <pod-name> -n my-app
+```
+
+---
+
+### 컨테이너 내부 접속
+
+애플리케이션이 정상적으로 실행되었는지 확인하기 위해 컨테이너 내부에 접속할 수 있다.
+
+```shell
+kubectl exec -it <pod-name> -- sh
+```
+
+또는
+
+```shell
+kubectl exec -it <pod-name> -- bash
+```
+
+---
+
+#### 로그 확인
+
+Spring Boot 애플리케이션 로그 확인
+
+```shell
+kubectl logs <pod-name>
+```
+
+실시간 로그 확인
+
+```shell
+kubectl logs -f <pod-name>
+```
+
+---
+
+### Service 연결
+
+Deployment만 생성하면 Pod는 실행되지만 네트워크를 통해 접근하기 어렵다.
+
+Service를 생성하여 Pod를 네트워크에 연결한다.
+
+```yaml
+apiVersion: v1
+kind: Service
+
+metadata:
+  name: my-app-service
+  namespace: my-app
+
+spec:
+  selector:
+    app: my-app
+
+  ports:
+  - port: 80
+    targetPort: 8080
+
+  type: ClusterIP
+```
+
+---
+
+#### Service의 역할
+
+```text
+Service
+↓
+Pod1
+Pod2
+Pod3
+```
+
+Service는 여러 Pod에 대한 고정된 접근 지점을 제공한다.
+
+또한 Pod 수가 변경되더라도 Service 주소는 유지된다.
+
+---
+
+### Ingress 연결
+
+외부 사용자가 애플리케이션에 접근할 수 있도록 Ingress를 연결한다.
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+
+metadata:
+  name: my-app-ingress
+
+spec:
+  rules:
+  - host: api.example.com
+
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+
+        backend:
+          service:
+            name: my-app-service
+
+            port:
+              number: 80
+```
+
+---
+
+#### 네트워크 흐름
+
+```mermaid
+graph LR
+    Client
+    --> Ingress
+
+    Ingress
+    --> Service
+
+    Service
+    --> Pod
+```
+
+---
+
+### Deployment 파일 관리 방식
+
+Deployment YAML 파일은 여러 방식으로 관리할 수 있다.
+
+---
+
+#### 애플리케이션 저장소 내부 관리
+
+```text
+project
+ ├── src
+ ├── build.gradle
+ ├── Dockerfile
+ └── k8s
+     ├── deployment.yaml
+     ├── service.yaml
+     └── ingress.yaml
+```
+
+가장 단순한 방식이다.
+
+애플리케이션 코드와 Kubernetes 설정을 함께 관리할 수 있다.
+
+---
+
+#### 별도 Infrastructure 저장소 관리
+
+```text
+application-repository
+
+infrastructure-repository
+ ├── dev
+ ├── staging
+ └── production
+```
+
+운영 환경에서는 Infrastructure Repository를 별도로 두는 경우도 많다.
+
+GitOps(ArgoCD, FluxCD) 환경에서는 이 방식이 많이 사용된다.
+
+---
+
+### 이미지 버전 관리
+
+Kubernetes 운영 시 가장 중요한 것 중 하나가 이미지 태그 관리이다.
+
+---
+
+#### 좋지 않은 예
+
+```yaml
+image: my-repo/my-app:latest
+```
+
+---
+
+#### 왜 문제가 될까?
+
+latest 태그는 항상 가장 최근 이미지를 의미한다.
+
+따라서 다음과 같은 문제가 발생할 수 있다.
+
+```text
+Pod A → old latest
+
+Pod B → new latest
+```
+
+같은 Deployment인데도 서로 다른 버전의 애플리케이션이 실행될 수 있다.
+
+---
+
+#### 롤백도 어려움
+
+```text
+latest
+```
+
+만 사용하면 이전 버전이 무엇인지 알 수 없다.
+
+따라서 장애 발생 시 롤백이 매우 어려워진다.
+
+---
+
+#### 권장 방식
+
+```yaml
+image: my-repo/my-app:1.0.0
+```
+
+또는
+
+```yaml
+image: my-repo/my-app:2025.08.15
+```
+
+또는
+
+```yaml
+image: my-repo/my-app:git-a1b2c3
+```
+
+처럼 명확한 버전을 사용하는 것이 좋다.
+
+---
+
+### 버전 업데이트
+
+새로운 이미지를 배포하는 경우
+
+```yaml
+image: my-repo/my-app:0.0.1
+```
+
+↓
+
+```yaml
+image: my-repo/my-app:0.0.2
+```
+
+로 변경한 후 다시 적용한다.
+
+```shell
+kubectl apply -f deployment.yaml
+```
+
+Deployment는 자동으로 Rolling Update를 수행한다.
+
+---
+
+### 배포 흐름
+
+```mermaid
+graph LR
+    A[my-app 0.0.1]
+    --> B[Image Push]
+
+    B --> C[Deployment Update]
+
+    C --> D[Rolling Update]
+
+    D --> E[0.0.2 Pod]
+```
+
+---
+
+### 정리
+
+스프링 애플리케이션을 Kubernetes에 배포하는 과정은 다음과 같다.
+
+```text
+1. 애플리케이션 빌드
+2. 컨테이너 이미지 생성
+3. 이미지 저장소 Push
+4. Namespace 생성
+5. Deployment 생성
+6. Pod 실행 확인
+7. Service 연결
+8. Ingress 연결
+9. 외부 서비스 제공
+```
+
+운영 환경에서는 `latest` 태그 사용을 피하고, 명확한 버전 태그를 사용하여 배포와 롤백이 가능하도록 관리하는 것이 중요하다.
