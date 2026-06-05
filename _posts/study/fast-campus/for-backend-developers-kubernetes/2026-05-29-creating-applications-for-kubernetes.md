@@ -479,3 +479,415 @@ Service 연결
 ```
 
 실제 운영 환경에서는 Deployment를 중심으로 ConfigMap, Secret, Volume, Service, Ingress 등을 함께 사용하여 완전한 애플리케이션 실행 환경을 구성하게 된다.
+
+## 02. 기본 스프링 애플리케이션 생성 및 컨테이너화 
+
+### 기본 스프링 애플리케이션 생성 및 컨테이너화
+
+스프링 애플리케이션을 Kubernetes에 배포하려면 먼저 애플리케이션을 **컨테이너 이미지** 형태로 만들어야 한다.
+
+Kubernetes는 소스 코드나 JAR 파일을 직접 실행하는 플랫폼이 아니다.
+Kubernetes는 컨테이너 이미지를 기반으로 Pod를 생성하고, Pod 안에서 컨테이너를 실행한다.
+
+따라서 전체 흐름은 다음과 같다.
+
+```text
+Spring Application
+↓
+JAR Build
+↓
+Container Image
+↓
+Image Repository Push
+↓
+Kubernetes Deployment
+```
+
+---
+
+### 컨테이너 이미지 저장소
+
+컨테이너 이미지를 만들었다면 Kubernetes 클러스터가 이미지를 가져올 수 있는 저장소에 이미지를 올려야 한다.
+
+대표적인 방식은 다음과 같다.
+
+#### 로컬 이미지 저장소 사용
+
+로컬 실습 환경에서는 Docker Desktop, kind, minikube 환경에서 로컬 이미지를 사용할 수 있다.
+
+다만 실제 운영 환경에서는 로컬 이미지를 사용하는 방식이 적합하지 않다.
+
+---
+
+#### Private Registry 사용
+
+회사 내부 환경에서는 보통 사설 이미지 저장소를 사용한다.
+
+예를 들면:
+
+* Harbor
+* AWS ECR
+* Google Artifact Registry
+* Azure Container Registry
+
+같은 저장소를 사용할 수 있다.
+
+---
+
+#### Docker Hub 사용
+
+가장 쉽게 실습할 수 있는 방식은 Docker Hub를 사용하는 것이다.
+
+Docker Hub를 사용하는 흐름은 다음과 같다.
+
+```text
+hub.docker.com 접속
+↓
+회원가입 / 로그인
+↓
+Repositories 이동
+↓
+Repository 생성
+↓
+이미지 Push
+↓
+Kubernetes에서 이미지 Pull
+```
+
+---
+
+### 컨테이너 이미지 생성 방식
+
+스프링 애플리케이션을 컨테이너 이미지로 만드는 대표적인 방법은 두 가지다.
+
+#### Dockerfile 사용
+
+Dockerfile을 직접 작성해서 이미지를 생성하는 방식이다.
+
+```dockerfile
+FROM openjdk:19
+
+COPY ./build/libs/my-app-*.jar /app.jar
+
+CMD ["java", "-jar", "/app.jar"]
+```
+
+---
+
+#### Dockerfile 방식의 특징
+
+* Dockerfile을 직접 관리해야 한다
+* 이미지 구조를 세밀하게 제어할 수 있다
+* Docker build 명령어를 직접 실행해야 한다
+
+```shell
+docker build -t my-repo/my-app:0.0.1 .
+```
+
+---
+
+#### Gradle Jib 사용
+
+Gradle Jib는 Dockerfile 없이 Java 애플리케이션을 컨테이너 이미지로 만들어주는 Gradle 플러그인이다.
+
+스프링 애플리케이션에서는 Jib를 사용하면 Dockerfile을 직접 작성하지 않아도 되고, Gradle Task만으로 이미지를 빌드하고 Registry에 Push할 수 있다.
+
+---
+
+### Gradle Jib 설정
+
+#### 플러그인 추가
+
+```groovy
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.2.0'
+    id 'io.spring.dependency-management' version '1.1.4'
+    id 'com.google.cloud.tools.jib' version '3.4.0'
+}
+```
+
+또는 기존 plugins 블록을 쓰지 않는 구조라면 다음과 같이 추가할 수 있다.
+
+```groovy
+buildscript {
+    dependencies {
+        classpath 'com.google.cloud.tools:jib-gradle-plugin:3.4.0'
+    }
+}
+```
+
+---
+
+### Jib 기본 설정 예시
+
+```groovy
+jib {
+    from {
+        image = "openjdk:19"
+    }
+
+    to {
+        image = "my-dockerhub-id/my-app"
+        tags = ["latest", "0.0.1"]
+    }
+
+    container {
+        creationTime = "USE_CURRENT_TIMESTAMP"
+    }
+}
+```
+
+---
+
+### Jib 설정 설명
+
+#### from
+
+```groovy
+from {
+    image = "openjdk:19"
+}
+```
+
+컨테이너 이미지의 기반이 되는 베이스 이미지를 지정한다.
+
+Java 애플리케이션이 실행되어야 하므로 JDK 또는 JRE가 포함된 이미지를 사용한다.
+
+---
+
+#### to
+
+```groovy
+to {
+    image = "my-dockerhub-id/my-app"
+    tags = ["latest", "0.0.1"]
+}
+```
+
+빌드된 이미지를 어떤 Repository에 Push할지 지정한다.
+
+예를 들어 Docker Hub 계정이 `siksik`이고 Repository 이름이 `my-app`이라면 다음과 같이 작성할 수 있다.
+
+```groovy
+to {
+    image = "siksik/my-app"
+    tags = ["latest", "0.0.1"]
+}
+```
+
+---
+
+#### tags
+
+```groovy
+tags = ["latest", "0.0.1"]
+```
+
+하나의 이미지에 여러 태그를 부여한다.
+
+다만 운영 환경에서는 `latest`만 사용하는 것은 권장되지 않는다.
+배포 버전을 명확하게 추적하기 어렵기 때문이다.
+
+운영에서는 보통 다음과 같이 명확한 버전 태그를 사용한다.
+
+```text
+0.0.1
+1.0.0
+2025.03.01
+git-commit-hash
+```
+
+---
+
+#### container
+
+```groovy
+container {
+    creationTime = "USE_CURRENT_TIMESTAMP"
+}
+```
+
+컨테이너 이미지의 생성 시간을 설정한다.
+
+Jib는 기본적으로 재현 가능한 빌드를 위해 이미지 생성 시간을 고정된 과거 시점으로 설정하는 경우가 있다.
+실습이나 이미지 생성 시각 확인이 필요한 경우에는 `USE_CURRENT_TIMESTAMP`를 지정해서 현재 시간을 사용하도록 설정할 수 있다.
+
+---
+
+### Jib Task 실행
+
+Jib 플러그인을 추가하면 Gradle Task에 `jib` 작업이 생긴다.
+
+```shell
+./gradlew jib
+```
+
+이 명령어를 실행하면 다음 작업이 한 번에 수행된다.
+
+```text
+애플리케이션 빌드
+↓
+컨테이너 이미지 생성
+↓
+Registry Push
+```
+
+즉 Dockerfile을 직접 작성하거나 `docker build`, `docker push`를 따로 실행하지 않아도 된다.
+
+---
+
+### Docker Hub 인증
+
+Docker Hub에 이미지를 Push하려면 인증이 필요하다.
+
+#### Docker CLI 로그인
+
+```shell
+docker login
+```
+
+로그인 후 `./gradlew jib`를 실행하면 Docker 인증 정보를 사용해서 이미지를 Push할 수 있다.
+
+---
+
+#### Jib에서 직접 인증 정보 지정
+
+필요하다면 Jib 설정에 인증 정보를 직접 지정할 수도 있다.
+
+```groovy
+jib {
+    to {
+        image = "my-dockerhub-id/my-app"
+        auth {
+            username = "my-dockerhub-id"
+            password = "my-password"
+        }
+    }
+}
+```
+
+다만 비밀번호를 `build.gradle`에 직접 작성하는 것은 피해야 한다.
+
+실무에서는 보통 다음과 같은 방식을 사용한다.
+
+```text
+- 환경 변수
+- Gradle properties
+- CI/CD Secret
+```
+
+---
+
+### 환경 변수를 이용한 인증 예시
+
+```groovy
+jib {
+    to {
+        image = "my-dockerhub-id/my-app"
+        auth {
+            username = System.getenv("DOCKER_USERNAME")
+            password = System.getenv("DOCKER_PASSWORD")
+        }
+    }
+}
+```
+
+---
+
+### 이미지 Push 이후 Kubernetes에서 사용
+
+이미지를 Repository에 Push했다면 Deployment에서 해당 이미지를 사용할 수 있다.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+
+spec:
+  replicas: 2
+
+  selector:
+    matchLabels:
+      app: my-app
+
+  template:
+    metadata:
+      labels:
+        app: my-app
+
+    spec:
+      containers:
+      - name: my-container
+        image: my-dockerhub-id/my-app:0.0.1
+```
+
+---
+
+### Deployment 적용
+
+```shell
+kubectl apply -f my-app.yaml
+```
+
+---
+
+### 배포 확인
+
+```shell
+kubectl get pods
+```
+
+```shell
+kubectl get deployment
+```
+
+---
+
+### 전체 흐름 정리
+
+```mermaid
+graph LR
+    A[Spring Application]
+    --> B[Gradle Build]
+
+    B --> C[Jib]
+
+    C --> D[Container Image]
+
+    D --> E[Docker Hub]
+
+    E --> F[Kubernetes Deployment]
+
+    F --> G[Pod]
+```
+
+---
+
+### Dockerfile vs Jib
+
+| 구분               | Dockerfile | Gradle Jib  |
+| ---------------- | ---------- | ----------- |
+| Dockerfile 필요    | 필요         | 불필요         |
+| Docker Daemon 필요 | 필요         | 불필요         |
+| Java 최적화         | 직접 구성      | 자동 최적화      |
+| 빌드/Push          | 수동 명령      | Gradle Task |
+| 세밀한 이미지 제어       | 높음         | 상대적으로 낮음    |
+
+---
+
+### 정리
+
+스프링 애플리케이션을 Kubernetes에 올리기 위한 핵심 과정은 다음과 같다.
+
+```text
+1. Spring 애플리케이션 생성
+2. JAR 빌드
+3. 컨테이너 이미지 생성
+4. 이미지 Repository Push
+5. Deployment에서 이미지 참조
+6. Kubernetes에 배포
+```
+
+Dockerfile 방식도 가능하지만, Java/Spring 애플리케이션에서는 Gradle Jib를 사용하면 훨씬 간단하게 이미지를 만들고 Registry에 Push할 수 있다.
