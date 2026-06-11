@@ -590,3 +590,321 @@ Liveness Probe
 * Liveness Probe → 신중하게
 
 설정하는 것이 일반적이며, 특히 Liveness Probe는 컨테이너 재시작이라는 큰 비용을 동반하기 때문에 충분한 검토 후 적용하는 것이 좋다.
+
+## 02. Pod와 Application Lifecycle
+
+### Pod와 Application Lifecycle
+
+쿠버네티스에서는 Pod와 컨테이너의 생명주기를 관리하기 위한 다양한 기능을 제공한다.
+
+애플리케이션은 시작보다 종료 과정이 더 중요한 경우가 많다. 특히 서버 애플리케이션은 요청을 처리하는 도중 종료될 수 있기 때문에 정상적인 종료 절차를 통해 현재 처리 중인 작업을 마무리하고 종료하는 것이 중요하다.
+
+---
+
+### Graceful Shutdown
+
+Graceful Shutdown은 애플리케이션이 종료될 때 즉시 종료하지 않고, 현재 처리 중인 작업을 정리할 수 있도록 유예 시간을 주는 절차이다.
+
+쿠버네티스는 Pod 종료 시 다음 순서로 동작한다.
+
+```text
+SIGTERM 전송
+    ↓
+종료 유예 시간(Grace Period)
+    ↓
+SIGKILL 전송
+```
+
+기본 종료 유예 시간은 30초이다.
+
+#### terminationGracePeriodSeconds
+
+Pod 단위로 종료 유예 시간을 설정할 수 있다.
+
+```yaml
+spec:
+  terminationGracePeriodSeconds: 60
+
+  containers:
+    - name: nginx
+      image: nginx
+```
+
+위 설정은 컨테이너 종료 시 최대 60초 동안 정상 종료를 기다린다.
+
+---
+
+#### Spring Boot의 Graceful Shutdown
+
+Spring Boot는 애플리케이션 레벨에서 Graceful Shutdown을 지원한다.
+
+```yaml
+server:
+  shutdown: graceful
+
+spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 60s
+```
+
+설정 시 다음과 같은 동작이 가능하다.
+
+* 신규 요청 수신 중단
+* 처리 중인 요청 완료
+* 스레드 풀 정리
+* 리소스 반납
+* 정상 종료
+
+실무에서는 기본값인 30초를 사용하거나 서비스 특성에 맞게 조정하는 경우가 많다.
+
+---
+
+### Pod Lifecycle Hook
+
+Lifecycle Hook은 컨테이너 생성 및 종료 시 특정 작업을 실행하기 위한 기능이다.
+
+```text
+Created
+   ↓
+postStart
+   ↓
+Running
+   ↓
+preStop
+   ↓
+Terminated
+```
+
+쿠버네티스는 두 가지 Hook을 제공한다.
+
+* postStart
+* preStop
+
+---
+
+#### postStart
+
+컨테이너가 시작된 직후 실행되는 Hook이다.
+
+```yaml
+lifecycle:
+  postStart:
+    exec:
+      command:
+        - sh
+        - -c
+        - echo "Container Started"
+```
+
+---
+
+#### postStart 특징
+
+* 컨테이너 생성 직후 실행
+* 컨테이너 메인 프로세스와 실행 순서가 보장되지 않음
+* 메인 프로세스와 비동기로 실행될 수 있음
+* 초기화 로직의 의존 대상으로 사용하면 안 됨
+* 빠르게 종료되는 작업 위주로 사용
+
+예시
+
+* 로그 기록
+* 외부 API 호출
+* 설정 파일 생성
+* 상태 파일 생성
+
+좋지 않은 예시
+
+* 긴 배치 작업
+* 수 분 이상 걸리는 초기화 작업
+* 애플리케이션 기동에 필수적인 작업
+
+postStart가 종료되지 않으면 컨테이너가 정상 Running 상태로 전환되지 못할 수 있다.
+
+---
+
+#### preStop
+
+컨테이너 종료 직전에 실행되는 Hook이다.
+
+```yaml
+lifecycle:
+  preStop:
+    exec:
+      command:
+        - sh
+        - -c
+        - sleep 10
+```
+
+---
+
+#### preStop 특징
+
+다음과 같은 상황에서 실행된다.
+
+* Rolling Update
+* kubectl delete pod
+* Deployment 교체
+* Liveness Probe 실패
+* 노드 Drain
+
+즉, 쿠버네티스가 의도적으로 컨테이너 종료를 시작할 때 실행된다.
+
+---
+
+#### preStop 동작 순서
+
+예를 들어 다음과 같은 설정이 있다고 가정하자.
+
+```yaml
+terminationGracePeriodSeconds: 30
+```
+
+```yaml
+preStop:
+  exec:
+    command:
+      - sh
+      - -c
+      - sleep 10
+```
+
+동작 순서는 다음과 같다.
+
+```text
+종료 결정
+    ↓
+EndpointSlice 제거
+    ↓
+preStop 실행 (10초)
+    ↓
+SIGTERM 전송
+    ↓
+20초 대기
+    ↓
+SIGKILL 전송
+```
+
+중요한 점은 terminationGracePeriodSeconds 카운트가 종료가 결정되는 순간부터 시작된다는 것이다.
+
+따라서
+
+```text
+Grace Period = 30초
+preStop = 10초
+```
+
+라면
+
+```text
+애플리케이션이 실제로 SIGTERM 이후 사용할 수 있는 시간
+
+= 20초
+```
+
+가 된다.
+
+---
+
+#### preStop을 사용하는 이유
+
+Rolling Update 시 다음과 같은 문제를 방지할 수 있다.
+
+```text
+트래픽 수신 중
+      ↓
+즉시 종료
+      ↓
+요청 실패
+```
+
+대신
+
+```text
+Endpoint 제거
+      ↓
+새 요청 차단
+      ↓
+잠시 대기
+      ↓
+기존 요청 처리 완료
+      ↓
+종료
+```
+
+형태로 동작할 수 있다.
+
+---
+
+### Application Lifecycle Control
+
+쿠버네티스 환경에서는 시작보다 종료 절차가 더 중요하게 다뤄지는 경우가 많다.
+
+특히 다음 요소들을 함께 사용하는 것이 일반적이다.
+
+#### 1. Readiness Probe
+
+먼저 트래픽 수신을 중단한다.
+
+```text
+Ready
+  ↓
+Not Ready
+  ↓
+트래픽 차단
+```
+
+---
+
+#### 2. preStop Hook
+
+기존 요청이 마무리될 시간을 확보한다.
+
+```yaml
+preStop:
+  exec:
+    command:
+      - sh
+      - -c
+      - sleep 10
+```
+
+---
+
+#### 3. Graceful Shutdown
+
+애플리케이션이 정상 종료 절차를 수행한다.
+
+```yaml
+server:
+  shutdown: graceful
+```
+
+---
+
+### 실무에서 자주 사용하는 종료 패턴
+
+```mermaid
+flowchart TD
+    A[Pod 종료 요청] --> B[EndpointSlice 제거]
+    B --> C[Readiness 실패]
+    C --> D[신규 요청 차단]
+    D --> E[preStop 실행]
+    E --> F[SIGTERM 전송]
+    F --> G[Graceful Shutdown]
+    G --> H[모든 요청 처리 완료]
+    H --> I[컨테이너 종료]
+```
+
+---
+
+### 정리
+
+* Graceful Shutdown은 현재 처리 중인 작업을 마무리할 시간을 제공한다.
+* terminationGracePeriodSeconds의 기본값은 30초이다.
+* Spring Boot는 graceful shutdown 기능을 기본 지원한다.
+* postStart는 컨테이너 시작 직후 실행되는 Hook이다.
+* preStop은 컨테이너 종료 직전에 실행되는 Hook이다.
+* preStop 실행 시간도 terminationGracePeriodSeconds에 포함된다.
+* 실무에서는 Readiness Probe + preStop + Graceful Shutdown을 함께 사용하여 무중단 배포를 구현하는 경우가 많다.
