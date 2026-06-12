@@ -908,3 +908,446 @@ flowchart TD
 * preStop은 컨테이너 종료 직전에 실행되는 Hook이다.
 * preStop 실행 시간도 terminationGracePeriodSeconds에 포함된다.
 * 실무에서는 Readiness Probe + preStop + Graceful Shutdown을 함께 사용하여 무중단 배포를 구현하는 경우가 많다.
+
+## 03. Healthcheck Probe와 Lifecycle 실습
+
+### Health Check Probe와 Lifecycle 실습
+
+이번 실습에서는 Spring Boot 애플리케이션에 Health Check API를 구현하고, Kubernetes의 Probe와 Lifecycle 기능을 적용해본다.
+
+실습 목표는 다음과 같다.
+
+* Startup Probe 적용
+* Readiness Probe 적용
+* Liveness Probe 적용
+* Graceful Shutdown 적용
+* Lifecycle Hook 적용
+* Pod 종료 시 무중단 종료 확인
+
+---
+
+### Health Check Controller 생성
+
+일반적으로 Probe는 특정 URL에 요청을 보내 HTTP 상태 코드를 확인하는 방식으로 동작한다.
+
+중요한 것은 응답 본문(Body)이 아니라 HTTP 상태 코드이다.
+
+예를 들어
+
+```text
+200 OK
+```
+
+이면 성공,
+
+```text
+500 Internal Server Error
+```
+
+또는
+
+```text
+Timeout
+```
+
+이면 실패로 판단한다.
+
+---
+
+#### Startup Probe용 API
+
+```java
+@RestController
+@RequestMapping("/health")
+public class HealthController {
+
+    @GetMapping("/startup")
+    public ResponseEntity<String> startup() {
+        return ResponseEntity.ok("STARTUP OK");
+    }
+
+}
+```
+
+---
+
+#### Readiness Probe용 API
+
+```java
+@GetMapping("/readiness")
+public ResponseEntity<String> readiness() {
+    return ResponseEntity.ok("READY");
+}
+```
+
+---
+
+#### Liveness Probe용 API
+
+```java
+@GetMapping("/liveness")
+public ResponseEntity<String> liveness() {
+    return ResponseEntity.ok("ALIVE");
+}
+```
+
+실무에서는 Spring Boot Actuator를 사용하는 경우가 많다.
+
+```text
+/actuator/health
+/actuator/health/readiness
+/actuator/health/liveness
+```
+
+---
+
+### Startup Probe 설정
+
+Startup Probe는 애플리케이션이 정상적으로 기동되었는지 확인한다.
+
+Startup Probe가 성공하기 전까지는 Readiness Probe와 Liveness Probe가 실행되지 않는다.
+
+```yaml
+startupProbe:
+  httpGet:
+    path: /health/startup
+    port: 8080
+
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  failureThreshold: 12
+```
+
+---
+
+#### 설정 설명
+
+##### initialDelaySeconds
+
+```yaml
+initialDelaySeconds: 5
+```
+
+컨테이너 시작 후 첫 번째 Probe를 실행하기 전 대기 시간이다.
+
+---
+
+##### periodSeconds
+
+```yaml
+periodSeconds: 5
+```
+
+5초마다 Probe를 수행한다.
+
+---
+
+##### failureThreshold
+
+```yaml
+failureThreshold: 12
+```
+
+12번 연속 실패하면 기동 실패로 판단한다.
+
+즉 최대 대기 시간은 다음과 같다.
+
+```text
+5초 × 12 = 60초
+```
+
+60초 내에 애플리케이션이 기동하지 못하면 컨테이너가 재시작된다.
+
+---
+
+### Readiness Probe 설정
+
+Readiness Probe는 애플리케이션이 트래픽을 받을 준비가 되었는지 판단한다.
+
+실패하더라도 컨테이너를 종료하지는 않는다.
+
+대신 Service의 Endpoint 목록에서 제거된다.
+
+```yaml
+readinessProbe:
+  httpGet:
+    path: /health/readiness
+    port: 8080
+
+  periodSeconds: 5
+  timeoutSeconds: 2
+  failureThreshold: 2
+  successThreshold: 2
+```
+
+---
+
+#### successThreshold
+
+```yaml
+successThreshold: 2
+```
+
+2번 연속 성공해야 Ready 상태가 된다.
+
+```text
+Success
+↓
+Success
+↓
+Ready
+```
+
+Readiness Probe는 세 가지 Probe 중 유일하게 `successThreshold`를 사용할 수 있다.
+
+---
+
+#### initialDelaySeconds를 잘 사용하지 않는 이유
+
+Startup Probe를 사용하는 경우에는 Startup Probe가 완료된 후에 Readiness Probe가 시작된다.
+
+따라서 Readiness Probe의 `initialDelaySeconds`는 대부분 큰 의미가 없다.
+
+---
+
+### Liveness Probe 설정
+
+Liveness Probe는 애플리케이션이 정상 동작 중인지 확인한다.
+
+실패하면 컨테이너를 재시작한다.
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /health/liveness
+    port: 8080
+
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 5
+```
+
+---
+
+#### Readiness보다 둔감하게 설정하는 이유
+
+Liveness Probe 실패는 컨테이너 재시작으로 이어진다.
+
+반면 Readiness Probe 실패는 트래픽만 차단한다.
+
+따라서 일반적으로 다음과 같이 설정한다.
+
+```text
+Readiness
+→ 민감하게
+
+Liveness
+→ 둔감하게
+```
+
+예를 들어
+
+```yaml
+readinessProbe:
+  failureThreshold: 2
+
+livenessProbe:
+  failureThreshold: 5
+```
+
+처럼 설정하는 경우가 많다.
+
+---
+
+### terminationGracePeriodSeconds 설정
+
+Pod 종료 시 애플리케이션이 작업을 마무리할 수 있도록 유예 시간을 설정한다.
+
+```yaml
+spec:
+  terminationGracePeriodSeconds: 60
+```
+
+동작 순서는 다음과 같다.
+
+```text
+SIGTERM
+    ↓
+60초 대기
+    ↓
+SIGKILL
+```
+
+Spring Boot의 Graceful Shutdown 시간보다 충분히 크게 설정하는 것이 좋다.
+
+---
+
+### Lifecycle Hook 설정
+
+Lifecycle Hook을 사용하면 컨테이너 시작 및 종료 시 특정 작업을 수행할 수 있다.
+
+---
+
+#### postStart
+
+```yaml
+lifecycle:
+  postStart:
+    exec:
+      command:
+        - sh
+        - -c
+        - echo "Container Started"
+```
+
+컨테이너 생성 직후 실행된다.
+
+---
+
+#### preStop
+
+```yaml
+lifecycle:
+  preStop:
+    exec:
+      command:
+        - sh
+        - -c
+        - sleep 10
+```
+
+종료 전에 10초 대기한다.
+
+실무에서는 Endpoint에서 트래픽이 제거된 후 기존 요청을 처리할 시간을 주기 위해 자주 사용한다.
+
+---
+
+### Spring Boot Graceful Shutdown 설정
+
+Spring Boot는 Graceful Shutdown을 지원한다.
+
+```yaml
+server:
+  shutdown: graceful
+
+spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+```
+
+동작 과정은 다음과 같다.
+
+```text
+신규 요청 차단
+      ↓
+기존 요청 처리
+      ↓
+리소스 정리
+      ↓
+종료
+```
+
+---
+
+### 전체 Deployment 예시
+
+```yaml
+spec:
+  terminationGracePeriodSeconds: 60
+
+  containers:
+    - name: my-app
+      image: my-app:1.0.0
+
+      startupProbe:
+        httpGet:
+          path: /health/startup
+          port: 8080
+        periodSeconds: 5
+        failureThreshold: 12
+
+      readinessProbe:
+        httpGet:
+          path: /health/readiness
+          port: 8080
+        periodSeconds: 5
+        failureThreshold: 2
+        successThreshold: 2
+
+      livenessProbe:
+        httpGet:
+          path: /health/liveness
+          port: 8080
+        periodSeconds: 10
+        failureThreshold: 5
+
+      lifecycle:
+        preStop:
+          exec:
+            command:
+              - sh
+              - -c
+              - sleep 10
+```
+
+---
+
+### 설정 적용 및 로그 확인
+
+배포
+
+```bash
+kubectl apply -f deployment.yaml
+```
+
+Pod 상태 확인
+
+```bash
+kubectl get pods
+```
+
+로그 확인
+
+```bash
+kubectl logs -f <pod-name>
+```
+
+---
+
+### Graceful Shutdown 확인
+
+Graceful Shutdown 동작을 확인하기 위해 Pod 하나를 삭제해본다.
+
+```bash
+kubectl delete pod <pod-name>
+```
+
+정상 동작한다면 다음 순서가 로그에서 확인된다.
+
+```text
+Pod 삭제 요청
+        ↓
+Endpoint 제거
+        ↓
+preStop 실행
+        ↓
+SIGTERM 수신
+        ↓
+Graceful Shutdown
+        ↓
+컨테이너 종료
+```
+
+기존 요청이 정상적으로 처리되고 종료된다면 Graceful Shutdown이 제대로 동작하는 것이다.
+
+---
+
+### 정리
+
+* Probe는 애플리케이션 상태를 판단하는 핵심 기능이다.
+* Startup Probe는 기동 완료 여부를 판단한다.
+* Readiness Probe는 트래픽 수신 여부를 결정한다.
+* Liveness Probe는 컨테이너 재시작 여부를 결정한다.
+* Lifecycle Hook은 시작과 종료 시 추가 작업을 수행한다.
+* Graceful Shutdown은 무중단 배포의 핵심 요소이다.
+* 실무에서는 `Readiness + preStop + Graceful Shutdown` 조합을 가장 많이 사용한다.
