@@ -423,4 +423,420 @@ Service는 여러 Pod에 트래픽을 분산한다.
 * ExternalName Service는 DNS Alias 역할을 수행한다.
 * 애플리케이션은 Pod가 아닌 Service를 기준으로 설계하는 것이 쿠버네티스 친화적인 구조이다.
 
+## 02. Service 정의 및 애플리케이션 간 HTTP 통신 실습
 
+이번 실습에서는 Kubernetes 환경에서 여러 애플리케이션을 배포한 뒤 Service를 이용한 내부 통신과 Ingress를 이용한 외부 통신을 구성해본다.
+
+실습 목표는 다음과 같다.
+
+* Kind 기반 Kubernetes 클러스터 구성
+* NGINX Ingress Controller 설치
+* Service를 이용한 애플리케이션 간 통신
+* Ingress를 이용한 외부 노출
+* Path Rewrite 적용
+
+### 전체 구조
+
+최종적으로 다음과 같은 구조를 구성한다.
+
+```text
+외부 사용자
+      │
+      ▼
+Ingress
+      │
+      ▼
+api-service
+      │
+      ▼
+api-app
+
+      │ HTTP 호출
+      ▼
+
+user-service
+      │
+      ▼
+user-app
+```
+
+---
+
+### Kind 클러스터 재생성
+
+Ingress 실습을 위해 기존 Kind 클러스터를 삭제한 후 Ingress를 사용할 수 있는 형태로 다시 생성한다.
+
+기존 클러스터 삭제
+
+```bash
+kind delete cluster
+```
+
+Ingress 지원용 Kind 설정 파일 생성
+
+```yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+
+nodes:
+  - role: control-plane
+
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+
+    extraPortMappings:
+      - containerPort: 80
+        hostPort: 80
+        protocol: TCP
+
+      - containerPort: 443
+        hostPort: 443
+        protocol: TCP
+```
+
+클러스터 생성
+
+```bash
+kind create cluster --config kind-config.yaml
+```
+
+위 설정은 다음 목적을 가진다.
+
+* Ingress Controller가 배치될 수 있도록 노드 라벨 추가
+* 로컬 PC의 80, 443 포트를 클러스터와 연결
+* 브라우저에서 직접 Ingress 테스트 가능
+
+---
+
+### NGINX Ingress Controller 설치
+
+Ingress는 리소스만 생성한다고 동작하지 않는다.
+
+Ingress 규칙을 실제로 처리할 Controller가 필요하다.
+
+NGINX Ingress Controller 설치
+
+```bash
+kubectl apply -f \
+https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
+```
+
+설치 확인
+
+```bash
+kubectl get pods -n ingress-nginx
+```
+
+Controller 준비 대기
+
+```bash
+kubectl wait \
+--namespace ingress-nginx \
+--for=condition=ready pod \
+--selector=app.kubernetes.io/component=controller \
+--timeout=90s
+```
+
+---
+
+### 기존 애플리케이션 배포
+
+기존에 작성한 Deployment를 적용한다.
+
+```bash
+kubectl apply -f deployment.yaml
+```
+
+배포 상태 확인
+
+```bash
+kubectl get pods
+```
+
+---
+
+### Namespace 및 Secret 생성
+
+Namespace나 Secret은 실무에서도 명령어로 생성하는 경우가 많다.
+
+```bash
+kubectl create namespace dev
+```
+
+```bash
+kubectl create secret generic api-secret \
+  --from-literal=API_KEY=my-secret-key
+```
+
+---
+
+### User Service 생성
+
+User 애플리케이션을 위한 Service 생성
+
+```yaml
+apiVersion: v1
+kind: Service
+
+metadata:
+  name: user-service
+
+spec:
+  selector:
+    app: user-app
+
+  ports:
+    - protocol: TCP
+      port: 8080
+```
+
+적용
+
+```bash
+kubectl apply -f user-service.yaml
+```
+
+---
+
+### Service DNS 확인
+
+Service가 생성되면 Kubernetes DNS가 자동 생성된다.
+
+같은 Namespace에서는 다음 주소로 호출할 수 있다.
+
+```text
+http://user-service:8080
+```
+
+실제 Pod IP를 알 필요가 없으며 Service 이름만으로 통신이 가능하다.
+
+---
+
+### 애플리케이션 간 HTTP 통신
+
+Kubernetes에서는 다른 애플리케이션을 호출할 때 Pod IP를 직접 사용하지 않는다.
+
+또한 localhost도 사용할 수 없다.
+
+localhost는 현재 컨테이너 또는 같은 Pod 내부 컨테이너만 의미한다.
+
+다른 애플리케이션은 반드시 Service를 통해 호출해야 한다.
+
+예시
+
+```java
+RestClient httpClient = RestClient.create();
+
+UserInfo userInfo = httpClient
+    .get()
+    .uri("http://user-service:8080/users/" + userId)
+    .retrieve()
+    .body(UserInfo.class);
+```
+
+요청 흐름
+
+```text
+api-app
+    │
+    ▼
+user-service
+    │
+    ▼
+user-app Pod
+```
+
+Service는 selector를 이용하여 실제 Pod를 찾고 트래픽을 분산한다.
+
+따라서 애플리케이션은 Pod 수가 증가하거나 감소하는 것을 신경 쓸 필요가 없다.
+
+---
+
+### API Service 생성
+
+Ingress가 연결할 대상 Service 생성
+
+```yaml
+apiVersion: v1
+kind: Service
+
+metadata:
+  name: api-service
+
+spec:
+  selector:
+    app: api-app
+
+  ports:
+    - protocol: TCP
+      port: 8080
+```
+
+적용
+
+```bash
+kubectl apply -f api-service.yaml
+```
+
+---
+
+### Ingress 생성
+
+외부 요청을 Service로 연결하기 위한 Ingress 생성
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+
+metadata:
+  name: api-ingress
+
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /api
+            pathType: Prefix
+
+            backend:
+              service:
+                name: api-service
+                port:
+                  number: 8080
+```
+
+적용
+
+```bash
+kubectl apply -f ingress.yaml
+```
+
+---
+
+### Ingress 요청 흐름
+
+```text
+브라우저
+    │
+    ▼
+Ingress
+    │
+    ▼
+api-service
+    │
+    ▼
+api-app Pod
+```
+
+Ingress는 Pod가 아니라 Service를 대상으로 동작한다.
+
+따라서 외부에서 호출되는 애플리케이션도 반드시 Service가 필요하다.
+
+---
+
+### 외부 호출 테스트
+
+Ingress를 통해 요청을 전송한다.
+
+```bash
+curl http://localhost/api/users/1
+```
+
+여기서 localhost는 애플리케이션 내부 주소가 아니라 Kind 클러스터를 실행 중인 로컬 PC를 의미한다.
+
+Ingress가 80 포트로 노출되어 있기 때문에 localhost로 접근할 수 있다.
+
+---
+
+### Path Rewrite 적용
+
+Ingress는 기본적으로 요청 경로를 그대로 전달한다.
+
+예를 들어
+
+```text
+/api/users/1
+```
+
+요청이 들어오면
+
+```text
+/api/users/1
+```
+
+그대로 백엔드 애플리케이션에 전달된다.
+
+Prefix를 제거하려면 Rewrite 기능을 사용한다.
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+
+metadata:
+  name: api-ingress
+
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /api(/|$)(.*)
+            pathType: ImplementationSpecific
+
+            backend:
+              service:
+                name: api-service
+                port:
+                  number: 8080
+```
+
+---
+
+### Rewrite 동작 확인
+
+Rewrite 적용 전
+
+```text
+외부 요청
+/api/users/1
+
+↓
+
+백엔드 전달
+/api/users/1
+```
+
+Rewrite 적용 후
+
+```text
+외부 요청
+/api/users/1
+
+↓
+
+백엔드 전달
+/users/1
+```
+
+애플리케이션 로그를 통해 실제 전달 경로가 변경된 것을 확인할 수 있다.
+
+---
+
+### 실습 정리
+
+* Kind 클러스터를 Ingress 지원 형태로 생성한다.
+* NGINX Ingress Controller를 설치한다.
+* Deployment를 배포한다.
+* ClusterIP Service를 생성한다.
+* Service DNS를 이용해 애플리케이션 간 통신을 수행한다.
+* Pod IP나 localhost 대신 Service 이름으로 통신한다.
+* Ingress를 생성하여 외부 요청을 Service로 연결한다.
+* Rewrite 기능을 이용해 URL Prefix를 제거할 수 있다.
+* Kubernetes 환경에서는 애플리케이션을 Pod가 아니라 Service를 기준으로 바라보는 것이 중요하다.
