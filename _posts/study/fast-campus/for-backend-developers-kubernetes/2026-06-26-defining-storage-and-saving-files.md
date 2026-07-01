@@ -20,7 +20,7 @@ comments: true
 
 ### Kubernetes Storage의 종류와 활용
 
-Kubernetes에서 Storage를 이해할 때 핵심은 **데이터의 생명주기**를 먼저 구분하는 것이다. PDF에서도 Storage를 `Ephemeral Volume`과 `Persistent Volume`으로 나누고, Pod와 Volume의 생명주기 차이를 그림으로 설명한다.
+Kubernetes에서 Storage를 이해할 때 핵심은 **데이터의 생명주기**를 먼저 구분하는 것이다. 
 
 ---
 
