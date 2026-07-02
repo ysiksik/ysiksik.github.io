@@ -642,3 +642,638 @@ Kubernetes Storage는 단순히 “파일을 어디에 저장할 것인가”의
 한 문장으로 정리하면 다음과 같다.
 
 > Kubernetes에서 좋은 Storage 설계는 “Pod가 언제든 사라져도 데이터와 서비스가 안전한 구조”를 만드는 것이다.
+
+## 02. PV와 PVC를 이용한 파일 저장 실습
+
+### PV와 PVC를 이용한 파일 저장 실습
+
+이번 실습에서는 Kubernetes에서 임시 볼륨과 영구 볼륨을 함께 사용해본다.
+
+실습 목표는 두 가지이다.
+
+첫 번째는 애플리케이션 캐시 데이터를 파일로 저장해서 컨테이너가 재시작되더라도 캐시를 복구하는 것이다.
+
+두 번째는 여러 Pod가 공통으로 접근할 수 있는 영구 저장소를 구성하고, 각 Pod의 로그를 하나의 파일에 기록하는 것이다.
+
+---
+
+### 실습 구성
+
+이번 실습에서는 다음 구조를 만든다.
+
+```mermaid
+flowchart TD
+    A[Spring Boot Application Pod] --> B[임시 볼륨 emptyDir]
+    A --> C[PVC]
+    C --> D[PV]
+    D --> E[StorageClass]
+
+    B --> F[Cache File]
+    D --> G[Shared Log File]
+```
+
+구성 요소는 다음과 같다.
+
+* `emptyDir`: 캐시 데이터를 저장할 임시 볼륨
+* `StorageClass`: 동적 볼륨 생성을 위한 스토리지 정의
+* `PVC`: 애플리케이션이 요청하는 영구 저장소
+* `PV`: 실제 할당된 영구 볼륨
+* `Deployment`: 애플리케이션 실행 및 볼륨 마운트
+* Spring Boot 코드: 캐시 저장, 캐시 복구, 로그 기록
+
+---
+
+### 실습 시나리오
+
+#### 1. 캐시 파일 저장
+
+애플리케이션 내부의 `Map` 데이터를 주기적으로 파일에 저장한다.
+
+```mermaid
+flowchart LR
+    A[Map Cache] --> B[1초마다 JSON 저장]
+    B --> C[/tmp/cache/cache.json]
+```
+
+컨테이너가 재시작되면 애플리케이션 기동 시점에 해당 파일을 읽어서 Map을 복구한다.
+
+```mermaid
+flowchart LR
+    A[Application Start] --> B[cache.json 읽기]
+    B --> C[Map 복구]
+```
+
+---
+
+#### 2. 여러 Pod의 로그를 하나의 파일에 기록
+
+여러 Pod가 하나의 영구 볼륨을 공유하고, 각 Pod가 동일한 로그 파일에 메시지를 기록한다.
+
+```mermaid
+flowchart TD
+    P1[Pod-1] --> L[shared-log.txt]
+    P2[Pod-2] --> L
+    P3[Pod-3] --> L
+```
+
+로그에는 다음 정보를 기록한다.
+
+* Pod 이름
+* 캐시 히트 여부
+* 캐시 미스 여부
+* 요청 메시지
+* 기록 시간
+
+---
+
+### StorageClass 생성
+
+먼저 동적 볼륨 생성을 위한 StorageClass를 만든다.
+
+StorageClass는 클러스터 전역 객체이기 때문에 Namespace를 지정하지 않는다.
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-storage
+provisioner: rancher.io/local-path
+volumeBindingMode: WaitForFirstConsumer
+```
+
+#### 설정 설명
+
+`storageClassName`으로 PVC에서 이 StorageClass를 참조할 수 있다.
+
+```yaml
+metadata:
+  name: local-storage
+```
+
+`provisioner`는 실제 볼륨을 생성할 스토리지 제공자를 의미한다.
+
+```yaml
+provisioner: rancher.io/local-path
+```
+
+`volumeBindingMode`는 볼륨이 언제 생성되고 바인딩될지 결정한다.
+
+```yaml
+volumeBindingMode: WaitForFirstConsumer
+```
+
+`WaitForFirstConsumer`는 PVC가 생성되는 즉시 볼륨을 만드는 것이 아니라, 실제 Pod가 PVC를 사용할 때 볼륨을 바인딩한다.
+
+---
+
+### PVC 생성
+
+PVC는 애플리케이션이 사용할 저장공간을 요청하는 객체이다.
+
+PVC는 Namespace에 속하는 객체이므로 애플리케이션과 같은 Namespace에 생성한다.
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: app-log-pvc
+  namespace: default
+spec:
+  storageClassName: local-storage
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+```
+
+#### 설정 설명
+
+```yaml
+storageClassName: local-storage
+```
+
+앞에서 만든 StorageClass를 사용한다.
+
+```yaml
+accessModes:
+  - ReadWriteOnce
+```
+
+하나의 노드에서 읽기/쓰기가 가능한 볼륨을 요청한다.
+
+```yaml
+resources:
+  requests:
+    storage: 1Gi
+```
+
+1Gi 크기의 저장공간을 요청한다.
+
+---
+
+### Deployment에 볼륨 마운트
+
+애플리케이션 Deployment에 두 가지 볼륨을 추가한다.
+
+* 캐시용 임시 볼륨
+* 로그용 영구 볼륨
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: storage-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: storage-app
+  template:
+    metadata:
+      labels:
+        app: storage-app
+    spec:
+      volumes:
+        - name: cache-volume
+          emptyDir: {}
+
+        - name: log-volume
+          persistentVolumeClaim:
+            claimName: app-log-pvc
+
+      containers:
+        - name: storage-app
+          image: my-repo/storage-app:0.0.1
+          volumeMounts:
+            - name: cache-volume
+              mountPath: /tmp/cache
+
+            - name: log-volume
+              mountPath: /app/logs
+```
+
+---
+
+### 볼륨 마운트 구조
+
+```mermaid
+flowchart TD
+    A[Pod] --> B[Container]
+    B --> C[/tmp/cache]
+    B --> D[/app/logs]
+
+    C --> E[emptyDir]
+    D --> F[PVC]
+    F --> G[PV]
+```
+
+`/tmp/cache`는 임시 볼륨이다.
+
+Pod가 삭제되면 함께 삭제된다.
+
+`/app/logs`는 영구 볼륨이다.
+
+Pod가 재생성되더라도 PVC를 통해 다시 연결될 수 있다.
+
+---
+
+### 로그 기록 클래스 생성
+
+여러 Pod가 공통 로그 파일에 메시지를 기록하도록 간단한 클래스를 만든다.
+
+```java
+@Component
+public class FileLogWriter {
+
+    private static final Path LOG_FILE = Paths.get("/app/logs/shared-log.txt");
+
+    @Value("${HOSTNAME:unknown-pod}")
+    private String podName;
+
+    public synchronized void write(String message) {
+        try {
+            Files.createDirectories(LOG_FILE.getParent());
+
+            String log = String.format(
+                    "[%s] pod=%s message=%s%n",
+                    LocalDateTime.now(),
+                    podName,
+                    message
+            );
+
+            Files.writeString(
+                    LOG_FILE,
+                    log,
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.APPEND
+            );
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to write log file", e);
+        }
+    }
+}
+```
+
+#### 코드 설명
+
+`HOSTNAME` 환경 변수는 Kubernetes에서 Pod 이름으로 주입되는 경우가 많다.
+
+```java
+@Value("${HOSTNAME:unknown-pod}")
+private String podName;
+```
+
+이를 이용하면 어떤 Pod가 로그를 남겼는지 확인할 수 있다.
+
+```text
+[2026-01-01T10:00:00] pod=storage-app-xxxx message=cache hit
+```
+
+---
+
+### 캐시 서비스 생성
+
+비즈니스 로직에서는 캐시를 조회하고, 캐시 히트 또는 캐시 미스를 로그로 남긴다.
+
+```java
+@Service
+@RequiredArgsConstructor
+public class CacheService {
+
+    private final FileLogWriter fileLogWriter;
+
+    private final Map<String, String> cache = new ConcurrentHashMap<>();
+
+    public String getValue(String key) {
+        if (cache.containsKey(key)) {
+            fileLogWriter.write("CACHE_HIT key=" + key);
+            return cache.get(key);
+        }
+
+        String value = "value-" + key;
+        cache.put(key, value);
+
+        fileLogWriter.write("CACHE_MISS key=" + key);
+
+        return value;
+    }
+
+    public Map<String, String> getCache() {
+        return cache;
+    }
+}
+```
+
+---
+
+### 캐시 파일 저장
+
+캐시 데이터를 주기적으로 파일에 기록한다.
+
+간단하게 JSON 파일로 저장한다.
+
+```java
+@Component
+@RequiredArgsConstructor
+@EnableScheduling
+public class CacheFileManager {
+
+    private static final Path CACHE_FILE = Paths.get("/tmp/cache/cache.json");
+
+    private final ObjectMapper objectMapper;
+    private final CacheService cacheService;
+
+    @Scheduled(fixedRate = 1000)
+    public void saveCache() {
+        try {
+            Files.createDirectories(CACHE_FILE.getParent());
+
+            String json = objectMapper.writeValueAsString(cacheService.getCache());
+
+            Files.writeString(
+                    CACHE_FILE,
+                    json,
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.TRUNCATE_EXISTING
+            );
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to save cache file", e);
+        }
+    }
+}
+```
+
+#### 동작 방식
+
+```mermaid
+sequenceDiagram
+    participant App as Application
+    participant Map as Memory Map
+    participant File as /tmp/cache/cache.json
+
+    loop Every 1 second
+        App->>Map: cache 조회
+        App->>File: JSON으로 저장
+    end
+```
+
+---
+
+### 애플리케이션 기동 시 캐시 복구
+
+애플리케이션이 시작될 때 캐시 파일을 읽어 Map을 복구한다.
+
+```java
+@Component
+@RequiredArgsConstructor
+public class CacheInitializer {
+
+    private static final Path CACHE_FILE = Paths.get("/tmp/cache/cache.json");
+
+    private final ObjectMapper objectMapper;
+    private final CacheService cacheService;
+
+    @PostConstruct
+    public void loadCache() {
+        if (!Files.exists(CACHE_FILE)) {
+            return;
+        }
+
+        try {
+            Map<String, String> restored = objectMapper.readValue(
+                    Files.readString(CACHE_FILE),
+                    new TypeReference<Map<String, String>>() {}
+            );
+
+            cacheService.getCache().putAll(restored);
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to load cache file", e);
+        }
+    }
+}
+```
+
+#### 동작 방식
+
+```mermaid
+flowchart TD
+    A[Application Start] --> B{cache.json 존재?}
+    B -->|없음| C[빈 캐시로 시작]
+    B -->|있음| D[JSON 파일 읽기]
+    D --> E[Map에 복구]
+    E --> F[서비스 시작]
+```
+
+---
+
+### 테스트용 Controller
+
+캐시 동작을 확인할 수 있는 API를 만든다.
+
+```java
+@RestController
+@RequiredArgsConstructor
+@RequestMapping("/cache")
+public class CacheController {
+
+    private final CacheService cacheService;
+
+    @GetMapping("/{key}")
+    public String get(@PathVariable String key) {
+        return cacheService.getValue(key);
+    }
+
+    @GetMapping
+    public Map<String, String> getAll() {
+        return cacheService.getCache();
+    }
+}
+```
+
+---
+
+### YAML 적용
+
+StorageClass를 먼저 적용한다.
+
+```bash
+kubectl apply -f storage-class.yaml
+```
+
+PVC를 적용한다.
+
+```bash
+kubectl apply -f pvc.yaml
+```
+
+Deployment를 적용한다.
+
+```bash
+kubectl apply -f deployment.yaml
+```
+
+상태를 확인한다.
+
+```bash
+kubectl get storageclass
+kubectl get pvc
+kubectl get pv
+kubectl get pods
+```
+
+---
+
+### 동작 확인
+
+API를 호출해서 캐시 데이터를 만든다.
+
+```bash
+curl http://localhost/cache/user-1
+curl http://localhost/cache/user-2
+curl http://localhost/cache/user-1
+```
+
+Pod 내부에 들어가 캐시 파일을 확인한다.
+
+```bash
+kubectl exec -it <pod-name> -- sh
+```
+
+```bash
+cat /tmp/cache/cache.json
+```
+
+로그 파일도 확인한다.
+
+```bash
+cat /app/logs/shared-log.txt
+```
+
+여러 Pod가 같은 파일에 로그를 남기고 있다면 다음과 같은 형태가 보인다.
+
+```text
+[2026-01-01T10:00:00] pod=storage-app-abc message=CACHE_MISS key=user-1
+[2026-01-01T10:00:03] pod=storage-app-def message=CACHE_HIT key=user-1
+```
+
+---
+
+### 컨테이너 강제 재시작 테스트
+
+컨테이너를 강제로 재시작시켜 캐시가 유지되는지 확인한다.
+
+예를 들어 애플리케이션 프로세스를 종료한다.
+
+```bash
+kubectl exec -it <pod-name> -- sh
+```
+
+```bash
+kill 1
+```
+
+컨테이너가 재시작된 후 다시 접속한다.
+
+```bash
+kubectl get pods
+kubectl exec -it <pod-name> -- sh
+```
+
+캐시 파일이 남아 있는지 확인한다.
+
+```bash
+cat /tmp/cache/cache.json
+```
+
+API를 다시 호출한다.
+
+```bash
+curl http://localhost/cache/user-1
+```
+
+컨테이너만 재시작되고 Pod가 유지되었다면 `emptyDir`에 저장된 캐시 파일이 남아 있을 수 있다.
+
+따라서 애플리케이션은 기동 시 캐시 파일을 읽어 Map을 복구할 수 있다.
+
+---
+
+### Pod 삭제 테스트
+
+이번에는 Pod 자체를 삭제한다.
+
+```bash
+kubectl delete pod <pod-name>
+```
+
+Deployment가 새로운 Pod를 생성한다.
+
+```bash
+kubectl get pods
+```
+
+새 Pod에 접속해 캐시 파일을 확인한다.
+
+```bash
+cat /tmp/cache/cache.json
+```
+
+이 경우 `emptyDir`은 Pod와 함께 삭제되었기 때문에 캐시 파일이 사라진다.
+
+하지만 영구 볼륨에 기록한 로그 파일은 PVC/PV를 통해 유지될 수 있다.
+
+---
+
+### 컨테이너 재시작과 Pod 재생성의 차이
+
+```mermaid
+flowchart TD
+    A[장애 발생] --> B{무엇이 재시작되는가?}
+
+    B -->|컨테이너만 재시작| C[Pod 유지]
+    C --> D[emptyDir 유지 가능]
+    D --> E[캐시 복구 가능]
+
+    B -->|Pod 삭제 후 재생성| F[새 Pod 생성]
+    F --> G[emptyDir 새로 생성]
+    G --> H[캐시 복구 불가]
+
+    F --> I[PVC 재연결]
+    I --> J[영구 로그 유지 가능]
+```
+
+---
+
+### 실습에서 확인해야 할 포인트
+
+* PVC는 Namespace에 속한다.
+* StorageClass와 PV는 클러스터 전역 객체이다.
+* emptyDir은 Pod 생명주기에 종속된다.
+* 컨테이너가 재시작되어도 Pod가 유지되면 emptyDir 데이터가 남을 수 있다.
+* Pod가 삭제되면 emptyDir은 삭제된다.
+* PVC/PV 기반 저장소는 Pod가 재생성되어도 유지될 수 있다.
+* 여러 Pod가 하나의 로그 파일에 접근하려면 AccessMode와 실제 스토리지 지원 여부를 고려해야 한다.
+* 일반적인 백엔드 애플리케이션에서는 영구 저장소보다 외부 Object Storage를 우선 고려하는 경우가 많다.
+
+---
+
+### 정리
+
+이번 실습에서는 임시 볼륨과 영구 볼륨을 함께 사용했다.
+
+캐시 데이터는 `emptyDir`에 저장해서 컨테이너 재시작 시 복구할 수 있도록 했다.
+
+공통 로그는 PVC/PV 기반 영구 볼륨에 기록해서 Pod가 재생성되어도 유지될 수 있도록 했다.
+
+핵심은 다음과 같다.
+
+```mermaid
+flowchart LR
+    A[임시 데이터] --> B[emptyDir]
+    C[영구 데이터] --> D[PVC/PV]
+    E[Pod별 고유 데이터] --> F[StatefulSet]
+    G[장기 보관 파일] --> H[Object Storage]
+```
+
+Kubernetes Storage를 사용할 때는 파일을 저장하는 방법보다 먼저 데이터의 생명주기를 판단해야 한다.
+
