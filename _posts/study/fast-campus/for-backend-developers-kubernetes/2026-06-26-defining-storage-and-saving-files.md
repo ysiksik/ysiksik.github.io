@@ -692,7 +692,7 @@ flowchart TD
 ```mermaid
 flowchart LR
     A[Map Cache] --> B[1초마다 JSON 저장]
-    B --> C[/tmp/cache/cache.json]
+    B --> C["/tmp/cache/cache.json"]
 ```
 
 컨테이너가 재시작되면 애플리케이션 기동 시점에 해당 파일을 읽어서 Map을 복구한다.
