@@ -1277,3 +1277,587 @@ flowchart LR
 
 Kubernetes Storage를 사용할 때는 파일을 저장하는 방법보다 먼저 데이터의 생명주기를 판단해야 한다.
 
+
+## 03. Kubernetes와 데이터베이스
+
+### Kubernetes와 데이터베이스
+
+Kubernetes에서 데이터베이스를 운영하는 것은 단순히 StatefulSet에 DB 컨테이너를 올리는 문제로 끝나지 않는다.
+
+데이터베이스는 일반적인 백엔드 애플리케이션과 다르게 **데이터 영속성**, **장애 복구**, **복제**, **Failover**, **스토리지 성능**, **엔드포인트 관리**까지 함께 고려해야 한다. PDF에서도 일반적인 DB 구성을 쓰기 가능한 인스턴스와 읽기 전용 인스턴스로 나누고, StatefulSet 기반 구성과 PV 연결 구조를 단계적으로 설명한다.
+
+---
+
+### 데이터베이스의 일반적인 구성
+
+일반적인 데이터베이스는 쓰기 가능한 인스턴스와 읽기 전용 인스턴스를 구분해서 구성한다.
+
+```mermaid
+flowchart LR
+    W["Writable DB"] --> R1["Readonly DB"]
+    W --> R2["Readonly DB"]
+```
+
+보통 쓰기 가능한 인스턴스는 하나이고, 읽기 전용 인스턴스는 여러 개로 구성한다.
+
+* `Writable`: 쓰기와 읽기 모두 가능
+* `Readonly`: 읽기 전용
+* `Replication`: Writable 인스턴스의 데이터를 Readonly 인스턴스로 복제
+
+이 구조는 다음 목적을 가진다.
+
+* 읽기 부하 분산
+* 장애 대비
+* 백업 또는 분석 부하 분리
+* 고가용성 구성
+
+예를 들어 애플리케이션에서는 쓰기 요청과 읽기 요청을 분리할 수 있다.
+
+```text
+쓰기 요청 → Writable DB
+읽기 요청 → Readonly DB
+```
+
+---
+
+### StatefulSet을 이용한 데이터베이스 구성
+
+Kubernetes에서 데이터베이스를 구성하려면 일반적인 Deployment보다 StatefulSet을 고려하게 된다.
+
+StatefulSet은 Pod마다 고유한 이름과 순서를 유지한다.
+
+```mermaid
+flowchart TD
+    DB0["db-0"] --> PV0["pv-db-0"]
+    DB1["db-1"] --> PV1["pv-db-1"]
+    DB2["db-2"] --> PV2["pv-db-2"]
+```
+
+각 Pod는 고유한 PV를 연결할 수 있다.
+
+```text
+db-0 → pv-db-0
+db-1 → pv-db-1
+db-2 → pv-db-2
+```
+
+이 구조는 데이터베이스에 적합해 보인다.
+
+이유는 데이터베이스 인스턴스마다 고유한 데이터 디렉터리가 필요하기 때문이다.
+
+---
+
+### StatefulSet에서 Pod 역할 분리
+
+데이터베이스를 StatefulSet으로 구성하면 각 Pod에 역할을 부여할 수 있다.
+
+예를 들어 다음과 같이 구성할 수 있다.
+
+```mermaid
+flowchart LR
+    DB0["db-0 / Writable"] --> DB1["db-1 / Readonly"]
+    DB0 --> DB2["db-2 / Readonly"]
+```
+
+이 경우 `db-0`은 쓰기 가능한 Primary 역할을 하고, `db-1`, `db-2`는 읽기 전용 Replica 역할을 한다.
+
+StatefulSet의 장점은 Pod 이름이 안정적이라는 것이다.
+
+```text
+db-0
+db-1
+db-2
+```
+
+Deployment처럼 랜덤한 이름으로 계속 바뀌지 않는다.
+
+---
+
+### Headless Service와 개별 Pod 접근
+
+StatefulSet의 각 Pod에 직접 접근하려면 일반 Service보다 Headless Service를 사용하는 경우가 많다.
+
+Headless Service를 사용하면 각 Pod는 고정된 DNS 이름을 가질 수 있다.
+
+```text
+db-0.database-service.default.svc.cluster.local
+db-1.database-service.default.svc.cluster.local
+db-2.database-service.default.svc.cluster.local
+```
+
+구조는 다음과 같다.
+
+```mermaid
+flowchart TD
+    APP["Application Pod"] --> DB0["db-0.database-service.default.svc.cluster.local"]
+    APP --> DB1["db-1.database-service.default.svc.cluster.local"]
+    APP --> DB2["db-2.database-service.default.svc.cluster.local"]
+```
+
+이 방식의 장점은 명확하다.
+
+* `db-0`으로 쓰기 요청
+* `db-1`, `db-2`로 읽기 요청
+* Pod별 역할 구분 가능
+* StatefulSet의 고정 DNS 활용 가능
+
+하지만 문제도 있다.
+
+만약 Failover가 발생해서 `db-1`이 새로운 Writable DB로 승격되면 어떻게 될까?
+
+기존 애플리케이션은 여전히 `db-0`을 쓰기 엔드포인트로 알고 있을 수 있다.
+
+즉 Pod 이름을 직접 기준으로 쓰기/읽기 역할을 구분하면, 장애 복구 후 역할 변경을 애플리케이션이 즉시 따라가기 어렵다.
+
+---
+
+### Failover와 엔드포인트 문제
+
+데이터베이스 장애 상황을 생각해보자.
+
+```mermaid
+flowchart TD
+    A["db-0 / Writable 장애"] --> B["db-1 / Readonly 승격"]
+    B --> C["db-1 / New Writable"]
+    A --> D["db-0 재생성"]
+    D --> E["db-0 / Readonly로 복구"]
+```
+
+일반적인 DB 장애 복구에서는 기존 Primary가 죽으면 Replica 중 하나가 새로운 Primary로 승격될 수 있다.
+
+이때 역할은 다음처럼 바뀐다.
+
+```text
+장애 전
+db-0 = Writable
+db-1 = Readonly
+db-2 = Readonly
+
+장애 후
+db-1 = Writable
+db-0 = Readonly 또는 복구 중
+db-2 = Readonly
+```
+
+문제는 애플리케이션이 `db-0`을 쓰기 DB로 직접 알고 있었다면, Failover 이후에는 잘못된 DB로 쓰기 요청을 보낼 수 있다는 점이다.
+
+그래서 실제 운영에서는 Pod 이름 자체보다 역할 기반 엔드포인트가 필요하다.
+
+```text
+write-db-service → 현재 Writable DB
+read-db-service  → Readonly DB들
+```
+
+즉 다음처럼 추상화하는 것이 더 안전하다.
+
+```mermaid
+flowchart TD
+    APP["Application"] --> W["write-db-service"]
+    APP --> R["read-db-service"]
+
+    W --> DB1["현재 Writable Pod"]
+    R --> DB0["Readonly Pod"]
+    R --> DB2["Readonly Pod"]
+```
+
+다만 이 역할 기반 엔드포인트를 누가 자동으로 갱신할 것인지가 또 다른 문제가 된다.
+
+이 부분에서 Operator의 필요성이 커진다.
+
+---
+
+### StatefulSet의 Self-Healing과 데이터 복구
+
+StatefulSet으로 구성된 DB Pod 중 하나에 장애가 발생하면 Kubernetes는 Self-Healing 기능으로 해당 Pod를 다시 생성한다.
+
+```mermaid
+flowchart TD
+    A["db-1 장애"] --> B["Kubernetes 감지"]
+    B --> C["db-1 Pod 재생성"]
+    C --> D["기존 PVC 재연결"]
+    D --> E["DB 복구 및 Replication 재개"]
+```
+
+StatefulSet은 같은 이름의 Pod를 다시 만들고, 기존 PVC를 다시 연결한다.
+
+따라서 `db-1`이 장애로 사라졌다가 다시 생성되면 기존 `db-1`이 사용하던 저장공간을 다시 연결할 수 있다.
+
+이후 데이터베이스 자체의 복구 메커니즘이 동작한다.
+
+* 장애 기간 동안 누락된 데이터 복제
+* WAL, binlog, redo log 기반 복구
+* Replica 재동기화
+* 원래 역할 복귀 또는 Readonly로 재편입
+
+여기서 중요한 점은 Kubernetes가 데이터베이스 내부 복구를 대신 해주는 것은 아니라는 점이다.
+
+Kubernetes는 Pod를 다시 띄우고 PV를 연결해줄 수 있다.
+
+하지만 데이터 정합성 복구, 복제 재개, Primary 승격 같은 작업은 데이터베이스의 기능 또는 Operator가 처리해야 한다.
+
+---
+
+### PV와 Node 종속성 문제
+
+StatefulSet을 쓴다고 해서 모든 문제가 해결되는 것은 아니다.
+
+특히 PV가 특정 Node에 종속되어 있으면 문제가 생긴다.
+
+예를 들어 다음 구조를 보자.
+
+```mermaid
+flowchart TD
+    subgraph N0["Node-0"]
+        DB0["db-0"]
+        PV0["pv-0"]
+    end
+
+    subgraph N1["Node-1"]
+        DB1["db-1"]
+        PV1["pv-1"]
+    end
+```
+
+`db-1`이 장애가 나서 다른 Node에 다시 스케줄링되었다고 해보자.
+
+```mermaid
+flowchart TD
+    subgraph N1["Node-1"]
+        PV1["pv-1"]
+    end
+
+    subgraph N2["Node-2"]
+        DB1["db-1 재생성"]
+    end
+
+    DB1 -. "기존 PV 연결 필요" .-> PV1
+```
+
+만약 `pv-1`이 Node-1에만 존재하는 로컬 디스크라면, Node-2에서 실행된 `db-1`은 기존 PV를 연결할 수 없다.
+
+이 경우 새로운 스토리지를 받아야 할 수도 있고, 그러면 데이터가 비어 있는 상태에서 전체 복제를 다시 받아야 한다.
+
+데이터가 작다면 괜찮을 수 있지만, 데이터베이스 크기가 크면 다음 문제가 생긴다.
+
+* 전체 데이터 재복제 시간 증가
+* 네트워크 부하 증가
+* Primary DB 부하 증가
+* 복구 지연
+* 장애 시간 증가
+
+---
+
+### Node Affinity로 고정하면 해결될까?
+
+이 문제를 보고 다음처럼 생각할 수 있다.
+
+> db-1은 항상 Node-1에서만 실행되도록 Node Affinity를 걸면 되지 않을까?
+
+일부 문제는 해결된다.
+
+```mermaid
+flowchart TD
+    DB1["db-1"] --> N1["Node-1 고정"]
+    N1 --> PV1["Local PV"]
+```
+
+하지만 새로운 문제가 생긴다.
+
+Node-1 자체에 장애가 발생하면 `db-1`은 다른 Node로 이동할 수 없다.
+
+즉 Kubernetes의 Self-Healing 장점이 줄어든다.
+
+데이터베이스는 가용성이 매우 중요한 시스템이기 때문에 Node를 완전히 고정하는 방식은 신중해야 한다.
+
+---
+
+### 노드에 종속되지 않는 스토리지 필요
+
+StatefulSet으로 데이터베이스를 운영하려면 PV가 특정 Node에 종속되지 않는 스토리지여야 한다.
+
+```mermaid
+flowchart TD
+    PV["Network / Cloud Storage"] --> DB0["db-0 on Node-0"]
+    PV --> DB1["db-0 재스케줄링 on Node-1"]
+```
+
+Pod가 다른 Node로 이동해도 기존 PV를 다시 연결할 수 있어야 한다.
+
+대표적인 예시는 다음과 같다.
+
+* 클라우드 Block Storage
+* Network File System
+* Cloud File Storage
+* 분산 스토리지
+* CSI 기반 스토리지
+
+---
+
+### Block Storage와 Availability Zone 문제
+
+AWS EBS 같은 Block Storage는 특정 가상 머신에 Attach/Detach가 가능하다.
+
+그래서 StatefulSet과 함께 사용할 수 있어 보인다.
+
+하지만 중요한 제약이 있다.
+
+대부분의 Block Storage는 같은 Availability Zone 안에서만 Attach할 수 있다.
+
+```mermaid
+flowchart TD
+    subgraph AZA["AZ-a"]
+        N1["Node-1"]
+        EBS["EBS Volume"]
+    end
+
+    subgraph AZB["AZ-b"]
+        N2["Node-2"]
+    end
+
+    EBS --> N1
+    EBS -. "AZ가 달라 연결 불가" .-> N2
+```
+
+Kubernetes Node는 보통 여러 AZ에 분산된다.
+
+따라서 DB Pod가 다른 AZ의 Node로 스케줄링되면 기존 EBS를 연결할 수 없다.
+
+이 문제를 줄이려면 다음 구성이 필요하다.
+
+* StorageClass의 topology 설정
+* WaitForFirstConsumer 사용
+* 같은 AZ 안에서만 Pod가 스케줄링되도록 제약
+* Zone 기반 Node Affinity
+* Pod와 Volume의 AZ 일치 보장
+
+즉 “아무 Node나 괜찮다”가 아니라 “같은 AZ 안의 다른 Node는 괜찮다” 정도로 제약을 두는 방식이다.
+
+---
+
+### File Storage를 사용하면 어떨까?
+
+EFS 같은 File Storage는 여러 AZ에서 접근 가능한 구성을 제공할 수 있다.
+
+```mermaid
+flowchart TD
+    FS["EFS / Network File Storage"] --> N1["Node-1"]
+    FS --> N2["Node-2"]
+    FS --> N3["Node-3"]
+```
+
+장점은 다음과 같다.
+
+* 여러 Node에서 접근 가능
+* AZ를 넘어 연결 가능
+* Pod 재스케줄링에 유리
+* 공유 스토리지 구성 가능
+
+하지만 단점도 있다.
+
+데이터베이스는 파일 입출력 성능에 민감하다.
+
+네트워크 파일 스토리지는 로컬 디스크나 고성능 Block Storage보다 성능이 낮을 수 있다.
+
+특히 다음 영역에서 문제가 될 수 있다.
+
+* Write latency
+* fsync 성능
+* 랜덤 I/O
+* 트랜잭션 로그 기록
+* 대용량 인덱스 업데이트
+
+그래서 “연결 가능성”만 보고 File Storage를 선택하면 데이터베이스 성능 문제가 발생할 수 있다.
+
+---
+
+### Kubernetes 내부 DB 구성의 어려움
+
+Kubernetes 안에 데이터베이스를 설치하는 것은 가능하다.
+
+하지만 다음 문제를 함께 해결해야 한다.
+
+```mermaid
+flowchart TD
+    A["Kubernetes 내부 DB"] --> B["PV 연결"]
+    A --> C["Failover"]
+    A --> D["Replication"]
+    A --> E["Endpoint 변경"]
+    A --> F["Storage 성능"]
+    A --> G["Backup / Restore"]
+    A --> H["AZ / Node 장애"]
+```
+
+일반적인 백엔드 애플리케이션은 Stateless하게 만들 수 있다.
+
+하지만 데이터베이스는 Stateful하다.
+
+이 차이 때문에 Kubernetes의 기본 철학과 데이터베이스 운영 방식 사이에 긴장이 생긴다.
+
+---
+
+### Kubernetes를 통한 데이터베이스 구성
+
+PDF 마지막 페이지에서도 Kubernetes를 통한 데이터베이스 구성 방법을 세 가지로 정리한다. 첫째, 클러스터 내부에 DB를 설치하지 않고 외부 DB를 사용하는 방식. 둘째, 클러스터 내부에는 개발용 DB만 설치하는 방식. 셋째, Kubernetes에 적합한 DB나 Operator를 활용하는 방식이다.
+
+---
+
+### 1. 외부 데이터베이스 사용
+
+운영 환경에서 가장 일반적인 선택은 Kubernetes 클러스터 내부에 데이터베이스를 직접 설치하지 않고 외부 데이터베이스를 사용하는 것이다.
+
+```mermaid
+flowchart TD
+    APP["Kubernetes Backend Pods"] --> DB["External Managed Database"]
+```
+
+예시는 다음과 같다.
+
+* AWS RDS
+* Aurora
+* Azure Database
+* Cloud SQL
+* MongoDB Atlas
+* Redis Enterprise Cloud
+* 사내 전용 DB Cluster
+
+이 방식의 장점은 명확하다.
+
+* DB 운영 복잡도를 줄일 수 있다.
+* 백업, 복구, Failover를 Managed Service가 담당한다.
+* Kubernetes Node 장애와 DB 장애를 분리할 수 있다.
+* 애플리케이션은 Stateless하게 유지하기 쉽다.
+
+일반적인 백엔드 서비스라면 이 방식이 가장 안정적이다.
+
+---
+
+### 2. 개발용 데이터베이스만 클러스터 내부에 설치
+
+개발 환경이나 테스트 환경에서는 Kubernetes 내부에 DB를 설치할 수 있다.
+
+```mermaid
+flowchart TD
+    DEV["Dev Namespace"] --> DB["MySQL / PostgreSQL Pod"]
+```
+
+이 방식은 다음 상황에서 유용하다.
+
+* 로컬 개발 환경
+* 통합 테스트 환경
+* 임시 검증 환경
+* 샘플 애플리케이션
+* CI 테스트 환경
+
+하지만 운영 환경과는 차이가 생길 수 있다.
+
+예를 들어 개발 환경에서는 Pod 안의 MySQL을 사용하고, 운영 환경에서는 RDS를 사용한다면 다음 차이가 발생할 수 있다.
+
+* DB 버전 차이
+* 파라미터 차이
+* 성능 차이
+* 네트워크 지연 차이
+* 백업/복구 방식 차이
+
+따라서 개발용 DB를 내부에 설치하더라도 운영 환경과 최대한 유사하게 맞추는 것이 좋다.
+
+---
+
+### 3. Kubernetes에 적합한 데이터베이스 또는 Operator 활용
+
+데이터베이스를 반드시 Kubernetes 내부에 운영해야 한다면 Operator를 고려하는 것이 좋다.
+
+Operator는 Kubernetes 위에서 특정 애플리케이션을 운영하기 위한 자동화 컨트롤러이다.
+
+```mermaid
+flowchart TD
+    USER["DB Custom Resource 작성"] --> OP["Database Operator"]
+    OP --> STS["StatefulSet 생성"]
+    OP --> SVC["Service 관리"]
+    OP --> PVC["PVC 관리"]
+    OP --> BK["Backup 관리"]
+    OP --> FO["Failover 관리"]
+```
+
+Operator는 다음 작업을 자동화할 수 있다.
+
+* DB 클러스터 생성
+* Replication 구성
+* Failover 처리
+* Primary/Replica 역할 관리
+* 백업/복구
+* 버전 업그레이드
+* Endpoint 변경
+* PVC 관리
+* 상태 모니터링
+
+예를 들어 PostgreSQL, MySQL, Redis, Kafka, MongoDB 등은 Kubernetes용 Operator가 존재한다.
+
+Operator를 사용하면 앞에서 설명한 단점들을 상당히 줄일 수 있다.
+
+다만 Operator 자체도 학습과 운영이 필요하다.
+
+---
+
+### Kubernetes에 적합한 데이터베이스
+
+최근에는 처음부터 Kubernetes 환경을 고려해서 만들어진 데이터베이스도 있다.
+
+예를 들어 Vitess 같은 시스템은 Kubernetes와 함께 사용하는 사례가 많다.
+
+이런 시스템은 일반적인 단일 인스턴스 DB를 억지로 Kubernetes에 올리는 것보다 더 자연스럽게 운영될 수 있다.
+
+다만 데이터베이스 선택은 쉽게 바꿀 수 있는 결정이 아니다.
+
+이미 사용하는 DB가 있다면 다음을 함께 고려해야 한다.
+
+* 현재 DB와의 호환성
+* 마이그레이션 비용
+* 운영팀 역량
+* 장애 복구 절차
+* 성능 요구사항
+* 라이선스와 비용
+
+---
+
+### 실무적인 판단 기준
+
+Kubernetes와 데이터베이스를 함께 고민할 때는 다음 순서로 판단하는 것이 좋다.
+
+```mermaid
+flowchart TD
+    A["DB가 필요한가?"] --> B["운영 환경인가?"]
+    B -->|"예"| C{"Managed DB 사용 가능?"}
+    C -->|"가능"| D["External Managed DB 사용"]
+    C -->|"불가능"| E{"Operator 존재?"}
+    E -->|"있음"| F["DB Operator 사용"]
+    E -->|"없음"| G["직접 StatefulSet 구성 신중 검토"]
+
+    B -->|"아니오 / 개발환경"| H["Kubernetes 내부 개발용 DB 가능"]
+```
+
+---
+
+### 정리
+
+Kubernetes에서 데이터베이스를 운영할 수는 있다.
+
+하지만 단순히 StatefulSet과 PV를 사용한다고 해서 운영 가능한 데이터베이스 구성이 완성되는 것은 아니다.
+
+핵심 고려사항은 다음과 같다.
+
+* DB는 쓰기 인스턴스와 읽기 인스턴스의 역할이 구분된다.
+* StatefulSet은 Pod별 고유 이름과 PV 연결을 제공한다.
+* Headless Service를 사용하면 각 DB Pod에 직접 접근할 수 있다.
+* Failover가 발생하면 Pod 이름과 DB 역할이 달라질 수 있다.
+* 역할 기반 Endpoint 관리가 필요하다.
+* PV가 특정 Node에 종속되면 장애 복구가 어려워진다.
+* Block Storage는 Availability Zone 제약을 고려해야 한다.
+* File Storage는 연결성은 좋지만 DB 성능에 불리할 수 있다.
+* 운영 환경에서는 외부 Managed DB를 우선 고려하는 것이 일반적이다.
+* 내부에 DB를 설치해야 한다면 Operator를 적극적으로 검토하는 것이 좋다.
+
+한 문장으로 정리하면 다음과 같다.
+
+> Kubernetes에서 데이터베이스를 운영할 수는 있지만, 일반 백엔드 애플리케이션처럼 단순히 배포하는 대상이 아니라 “데이터, 역할, 장애 복구, 스토리지 특성까지 함께 운영해야 하는 시스템”으로 봐야 한다.
+
+
