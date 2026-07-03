@@ -860,8 +860,8 @@ spec:
 ```mermaid
 flowchart TD
     A[Pod] --> B[Container]
-    B --> C[/tmp/cache]
-    B --> D[/app/logs]
+    B --> C["/tmp/cache"]
+    B --> D["/app/logs"]
 
     C --> E[emptyDir]
     D --> F[PVC]
