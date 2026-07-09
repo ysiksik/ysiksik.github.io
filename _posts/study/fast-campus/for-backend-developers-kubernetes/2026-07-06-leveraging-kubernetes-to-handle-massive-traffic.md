@@ -2,7 +2,7 @@
 layout: post
 bigtitle: 'Part 2. 백엔드 개발과 Kubernetes'
 subtitle: Ch 7. 대규모 트래픽에 대응하기위한 Kubernetes 활용
-date: '2026-06-26 00:00:01 +0900'
+date: '2026-07-06 00:00:01 +0900'
 categories:
     - for-backend-developers-kubernetes
 comments: true
@@ -909,4 +909,5 @@ Kubernetes에서 Pod의 자원 설정과 스케일 조정은 애플리케이션 
 한 문장으로 정리하면 다음과 같다.
 
 > Kubernetes에서 성능을 높이는 핵심은 “Pod 하나가 안정적으로 처리할 수 있는 자원을 찾고, 그 Pod를 필요한 만큼 수평 확장하는 것”이다.
+
 
