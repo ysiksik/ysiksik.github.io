@@ -2,7 +2,7 @@
 layout: post
 bigtitle: 'Redis와 Kafka를 활용한 대규모 트래픽 처리 시스템 설계하기'
 subtitle: Kafka UI 사용해보기
-date: '2026-07-068 00:00:00 +0900'
+date: '2026-07-08 00:00:00 +0900'
 categories:
     - designing-with-redis-and-kafka
 comments: true
