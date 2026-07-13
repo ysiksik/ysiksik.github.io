@@ -74,9 +74,6 @@ Volume Mount
 Container 내부 경로
 ```
 
-자료에서도
-👉 container ↔ volume 연결 구조로 표현되어 있다
-
 ---
 
 ### Volume 설정 예시 (ConfigMap 연동)
@@ -237,7 +234,6 @@ Ephemeral Volume은
 * secret
 * hostPath
 
-자료에서도 동일하게 정의됨
 
 ---
 
@@ -641,8 +637,6 @@ Dynamic:
 Pod → PVC → StorageClass → PV 자동 생성
 ```
 
-👉 자료에서도 이 구조가 단계적으로 확장되는 형태로 설명된다
-
 ---
 
 ### StorageClass
@@ -849,8 +843,6 @@ spec:
 StatefulSet-0 → PVC-0 → PV-0
 StatefulSet-1 → PVC-1 → PV-1
 ```
-
-👉 자료에서도 Pod마다 PVC가 생성되는 구조로 설명됨
 
 ---
 
