@@ -10,7 +10,7 @@ list: true
 order: 11
 submenu: true
 ---
-# 이펙티브 자바 완벽 공략 1부
+# 이펙티브 자바 완벽 공략 2부
 
 
 
