@@ -352,9 +352,17 @@ AOF만 사용하는 구조는 다음과 같다.
 ```mermaid
 flowchart LR
 
-    "Redis Memory" --> "appendonly.aof"
-    "appendonly.aof" --> "Command Replay"
-    "Command Replay" --> "Redis Restore"
+    RedisMemory["Redis Memory"]
+
+    AOFFile["appendonly.aof"]
+
+    CommandReplay["Command Replay"]
+
+    RedisRestore["Redis Restore"]
+
+    RedisMemory --> AOFFile
+    AOFFile --> CommandReplay
+    CommandReplay --> RedisRestore
 ```
 
 AOF는 Redis에 실행된 쓰기 명령을 파일에 기록한다. Redis가 재시작되면 이 명령들을 다시 실행해서 데이터를 복구한다.
@@ -364,11 +372,18 @@ RDB만 사용하는 구조는 다음과 같다.
 ```mermaid
 flowchart LR
 
-    "Redis Memory" --> "dump.rdb"
-    "dump.rdb" --> "Snapshot Load"
-    "Snapshot Load" --> "Redis Restore"
-```
+    RedisMemory["Redis Memory"]
 
+    RDBFile["dump.rdb"]
+
+    SnapshotLoad["Snapshot Load"]
+
+    RedisRestore["Redis Restore"]
+
+    RedisMemory --> RDBFile
+    RDBFile --> SnapshotLoad
+    SnapshotLoad --> RedisRestore
+```
 RDB는 특정 시점의 Redis 메모리 상태를 스냅샷으로 저장한다. Redis가 재시작되면 스냅샷 파일을 읽어 데이터를 복구한다.
 
 AOF와 RDB를 함께 사용하는 구조는 다음과 같다.
