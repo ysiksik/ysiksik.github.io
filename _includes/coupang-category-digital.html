@@ -1,0 +1,38 @@
+<div class="coupang-partners-ad coupang-partners-category" aria-label="쿠팡 가전디지털 카테고리 광고">
+  <script src="https://ads-partners.coupang.com/g.js"></script>
+  <script>
+    new PartnersCoupang.G({"id":1022889,"template":"carousel","trackingCode":"AF1778713","width":"680","height":"140","tsource":""});
+  </script>
+  <script>
+    (function () {
+      var categoryAd = document.currentScript.parentElement;
+
+      window.setTimeout(function () {
+        var markdownBody = categoryAd.closest('.markdown-body');
+        if (!markdownBody || categoryAd.dataset.positioned === 'true') return;
+
+        var children = Array.prototype.slice.call(markdownBody.children);
+        var headings = children.filter(function (element) {
+          return element.tagName === 'H2' || element.tagName === 'H3';
+        });
+
+        if (headings.length >= 2) {
+          var headingIndex = Math.max(1, Math.floor(headings.length / 3));
+          markdownBody.insertBefore(categoryAd, headings[headingIndex]);
+        } else {
+          var paragraphs = children.filter(function (element) {
+            return element.tagName === 'P';
+          });
+
+          if (paragraphs.length > 0) {
+            var paragraphIndex = Math.floor(paragraphs.length / 3);
+            var paragraph = paragraphs[paragraphIndex];
+            markdownBody.insertBefore(categoryAd, paragraph.nextSibling);
+          }
+        }
+
+        categoryAd.dataset.positioned = 'true';
+      }, 0);
+    }());
+  </script>
+</div>

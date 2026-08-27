@@ -75,6 +75,9 @@
         </div>
     </header>
     <div class="markdown-body">
+        {% if no_excerpt and post.layout == 'post' %}
+        {% include coupang-partners.html %}
+        {% endif %}
         <ins class="kakao_ad_area" style="display:none;"
              data-ad-unit="DAN-t9o4PPiNZJboUChC"
              data-ad-width="320"
@@ -82,11 +85,18 @@
         <script type="text/javascript" src="//t1.daumcdn.net/kas/static/ba.min.js" async></script>
         {% if no_excerpt %}
         {{ post.content }}
+        {% if post.layout == 'post' %}
+        {% include coupang-category-digital.html %}
+        {% include coupang-category-books.html %}
+        {% endif %}
         <ins class="kakao_ad_area" style="display:none;"
              data-ad-unit = "DAN-AWn5suxm4YwAxPYR"
              data-ad-width = "728"
              data-ad-height = "90"></ins>
         <script type="text/javascript" src="//t1.daumcdn.net/kas/static/ba.min.js" async></script>
+        {% if post.layout == 'post' %}
+        {% include coupang-search-widget.html %}
+        {% endif %}
         {% else %}
         {{ post.excerpt }}
 

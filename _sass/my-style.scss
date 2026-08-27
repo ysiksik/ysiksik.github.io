@@ -28,6 +28,36 @@
 
 
 .markdown-body {
+  .coupang-partners-disclosure {
+    margin: 0 0 0.75rem;
+    padding: 0.75rem 1rem;
+    border: 1px solid #e1e4e8;
+    border-radius: 4px;
+    background-color: #f6f8fa;
+    color: #444;
+    font-size: 0.85rem;
+    line-height: 1.5;
+  }
+
+  .coupang-partners-ad {
+    max-width: 100%;
+    margin: 1rem 0 1.5rem;
+    overflow-x: auto;
+    overflow-y: hidden;
+    text-align: center;
+  }
+
+  .coupang-partners-search {
+    width: 100%;
+    margin: 1.5rem 0 0;
+    overflow: hidden;
+
+    iframe {
+      display: block;
+      max-width: 100%;
+    }
+  }
+
   kbd {
     font-family: monospace, monospace;
     display: inline-block;
