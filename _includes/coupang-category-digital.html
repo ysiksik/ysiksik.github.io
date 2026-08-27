@@ -16,8 +16,8 @@
           return element.tagName === 'H2' || element.tagName === 'H3';
         });
 
-        if (headings.length >= 2) {
-          var headingIndex = Math.max(1, Math.floor(headings.length / 3));
+        if (headings.length >= 5) {
+          var headingIndex = Math.max(1, Math.floor(headings.length / 5));
           markdownBody.insertBefore(categoryAd, headings[headingIndex]);
         } else {
           var paragraphs = children.filter(function (element) {
@@ -25,7 +25,7 @@
           });
 
           if (paragraphs.length > 0) {
-            var paragraphIndex = Math.floor(paragraphs.length / 3);
+            var paragraphIndex = Math.floor(paragraphs.length / 5);
             var paragraph = paragraphs[paragraphIndex];
             markdownBody.insertBefore(categoryAd, paragraph.nextSibling);
           }

@@ -1,0 +1,38 @@
+<div class="coupang-partners-ad coupang-partners-recommendation" aria-label="쿠팡 파트너스 추천 광고">
+  <script src="https://ads-partners.coupang.com/g.js"></script>
+  <script>
+    new PartnersCoupang.G({"id":1022906,"template":"carousel","trackingCode":"AF1778713","width":"680","height":"140","tsource":""});
+  </script>
+  <script>
+    (function () {
+      var recommendationAd = document.currentScript.parentElement;
+
+      window.setTimeout(function () {
+        var markdownBody = recommendationAd.closest('.markdown-body');
+        if (!markdownBody || recommendationAd.dataset.positioned === 'true') return;
+
+        var children = Array.prototype.slice.call(markdownBody.children);
+        var headings = children.filter(function (element) {
+          return element.tagName === 'H2' || element.tagName === 'H3';
+        });
+
+        if (headings.length >= 5) {
+          var headingIndex = Math.min(headings.length - 1, Math.floor(headings.length * 2 / 5));
+          markdownBody.insertBefore(recommendationAd, headings[headingIndex]);
+        } else {
+          var paragraphs = children.filter(function (element) {
+            return element.tagName === 'P';
+          });
+
+          if (paragraphs.length >= 2) {
+            var paragraphIndex = Math.min(paragraphs.length - 1, Math.floor(paragraphs.length * 2 / 5));
+            var paragraph = paragraphs[paragraphIndex];
+            markdownBody.insertBefore(recommendationAd, paragraph.nextSibling);
+          }
+        }
+
+        recommendationAd.dataset.positioned = 'true';
+      }, 0);
+    }());
+  </script>
+</div>

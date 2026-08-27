@@ -1,7 +1,7 @@
-<div class="coupang-partners-ad coupang-partners-category" aria-label="쿠팡 도서 카테고리 광고">
+<div class="coupang-partners-ad coupang-partners-category" aria-label="쿠팡 문구·오피스 카테고리 광고">
   <script src="https://ads-partners.coupang.com/g.js"></script>
   <script>
-    new PartnersCoupang.G({"id":1022894,"template":"carousel","trackingCode":"AF1778713","width":"680","height":"140","tsource":""});
+    new PartnersCoupang.G({"id":1022907,"template":"carousel","trackingCode":"AF1778713","width":"680","height":"140","tsource":""});
   </script>
   <script>
     (function () {
@@ -17,15 +17,15 @@
         });
 
         if (headings.length >= 5) {
-          var headingIndex = Math.min(headings.length - 1, Math.floor(headings.length * 4 / 5));
+          var headingIndex = Math.min(headings.length - 1, Math.floor(headings.length * 3 / 5));
           markdownBody.insertBefore(categoryAd, headings[headingIndex]);
         } else {
           var paragraphs = children.filter(function (element) {
             return element.tagName === 'P';
           });
 
-          if (paragraphs.length >= 4) {
-            var paragraphIndex = Math.min(paragraphs.length - 1, Math.floor(paragraphs.length * 4 / 5));
+          if (paragraphs.length >= 3) {
+            var paragraphIndex = Math.min(paragraphs.length - 1, Math.floor(paragraphs.length * 3 / 5));
             var paragraph = paragraphs[paragraphIndex];
             markdownBody.insertBefore(categoryAd, paragraph.nextSibling);
           }
