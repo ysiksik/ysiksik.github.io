@@ -8,6 +8,8 @@ categories:
 comments: true
 ---
 
+{% raw %}
+
 # Ch 10. Helm 템플릿과 Kubernetes 객체 생성
 
 # Ch 10. Helm 템플릿과 Kubernetes 객체 생성
@@ -1399,3 +1401,5 @@ Chart를 클러스터에 설치하면 Release가 만들어진다. 하나의 Rele
 Helm은 컨테이너 이미지를 빌드하는 도구가 아니며 Kubernetes 객체를 대신하는 기술도 아니다. 최종 결과는 일반적인 Kubernetes 객체이므로 Deployment, Service, ConfigMap, Secret, Ingress의 동작 원리를 이해한 상태에서 사용해야 한다.
 
 안전한 배포를 위해서는 `helm lint`, `helm template`, Kubernetes API Dry Run으로 결과를 검증하고, 환경별 Value 파일과 Secret 관리 체계를 분리해야 한다. Helm으로 관리되는 객체는 Template과 Value를 통해 변경하여 Chart의 선언 상태와 실제 클러스터 상태가 어긋나지 않도록 관리하는 것이 중요하다.
+
+{% endraw %}
