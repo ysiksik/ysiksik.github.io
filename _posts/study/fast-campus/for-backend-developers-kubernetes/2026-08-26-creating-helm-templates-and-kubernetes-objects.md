@@ -2125,6 +2125,1030 @@ Jenkins를 Kubernetes 환경에서 사용하면 소스 코드 빌드부터 컨�
 
 Jenkins와 Helm만으로도 충분한 배포 자동화를 구성할 수 있지만, 여러 클러스터의 상태 동기화나 정교한 Canary 및 Blue-Green 배포가 필요해지면 GitOps와 전용 배포 관리 도구를 함께 사용하는 것이 더 적합하다.
 
+## 03. Helm을 이용한 스프링 애플리케이션 배포 실습
+
+### Helm을 이용한 애플리케이션 패키징 실습
+
+Helm을 사용하면 Deployment, Service, ConfigMap, Ingress, HPA와 같이 애플리케이션에 필요한 여러 Kubernetes 객체를 하나의 Chart로 패키징할 수 있다.
+
+기존에는 객체별 YAML을 수정한 뒤 `kubectl apply`를 반복해서 실행했다면, Helm에서는 공통 구조를 Template으로 정의하고 환경이나 애플리케이션마다 달라지는 값을 `values.yaml`로 분리한다.
+
+이번 실습에서는 Factorial Spring Boot 애플리케이션을 위한 Helm Chart를 생성하고 다음 과정을 진행한다.
+
+1. Helm Chart를 생성한다.
+2. `Chart.yaml`과 `values.yaml`을 수정한다.
+3. Deployment와 Service Template을 애플리케이션에 맞게 변경한다.
+4. Probe와 리소스 설정을 추가한다.
+5. Chart를 검증하고 Kubernetes에 설치한다.
+6. Service 포트를 변경해 Release를 업그레이드한다.
+7. Helm 이력을 확인하고 이전 Revision으로 롤백한다.
+8. 실습이 끝난 Release를 제거한다.
+
+```mermaid
+flowchart TD
+    A["helm create로 Chart 생성"] --> B["Chart.yaml 수정"]
+    B --> C["values.yaml 수정"]
+    C --> D["Deployment와 Service Template 수정"]
+    D --> E["helm lint와 helm template 검증"]
+    E --> F["helm install 실행"]
+    F --> G["Deployment와 Service 생성"]
+    G --> H["values.yaml 변경"]
+    H --> I["helm upgrade 실행"]
+    I --> J["Release Revision 증가"]
+    J --> K["helm rollback 실행"]
+    K --> L["이전 설정으로 복구"]
+```
+
+#### 실습 목표
+
+이번 실습의 핵심은 단순히 Helm 명령어를 실행하는 것이 아니라 다음 구조를 이해하는 것이다.
+
+- Chart는 Kubernetes 애플리케이션을 구성하는 패키지다.
+- Template은 Kubernetes 객체의 공통 구조를 정의한다.
+- `values.yaml`은 Template에 주입할 기본값을 정의한다.
+- Release는 Chart를 Kubernetes 클러스터에 설치한 실행 단위다.
+- Revision은 Release가 설치, 업그레이드, 롤백될 때 생성되는 변경 이력이다.
+- Helm Rollback은 기존 Revision을 제거하는 것이 아니라 이전 설정을 바탕으로 새로운 Revision을 만든다.
+
+#### 전체 구성
+
+실습에서는 다음과 같은 구조로 애플리케이션을 배포한다.
+
+```mermaid
+flowchart LR
+    A["factorial-chart"] --> B["Helm Template 렌더링"]
+    C["values.yaml"] --> B
+    B --> D["Kubernetes API Server"]
+    D --> E["Deployment"]
+    D --> F["Service"]
+    E --> G["Factorial Pod 1"]
+    E --> H["Factorial Pod 2"]
+    F --> G
+    F --> H
+```
+
+#### 사전 조건
+
+다음 환경이 준비되어 있어야 한다.
+
+- Kubernetes 클러스터
+- `kubectl`
+- Helm 3
+- Kubernetes에 접근할 수 있는 `kubeconfig`
+- Registry에 푸시된 Factorial 애플리케이션 이미지
+- Spring Boot Actuator가 적용된 애플리케이션
+
+설치된 Helm 버전은 다음 명령으로 확인한다.
+
+```bash
+helm version
+```
+
+Kubernetes 연결 상태도 확인한다.
+
+```bash
+kubectl cluster-info
+```
+
+```bash
+kubectl get nodes
+```
+
+실습에서는 `factorial` Namespace를 사용한다.
+
+```bash
+kubectl create namespace factorial
+```
+
+이미 존재한다면 다음과 같은 오류가 발생할 수 있다.
+
+```text
+Error from server (AlreadyExists): namespaces "factorial" already exists
+```
+
+이 경우에는 새로 생성하지 않고 기존 Namespace를 사용하면 된다.
+
+#### Helm Chart 생성
+
+`helm create` 명령을 사용하면 기본 Chart 구조를 자동으로 생성할 수 있다.
+
+```bash
+helm create factorial-chart
+```
+
+명령을 실행하면 현재 디렉터리 아래에 다음과 같은 구조가 생성된다.
+
+```text
+factorial-chart/
+├── Chart.yaml
+├── values.yaml
+├── charts/
+└── templates/
+    ├── NOTES.txt
+    ├── _helpers.tpl
+    ├── deployment.yaml
+    ├── hpa.yaml
+    ├── ingress.yaml
+    ├── service.yaml
+    ├── serviceaccount.yaml
+    └── tests/
+        └── test-connection.yaml
+```
+
+각 파일과 디렉터리의 역할은 다음과 같다.
+
+| 항목 | 역할 |
+|---|---|
+| `Chart.yaml` | Chart 이름, 버전, 애플리케이션 버전과 같은 메타데이터를 정의한다. |
+| `values.yaml` | Template에서 사용할 기본 설정값을 정의한다. |
+| `templates/` | Deployment, Service와 같은 Kubernetes 객체 Template을 저장한다. |
+| `_helpers.tpl` | 객체 이름과 공통 Label을 생성하는 재사용 Template을 정의한다. |
+| `charts/` | 의존하는 하위 Chart를 저장한다. |
+| `NOTES.txt` | 설치가 완료된 뒤 사용자에게 보여줄 안내 문구를 정의한다. |
+
+#### Chart.yaml 설정
+
+생성된 `Chart.yaml`을 Factorial 애플리케이션에 맞게 수정한다.
+
+```yaml
+apiVersion: v2
+name: factorial-chart
+description: A Helm chart for the Factorial Spring Boot application
+type: application
+version: 0.1.0
+appVersion: "0.0.7"
+```
+
+각 필드의 의미는 다음과 같다.
+
+- `apiVersion: v2`는 Helm 3에서 사용하는 Chart API 버전이다.
+- `name`은 Chart의 이름이다.
+- `description`은 Chart의 목적을 설명한다.
+- `type: application`은 배포 가능한 애플리케이션 Chart임을 의미한다.
+- `version`은 Chart 자체의 버전이다.
+- `appVersion`은 Chart가 배포하는 애플리케이션 버전을 표현하는 정보다.
+
+`version`과 `appVersion`은 서로 다른 의미를 가진다.
+
+| 구분 | 의미 | 변경 시점 |
+|---|---|---|
+| `version` | Template과 기본 설정을 포함한 Chart 버전 | Chart 구조나 기본값이 변경될 때 |
+| `appVersion` | 배포 대상 애플리케이션 버전 | 애플리케이션 버전이 변경될 때 |
+| `image.tag` | 실제 Pod가 실행할 이미지 태그 | 배포할 컨테이너 이미지가 변경될 때 |
+
+`appVersion`을 변경한다고 해서 이미지 태그가 자동으로 바뀌는 것은 아니다. Deployment Template에서 `appVersion`을 기본 이미지 태그로 사용하도록 작성했을 때만 해당 값이 이미지에 반영된다.
+
+#### values.yaml 작성
+
+기본으로 생성된 `values.yaml`을 Factorial 애플리케이션에 맞게 수정한다.
+
+아래 예제의 이미지 Repository는 실제 Registry 주소로 변경해야 한다.
+
+```yaml
+replicaCount: 2
+
+image:
+  repository: your-dockerhub-id/factorial-app
+  pullPolicy: IfNotPresent
+  tag: "0.0.7"
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: false
+  automount: false
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: false
+  runAsUser: 10001
+
+container:
+  port: 8080
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []
+  tls: []
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+startupProbe:
+  httpGet:
+    path: /actuator/health/liveness
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 2
+  failureThreshold: 12
+  successThreshold: 1
+
+livenessProbe:
+  httpGet:
+    path: /actuator/health/liveness
+    port: http
+  initialDelaySeconds: 45
+  periodSeconds: 10
+  timeoutSeconds: 2
+  failureThreshold: 3
+  successThreshold: 1
+
+readinessProbe:
+  httpGet:
+    path: /actuator/health/readiness
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 2
+  failureThreshold: 3
+  successThreshold: 1
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+
+volumes: []
+
+volumeMounts: []
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+```
+
+##### Replica 설정
+
+```yaml
+replicaCount: 2
+```
+
+Deployment가 유지할 Pod 개수를 두 개로 지정한다. HPA를 활성화하면 고정된 `replicaCount` 대신 HPA가 부하에 따라 레플리카 수를 조정한다.
+
+##### 이미지 설정
+
+```yaml
+image:
+  repository: your-dockerhub-id/factorial-app
+  pullPolicy: IfNotPresent
+  tag: "0.0.7"
+```
+
+- `repository`는 Container Registry의 이미지 경로다.
+- `tag`는 실제 실행할 이미지 버전이다.
+- `pullPolicy`는 Node가 이미지를 내려받는 기준이다.
+
+운영 환경에서는 `latest`와 같은 변경 가능한 태그보다 Git Commit SHA나 Build Number가 포함된 고유 태그를 사용하는 것이 좋다.
+
+##### ServiceAccount 설정
+
+```yaml
+serviceAccount:
+  create: false
+```
+
+애플리케이션 전용 ServiceAccount를 생성하지 않도록 설정한다. 애플리케이션이 Kubernetes API에 접근해야 한다면 ServiceAccount와 RBAC 권한을 별도로 정의해야 한다.
+
+ServiceAccount를 생성하지 않는다고 해서 보안 고려가 사라지는 것은 아니다. Pod에서 Kubernetes API 인증 정보가 필요하지 않다면 ServiceAccount Token 자동 마운트도 비활성화하는 것이 좋다.
+
+##### 컨테이너 포트와 Service 포트
+
+```yaml
+container:
+  port: 8080
+
+service:
+  type: ClusterIP
+  port: 8080
+```
+
+컨테이너가 실제로 요청을 받는 포트와 Service가 클러스터 내부에 공개하는 포트를 분리했다.
+
+이렇게 분리하면 Service 포트를 `8090`으로 변경하더라도 애플리케이션은 계속 컨테이너의 `8080` 포트에서 요청을 받을 수 있다.
+
+```mermaid
+flowchart LR
+    A["클라이언트"] --> B["Service 포트 8090"]
+    B --> C["targetPort http"]
+    C --> D["컨테이너 포트 8080"]
+```
+
+컨테이너 포트까지 Service 포트와 동일한 값으로 묶으면 Service 포트 변경 시 실제 애플리케이션이 수신하지 않는 포트로 트래픽이 전달될 수 있으므로 주의해야 한다.
+
+##### Ingress와 HPA 설정
+
+이번 실습에서는 Ingress와 HPA를 생성하지 않는다.
+
+```yaml
+ingress:
+  enabled: false
+
+autoscaling:
+  enabled: false
+```
+
+`enabled` 값이 `false`이면 `templates/ingress.yaml`과 `templates/hpa.yaml`의 조건문에 의해 해당 객체가 생성되지 않는다.
+
+##### 리소스 설정
+
+```yaml
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+```
+
+- `requests`는 Scheduler가 Pod를 Node에 배치할 때 사용하는 최소 자원 기준이다.
+- `limits`는 컨테이너가 사용할 수 있는 자원의 상한이다.
+
+CPU Limit을 초과하면 컨테이너가 즉시 종료되는 것이 아니라 CPU 사용이 제한될 수 있다. Memory Limit을 초과하면 컨테이너 프로세스가 OOMKilled로 종료될 수 있다.
+
+#### Spring Boot Actuator 설정
+
+Probe 경로가 정상적으로 동작하려면 Spring Boot Actuator 의존성이 필요하다.
+
+```groovy
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+}
+```
+
+`application.yaml`에는 Kubernetes Probe 경로를 활성화한다.
+
+```yaml
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  endpoints:
+    web:
+      exposure:
+        include:
+          - health
+          - info
+```
+
+다음 엔드포인트가 HTTP 200 상태를 반환하는지 애플리케이션 실행 환경에서 먼저 확인하는 것이 좋다.
+
+```bash
+curl http://localhost:8080/actuator/health/liveness
+```
+
+```bash
+curl http://localhost:8080/actuator/health/readiness
+```
+
+Probe 경로가 존재하지 않거나 인증으로 차단되면 Pod가 정상적으로 실행되더라도 Kubernetes에서는 준비되지 않은 Pod로 판단할 수 있다.
+
+#### Deployment Template 수정
+
+`templates/deployment.yaml`에서 `values.yaml`의 설정을 참조하도록 수정한다.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "factorial-chart.fullname" . }}
+  labels:
+    {{- include "factorial-chart.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "factorial-chart.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "factorial-chart.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "factorial-chart.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.container.port }}
+              protocol: TCP
+          startupProbe:
+            {{- toYaml .Values.startupProbe | nindent 12 }}
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- with .Values.volumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.volumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+```
+
+##### 이미지 태그 기본값
+
+```yaml
+image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+```
+
+`values.yaml`에 `image.tag`가 있으면 해당 값을 사용하고, 비어 있으면 `Chart.yaml`의 `appVersion`을 사용한다.
+
+배포 환경에서 이미지 태그를 명시적으로 관리하려면 `values.yaml` 또는 `--set-string image.tag=...` 방식으로 지정하는 것이 더 명확하다.
+
+##### Probe 설정
+
+Probe 설정을 Template에 고정하지 않고 `values.yaml`에서 가져오도록 구성했다.
+
+```yaml
+startupProbe:
+  {{- toYaml .Values.startupProbe | nindent 12 }}
+```
+
+애플리케이션마다 시작 시간과 Health Check 경로가 다를 수 있기 때문에 Probe 설정은 변경 가능한 값으로 분리하는 편이 재사용에 유리하다.
+
+Probe의 역할은 다음과 같이 구분해야 한다.
+
+| Probe | 역할 | 실패 시 동작 |
+|---|---|---|
+| Startup Probe | 애플리케이션 초기 기동 완료 여부 확인 | 성공 전까지 다른 Probe의 실행을 억제한다. |
+| Readiness Probe | 트래픽을 받을 준비가 되었는지 확인 | Service Endpoint에서 Pod를 제외한다. |
+| Liveness Probe | 컨테이너를 재시작해야 할 상태인지 확인 | kubelet이 컨테이너를 재시작한다. |
+
+Spring Boot처럼 시작 시간이 길어질 수 있는 애플리케이션은 Liveness Probe의 `initialDelaySeconds`만 크게 설정하는 것보다 Startup Probe를 함께 사용하는 것이 안전하다.
+
+#### Service Template 수정
+
+`templates/service.yaml`에서는 Service 포트와 컨테이너 포트를 분리한다.
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "factorial-chart.fullname" . }}
+  labels:
+    {{- include "factorial-chart.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "factorial-chart.selectorLabels" . | nindent 4 }}
+```
+
+`targetPort: http`는 Deployment의 다음 이름을 가진 컨테이너 포트를 참조한다.
+
+```yaml
+ports:
+  - name: http
+    containerPort: 8080
+```
+
+따라서 Service의 외부 노출 포트를 변경해도 컨테이너가 실제로 수신하는 포트는 유지할 수 있다.
+
+#### Template과 values.yaml의 구분 기준
+
+Template에는 객체의 구조와 같이 자주 바뀌지 않는 내용을 정의하고, `values.yaml`에는 환경이나 애플리케이션에 따라 달라지는 값을 정의한다.
+
+| Template에 적합한 항목 | values.yaml에 적합한 항목 |
+|---|---|
+| Deployment 구조 | 레플리카 수 |
+| Label과 Selector 연결 구조 | 이미지 Repository와 태그 |
+| Service와 Pod 연결 방식 | Service 포트 |
+| Probe 필드를 배치하는 구조 | Probe 경로와 주기 |
+| 조건부 객체 생성 로직 | Ingress와 HPA 활성화 여부 |
+| 공통 보안 구조 | CPU와 Memory 설정 |
+
+여러 프로젝트가 같은 Chart를 사용하더라도 Probe 경로, 이미지 태그, 리소스 설정이 다를 수 있다. 이러한 값은 Template에 고정하기보다 `values.yaml`에서 조정할 수 있도록 만드는 것이 좋다.
+
+반대로 모든 값을 `values.yaml`로 노출하면 Chart가 지나치게 복잡해질 수 있다. 실제로 환경별 변경 가능성이 있는 값만 외부 설정으로 분리해야 한다.
+
+#### Chart 검증
+
+클러스터에 설치하기 전에 Chart의 문법과 렌더링 결과를 확인한다.
+
+##### Helm Lint 실행
+
+```bash
+helm lint ./factorial-chart
+```
+
+정상적인 경우 다음과 유사한 결과가 나타난다.
+
+```text
+1 chart(s) linted, 0 chart(s) failed
+```
+
+`helm lint`는 Chart 구조와 Template 문법을 확인하지만 실제 클러스터의 API 지원 여부나 Admission Policy까지 검증하지는 않는다.
+
+##### Template 렌더링 확인
+
+```bash
+helm template my-test-app ./factorial-chart \
+  --namespace factorial
+```
+
+`helm template`은 Chart를 실제 Kubernetes YAML로 렌더링하지만 클러스터에는 적용하지 않는다.
+
+렌더링 결과에서 다음 항목을 확인한다.
+
+- Deployment의 이미지와 태그
+- 레플리카 수
+- 컨테이너 포트
+- Service 포트와 `targetPort`
+- Probe 경로
+- CPU와 Memory 설정
+- Label과 Selector 일치 여부
+- Ingress와 HPA의 생성 여부
+
+##### Dry Run 실행
+
+```bash
+helm install my-test-app ./factorial-chart \
+  --namespace factorial \
+  --dry-run \
+  --debug
+```
+
+`--dry-run`은 설치 결과를 미리 확인하는 용도로 사용할 수 있다. 클러스터 측 검증까지 필요하다면 Kubernetes 연결과 권한을 준비한 뒤 서버 측 Dry Run도 함께 활용할 수 있다.
+
+#### Chart 패키징
+
+Helm은 Chart 디렉터리를 직접 설치할 수도 있지만 `.tgz` 파일로 패키징하여 저장소나 CI/CD 시스템에서 관리할 수도 있다.
+
+```bash
+mkdir -p dist
+```
+
+```bash
+helm package ./factorial-chart \
+  --destination ./dist
+```
+
+정상적으로 패키징되면 `Chart.yaml`의 `version`을 사용한 파일이 생성된다.
+
+```text
+dist/factorial-chart-0.1.0.tgz
+```
+
+패키징된 Chart는 다음과 같이 검사할 수 있다.
+
+```bash
+helm show chart ./dist/factorial-chart-0.1.0.tgz
+```
+
+이번 실습에서는 수정 내용을 바로 확인하기 위해 Chart 디렉터리를 직접 설치한다.
+
+#### Helm Release 설치
+
+다음 명령으로 Chart를 `factorial` Namespace에 설치한다.
+
+```bash
+helm install my-test-app ./factorial-chart \
+  --namespace factorial
+```
+
+여기서 각 값의 의미는 다음과 같다.
+
+- `my-test-app`은 Helm Release 이름이다.
+- `./factorial-chart`는 설치할 Chart 경로다.
+- `--namespace factorial`은 객체를 생성할 Namespace다.
+
+Namespace까지 함께 생성하려면 `--create-namespace`를 사용할 수 있다.
+
+```bash
+helm install my-test-app ./factorial-chart \
+  --namespace factorial \
+  --create-namespace
+```
+
+설치가 완료되면 Helm Release를 확인한다.
+
+```bash
+helm list --namespace factorial
+```
+
+```bash
+helm status my-test-app --namespace factorial
+```
+
+Kubernetes 객체도 확인한다.
+
+```bash
+kubectl get deployment \
+  --namespace factorial \
+  --selector app.kubernetes.io/instance=my-test-app
+```
+
+```bash
+kubectl get pods \
+  --namespace factorial \
+  --selector app.kubernetes.io/instance=my-test-app
+```
+
+```bash
+kubectl get services \
+  --namespace factorial \
+  --selector app.kubernetes.io/instance=my-test-app
+```
+
+정상적으로 설치되었다면 다음 상태를 확인할 수 있다.
+
+- Helm Release 상태가 `deployed`로 표시된다.
+- Deployment가 생성된다.
+- 두 개의 Pod가 실행된다.
+- Pod가 Readiness Probe를 통과해 `READY 1/1` 상태가 된다.
+- ClusterIP Service가 생성된다.
+- Ingress와 HPA는 생성되지 않는다.
+
+#### 애플리케이션 테스트
+
+생성된 Service 이름을 확인한다.
+
+```bash
+kubectl get service \
+  --namespace factorial \
+  --selector app.kubernetes.io/instance=my-test-app
+```
+
+Service 이름이 `my-test-app-factorial-chart`라면 Port Forwarding으로 테스트할 수 있다.
+
+```bash
+kubectl port-forward \
+  service/my-test-app-factorial-chart \
+  8080:8080 \
+  --namespace factorial
+```
+
+다른 터미널에서 애플리케이션을 호출한다.
+
+```bash
+curl http://localhost:8080/actuator/health/readiness
+```
+
+Factorial API가 `/factorial` 경로와 `number` 파라미터를 사용한다면 다음과 같이 테스트할 수 있다.
+
+```bash
+curl "http://localhost:8080/factorial?number=5"
+```
+
+정상적으로 동작하면 애플리케이션의 정의에 따라 `120`과 같은 계산 결과를 확인할 수 있다.
+
+#### Helm Release 업그레이드
+
+Helm으로 설치한 객체의 설정을 변경하려면 `values.yaml`을 수정한 뒤 `helm upgrade`를 실행한다.
+
+이번에는 Service 포트를 `8080`에서 `8090`으로 변경한다.
+
+```yaml
+service:
+  type: ClusterIP
+  port: 8090
+```
+
+컨테이너 포트는 변경하지 않는다.
+
+```yaml
+container:
+  port: 8080
+```
+
+변경된 설정으로 Release를 업그레이드한다.
+
+```bash
+helm upgrade my-test-app ./factorial-chart \
+  --namespace factorial \
+  --values ./factorial-chart/values.yaml \
+  --wait \
+  --timeout 5m
+```
+
+설정 파일을 수정하지 않고 명령어에서 값을 덮어쓸 수도 있다.
+
+```bash
+helm upgrade my-test-app ./factorial-chart \
+  --namespace factorial \
+  --set service.port=8090 \
+  --wait \
+  --timeout 5m
+```
+
+Helm 설정값의 일반적인 우선순위는 다음과 같다.
+
+```text
+Chart 기본 values.yaml
+< --values 또는 -f로 지정한 파일
+< --set 및 --set-string으로 지정한 값
+```
+
+업그레이드된 Service를 확인한다.
+
+```bash
+kubectl get service \
+  --namespace factorial \
+  --selector app.kubernetes.io/instance=my-test-app
+```
+
+Service 포트는 `8090`으로 변경되지만 `targetPort`는 이름이 `http`인 컨테이너 포트, 즉 `8080`을 가리킨다.
+
+#### Release 이력 확인
+
+Release의 변경 이력은 다음 명령으로 조회한다.
+
+```bash
+helm history my-test-app \
+  --namespace factorial
+```
+
+최초 설치 후 한 번 업그레이드했다면 다음과 같은 Revision을 확인할 수 있다.
+
+```text
+REVISION  STATUS      DESCRIPTION
+1         superseded  Install complete
+2         deployed    Upgrade complete
+```
+
+- Revision 1은 최초 설치 상태다.
+- Revision 2는 Service 포트를 변경한 상태다.
+- 현재 적용 중인 Revision은 `deployed`로 표시된다.
+- 이전 Revision은 `superseded`로 표시된다.
+
+Chart 버전과 애플리케이션 버전이 같더라도 `values.yaml`이나 `--set` 값이 변경되면 새로운 Revision이 생성될 수 있다.
+
+#### 이전 Revision으로 롤백
+
+Service 포트를 `8090`으로 변경한 것이 잘못된 배포라고 가정하고 Revision 1로 롤백한다.
+
+```bash
+helm rollback my-test-app 1 \
+  --namespace factorial \
+  --wait \
+  --timeout 5m
+```
+
+Service를 다시 조회한다.
+
+```bash
+kubectl get service \
+  --namespace factorial \
+  --selector app.kubernetes.io/instance=my-test-app
+```
+
+정상적으로 롤백되었다면 Service 포트가 다시 `8080`으로 변경된다.
+
+Helm 이력을 다시 확인한다.
+
+```bash
+helm history my-test-app \
+  --namespace factorial
+```
+
+롤백은 Revision 2를 삭제하고 Revision 1을 현재 상태로 되돌리는 방식이 아니다. Revision 1의 설정을 사용한 새로운 Revision 3을 생성한다.
+
+```text
+REVISION  STATUS      DESCRIPTION
+1         superseded  Install complete
+2         superseded  Upgrade complete
+3         deployed    Rollback to 1
+```
+
+이 구조 덕분에 설치, 업그레이드, 롤백 과정을 모두 이력으로 추적할 수 있다.
+
+다만 Helm Rollback이 데이터베이스 데이터나 외부 시스템의 상태까지 복원하는 것은 아니다. Chart가 관리하는 Kubernetes 객체를 이전 Revision의 선언 상태로 되돌리는 기능이라는 점을 구분해야 한다.
+
+#### Release 제거
+
+실습이 끝나면 다음 명령으로 Release를 제거한다.
+
+```bash
+helm uninstall my-test-app \
+  --namespace factorial
+```
+
+`helm uninstall`은 해당 Release에서 관리하던 Deployment, Service 등의 Kubernetes 객체를 삭제한다.
+
+삭제 결과를 확인한다.
+
+```bash
+helm list --namespace factorial
+```
+
+```bash
+kubectl get all \
+  --namespace factorial \
+  --selector app.kubernetes.io/instance=my-test-app
+```
+
+정상적으로 제거되었다면 Release와 관련 객체가 더 이상 조회되지 않는다.
+
+기본적으로 `helm uninstall`은 Release 이력도 제거한다. 이력을 보존해야 한다면 다음 옵션을 사용할 수 있다.
+
+```bash
+helm uninstall my-test-app \
+  --namespace factorial \
+  --keep-history
+```
+
+#### 자주 발생하는 문제
+
+##### Chart 설치 시 Namespace를 찾지 못하는 경우
+
+```text
+Error: INSTALLATION FAILED: create: failed to create: namespaces "factorial" not found
+```
+
+Namespace를 먼저 생성하거나 `--create-namespace` 옵션을 사용한다.
+
+```bash
+helm install my-test-app ./factorial-chart \
+  --namespace factorial \
+  --create-namespace
+```
+
+##### Pod가 `ImagePullBackOff` 상태가 되는 경우
+
+다음 항목을 확인한다.
+
+- 이미지 Repository가 정확한가
+- 이미지 태그 `0.0.7`이 Registry에 존재하는가
+- Private Registry 인증을 위한 `imagePullSecrets`가 설정되었는가
+- Kubernetes Node에서 Registry에 접근할 수 있는가
+
+##### Readiness Probe가 실패하는 경우
+
+```bash
+kubectl describe pod <pod-name> \
+  --namespace factorial
+```
+
+```bash
+kubectl logs <pod-name> \
+  --namespace factorial
+```
+
+다음 항목을 확인해야 한다.
+
+- Spring Boot Actuator 의존성이 포함되어 있는가
+- `/actuator/health/readiness` 경로가 활성화되어 있는가
+- 보안 설정이 Health Check 요청을 차단하지 않는가
+- 애플리케이션이 실제로 `8080` 포트에서 실행되는가
+- 애플리케이션의 시작 시간이 Probe 허용 시간보다 길지 않은가
+
+##### Upgrade 후 Service 요청이 실패하는 경우
+
+Service 포트와 컨테이너 포트를 같은 값으로 묶어 두었다면 Service 포트 변경이 컨테이너의 `targetPort`까지 변경했을 가능성이 있다.
+
+Service 공개 포트와 애플리케이션의 실제 수신 포트는 별도의 값으로 관리해야 한다.
+
+##### Template 렌더링 오류가 발생하는 경우
+
+```bash
+helm lint ./factorial-chart
+```
+
+```bash
+helm template my-test-app ./factorial-chart \
+  --namespace factorial \
+  --debug
+```
+
+들여쓰기 오류, 존재하지 않는 Values 경로, 잘못된 조건문을 확인한다. Helm Template은 공백과 들여쓰기에 민감하므로 `nindent`와 `toYaml` 사용 위치를 주의해야 한다.
+
+#### 실무적인 Chart 관리 기준
+
+##### 환경별 Values 파일 분리
+
+개발, 스테이지, 운영 환경의 설정이 다르다면 파일을 분리한다.
+
+```text
+factorial-chart/
+├── Chart.yaml
+├── values.yaml
+├── values-dev.yaml
+├── values-stage.yaml
+├── values-prod.yaml
+└── templates/
+```
+
+운영 환경 설정은 다음과 같이 적용할 수 있다.
+
+```bash
+helm upgrade --install factorial-prod ./factorial-chart \
+  --namespace factorial-prod \
+  --values ./factorial-chart/values-prod.yaml
+```
+
+##### Secret 평문 저장 금지
+
+데이터베이스 비밀번호나 API Key를 `values.yaml`에 평문으로 커밋하면 안 된다. External Secrets, Secret Store CSI Driver, SOPS와 같은 별도의 비밀 관리 방식을 검토해야 한다.
+
+##### Chart 버전 증가
+
+Chart의 Template이나 기본값을 변경해 패키징한다면 `Chart.yaml`의 `version`도 증가시켜야 한다.
+
+```yaml
+version: 0.1.1
+```
+
+동일한 버전의 Chart 패키지를 덮어쓰면 어떤 내용이 배포되었는지 추적하기 어려워진다.
+
+##### 배포 전 검증 자동화
+
+CI/CD Pipeline에서는 최소한 다음 검증을 수행하는 것이 좋다.
+
+```bash
+helm lint ./factorial-chart
+```
+
+```bash
+helm template my-test-app ./factorial-chart \
+  --namespace factorial \
+  --values ./factorial-chart/values-prod.yaml
+```
+
+필요하다면 렌더링된 YAML에 Kubernetes 스키마 검사와 정책 검사를 추가할 수 있다.
+
+### 정리
+
+Helm Chart는 애플리케이션과 관련된 Deployment, Service, ConfigMap, Ingress, HPA 등의 Kubernetes 객체를 하나의 패키지로 관리하기 위한 구조다.
+
+`helm create`를 사용하면 기본 Chart 구조를 빠르게 생성할 수 있으며, 객체의 공통 구조는 Template에 작성하고 환경별로 달라지는 이미지, 레플리카, 포트, Probe, 리소스 설정은 `values.yaml`로 분리할 수 있다.
+
+`helm install`은 Chart를 새로운 Release로 설치하고, `helm upgrade`는 기존 Release의 설정을 변경한다. 각 변경은 Revision으로 기록되며 `helm history`로 조회할 수 있다. 잘못된 변경은 `helm rollback`으로 이전 Revision의 상태를 바탕으로 복구할 수 있다.
+
+이때 롤백은 기존 이력을 지우는 것이 아니라 새로운 Revision을 생성하며, Kubernetes 객체만 이전 선언 상태로 되돌린다. 데이터베이스나 외부 시스템의 상태까지 자동으로 복원하지는 않는다.
+
+마지막으로 `helm uninstall`을 사용하면 Release가 관리하던 여러 Kubernetes 객체를 한 번에 제거할 수 있다. 이러한 설치, 업그레이드, 이력 관리, 롤백, 삭제 기능을 통해 Helm은 여러 Kubernetes YAML을 개별적으로 관리할 때 발생하는 복잡성을 줄여준다.
 
 {% endraw %}
 
