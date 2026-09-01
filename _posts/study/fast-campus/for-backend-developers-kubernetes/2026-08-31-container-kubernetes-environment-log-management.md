@@ -665,3 +665,1270 @@ Kubernetes에서 컨테이너의 표준 출력과 표준 에러는 Container Run
 여러 서비스와 Pod를 거치는 요청을 분석하려면 최초 요청에서 생성한 Trace ID를 후속 호출에 전달하고 모든 로그에 포함해야 한다. 단순한 사용자 정의 헤더도 사용할 수 있지만 규모가 커지면 OpenTelemetry와 같은 표준 분산 추적 체계를 사용하는 것이 유리하다.
 
 마지막으로 로그는 많이 수집하는 것보다 필요한 데이터를 일관된 형식으로 남기는 것이 중요하다. 구조화된 로그, 적절한 보존 기간, 민감 정보 보호, Probe 로그 제어, Collector 처리량 관리가 함께 이루어져야 안정적인 Kubernetes 로그 관리 환경을 구성할 수 있다.
+
+## 02. 컨테이너 로그 조회 및 OpenSearch를 이용한 로그 중앙화 실습
+
+### 02. OpenSearch를 이용한 로그 중앙화 실습
+
+이번 실습에서는 Kubernetes에서 실행되는 Spring Boot 애플리케이션의 로그를 Fluent Bit으로 수집하고 OpenSearch에 중앙화한다. 수집된 로그는 OpenSearch Dashboards의 Discover 화면에서 검색한다.
+
+애플리케이션 Pod에는 다음 두 컨테이너를 실행한다.
+
+- 애플리케이션 컨테이너는 로그를 `emptyDir` Volume의 파일로 기록한다.
+- Fluent Bit Sidecar는 같은 파일을 읽어 OpenSearch로 전송한다.
+
+OpenSearch와 OpenSearch Dashboards는 애플리케이션과 분리된 `opensearch` Namespace에 Helm으로 설치한다.
+
+```mermaid
+flowchart LR
+    A["Spring Boot 애플리케이션"] --> B["/var/log/app/factorial.log"]
+    B --> C["emptyDir Volume"]
+    C --> D["Fluent Bit Sidecar"]
+    D --> E["OpenSearch Service"]
+    E --> F["날짜별 로그 Index"]
+    F --> G["OpenSearch Dashboards"]
+```
+
+#### OpenSearch의 역할
+
+OpenSearch는 로그와 검색 데이터를 저장하고 분석할 수 있는 분산 검색 엔진이다. Elasticsearch 7.10.2를 기반으로 분리된 프로젝트이므로 기본적인 Index, Document, Query 개념이 유사하다.
+
+다만 OpenSearch와 최신 Elasticsearch는 서로 독립적으로 발전하고 있으므로 모든 플러그인과 API가 완전히 호환된다고 가정해서는 안 된다.
+
+이번 구성에서 각 도구의 역할은 다음과 같다.
+
+| 구성 요소 | 역할 |
+|---|---|
+| Spring Boot | 애플리케이션 로그를 파일에 기록한다. |
+| `emptyDir` | 애플리케이션과 Fluent Bit이 로그 파일을 공유한다. |
+| Fluent Bit | 로그 파일을 읽어 OpenSearch로 전송한다. |
+| OpenSearch | 로그를 날짜별 Index에 저장한다. |
+| OpenSearch Dashboards | 저장된 로그를 검색하고 시각화한다. |
+| Helm | OpenSearch와 Dashboards의 Kubernetes 객체를 설치한다. |
+
+#### 실습 Namespace 구성
+
+OpenSearch와 애플리케이션은 서로 다른 Namespace에 설치한다.
+
+```mermaid
+flowchart TD
+    subgraph O["opensearch Namespace"]
+        A["OpenSearch"]
+        B["OpenSearch Dashboards"]
+        B --> A
+    end
+
+    subgraph F["factorial Namespace"]
+        C["Factorial Application"]
+        D["Fluent Bit Sidecar"]
+        C --> D
+    end
+
+    D --> A
+```
+
+Namespace를 분리하면 객체 이름과 자원 관리 범위를 구분할 수 있다. 하지만 Namespace가 다르더라도 Service의 전체 DNS 이름을 사용하면 서로 통신할 수 있다.
+
+OpenSearch Service의 전체 DNS 이름은 다음과 같은 구조를 가진다.
+
+```text
+opensearch-cluster-master.opensearch.svc.cluster.local
+```
+
+각 항목의 의미는 다음과 같다.
+
+```text
+<Service 이름>.<Namespace>.svc.cluster.local
+```
+
+#### 사전 조건
+
+실습 전 다음 도구와 환경이 필요하다.
+
+- Kubernetes 클러스터
+- `kubectl`
+- Helm 3
+- StorageClass 또는 동적 Volume 프로비저닝 환경
+- Spring Boot 애플리케이션 이미지
+- OpenSearch를 실행할 충분한 CPU와 Memory
+
+OpenSearch의 기본 Helm Chart는 여러 노드로 구성된 클러스터를 생성하므로 로컬 실습 환경에서는 상당한 Memory가 필요하다. 공식 설치 안내에서도 기본 Chart가 3개 노드를 생성하며 충분한 메모리가 필요하다고 설명한다. 실습에서는 단일 노드로 축소하지만 운영 환경에 그대로 사용해서는 안 된다. [OpenSearch Helm 설치 안내](https://docs.opensearch.org/latest/install-and-configure/install-opensearch/helm/)
+
+#### Namespace 생성
+
+```bash
+kubectl create namespace opensearch
+```
+
+```bash
+kubectl create namespace factorial
+```
+
+생성 결과를 확인한다.
+
+```bash
+kubectl get namespaces
+```
+
+이미 존재하는 Namespace라면 새로 생성하지 않고 기존 Namespace를 사용하면 된다.
+
+#### OpenSearch 관리자 인증 정보 생성
+
+OpenSearch 2.12 이상에서는 신규 클러스터의 데모 보안 구성을 초기화할 때 강력한 관리자 비밀번호를 지정해야 한다. `admin/admin`을 기본 인증 정보로 사용하는 방식은 현재 구성에서 적합하지 않다.
+
+먼저 Shell 환경 변수로 실습용 비밀번호를 준비한다.
+
+```bash
+export OPENSEARCH_ADMIN_PASSWORD='REPLACE_WITH_A_STRONG_PASSWORD'
+```
+
+OpenSearch와 Dashboards가 사용할 Secret을 생성한다.
+
+```bash
+kubectl create secret generic opensearch-admin-credentials \
+  --namespace opensearch \
+  --from-literal=username=admin \
+  --from-literal=password="${OPENSEARCH_ADMIN_PASSWORD}" \
+  --from-literal=cookie="$(openssl rand -hex 16)"
+```
+
+Fluent Bit은 `factorial` Namespace에서 실행된다. Kubernetes Secret은 Namespace 범위 객체이므로 `opensearch` Namespace의 Secret을 직접 참조할 수 없다.
+
+따라서 Fluent Bit용 Secret을 `factorial` Namespace에도 생성한다.
+
+```bash
+kubectl create secret generic opensearch-log-writer \
+  --namespace factorial \
+  --from-literal=username=admin \
+  --from-literal=password="${OPENSEARCH_ADMIN_PASSWORD}"
+```
+
+실습에서는 간단한 구성을 위해 관리자 계정을 사용하지만 운영 환경에서는 로그를 기록할 Index에만 쓰기 권한을 가진 전용 계정을 만들어야 한다.
+
+#### Helm Repository 추가
+
+OpenSearch Helm Repository를 추가한다.
+
+```bash
+helm repo add opensearch \
+  https://opensearch-project.github.io/helm-charts/
+```
+
+Repository 정보를 갱신한다.
+
+```bash
+helm repo update
+```
+
+사용할 수 있는 Chart를 확인한다.
+
+```bash
+helm search repo opensearch
+```
+
+목록에서 다음 Chart를 확인할 수 있다.
+
+```text
+opensearch/opensearch
+opensearch/opensearch-dashboards
+```
+
+#### OpenSearch values.yaml 작성
+
+로컬 실습용 단일 노드 구성을 작성한다.
+
+```yaml
+clusterName: opensearch-cluster
+nodeGroup: master
+
+singleNode: true
+replicas: 1
+
+config:
+  opensearch.yml: |-
+    cluster.name: opensearch-cluster
+    network.host: 0.0.0.0
+    discovery.type: single-node
+
+extraEnvs:
+  - name: OPENSEARCH_INITIAL_ADMIN_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: opensearch-admin-credentials
+        key: password
+
+opensearchJavaOpts: "-Xms512m -Xmx512m"
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 1Gi
+  limits:
+    cpu: 1
+    memory: 2Gi
+
+persistence:
+  enabled: true
+  size: 8Gi
+
+service:
+  type: ClusterIP
+```
+
+파일명은 `opensearch-values.yaml`로 지정한다.
+
+주요 설정은 다음과 같다.
+
+- `singleNode: true`는 OpenSearch를 단일 노드 모드로 실행한다.
+- `replicas: 1`은 OpenSearch Pod를 하나만 생성한다.
+- `discovery.type: single-node`는 다른 OpenSearch 노드를 찾지 않도록 설정한다.
+- `OPENSEARCH_INITIAL_ADMIN_PASSWORD`는 Secret에서 읽는다.
+- `opensearchJavaOpts`는 JVM Heap의 초기 크기와 최대 크기를 설정한다.
+- `resources`는 컨테이너의 CPU와 Memory 요청 및 제한을 설정한다.
+- `persistence.enabled`는 OpenSearch 데이터를 PVC에 보존한다.
+- `service.type: ClusterIP`는 OpenSearch를 클러스터 내부에만 노출한다.
+
+단일 노드 구성에서는 해당 Pod나 PVC에 문제가 생기면 로그 검색 기능이 중단될 수 있다. 운영 환경에서는 전용 Node 역할, 다중 Replica, 스냅샷, PodDisruptionBudget, Anti-Affinity를 함께 설계해야 한다.
+
+#### OpenSearch 설치
+
+```bash
+helm install opensearch opensearch/opensearch \
+  --namespace opensearch \
+  --values opensearch-values.yaml \
+  --wait \
+  --timeout 10m
+```
+
+설치된 Release를 확인한다.
+
+```bash
+helm list --namespace opensearch
+```
+
+```bash
+helm status opensearch --namespace opensearch
+```
+
+OpenSearch Pod와 Service를 확인한다.
+
+```bash
+kubectl get pods \
+  --namespace opensearch \
+  --watch
+```
+
+```bash
+kubectl get services \
+  --namespace opensearch
+```
+
+정상적으로 준비되면 다음과 같은 Service를 확인할 수 있다.
+
+```text
+opensearch-cluster-master
+```
+
+#### OpenSearch 동작 확인
+
+OpenSearch Service의 `9200` 포트를 로컬로 전달한다.
+
+```bash
+kubectl port-forward \
+  service/opensearch-cluster-master \
+  9200:9200 \
+  --namespace opensearch
+```
+
+다른 터미널에서 OpenSearch API를 호출한다.
+
+```bash
+curl --insecure \
+  --user "admin:${OPENSEARCH_ADMIN_PASSWORD}" \
+  https://localhost:9200
+```
+
+정상적으로 실행되고 있다면 클러스터 이름과 OpenSearch 버전 정보가 포함된 JSON 응답을 확인할 수 있다.
+
+```json
+{
+  "name": "opensearch-cluster-master-0",
+  "cluster_name": "opensearch-cluster",
+  "version": {
+    "distribution": "opensearch"
+  }
+}
+```
+
+`--insecure`는 Helm Chart의 데모 인증서가 공인 CA로 검증되지 않기 때문에 실습에서만 사용한다. 운영 환경에서는 신뢰할 수 있는 CA 인증서를 구성하고 TLS 검증을 활성화해야 한다.
+
+#### OpenSearch Dashboards values.yaml 작성
+
+OpenSearch Dashboards가 OpenSearch Service에 연결하도록 설정한다.
+
+```yaml
+opensearchHosts: "https://opensearch-cluster-master:9200"
+
+replicaCount: 1
+
+opensearchAccount:
+  secret: opensearch-admin-credentials
+
+config:
+  opensearch_dashboards.yml: |-
+    server.host: "0.0.0.0"
+    opensearch.hosts:
+      - "https://opensearch-cluster-master:9200"
+    opensearch.ssl.verificationMode: none
+    opensearch.requestHeadersWhitelist:
+      - authorization
+      - securitytenant
+    opensearch_security.multitenancy.enabled: true
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 512Mi
+  limits:
+    cpu: 500m
+    memory: 1Gi
+
+service:
+  type: ClusterIP
+  port: 5601
+```
+
+파일명은 `opensearch-dashboards-values.yaml`로 지정한다.
+
+`opensearchHosts`에는 같은 Namespace의 OpenSearch Service 이름을 사용한다. 두 객체가 모두 `opensearch` Namespace에 있으므로 전체 DNS 이름이 없어도 Service를 찾을 수 있다.
+
+`opensearchAccount.secret`은 Dashboards가 사용할 사용자 이름과 비밀번호를 Secret에서 가져오도록 한다. Chart는 `username`, `password`, `cookie` Key를 참조한다. [OpenSearch Dashboards Chart 설정](https://github.com/opensearch-project/helm-charts/blob/main/charts/opensearch-dashboards/values.yaml)
+
+`opensearch.ssl.verificationMode: none`도 데모 인증서를 위한 실습 설정이다. 운영 환경에서는 OpenSearch 인증서의 CA를 Dashboards에 마운트하고 인증서 검증을 활성화해야 한다.
+
+#### OpenSearch Dashboards 설치
+
+```bash
+helm install dashboards \
+  opensearch/opensearch-dashboards \
+  --namespace opensearch \
+  --values opensearch-dashboards-values.yaml \
+  --wait \
+  --timeout 10m
+```
+
+Pod와 Service를 확인한다.
+
+```bash
+kubectl get pods \
+  --namespace opensearch
+```
+
+```bash
+kubectl get services \
+  --namespace opensearch
+```
+
+OpenSearch Dashboards는 초기화에 시간이 걸릴 수 있다. Pod가 `Running`이더라도 Readiness Probe를 통과하지 않았다면 웹 요청을 정상적으로 처리하지 못할 수 있다.
+
+다음 명령으로 상태를 확인한다.
+
+```bash
+kubectl describe pod \
+  --namespace opensearch \
+  --selector app.kubernetes.io/instance=dashboards
+```
+
+```bash
+kubectl logs \
+  --namespace opensearch \
+  --selector app.kubernetes.io/instance=dashboards \
+  --all-containers=true \
+  --tail=200
+```
+
+#### OpenSearch Dashboards 접속
+
+Pod 이름 대신 Service를 대상으로 Port Forwarding하면 Pod가 교체되어도 명령 대상을 찾기 쉽다.
+
+먼저 Service 이름을 확인한다.
+
+```bash
+kubectl get services \
+  --namespace opensearch
+```
+
+Service 이름이 `dashboards-opensearch-dashboards`라면 다음 명령을 실행한다.
+
+```bash
+kubectl port-forward \
+  service/dashboards-opensearch-dashboards \
+  5601:5601 \
+  --namespace opensearch
+```
+
+브라우저에서 다음 주소에 접속한다.
+
+```text
+http://localhost:5601
+```
+
+로그인 정보는 다음과 같다.
+
+```text
+Username: admin
+Password: OPENSEARCH_ADMIN_PASSWORD에 지정한 값
+```
+
+아직 애플리케이션 로그를 전송하지 않았으므로 Discover 화면에서 조회할 Index는 존재하지 않는다.
+
+#### Spring Boot 파일 로그 설정
+
+애플리케이션이 공유 Volume의 파일로 로그를 기록하도록 `application.yaml`을 수정한다.
+
+```yaml
+spring:
+  application:
+    name: factorial-app
+
+server:
+  port: 8080
+
+logging:
+  file:
+    name: /var/log/app/factorial.log
+  logback:
+    rollingpolicy:
+      file-name-pattern: /var/log/app/factorial.%d{yyyy-MM-dd}.%i.log.gz
+      max-file-size: 10MB
+      max-history: 7
+      total-size-cap: 200MB
+  level:
+    root: INFO
+    com.example: INFO
+
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  endpoints:
+    web:
+      exposure:
+        include:
+          - health
+          - info
+```
+
+주요 설정은 다음과 같다.
+
+- `logging.file.name`은 로그 파일의 전체 경로를 지정한다.
+- `file-name-pattern`은 회전된 로그 파일의 이름을 정의한다.
+- `max-file-size`는 단일 로그 파일의 최대 크기다.
+- `max-history`는 보관할 로그 파일의 기간 기준이다.
+- `total-size-cap`은 파일 로그가 사용할 수 있는 전체 크기를 제한한다.
+
+`emptyDir`에는 `sizeLimit`도 설정하므로 애플리케이션의 Logback 회전 정책과 Kubernetes Volume 제한을 함께 관리해야 한다.
+
+Spring Boot는 파일 로그를 활성화해도 기본적으로 콘솔 로그를 함께 출력할 수 있다. 클러스터에 Node 단위 Collector가 이미 설치되어 있다면 콘솔 로그와 파일 로그가 중복 수집되지 않는지 확인해야 한다.
+
+애플리케이션 설정이 변경되었으므로 새로운 컨테이너 이미지를 빌드하고 변경되지 않는 고유 태그로 Registry에 푸시한다.
+
+```bash
+./gradlew clean test bootJar
+```
+
+```bash
+docker build \
+  --tag your-dockerhub-id/factorial-app:0.0.8 \
+  .
+```
+
+```bash
+docker push \
+  your-dockerhub-id/factorial-app:0.0.8
+```
+
+#### Fluent Bit 설정 ConfigMap 작성
+
+Fluent Bit은 `factorial.log` 파일을 Tail 방식으로 읽고 OpenSearch로 전송한다.
+
+다음은 Fluent Bit의 YAML 설정을 포함한 ConfigMap이다.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluent-bit-config
+  namespace: factorial
+data:
+  fluent-bit.yaml: |
+    service:
+      flush: 1
+      log_level: info
+      storage.path: /var/log/app/fluent-bit-storage
+
+    pipeline:
+      inputs:
+        - name: tail
+          tag: factorial.app
+          path: /var/log/app/factorial.log
+          read_from_head: true
+          refresh_interval: 5
+          rotate_wait: 30
+          skip_long_lines: true
+          mem_buf_limit: 10MB
+          db: /var/log/app/fluent-bit-tail.db
+          storage.type: filesystem
+
+      outputs:
+        - name: opensearch
+          match: factorial.app
+          host: opensearch-cluster-master.opensearch.svc.cluster.local
+          port: 9200
+          http_user: ${OPENSEARCH_USERNAME}
+          http_passwd: ${OPENSEARCH_PASSWORD}
+          logstash_format: true
+          logstash_prefix: factorial-app-logs
+          time_key: "@timestamp"
+          suppress_type_name: true
+          tls: true
+          tls.verify: false
+          compress: gzip
+          retry_limit: false
+```
+
+##### Service 설정
+
+```yaml
+service:
+  flush: 1
+  log_level: info
+  storage.path: /var/log/app/fluent-bit-storage
+```
+
+- `flush`는 버퍼의 로그를 Output으로 전달하려고 시도하는 주기를 지정한다.
+- `log_level`은 Fluent Bit 자체 로그 레벨이다.
+- `storage.path`는 파일 시스템 버퍼를 저장할 경로다.
+
+##### Tail Input 설정
+
+```yaml
+inputs:
+  - name: tail
+    path: /var/log/app/factorial.log
+    db: /var/log/app/fluent-bit-tail.db
+```
+
+- `name: tail`은 파일에 추가되는 내용을 계속 읽는다.
+- `path`는 Spring Boot가 로그를 기록하는 경로와 일치해야 한다.
+- `db`는 Fluent Bit이 어디까지 읽었는지 파일 Offset을 저장한다.
+- `read_from_head: true`는 처음 발견한 파일을 처음부터 읽는다.
+- `rotate_wait`는 로그 파일 회전 직후 남은 내용을 읽기 위해 기다리는 시간을 지정한다.
+- `storage.type: filesystem`은 출력 지연 시 파일 시스템 버퍼를 사용한다.
+
+DB와 버퍼도 `emptyDir`에 저장되므로 Fluent Bit 컨테이너가 재시작되더라도 같은 Pod가 유지되는 동안에는 Offset을 다시 사용할 수 있다. 그러나 Pod가 삭제되면 DB와 전송하지 못한 로그도 함께 사라질 수 있다.
+
+##### OpenSearch Output 설정
+
+```yaml
+outputs:
+  - name: opensearch
+    host: opensearch-cluster-master.opensearch.svc.cluster.local
+    port: 9200
+```
+
+Fluent Bit은 `factorial` Namespace에 있고 OpenSearch는 `opensearch` Namespace에 있다. 따라서 전체 Service DNS 이름을 사용한다.
+
+```yaml
+http_user: ${OPENSEARCH_USERNAME}
+http_passwd: ${OPENSEARCH_PASSWORD}
+```
+
+인증 정보는 Deployment의 환경 변수로 주입하며 ConfigMap에 평문으로 저장하지 않는다.
+
+```yaml
+logstash_format: true
+logstash_prefix: factorial-app-logs
+```
+
+`logstash_format`을 활성화하면 다음과 같이 날짜가 포함된 Index 이름을 생성한다.
+
+```text
+factorial-app-logs-2026.09.01
+```
+
+날짜별 Index를 사용하면 보존 기간에 따라 오래된 Index를 제거하기 쉽다. 다만 날짜별 Index를 생성하는 것만으로 자동 삭제가 설정되는 것은 아니다. OpenSearch의 Index State Management 정책을 별도로 구성해야 한다.
+
+```yaml
+suppress_type_name: true
+```
+
+OpenSearch 2.0 이상에서는 Mapping Type을 지원하지 않으므로 Fluent Bit의 `suppress_type_name`을 활성화해야 한다. 활성화하지 않으면 Bulk 요청에서 `_type` 관련 오류가 발생할 수 있다. [Fluent Bit OpenSearch Output 설정](https://docs.fluentbit.io/manual/data-pipeline/outputs/opensearch)
+
+```yaml
+tls: true
+tls.verify: false
+```
+
+TLS 통신은 사용하지만 데모 인증서를 신뢰할 수 없기 때문에 인증서 검증을 비활성화했다. 운영 환경에서는 `tls.verify: true`로 변경하고 CA 인증서를 Fluent Bit 컨테이너에 마운트해야 한다.
+
+```yaml
+retry_limit: false
+```
+
+전송 실패 시 재시도를 제한하지 않는 설정이다. 로그가 장시간 전송되지 않으면 버퍼가 계속 증가할 수 있으므로 운영 환경에서는 디스크 사용량과 Backpressure 정책을 함께 설계해야 한다.
+
+#### Fluent Bit Classic 설정을 사용하는 경우
+
+기존 Fluent Bit에서는 `fluent-bit.conf` 형식의 Classic 설정을 많이 사용했다.
+
+```text
+[SERVICE]
+    Flush        1
+    Log_Level    info
+
+[INPUT]
+    Name              tail
+    Path              /var/log/app/factorial.log
+    Tag               factorial.app
+    Read_from_Head    On
+    DB                /var/log/app/fluent-bit-tail.db
+    Mem_Buf_Limit     10MB
+    Skip_Long_Lines   On
+
+[OUTPUT]
+    Name                opensearch
+    Match               factorial.app
+    Host                opensearch-cluster-master.opensearch.svc.cluster.local
+    Port                9200
+    HTTP_User           ${OPENSEARCH_USERNAME}
+    HTTP_Passwd         ${OPENSEARCH_PASSWORD}
+    Logstash_Format     On
+    Logstash_Prefix     factorial-app-logs
+    Suppress_Type_Name  On
+    TLS                 On
+    TLS.Verify          Off
+    Retry_Limit         False
+```
+
+하지만 Fluent Bit Classic 설정은 폐기 방향이 안내되어 있으므로 신규 구성에서는 YAML 설정을 우선 검토하는 것이 좋다.
+
+Classic 설정 파일 하나만 기존 경로에 덮어쓰려면 `subPath`를 사용할 수 있다.
+
+```yaml
+volumeMounts:
+  - name: fluent-bit-config
+    mountPath: /fluent-bit/etc/fluent-bit.conf
+    subPath: fluent-bit.conf
+    readOnly: true
+```
+
+`subPath` 없이 ConfigMap을 `/fluent-bit/etc` 전체에 마운트하면 이미지에 포함된 다른 기본 파일까지 가릴 수 있다.
+
+다만 `subPath`로 마운트한 ConfigMap 파일은 ConfigMap이 변경되어도 실행 중인 컨테이너에 자동 반영되지 않을 수 있다. 설정 변경 후 Pod Rollout이 필요하다.
+
+#### Factorial Deployment 작성
+
+애플리케이션 컨테이너와 Fluent Bit Sidecar를 포함하는 Deployment를 작성한다.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: factorial-app
+  namespace: factorial
+  labels:
+    app: factorial-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: factorial-app
+  template:
+    metadata:
+      labels:
+        app: factorial-app
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: application
+          image: your-dockerhub-id/factorial-app:0.0.8
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            initialDelaySeconds: 45
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+              ephemeral-storage: 1Gi
+          volumeMounts:
+            - name: application-logs
+              mountPath: /var/log/app
+
+        - name: fluent-bit
+          image: fluent/fluent-bit:5.0.9
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config
+            - /fluent-bit/etc/custom/fluent-bit.yaml
+          env:
+            - name: OPENSEARCH_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: opensearch-log-writer
+                  key: username
+            - name: OPENSEARCH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: opensearch-log-writer
+                  key: password
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+              ephemeral-storage: 1Gi
+          volumeMounts:
+            - name: application-logs
+              mountPath: /var/log/app
+            - name: fluent-bit-config
+              mountPath: /fluent-bit/etc/custom
+              readOnly: true
+
+      volumes:
+        - name: application-logs
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: fluent-bit-config
+          configMap:
+            name: fluent-bit-config
+```
+
+##### `emptyDir` Volume
+
+```yaml
+volumes:
+  - name: application-logs
+    emptyDir:
+      sizeLimit: 1Gi
+```
+
+`emptyDir`는 Pod가 Node에 배치될 때 생성되며 같은 Pod의 컨테이너가 공유할 수 있다.
+
+- 애플리케이션은 `/var/log/app/factorial.log`에 로그를 기록한다.
+- Fluent Bit은 같은 경로에서 로그를 읽는다.
+- 컨테이너가 재시작되어도 Pod가 유지되면 Volume은 유지된다.
+- Pod가 삭제되면 Volume과 전송하지 못한 로그도 삭제된다.
+
+이 Volume은 중앙 로그 저장소를 대신하는 영구 스토리지가 아니라 일시적인 공유 공간과 버퍼다.
+
+##### Fluent Bit ConfigMap 마운트
+
+ConfigMap 전체를 별도 디렉터리에 마운트한다.
+
+```yaml
+volumeMounts:
+  - name: fluent-bit-config
+    mountPath: /fluent-bit/etc/custom
+    readOnly: true
+```
+
+Fluent Bit 실행 인자에서 해당 설정 파일을 지정한다.
+
+```yaml
+args:
+  - --config
+  - /fluent-bit/etc/custom/fluent-bit.yaml
+```
+
+기본 설정 디렉터리를 덮어쓰지 않으므로 `subPath`를 사용하지 않아도 된다.
+
+##### Secret 환경 변수 주입
+
+```yaml
+env:
+  - name: OPENSEARCH_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: opensearch-log-writer
+        key: password
+```
+
+ConfigMap에는 `${OPENSEARCH_PASSWORD}`만 작성하고 실제 값은 Secret에서 환경 변수로 주입한다.
+
+Kubernetes Secret은 암호화된 비밀 관리 시스템 자체가 아니라 Base64 기반 Kubernetes 객체다. 접근 권한, etcd 암호화, Secret 외부 관리 정책을 함께 구성해야 한다.
+
+#### Service 작성
+
+애플리케이션을 클러스터 내부에서 호출하기 위한 Service를 작성한다.
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: factorial-app
+  namespace: factorial
+  labels:
+    app: factorial-app
+spec:
+  type: ClusterIP
+  selector:
+    app: factorial-app
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+```
+
+#### Kubernetes 객체 적용
+
+ConfigMap을 먼저 적용한다.
+
+```bash
+kubectl apply \
+  --filename fluent-bit-config.yaml
+```
+
+Deployment와 Service를 적용한다.
+
+```bash
+kubectl apply \
+  --filename factorial-deployment.yaml
+```
+
+```bash
+kubectl apply \
+  --filename factorial-service.yaml
+```
+
+Pod 상태를 확인한다.
+
+```bash
+kubectl get pods \
+  --namespace factorial \
+  --watch
+```
+
+하나의 Pod에 두 컨테이너가 있으므로 정상 상태는 다음과 같이 표시된다.
+
+```text
+NAME                             READY   STATUS    RESTARTS
+factorial-app-xxxxxxxxxx-abcde   2/2     Running   0
+factorial-app-xxxxxxxxxx-fghij   2/2     Running   0
+```
+
+`READY 2/2`는 애플리케이션과 Fluent Bit 컨테이너가 모두 준비되었다는 의미다.
+
+#### ConfigMap 변경 후 Rollout
+
+Pod Template이 변경되지 않은 상태에서 ConfigMap만 수정하면 애플리케이션 Pod가 자동으로 재생성되지 않을 수 있다.
+
+설정 변경을 확실하게 반영하려면 Deployment를 재시작한다.
+
+```bash
+kubectl rollout restart deployment/factorial-app \
+  --namespace factorial
+```
+
+Rollout 상태를 확인한다.
+
+```bash
+kubectl rollout status deployment/factorial-app \
+  --namespace factorial \
+  --timeout=5m
+```
+
+단순히 기존 Pod 안의 컨테이너 프로세스를 재시작하는 것이 아니라 Deployment가 새로운 Pod를 생성하고 기존 Pod를 교체한다.
+
+#### 로그 발생 테스트
+
+임시 Curl Pod를 사용해 Factorial Service를 반복 호출한다.
+
+```bash
+kubectl run log-test-client \
+  --namespace factorial \
+  --image=curlimages/curl:8.10.1 \
+  --restart=Never \
+  --rm \
+  --stdin \
+  --tty \
+  --command -- \
+  sh
+```
+
+Pod 내부에서 요청을 전송한다.
+
+```bash
+for number in 5 10 15 20; do
+  curl "http://factorial-app:8080/factorial?number=${number}"
+  echo
+done
+```
+
+애플리케이션 컨테이너에서 로그 파일이 생성되었는지 확인한다.
+
+```bash
+kubectl exec \
+  --namespace factorial \
+  deployment/factorial-app \
+  --container application \
+  -- \
+  ls -l /var/log/app
+```
+
+로그 내용을 확인한다.
+
+```bash
+kubectl exec \
+  --namespace factorial \
+  deployment/factorial-app \
+  --container application \
+  -- \
+  tail -n 20 /var/log/app/factorial.log
+```
+
+#### Fluent Bit 상태 확인
+
+Fluent Bit 로그를 확인한다.
+
+```bash
+kubectl logs \
+  --namespace factorial \
+  --selector app=factorial-app \
+  --container fluent-bit \
+  --prefix=true \
+  --tail=200
+```
+
+정상적으로 동작한다면 Tail Input 초기화와 OpenSearch 연결 로그를 확인할 수 있다.
+
+Fluent Bit이 읽은 Offset DB도 확인할 수 있다.
+
+```bash
+kubectl exec \
+  --namespace factorial \
+  deployment/factorial-app \
+  --container fluent-bit \
+  -- \
+  ls -l /var/log/app/fluent-bit-tail.db
+```
+
+#### OpenSearch Index 확인
+
+OpenSearch Service를 Port Forwarding한다.
+
+```bash
+kubectl port-forward \
+  service/opensearch-cluster-master \
+  9200:9200 \
+  --namespace opensearch
+```
+
+다른 터미널에서 날짜별 Index를 조회한다.
+
+```bash
+curl --insecure \
+  --user "admin:${OPENSEARCH_ADMIN_PASSWORD}" \
+  "https://localhost:9200/_cat/indices/factorial-app-logs-*?v"
+```
+
+정상적으로 로그가 적재되면 다음과 같은 Index가 생성된다.
+
+```text
+factorial-app-logs-2026.09.01
+```
+
+Document 수를 확인한다.
+
+```bash
+curl --insecure \
+  --user "admin:${OPENSEARCH_ADMIN_PASSWORD}" \
+  "https://localhost:9200/factorial-app-logs-*/_count"
+```
+
+로그를 직접 검색한다.
+
+```bash
+curl --insecure \
+  --user "admin:${OPENSEARCH_ADMIN_PASSWORD}" \
+  --header "Content-Type: application/json" \
+  "https://localhost:9200/factorial-app-logs-*/_search?pretty" \
+  --data '
+  {
+    "size": 10,
+    "sort": [
+      {
+        "@timestamp": {
+          "order": "desc"
+        }
+      }
+    ],
+    "query": {
+      "match_all": {}
+    }
+  }'
+```
+
+#### OpenSearch Dashboards에서 로그 조회
+
+OpenSearch Dashboards에 접속한 뒤 Data View 또는 Index Pattern을 생성한다. 메뉴 이름은 Dashboards 버전에 따라 조금 다를 수 있다.
+
+Index 이름에는 와일드카드를 사용한다.
+
+```text
+factorial-app-logs-*
+```
+
+시간 필드는 다음 값을 선택한다.
+
+```text
+@timestamp
+```
+
+Data View를 생성한 뒤 Discover 화면으로 이동하면 여러 Factorial Pod에서 전송한 로그를 한 화면에서 확인할 수 있다.
+
+로그가 보이지 않는다면 다음 항목을 확인한다.
+
+- Dashboards의 조회 시간 범위가 현재 시간을 포함하는가
+- `factorial-app-logs-*` Index가 실제로 생성되었는가
+- 시간 필드를 `@timestamp`로 선택했는가
+- 브라우저와 Kubernetes Node의 시간 차이가 크지 않은가
+
+#### 기본 구성의 한계
+
+현재 구성은 로그 한 줄을 하나의 문자열로 OpenSearch에 저장한다. 따라서 로그 레벨, 클래스 이름, Trace ID를 개별 필드로 검색하기 어렵다.
+
+예를 들어 다음 로그가 하나의 `log` 필드에 저장될 수 있다.
+
+```text
+2026-09-01T10:15:20.215 INFO trace_id=abc123 c.e.FactorialService - calculation completed
+```
+
+운영 환경에서는 애플리케이션 로그를 JSON으로 출력하거나 Fluent Bit Parser를 구성해 다음과 같은 구조로 저장하는 것이 좋다.
+
+```json
+{
+  "@timestamp": "2026-09-01T10:15:20.215Z",
+  "level": "INFO",
+  "service": "factorial-app",
+  "trace_id": "abc123",
+  "logger": "com.example.FactorialService",
+  "message": "calculation completed"
+}
+```
+
+구조화된 필드를 사용하면 다음 검색이 가능해진다.
+
+- `level: ERROR`
+- `service: factorial-app`
+- `trace_id: abc123`
+- 특정 시간 범위의 오류 로그
+- 특정 Pod에서 발생한 로그
+
+#### 자주 발생하는 문제
+
+##### OpenSearch Pod가 시작되지 않는 경우
+
+OpenSearch Pod 로그를 확인한다.
+
+```bash
+kubectl logs \
+  --namespace opensearch \
+  opensearch-cluster-master-0 \
+  --tail=200
+```
+
+주요 원인은 다음과 같다.
+
+- 관리자 비밀번호가 설정되지 않았다.
+- 비밀번호가 강도 조건을 충족하지 못했다.
+- Node에 Memory가 부족하다.
+- PVC를 생성할 StorageClass가 없다.
+- 기존 PVC의 데이터와 현재 보안 설정이 일치하지 않는다.
+
+##### OpenSearch Pod가 Pending 상태인 경우
+
+```bash
+kubectl describe pod \
+  opensearch-cluster-master-0 \
+  --namespace opensearch
+```
+
+다음 항목을 확인한다.
+
+- CPU와 Memory 요청량을 만족하는 Node가 있는가
+- PVC가 `Pending` 상태인가
+- Node Selector나 Taint로 스케줄링이 차단되었는가
+
+##### Dashboards 화면이 열리지 않는 경우
+
+```bash
+kubectl logs \
+  --namespace opensearch \
+  --selector app.kubernetes.io/instance=dashboards \
+  --all-containers=true \
+  --tail=200
+```
+
+OpenSearch가 아직 초기화 중이거나 Dashboards가 OpenSearch 인증에 실패했을 수 있다.
+
+##### Fluent Bit에서 DNS 오류가 발생하는 경우
+
+다음 Host 설정을 확인한다.
+
+```text
+opensearch-cluster-master.opensearch.svc.cluster.local
+```
+
+Service와 Endpoint도 확인한다.
+
+```bash
+kubectl get service,endpoints \
+  --namespace opensearch
+```
+
+##### Fluent Bit에서 HTTP 401 오류가 발생하는 경우
+
+- `opensearch-log-writer` Secret이 `factorial` Namespace에 있는지 확인한다.
+- Secret의 사용자 이름과 비밀번호가 OpenSearch와 일치하는지 확인한다.
+- Fluent Bit Pod가 Secret 변경 후 다시 생성되었는지 확인한다.
+
+```bash
+kubectl rollout restart deployment/factorial-app \
+  --namespace factorial
+```
+
+##### `_type` 관련 오류가 발생하는 경우
+
+Fluent Bit Output에 다음 설정이 있는지 확인한다.
+
+```yaml
+suppress_type_name: true
+```
+
+OpenSearch 2.0 이상에서는 Mapping Type이 제거되었기 때문에 필요한 설정이다.
+
+##### Index가 생성되지 않는 경우
+
+다음 순서로 확인한다.
+
+1. Spring Boot가 `/var/log/app/factorial.log`를 생성했는지 확인한다.
+2. 애플리케이션과 Fluent Bit이 같은 `emptyDir`를 마운트했는지 확인한다.
+3. Fluent Bit의 `path`가 실제 파일 경로와 일치하는지 확인한다.
+4. Fluent Bit 컨테이너 로그에서 인증 및 TLS 오류를 확인한다.
+5. OpenSearch Service DNS와 포트를 확인한다.
+6. OpenSearch에서 Index 목록을 직접 조회한다.
+
+##### 로그가 중복 적재되는 경우
+
+전송 성공 여부를 확인하기 전에 Fluent Bit이 재시도하면 동일한 이벤트가 중복 저장될 수 있다. 애플리케이션이 같은 로그를 콘솔과 파일에 동시에 출력하고 Node Collector와 Sidecar가 각각 수집하는 경우에도 중복이 발생한다.
+
+중복 허용 범위와 이벤트 ID 생성 전략을 정하고 수집 경로를 하나로 통일해야 한다.
+
+#### Sidecar 방식과 DaemonSet 방식 비교
+
+이번 실습에서는 파일 로그 수집 과정을 확인하기 위해 Sidecar를 사용했다. 하지만 모든 Pod에 Fluent Bit Sidecar를 추가하면 애플리케이션 레플리카 수만큼 Collector도 증가한다.
+
+| 구분 | Sidecar | DaemonSet |
+|---|---|---|
+| 배포 단위 | 애플리케이션 Pod마다 배치 | Node마다 하나씩 배치 |
+| 파일 공유 | `emptyDir`로 간단하게 공유 | Node의 CRI 로그 경로를 읽는다. |
+| 애플리케이션별 설정 | 세밀하게 분리 가능 | 중앙 설정으로 통일하기 쉽다. |
+| 자원 사용 | Pod 수에 비례해 증가 | Node 수에 비례해 증가 |
+| 적합한 상황 | 파일 로그, 특수한 파싱 요구사항 | 표준 출력 기반의 일반적인 로그 수집 |
+
+신규 애플리케이션은 표준 출력으로 로그를 기록하고 Node마다 Fluent Bit DaemonSet을 실행하는 구성이 일반적으로 더 효율적이다.
+
+Sidecar 방식은 다음 상황에서 고려할 수 있다.
+
+- 애플리케이션이 파일 로그만 지원한다.
+- 특정 애플리케이션에 전용 Parser가 필요하다.
+- 다른 로그와 분리된 전송 경로가 필요하다.
+- 레거시 애플리케이션을 빠르게 이전해야 한다.
+
+#### 운영 환경 개선 사항
+
+##### 관리자 계정 사용 금지
+
+Fluent Bit에 관리자 계정을 제공하면 Credential 노출 시 전체 OpenSearch 클러스터가 영향을 받을 수 있다.
+
+운영 환경에서는 다음 권한만 가진 전용 사용자를 생성하는 것이 좋다.
+
+- `factorial-app-logs-*` Index 생성
+- Document 쓰기
+- Bulk API 사용
+- 필요한 Index Template 조회
+
+##### TLS 검증 활성화
+
+실습에서는 다음 설정을 사용했다.
+
+```yaml
+tls.verify: false
+```
+
+운영 환경에서는 OpenSearch CA 인증서를 Secret으로 저장하고 Fluent Bit에 마운트한 뒤 검증을 활성화해야 한다.
+
+```yaml
+tls: true
+tls.verify: true
+tls.ca_file: /fluent-bit/certs/ca.crt
+```
+
+##### Index 보존 정책
+
+날짜별 Index는 관리 단위를 나눌 뿐 오래된 로그를 자동으로 삭제하지 않는다. Index State Management 정책으로 다음 수명주기를 구성할 수 있다.
+
+```mermaid
+flowchart LR
+    A["Hot Index"] --> B["Read Only Index"]
+    B --> C["저비용 저장 또는 Snapshot"]
+    C --> D["보존 기간 만료 후 삭제"]
+```
+
+##### OpenSearch 데이터 보호
+
+OpenSearch PVC만으로 충분한 백업이 되지는 않는다. 운영 환경에서는 외부 Object Storage를 사용하는 Snapshot Repository를 구성해야 한다.
+
+##### Health Check 로그 필터링
+
+실습에서는 Probe 요청 로그가 계속 적재될 수 있다. 정상적인 Health Check 로그가 대부분을 차지한다면 애플리케이션 또는 Fluent Bit에서 필터링해야 한다.
+
+다만 실패한 Probe 로그까지 제거하면 장애 분석이 어려워질 수 있으므로 정상 응답만 제외하는 정책이 필요하다.
+
+### 정리
+
+이번 실습에서는 OpenSearch와 OpenSearch Dashboards를 Helm으로 Kubernetes에 설치하고, Spring Boot 애플리케이션의 파일 로그를 Fluent Bit Sidecar로 수집했다.
+
+애플리케이션과 Fluent Bit은 `emptyDir` Volume을 공유한다. 애플리케이션은 `/var/log/app/factorial.log` 파일에 로그를 기록하고 Fluent Bit은 Tail Input으로 해당 파일을 읽는다. 수집한 로그는 다른 Namespace에 있는 OpenSearch Service의 전체 DNS 이름을 사용해 전송한다.
+
+OpenSearch Output에서는 날짜별 Index를 생성하기 위해 `logstash_format`과 `logstash_prefix`를 사용하고, OpenSearch 2.0 이상과 호환되도록 `suppress_type_name`을 활성화했다. 인증 정보는 ConfigMap에 작성하지 않고 Namespace별 Secret으로 주입했다.
+
+OpenSearch Dashboards에서는 `factorial-app-logs-*` Data View를 만들고 `@timestamp`를 시간 필드로 지정하면 여러 Pod의 로그를 한 화면에서 검색할 수 있다.
+
+이번 Sidecar 구성은 파일 기반 로그 수집 원리를 이해하는 데 적합하지만 Pod 수만큼 Fluent Bit 컨테이너가 증가한다. 신규 Kubernetes 애플리케이션에서는 표준 출력 로그와 Node 단위 DaemonSet Collector를 우선 검토하고, 파일 로그나 애플리케이션별 특수한 파싱 요구사항이 있을 때 Sidecar 방식을 선택하는 것이 좋다.
