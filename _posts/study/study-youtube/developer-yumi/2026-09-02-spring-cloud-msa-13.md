@@ -2,7 +2,7 @@
 layout: post
 bigtitle: '스프링 클라우드 MSA'
 subtitle: 스프링 클라우드 MSA 13 - 게이트웨이 지역 필터
-date: '2026-09-01 00:00:03 +0900'
+date: '2026-09-02 00:00:03 +0900'
 categories:
     - developer-yumi
 comments: true
