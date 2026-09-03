@@ -760,3 +760,716 @@ Feed Server는 게시물을 저장한 뒤 Kafka에 이벤트를 발행하고 Tim
 Kubernetes 기반 시스템에서 중요한 것은 모든 것을 클러스터 내부에 설치하는 것이 아니다. 데이터 특성, 운영 역량, 백업, 장애 복구, 네트워크, 비용을 기준으로 클러스터 경계를 결정해야 한다.
 
 또한 MSA에서는 서비스 분리만큼 데이터 소유권, 동기 호출 장애, 이벤트 중복, 최종적 일관성, 분산 로그 추적을 함께 고려해야 한다. 이러한 기준을 바탕으로 이후 단계에서 각 서비스와 Kubernetes 실행 환경을 순차적으로 구현한다.
+
+## 02. 프로젝트 개발을 위한 인프라 설정 개요
+
+### 02. 프로젝트 소스 코드와 인프라 구성 준비
+
+MSA 기반 SNS 프로젝트를 진행하려면 여러 Spring Boot 애플리케이션을 작성하는 것뿐 아니라 Kubernetes 클러스터, Container Registry, 데이터베이스, StorageClass, Redis, Kafka와 같은 인프라 환경도 함께 구성해야 한다.
+
+특히 User Server, Feed Server, Image Server, Timeline Server처럼 여러 서버를 만들면 프로젝트 생성, Gradle 설정, 컨테이너 이미지 설정, Deployment 작성과 같은 초기 작업이 반복된다.
+
+이러한 반복 작업을 줄이고 단계별 결과를 확인할 수 있도록 프로젝트는 다음 두 종류의 Git Repository로 구분하여 관리한다.
+
+- 애플리케이션별 소스 코드 Repository
+- 공통 인프라 설정 Repository
+
+```mermaid
+flowchart TD
+    A["애플리케이션 Repository"] --> B["initial 브랜치"]
+    A --> C["chapter 브랜치"]
+    A --> D["main 브랜치"]
+
+    E["인프라 Repository"] --> F["환경 구성 문서"]
+    E --> G["데이터베이스 DDL"]
+    E --> H["StorageClass와 PVC"]
+    E --> I["Kubernetes Manifest"]
+    E --> J["최종 배포 설정"]
+```
+
+#### 프로젝트 Repository 구성
+
+SNS 프로젝트는 여러 마이크로서비스로 분리되므로 서비스별 Repository가 존재할 수 있다.
+
+대표적인 애플리케이션은 다음과 같다.
+
+| Repository | 역할 |
+|---|---|
+| User Server | 회원 가입, 로그인, 사용자와 팔로우 관계 관리 |
+| Feed Server | 게시물 생성과 조회 |
+| Image Server | 이미지 업로드, 저장, 리사이징과 조회 |
+| Timeline Server | 사용자별 타임라인과 좋아요 관리 |
+| Notification | 신규 팔로워 이메일 알림 배치 |
+| Frontend | SNS 화면과 백엔드 API 연동 |
+| Infrastructure | 공통 인프라 문서와 Kubernetes 설정 관리 |
+
+각 애플리케이션 Repository에는 초기 설정만 포함된 브랜치와 단계별 완성 브랜치가 제공될 수 있다.
+
+#### 브랜치별 역할
+
+##### initial 브랜치
+
+`initial` 브랜치는 프로젝트 개발을 시작하기 위한 기본 골격을 제공한다.
+
+다음과 같은 설정은 준비되어 있지만 실제 비즈니스 기능은 거의 구현되지 않은 상태다.
+
+- Spring Boot 프로젝트 구조
+- Gradle Wrapper
+- 기본 의존성
+- 컨테이너 이미지 빌드 설정
+- 기본 패키지 구조
+- Kubernetes Deployment 초안
+- 애플리케이션 설정 파일
+
+```bash
+git clone <APPLICATION_REPOSITORY_URL>
+```
+
+```bash
+cd <APPLICATION_REPOSITORY_DIRECTORY>
+```
+
+```bash
+git branch --all
+```
+
+```bash
+git switch initial
+```
+
+실제 개발은 `initial` 브랜치를 기준으로 별도의 작업 브랜치를 만든 뒤 진행하는 것이 좋다.
+
+```bash
+git switch -c feature/chapter-01-setup
+```
+
+##### chapter 브랜치
+
+각 Chapter에서 완성되는 코드가 별도의 브랜치로 제공될 수 있다.
+
+```text
+chapter-3-1
+chapter-3-2
+chapter-7-1
+```
+
+Chapter 브랜치는 다음 용도로 활용한다.
+
+- 현재 작성한 코드와 완성 코드 비교
+- 누락된 설정 확인
+- 오탈자나 들여쓰기 오류 확인
+- 실행되지 않는 코드의 원인 분석
+- 다음 단계에서 필요한 변경 범위 확인
+
+현재 작업 내용을 유지하면서 특정 브랜치와 비교하려면 다음 명령을 사용할 수 있다.
+
+```bash
+git diff initial..chapter-3-1
+```
+
+특정 파일만 비교할 수도 있다.
+
+```bash
+git diff initial..chapter-3-1 -- build.gradle
+```
+
+```bash
+git diff initial..chapter-3-1 -- src/main
+```
+
+완성 브랜치를 그대로 덮어쓰기보다 어떤 코드와 설정이 달라졌는지 확인하는 방식이 학습에 더 도움이 된다.
+
+##### main 브랜치
+
+`main` 브랜치는 프로젝트의 최종 완성 상태를 포함한다.
+
+최종 브랜치는 전체 구성이나 완성된 API 흐름을 확인할 때 유용하지만, 프로젝트 초기부터 그대로 실행하면 각 단계에서 어떤 설정이 추가되었는지 파악하기 어려울 수 있다.
+
+따라서 다음 순서로 활용하는 것이 좋다.
+
+1. `initial` 브랜치에서 직접 구현한다.
+2. 문제가 생기면 해당 Chapter 브랜치와 비교한다.
+3. 프로젝트 전체 구성이 필요할 때 `main` 브랜치를 확인한다.
+
+#### 로컬 변경사항 보호
+
+다른 브랜치로 이동하기 전에는 현재 변경사항을 확인해야 한다.
+
+```bash
+git status
+```
+
+변경사항이 있는 상태에서 브랜치를 전환하면 충돌이 발생하거나 작업 내용이 다른 브랜치에 섞일 수 있다.
+
+작성 중인 코드는 먼저 Commit하는 것이 가장 명확하다.
+
+```bash
+git add .
+```
+
+```bash
+git commit -m "Implement chapter setup"
+```
+
+아직 Commit하기 어려운 임시 변경사항이라면 Stash를 사용할 수 있다.
+
+```bash
+git stash push -m "chapter setup in progress"
+```
+
+다시 적용하려면 다음 명령을 사용한다.
+
+```bash
+git stash pop
+```
+
+#### Amazon ECR 설정
+
+각 애플리케이션을 Kubernetes에 배포하려면 컨테이너 이미지를 생성하고 Kubernetes Node가 접근할 수 있는 Registry에 푸시해야 한다.
+
+이번 프로젝트에서는 Amazon ECR을 Container Registry로 사용한다.
+
+ECR 이미지 주소는 일반적으로 다음 형식을 가진다.
+
+```text
+<AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/<REPOSITORY_NAME>:<IMAGE_TAG>
+```
+
+예를 들면 다음과 같은 구조다.
+
+```text
+123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/feed-server:0.0.1
+```
+
+실제 계정 ID, Region, Repository 이름과 이미지 태그는 자신의 환경에 맞게 변경해야 한다.
+
+#### ECR Repository 생성
+
+AWS CLI를 사용할 수 있다면 서비스별 ECR Repository를 생성할 수 있다.
+
+```bash
+aws ecr create-repository \
+  --repository-name user-server \
+  --region ap-northeast-2
+```
+
+```bash
+aws ecr create-repository \
+  --repository-name feed-server \
+  --region ap-northeast-2
+```
+
+```bash
+aws ecr create-repository \
+  --repository-name image-server \
+  --region ap-northeast-2
+```
+
+```bash
+aws ecr create-repository \
+  --repository-name timeline-server \
+  --region ap-northeast-2
+```
+
+Repository가 이미 존재한다면 새로 생성할 필요가 없다.
+
+목록은 다음 명령으로 확인한다.
+
+```bash
+aws ecr describe-repositories \
+  --region ap-northeast-2
+```
+
+#### ECR 로그인
+
+Docker를 이용해 이미지를 푸시하려면 ECR 인증이 필요하다.
+
+```bash
+aws ecr get-login-password \
+  --region ap-northeast-2 \
+  | docker login \
+      --username AWS \
+      --password-stdin \
+      <AWS_ACCOUNT_ID>.dkr.ecr.ap-northeast-2.amazonaws.com
+```
+
+인증 Token은 영구적이지 않으므로 시간이 지나면 다시 로그인해야 할 수 있다.
+
+AWS Access Key와 Secret Access Key를 `build.gradle`, Deployment YAML이나 Git Repository에 평문으로 저장해서는 안 된다. 로컬에서는 AWS CLI Profile을 사용하고, CI/CD에서는 Workload Identity나 Jenkins Credentials와 같은 별도 인증 방식을 사용해야 한다.
+
+#### build.gradle의 이미지 주소 변경
+
+초기 프로젝트의 `build.gradle`에는 예제 ECR 주소가 포함되어 있을 수 있다. 해당 주소를 자신이 생성한 ECR Repository 주소로 변경해야 한다.
+
+먼저 기존 주소가 사용된 위치를 검색한다.
+
+```bash
+rg "dkr\.ecr|image|repository" build.gradle
+```
+
+프로젝트 전체에서 검색할 수도 있다.
+
+```bash
+rg "dkr\.ecr"
+```
+
+Gradle Jib를 사용하는 프로젝트라면 일반적으로 다음 정보가 이미지 생성 설정에 포함된다.
+
+```groovy
+def registry = providers.gradleProperty("ecrRegistry")
+        .orElse("123456789012.dkr.ecr.ap-northeast-2.amazonaws.com")
+
+def imageTag = providers.gradleProperty("imageTag")
+        .orElse(project.version.toString())
+
+jib {
+    from {
+        image = "eclipse-temurin:21-jre"
+    }
+
+    to {
+        image = "${registry.get()}/feed-server:${imageTag.get()}"
+    }
+
+    container {
+        ports = ["8080"]
+        creationTime = "USE_CURRENT_TIMESTAMP"
+    }
+}
+```
+
+계정별 ECR 주소를 소스 코드에 직접 고정하기보다 Gradle Property나 환경 변수로 주입하면 개발자별, 환경별 설정을 분리할 수 있다.
+
+```bash
+./gradlew jib \
+  -PecrRegistry=<AWS_ACCOUNT_ID>.dkr.ecr.ap-northeast-2.amazonaws.com \
+  -PimageTag=0.0.1
+```
+
+Jib 설정이 없는 프로젝트라면 Dockerfile과 `docker build`, `docker push` 방식을 사용할 수 있다.
+
+#### Deployment 이미지 주소 변경
+
+Gradle에서 푸시한 이미지와 Kubernetes Deployment가 참조하는 이미지는 정확히 일치해야 한다.
+
+다음 항목을 확인한다.
+
+- AWS Account ID
+- Region
+- ECR Repository 이름
+- 이미지 태그
+- 컨테이너 이름
+- `imagePullPolicy`
+
+프로젝트의 Deployment 파일에서 이미지 주소를 검색한다.
+
+```bash
+rg "image:" .
+```
+
+Deployment에 설정된 이미지 주소는 다음과 같은 형태가 된다.
+
+```text
+<AWS_ACCOUNT_ID>.dkr.ecr.ap-northeast-2.amazonaws.com/feed-server:0.0.1
+```
+
+Gradle은 `feed-server:0.0.2`를 푸시했는데 Deployment가 `feed-server:0.0.1`을 참조하면 이전 버전이 실행된다.
+
+반대로 Deployment가 아직 Registry에 없는 태그를 참조하면 Pod에서 `ImagePullBackOff` 또는 `ErrImagePull`이 발생한다.
+
+#### 이미지 태그 관리
+
+동일한 `latest` 태그를 반복해서 덮어쓰는 방식은 피하는 것이 좋다.
+
+```text
+feed-server:latest
+```
+
+같은 태그를 재사용하면 다음 문제가 발생한다.
+
+- 어떤 소스 코드가 배포되었는지 추적하기 어렵다.
+- Deployment의 Pod Template이 변경되지 않을 수 있다.
+- Node마다 서로 다른 시점의 이미지를 사용할 가능성이 생긴다.
+- 이전 이미지로 정확하게 롤백하기 어렵다.
+
+다음과 같이 고유한 태그를 사용하는 것이 좋다.
+
+```text
+feed-server:0.0.1
+feed-server:chapter-3-1
+feed-server:a84b1d4c2e10
+feed-server:a84b1d4c2e10-25
+```
+
+Git Commit SHA와 CI Build Number를 함께 사용하면 소스 코드, 빌드 결과와 배포 이미지를 연결하기 쉽다.
+
+#### 빌드 설정과 Deployment 일치 여부 확인
+
+이미지 배포 흐름은 다음과 같다.
+
+```mermaid
+flowchart LR
+    A["Spring Boot 소스 코드"] --> B["Gradle 빌드"]
+    B --> C["컨테이너 이미지 생성"]
+    C --> D["Amazon ECR Push"]
+    D --> E["Deployment image 설정"]
+    E --> F["Kubernetes Pod 생성"]
+```
+
+다음 명령으로 실제 Deployment에 적용된 이미지를 확인할 수 있다.
+
+```bash
+kubectl get deployment feed-server \
+  --namespace sns \
+  --output jsonpath="{.spec.template.spec.containers[*].image}"
+```
+
+실행 중인 Pod의 이미지도 확인한다.
+
+```bash
+kubectl get pods \
+  --namespace sns \
+  --selector app=feed-server \
+  --output jsonpath="{range .items[*]}{.metadata.name}{'\t'}{.spec.containers[*].image}{'\n'}{end}"
+```
+
+실행 중인 이미지 Digest까지 확인하려면 다음 명령을 사용할 수 있다.
+
+```bash
+kubectl get pods \
+  --namespace sns \
+  --selector app=feed-server \
+  --output jsonpath="{range .items[*]}{.metadata.name}{'\t'}{.status.containerStatuses[*].imageID}{'\n'}{end}"
+```
+
+#### 인프라 Repository 구성
+
+공통 인프라 Repository에는 프로젝트 실행에 필요한 다음 자료가 포함될 수 있다.
+
+- 클러스터 환경 구성 순서
+- Namespace
+- 데이터베이스 DDL
+- StorageClass
+- PersistentVolumeClaim
+- Redis와 Kafka 설치 설정
+- ConfigMap과 Secret 예제
+- Deployment와 Service
+- Ingress
+- Job과 CronJob
+- Helm Values
+- 최종 배포 Manifest
+
+```mermaid
+flowchart TD
+    A["인프라 구성 문서"] --> B["Kubernetes Cluster"]
+    C["데이터베이스 DDL"] --> D["MySQL"]
+    E["StorageClass와 PVC"] --> F["Image Server Storage"]
+    G["Redis와 Kafka 설정"] --> B
+    H["Deployment와 Service"] --> B
+    I["Ingress 설정"] --> B
+```
+
+인프라 설정은 작성 순서와 의존 관계가 중요하다. 파일이 모두 존재한다고 해서 임의의 순서로 한 번에 적용해도 되는 것은 아니다.
+
+#### 권장 인프라 구성 순서
+
+다음 순서로 환경을 구성하는 것이 이해하기 쉽다.
+
+1. AWS CLI와 `kubectl`, Helm을 준비한다.
+2. Kubernetes 클러스터 연결을 확인한다.
+3. Namespace를 생성한다.
+4. ECR Repository를 생성한다.
+5. 외부 MySQL과 SMTP 환경을 준비한다.
+6. 데이터베이스 DDL을 적용한다.
+7. StorageClass와 PVC를 생성한다.
+8. Redis와 Kafka를 설치한다.
+9. ConfigMap과 Secret을 생성한다.
+10. 애플리케이션 이미지를 ECR에 푸시한다.
+11. Deployment와 Service를 적용한다.
+12. Ingress와 외부 접근 경로를 구성한다.
+13. 배치 프로그램을 Job 또는 CronJob으로 배포한다.
+14. 로그와 Metric을 확인한다.
+
+```mermaid
+flowchart TD
+    A["클러스터 연결 확인"] --> B["Namespace 생성"]
+    B --> C["ECR Repository 생성"]
+    C --> D["MySQL과 SMTP 준비"]
+    D --> E["DDL 적용"]
+    E --> F["StorageClass와 PVC 적용"]
+    F --> G["Redis와 Kafka 설치"]
+    G --> H["ConfigMap과 Secret 적용"]
+    H --> I["이미지 Build와 Push"]
+    I --> J["Deployment와 Service 적용"]
+    J --> K["Ingress 적용"]
+    K --> L["동작 확인"]
+```
+
+#### 데이터베이스 DDL 적용
+
+인프라 Repository에 포함된 DDL은 User Server, Feed Server, Notification Batch에서 사용할 테이블을 생성한다.
+
+적용 전에는 반드시 다음 항목을 확인해야 한다.
+
+- 대상 MySQL Host
+- Port
+- Database 또는 Schema
+- 실행 계정
+- 계정 권한
+- DDL의 재실행 가능 여부
+- 기존 테이블과 데이터 존재 여부
+
+다음과 같이 대상 정보를 명확하게 지정해 실행할 수 있다.
+
+```bash
+mysql \
+  --host="<MYSQL_HOST>" \
+  --port=3306 \
+  --user="<MYSQL_USER>" \
+  --password \
+  "<DATABASE_NAME>" \
+  < schema.sql
+```
+
+DDL은 파괴적인 변경을 포함할 수 있으므로 운영 데이터베이스에 바로 실행해서는 안 된다. 개발용 데이터베이스에서 먼저 검증하고 적용 전 백업과 복구 방법을 확인해야 한다.
+
+#### StorageClass 확인
+
+Image Server가 공유 파일 시스템을 사용한다면 해당 클러스터에서 `ReadWriteMany`를 지원하는 StorageClass가 필요할 수 있다.
+
+StorageClass 목록을 확인한다.
+
+```bash
+kubectl get storageclasses
+```
+
+PVC 상태를 확인한다.
+
+```bash
+kubectl get persistentvolumeclaims \
+  --all-namespaces
+```
+
+PVC가 `Pending` 상태라면 다음 내용을 확인한다.
+
+```bash
+kubectl describe persistentvolumeclaim <PVC_NAME> \
+  --namespace sns
+```
+
+주요 원인은 다음과 같다.
+
+- StorageClass 이름이 실제 환경과 다르다.
+- CSI Driver가 설치되지 않았다.
+- 요청한 Access Mode를 지원하지 않는다.
+- 동적 프로비저닝 권한이 부족하다.
+- 스토리지 백엔드의 네트워크 연결이 준비되지 않았다.
+
+StorageClass 이름은 클라우드와 클러스터 구성에 따라 달라질 수 있으므로 제공된 값을 그대로 적용하기보다 현재 환경에 맞게 수정해야 한다.
+
+#### Kubernetes Manifest 적용 전 확인
+
+인프라 Repository의 Deployment나 Service 파일에는 작성자의 계정과 환경에 맞춘 값이 포함되어 있을 수 있다.
+
+적용 전 다음 문자열을 검색한다.
+
+```bash
+rg "dkr\.ecr|amazonaws|storageClassName|host:|password|secret" .
+```
+
+특히 다음 값을 자신의 환경에 맞게 변경해야 한다.
+
+- ECR 주소
+- AWS Region
+- Namespace
+- StorageClass 이름
+- MySQL Host
+- Redis와 Kafka 주소
+- SMTP Host
+- Ingress Hostname
+- Secret 이름
+- 이미지 태그
+
+Secret 값을 Manifest에 직접 입력해서 Git에 Commit하지 않도록 주의해야 한다.
+
+#### Manifest 문법 검증
+
+클러스터에 실제 반영하기 전에 Client Dry Run으로 YAML 문법을 확인한다.
+
+```bash
+kubectl apply \
+  --dry-run=client \
+  --filename <MANIFEST_PATH>
+```
+
+Kubernetes API Server를 통한 검증도 수행할 수 있다.
+
+```bash
+kubectl apply \
+  --dry-run=server \
+  --filename <MANIFEST_PATH>
+```
+
+`--dry-run=client`는 기본 YAML 구조를 확인하지만 클러스터에 설치된 CRD, Admission Policy, RBAC, 현재 API 지원 여부까지 모두 검증하지는 않는다.
+
+#### 적용 후 상태 확인
+
+Kubernetes 객체를 적용한 뒤에는 명령이 성공했다는 결과만 확인해서는 안 된다.
+
+Deployment 상태를 확인한다.
+
+```bash
+kubectl get deployments \
+  --namespace sns
+```
+
+Pod 상태를 확인한다.
+
+```bash
+kubectl get pods \
+  --namespace sns \
+  --output wide
+```
+
+Service를 확인한다.
+
+```bash
+kubectl get services \
+  --namespace sns
+```
+
+Rollout 상태를 확인한다.
+
+```bash
+kubectl rollout status deployment/feed-server \
+  --namespace sns \
+  --timeout=5m
+```
+
+문제가 발생하면 Event와 로그를 확인한다.
+
+```bash
+kubectl get events \
+  --namespace sns \
+  --sort-by=.metadata.creationTimestamp
+```
+
+```bash
+kubectl logs \
+  --namespace sns \
+  --selector app=feed-server \
+  --all-containers=true \
+  --prefix=true \
+  --tail=200
+```
+
+#### 초기 코드 활용 시 주의사항
+
+##### 버전 차이
+
+완성 브랜치의 Java, Spring Boot, Gradle, 라이브러리 버전이 현재 실습 환경과 다르면 코드가 그대로 실행되지 않을 수 있다.
+
+다음 파일을 먼저 확인한다.
+
+```text
+build.gradle
+settings.gradle
+gradle/wrapper/gradle-wrapper.properties
+Dockerfile
+application.yaml
+```
+
+##### 환경별 값 혼합
+
+소스 코드의 기본값과 Kubernetes ConfigMap 값, 환경 변수가 서로 다르면 예상하지 못한 설정이 적용될 수 있다.
+
+Spring Boot 설정의 일반적인 우선순위를 고려해 실제 Pod 환경 변수를 확인해야 한다.
+
+```bash
+kubectl exec \
+  --namespace sns \
+  deployment/feed-server \
+  -- \
+  printenv
+```
+
+출력에는 Credential이 포함될 수 있으므로 운영 환경에서 전체 결과를 로그나 문서에 남기지 않아야 한다.
+
+##### 완료 브랜치의 무조건적인 사용
+
+완성 브랜치는 참고용 결과물이다. 현재 Chapter에서 아직 생성하지 않은 Redis, Kafka, Secret이나 Service를 참조할 수 있으므로 중간 브랜치만 단독으로 실행하면 실패할 수 있다.
+
+해당 브랜치가 요구하는 인프라 의존성을 함께 확인해야 한다.
+
+##### 개인 환경 정보 Commit
+
+다음 정보는 Git에 Commit하지 않는다.
+
+- AWS Access Key
+- AWS Secret Access Key
+- MySQL 비밀번호
+- SMTP 인증 정보
+- JWT Secret
+- 개인 ECR 인증 Token
+- 실제 운영 도메인 인증서
+- 개인 `kubeconfig`
+
+이미 Commit했다면 파일에서 값을 삭제하는 것만으로 충분하지 않을 수 있다. Credential을 폐기하고 새로 발급해야 한다.
+
+#### 문제 발생 시 점검 순서
+
+인프라나 애플리케이션이 실행되지 않을 때는 다음 순서로 범위를 좁힌다.
+
+1. 현재 Git 브랜치가 올바른지 확인한다.
+2. 로컬 변경사항과 완성 브랜치의 차이를 확인한다.
+3. ECR Repository와 이미지 태그를 확인한다.
+4. Kubernetes Deployment의 이미지 주소를 확인한다.
+5. ConfigMap과 Secret 이름을 확인한다.
+6. Service DNS와 Namespace를 확인한다.
+7. PVC와 StorageClass 상태를 확인한다.
+8. Pod Event를 확인한다.
+9. 애플리케이션과 Sidecar 로그를 확인한다.
+10. 외부 MySQL, SMTP 네트워크 연결을 확인한다.
+
+```mermaid
+flowchart TD
+    A["애플리케이션 실행 실패"] --> B["Git 브랜치와 코드 확인"]
+    B --> C["이미지 Build와 ECR Push 확인"]
+    C --> D["Deployment 이미지 확인"]
+    D --> E["ConfigMap과 Secret 확인"]
+    E --> F["Service와 Namespace 확인"]
+    F --> G["PVC와 StorageClass 확인"]
+    G --> H["Pod Event와 로그 확인"]
+    H --> I["외부 시스템 연결 확인"]
+```
+
+#### 프로젝트 시작 전 체크리스트
+
+- 애플리케이션 Repository를 Clone했다.
+- `initial` 브랜치에서 개발을 시작했다.
+- 단계별 `chapter` 브랜치와 `main` 브랜치의 역할을 확인했다.
+- 자신의 AWS Account와 Region을 확인했다.
+- 서비스별 ECR Repository를 생성했다.
+- ECR 인증이 정상적으로 동작한다.
+- `build.gradle`의 이미지 주소를 변경했다.
+- Deployment의 이미지 주소를 동일하게 변경했다.
+- `latest` 대신 고유한 이미지 태그를 사용한다.
+- 인프라 Repository의 구성 순서를 확인했다.
+- DDL을 적용할 대상 데이터베이스를 확인했다.
+- StorageClass와 CSI Driver 지원 여부를 확인했다.
+- ConfigMap과 Secret을 구분했다.
+- Credential이 Git에 포함되지 않았는지 확인했다.
+- Manifest를 Dry Run으로 검증했다.
+- Deployment, Pod, Service와 PVC 상태를 확인할 명령을 준비했다.
+
+### 정리
+
+MSA 기반 SNS 프로젝트는 여러 Spring Boot 서버와 Kubernetes 인프라를 함께 구성해야 하므로 초기 설정과 반복 작업이 많다. 이를 효율적으로 진행하기 위해 애플리케이션별 Repository와 공통 인프라 Repository를 구분해 활용한다.
+
+애플리케이션 Repository의 `initial` 브랜치는 개발을 시작하기 위한 기본 환경을 제공하고, `chapter` 브랜치는 단계별 완성 상태를 확인하는 데 사용한다. `main` 브랜치는 전체 프로젝트의 최종 구성을 확인하기 위한 브랜치다.
+
+프로젝트를 시작할 때는 `build.gradle`과 Kubernetes Deployment에 포함된 ECR 주소를 자신의 AWS 환경에 맞게 변경해야 한다. 두 설정의 Repository와 이미지 태그가 일치하지 않으면 이전 이미지가 실행되거나 `ImagePullBackOff`가 발생할 수 있다.
+
+인프라 Repository에는 DDL, StorageClass, PVC, Redis, Kafka와 최종 Kubernetes Manifest가 포함될 수 있다. 이러한 파일은 그대로 적용하기보다 Namespace, ECR, StorageClass, 외부 서비스 주소와 Secret을 현재 환경에 맞게 검토해야 한다.
+
+완성된 코드는 정답을 복사하기 위한 자료라기보다 현재 구현과 비교해 누락된 설정과 오류를 찾기 위한 기준으로 활용하는 것이 좋다. 각 단계를 직접 구성하고 문제가 발생했을 때 브랜치 차이와 인프라 문서를 함께 확인하면 프로젝트의 전체 실행 흐름을 더 정확하게 이해할 수 있다.
