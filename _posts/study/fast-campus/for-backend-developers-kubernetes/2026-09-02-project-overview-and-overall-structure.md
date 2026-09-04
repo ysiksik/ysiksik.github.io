@@ -1473,3 +1473,607 @@ MSA 기반 SNS 프로젝트는 여러 Spring Boot 서버와 Kubernetes 인프라
 인프라 Repository에는 DDL, StorageClass, PVC, Redis, Kafka와 최종 Kubernetes Manifest가 포함될 수 있다. 이러한 파일은 그대로 적용하기보다 Namespace, ECR, StorageClass, 외부 서비스 주소와 Secret을 현재 환경에 맞게 검토해야 한다.
 
 완성된 코드는 정답을 복사하기 위한 자료라기보다 현재 구현과 비교해 누락된 설정과 오류를 찾기 위한 기준으로 활용하는 것이 좋다. 각 단계를 직접 구성하고 문제가 발생했을 때 브랜치 차이와 인프라 문서를 함께 확인하면 프로젝트의 전체 실행 흐름을 더 정확하게 이해할 수 있다.
+
+## 03. AWS와 EKS를 이용한 쿠버네티스 클러스터 설정
+
+Amazon EKS는 AWS에서 제공하는 관리형 Kubernetes 서비스다. Kubernetes Control Plane을 AWS가 관리하므로 사용자는 API Server나 etcd 같은 핵심 구성 요소를 직접 설치하고 운영하지 않아도 된다.
+
+이번 실습에서는 이후에 개발할 SNS 백엔드 애플리케이션을 배포할 수 있도록 다음 환경을 구성한다.
+
+- EKS 클러스터 생성
+- EKS 클러스터와 Managed Node Group에서 사용할 IAM Role 생성
+- EC2 기반 Worker Node 구성
+- AWS CLI 자격 증명 설정
+- 로컬 `kubectl`과 EKS 클러스터 연결
+- Node와 Kubernetes 시스템 Pod 상태 확인
+
+MySQL, Redis, Kafka와 같은 데이터 인프라는 클러스터 생성 이후 단계적으로 구성한다.
+
+#### 전체 실습 구성
+
+```mermaid
+flowchart TD
+    A["AWS 계정 및 IAM 자격 증명 준비"] --> B["EKS Cluster IAM Role 생성"]
+    B --> C["EKS Node IAM Role 생성"]
+    C --> D["Amazon EKS 클러스터 생성"]
+    D --> E["Managed Node Group 생성"]
+    E --> F["AWS CLI 자격 증명 설정"]
+    F --> G["kubeconfig 업데이트"]
+    G --> H["kubectl로 클러스터 접속 확인"]
+    H --> I["애플리케이션과 데이터 인프라 구성"]
+```
+
+#### Amazon EKS의 기본 구조
+
+EKS 클러스터를 생성할 때는 Control Plane과 Worker Node를 구분해서 이해해야 한다.
+
+```mermaid
+flowchart TB
+    U["개발자 또는 CI/CD 시스템"] --> API["EKS Kubernetes API Server"]
+
+    subgraph CP["AWS 관리 영역"]
+        API --> ETCD["etcd"]
+        API --> CM["Controller Manager"]
+        API --> SCH["Scheduler"]
+    end
+
+    API --> NG["Managed Node Group"]
+
+    subgraph DATA["사용자 관리 영역"]
+        NG --> N1["EC2 Worker Node 1"]
+        NG --> N2["EC2 Worker Node 2"]
+        N1 --> P1["Application Pod"]
+        N2 --> P2["Application Pod"]
+    end
+```
+
+EKS 클러스터를 생성했다고 해서 애플리케이션을 바로 실행할 수 있는 것은 아니다. 클러스터 생성 직후에는 Kubernetes API를 제공하는 Control Plane만 준비된 상태다.
+
+Pod를 실행하려면 다음 중 하나가 추가로 필요하다.
+
+- EC2 기반 Managed Node Group
+- 사용자가 직접 관리하는 Self-managed Node
+- AWS Fargate Profile
+- 별도의 자동 프로비저닝 환경
+
+이번 실습에서는 EKS가 EC2 인스턴스의 생성과 교체를 관리하는 Managed Node Group을 사용한다.
+
+#### 사전 준비 사항
+
+실습을 시작하기 전에 다음 도구와 환경이 필요하다.
+
+| 항목 | 용도 |
+|---|---|
+| AWS 계정 | EKS, EC2, VPC, IAM 리소스 생성 |
+| AWS CLI v2 | 로컬에서 AWS API 호출 |
+| kubectl | Kubernetes API Server에 명령 전달 |
+| IAM 자격 증명 | AWS CLI와 EKS 인증 |
+| VPC와 Subnet | Control Plane과 Worker Node 네트워크 구성 |
+
+설치 여부는 다음 명령으로 확인할 수 있다.
+
+```shell
+aws --version
+kubectl version --client
+```
+
+AWS CLI는 `aws-cli/2.x`, kubectl은 클라이언트 버전 정보가 출력되면 정상적으로 설치된 것이다.
+
+또한 AWS Console 오른쪽 상단에서 리전을 서울 리전인 `ap-northeast-2`로 선택한다. EKS, EC2, VPC 같은 대부분의 AWS 리소스는 리전 단위로 관리되므로 서로 다른 리전에 생성하면 Console에서 리소스가 보이지 않거나 연결할 수 없다.
+
+#### AWS 계정과 IAM 사용자 보안
+
+AWS 루트 사용자는 계정의 모든 리소스와 결제 정보에 접근할 수 있다. 따라서 루트 사용자는 계정 초기 설정과 복구 용도로만 사용하고, 일상적인 인프라 작업에는 사용하지 않는 것이 원칙이다.
+
+권장되는 인증 방식은 IAM Identity Center 또는 조직의 연동 인증을 통한 임시 자격 증명이다. 실습을 위해 IAM 사용자를 생성해야 한다면 다음 원칙을 적용해야 한다.
+
+- 루트 사용자와 IAM 사용자 모두 MFA를 활성화한다.
+- Console 비밀번호를 다른 사람에게 전달하지 않는다.
+- Access Key를 소스 코드나 Git 저장소에 저장하지 않는다.
+- 실습이 끝난 뒤 사용하지 않는 Access Key를 비활성화하거나 삭제한다.
+- 운영 환경에서는 `AdministratorAccess` 대신 필요한 권한만 부여한다.
+- 다른 사람이 사용할 계정이라면 최초 로그인 시 비밀번호 변경을 요구한다.
+
+`AdministratorAccess`는 실습 과정에서 발생하는 권한 문제를 줄일 수 있지만 AWS 계정 전체에 매우 강한 권한을 부여한다. 따라서 개인 실습 계정에서 제한적으로 사용하고, 운영 환경에서는 EKS와 관련된 최소 권한 정책을 별도로 설계해야 한다.
+
+#### EKS에서 사용하는 IAM Role 구분
+
+이번 구성에서는 사람이나 AWS CLI가 사용하는 자격 증명과 EKS가 사용하는 IAM Role을 구분해야 한다.
+
+```mermaid
+flowchart LR
+    USER["관리자 또는 AWS CLI"] --> EKSAPI["Amazon EKS API"]
+    EKSAPI --> CR["EKS Cluster IAM Role"]
+    NG["Managed Node Group"] --> NR["EKS Node IAM Role"]
+    NODE["EC2 Worker Node"] --> ECR["Amazon ECR"]
+    NODE --> EKSCP["EKS Control Plane"]
+```
+
+| 구분 | 신뢰 주체 | 주요 용도 |
+|---|---|---|
+| 관리자 자격 증명 | 사람 또는 CI/CD 시스템 | 클러스터와 Node Group 생성 및 관리 |
+| EKS Cluster IAM Role | `eks.amazonaws.com` | EKS가 AWS 리소스를 관리할 때 사용 |
+| EKS Node IAM Role | `ec2.amazonaws.com` | EC2 Node가 EKS와 ECR에 접근할 때 사용 |
+| VPC CNI IAM Role | Kubernetes ServiceAccount | VPC CNI가 네트워크 인터페이스를 관리할 때 사용 |
+
+사람이 사용하는 IAM 사용자와 EKS Cluster IAM Role은 서로 다른 목적을 가진다. IAM Role은 비밀번호로 로그인하는 계정이 아니라 AWS 서비스나 워크로드가 권한을 위임받기 위한 객체다.
+
+#### EKS Cluster IAM Role 생성
+
+EKS Control Plane이 AWS 리소스를 관리할 때 사용할 IAM Role을 생성한다.
+
+AWS Console에서 다음 순서로 이동한다.
+
+1. IAM 서비스로 이동한다.
+2. `Roles` 메뉴에서 `Create role`을 선택한다.
+3. 신뢰할 수 있는 엔터티로 `AWS service`를 선택한다.
+4. 사용 사례에서 `EKS`와 `EKS - Cluster`를 선택한다.
+5. 권한 정책으로 `AmazonEKSClusterPolicy`가 포함되었는지 확인한다.
+6. Role 이름을 `eks-cluster-role`로 지정한다.
+7. Role을 생성한다.
+
+신뢰 정책의 핵심 구조는 다음과 같다.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "eks.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+```
+
+- `Principal`은 Role을 사용할 수 있는 주체를 나타낸다.
+- `eks.amazonaws.com`은 EKS 서비스가 이 Role을 사용한다는 의미다.
+- `sts:AssumeRole`은 EKS가 Role을 위임받을 수 있도록 허용한다.
+- `AmazonEKSClusterPolicy`는 EKS가 클러스터와 관련된 AWS 리소스를 관리할 수 있도록 한다.
+
+Cluster IAM Role에는 EKS가 실제로 필요로 하는 권한만 부여해야 하며, 일반 사용자를 위한 `AdministratorAccess`를 연결해서는 안 된다. 자세한 역할 구성은 [Amazon EKS cluster IAM role](https://docs.aws.amazon.com/eks/latest/userguide/cluster-iam-role.html)에서 확인할 수 있다.
+
+#### EKS Node IAM Role 생성
+
+Managed Node Group의 EC2 인스턴스가 EKS Control Plane에 연결하고 ECR에서 이미지를 가져오려면 별도의 IAM Role이 필요하다.
+
+다음 순서로 Role을 생성한다.
+
+1. IAM의 `Roles` 메뉴에서 `Create role`을 선택한다.
+2. 신뢰할 수 있는 엔터티로 `AWS service`를 선택한다.
+3. 사용 사례에서 `EC2`를 선택한다.
+4. 다음 정책을 연결한다.
+5. Role 이름을 `eks-node`로 지정한다.
+6. Role을 생성한다.
+
+기본적으로 필요한 정책은 다음과 같다.
+
+- `AmazonEKSWorkerNodePolicy`
+- `AmazonEC2ContainerRegistryPullOnly`
+
+Node Role의 신뢰 정책은 다음과 같다.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "ec2.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+```
+
+`AmazonEKSWorkerNodePolicy`는 Node가 EKS Control Plane과 통신하는 데 필요한 권한을 제공한다. `AmazonEC2ContainerRegistryPullOnly`는 Amazon ECR에 저장된 컨테이너 이미지를 가져올 수 있도록 한다.
+
+VPC CNI가 네트워크 인터페이스와 Pod IP를 관리하려면 추가 권한이 필요하다. 단순 실습에서는 `AmazonEKS_CNI_Policy`를 Node Role에 연결할 수 있지만, 운영 환경에서는 VPC CNI의 `aws-node` ServiceAccount에 전용 IAM Role을 연결하는 구성이 권장된다. 이렇게 해야 Node에서 실행되는 모든 워크로드에 불필요한 네트워크 관리 권한이 노출되지 않는다.
+
+#### AWS CLI 자격 증명 설정
+
+AWS CLI가 어느 계정과 리전을 대상으로 명령을 실행할지 설정한다. 기존 설정을 덮어쓰지 않도록 별도의 프로파일을 사용하는 것이 안전하다.
+
+IAM Identity Center를 사용한다면 다음과 같이 구성한다.
+
+```shell
+aws configure sso --profile sns-admin
+```
+
+실습용 IAM Access Key를 사용한다면 다음 명령을 실행한다.
+
+```shell
+aws configure --profile sns-admin
+```
+
+명령을 실행하면 다음 값을 입력한다.
+
+```text
+AWS Access Key ID: 발급받은 Access Key
+AWS Secret Access Key: 발급받은 Secret Access Key
+Default region name: ap-northeast-2
+Default output format: json
+```
+
+Secret Access Key는 생성 시점에만 전체 값을 확인할 수 있다. 분실했다면 기존 키를 다시 확인하는 것이 아니라 새로운 Access Key를 발급하고 이전 키를 폐기해야 한다.
+
+설정한 자격 증명이 올바른 계정을 가리키는지 확인한다.
+
+```shell
+aws sts get-caller-identity --profile sns-admin
+```
+
+정상적으로 설정됐다면 다음과 같은 계정 및 IAM 정보가 출력된다.
+
+```json
+{
+  "UserId": "EXAMPLEUSERID",
+  "Account": "123456789012",
+  "Arn": "arn:aws:iam::123456789012:user/infra-admin"
+}
+```
+
+여기서 가장 중요한 값은 `Account`와 `Arn`이다. 의도하지 않은 AWS 계정으로 리소스를 생성하는 실수를 방지하려면 클러스터 생성 전에 반드시 확인해야 한다.
+
+#### EKS 클러스터 생성
+
+AWS Console에서 Amazon EKS 서비스로 이동하고 `Clusters` 메뉴에서 클러스터 생성을 시작한다.
+
+##### 기본 설정
+
+다음과 같이 기본 정보를 입력한다.
+
+| 설정 | 실습 값 | 설명 |
+|---|---|---|
+| Cluster name | `sns-cluster` | EKS 클러스터 이름 |
+| Kubernetes version | 현재 지원되는 버전 | Control Plane의 Kubernetes 버전 |
+| Cluster service role | `eks-cluster-role` | EKS가 사용할 IAM Role |
+
+Kubernetes 버전은 특정 버전을 무조건 선택하지 말고, 생성 시점에 서울 리전에서 지원되는 버전 중 애플리케이션과 Add-on의 호환성이 검증된 버전을 선택한다. 오래된 버전은 표준 지원이 종료되거나 추가 비용이 발생할 수 있다.
+
+##### 클러스터 접근 설정
+
+신규 클러스터에서는 EKS Access Entry 기반 인증을 우선 고려한다. 기존 `aws-auth` ConfigMap은 더 이상 신규 구성에 권장되는 중심 방식이 아니다.
+
+접근 모드는 일반적으로 다음 중 하나를 선택한다.
+
+| 모드 | 설명 |
+|---|---|
+| EKS API | Access Entry만 사용 |
+| EKS API and ConfigMap | Access Entry와 기존 `aws-auth` 방식 병행 |
+| ConfigMap | 기존 호환성을 위한 방식 |
+
+새로운 환경이라면 `EKS API`가 가장 단순하다. 기존 자동화 도구가 `aws-auth` ConfigMap을 사용한다면 마이그레이션 기간 동안 `EKS API and ConfigMap`을 선택할 수 있다. 자세한 차이는 [EKS Access Entries](https://docs.aws.amazon.com/eks/latest/userguide/access-entries.html)에서 확인할 수 있다.
+
+클러스터 생성자에게 관리자 권한을 자동으로 부여하는 옵션은 실습에서는 편리하지만, 운영 환경에서는 관리자 Role과 배포 Role을 분리하고 Access Entry를 통해 최소 권한을 부여해야 한다.
+
+##### VPC와 Subnet 설정
+
+빠른 실습에서는 Default VPC와 기본 Subnet을 선택할 수 있다. 그러나 Default VPC는 네트워크 구조가 단순하고 접근 범위가 넓어 운영 환경에는 적합하지 않다.
+
+운영 환경에서는 일반적으로 다음 구조를 사용한다.
+
+```mermaid
+flowchart TB
+    INTERNET["Internet"] --> IGW["Internet Gateway"]
+    IGW --> PUB1["Public Subnet AZ-A"]
+    IGW --> PUB2["Public Subnet AZ-B"]
+    PUB1 --> NAT1["NAT Gateway"]
+    PUB2 --> NAT2["NAT Gateway"]
+    NAT1 --> PRI1["Private Subnet AZ-A"]
+    NAT2 --> PRI2["Private Subnet AZ-B"]
+    PRI1 --> N1["EKS Worker Node"]
+    PRI2 --> N2["EKS Worker Node"]
+```
+
+- Node는 Private Subnet에 배치한다.
+- 외부 Load Balancer만 Public Subnet에 배치한다.
+- 최소 두 개 이상의 가용 영역을 사용한다.
+- Security Group의 인바운드와 아웃바운드 규칙을 필요한 범위로 제한한다.
+- NAT Gateway 비용이 부담되는 실습 환경에서는 구조를 단순화하되 외부 노출 범위를 확인한다.
+
+##### Kubernetes API Endpoint 설정
+
+실습에서는 로컬 PC에서 `kubectl`로 접속해야 하므로 Public Endpoint와 Private Endpoint를 함께 활성화하면 편리하다.
+
+다만 Public Endpoint를 전체 인터넷에 개방해서는 안 된다. 가능하면 Public Access CIDR을 현재 사용 중인 공인 IP로 제한한다.
+
+| 구성 | 적합한 환경 |
+|---|---|
+| Public Endpoint | 간단한 실습과 외부 관리 환경 |
+| Public and Private Endpoint | 외부 관리와 VPC 내부 통신을 함께 사용 |
+| Private Endpoint | VPN, Direct Connect, Bastion 등이 있는 운영 환경 |
+
+Private Endpoint만 활성화하면 VPC 외부의 로컬 PC에서는 직접 접근할 수 없다. 이 경우 VPN, Bastion Host 또는 VPC 내부 CI/CD Runner가 필요하다.
+
+##### Control Plane 로깅
+
+EKS는 다음 Control Plane 로그를 CloudWatch Logs로 전송할 수 있다.
+
+- API Server
+- Audit
+- Authenticator
+- Controller Manager
+- Scheduler
+
+비용을 줄이기 위한 단기 실습에서는 비활성화할 수 있지만, 운영 환경에서는 인증 실패, 권한 문제, 리소스 변경 이력과 장애를 추적하기 위해 활성화하는 것이 좋다.
+
+Managed Prometheus는 별도의 모니터링 아키텍처가 필요한 기능이다. 이번 실습에서는 필수 항목이 아니므로 활성화하지 않아도 된다.
+
+##### EKS Add-on 선택
+
+Console에서 클러스터를 생성하면 일반적으로 다음 핵심 Add-on을 함께 구성할 수 있다.
+
+| Add-on | 역할 |
+|---|---|
+| Amazon VPC CNI | Pod에 VPC IP 할당 |
+| CoreDNS | 클러스터 내부 DNS 제공 |
+| kube-proxy | Service 네트워크 규칙 관리 |
+
+Add-on 버전은 선택한 Kubernetes 버전과 호환되는 버전을 사용한다. 처음에는 Console이 제안하는 호환 버전을 선택하고, 이후 업그레이드 시 Kubernetes와 Add-on 버전을 함께 검증해야 한다.
+
+PersistentVolume으로 Amazon EBS를 사용할 계획이라면 Amazon EBS CSI Driver Add-on도 추가해야 한다. 해당 구성은 StorageClass와 PVC를 설정할 때 함께 다룬다.
+
+#### 클러스터 생성 상태 확인
+
+설정을 검토한 후 클러스터를 생성한다. 생성에는 몇 분 이상의 시간이 걸릴 수 있다.
+
+클러스터 상태가 `ACTIVE`가 되면 Kubernetes Control Plane을 사용할 수 있다. 하지만 아직 Managed Node Group을 생성하지 않았다면 Pod를 배치할 Worker Node는 존재하지 않는다.
+
+AWS CLI로도 상태를 확인할 수 있다.
+
+```shell
+aws eks describe-cluster \
+  --region ap-northeast-2 \
+  --name sns-cluster \
+  --profile sns-admin \
+  --query "cluster.status" \
+  --output text
+```
+
+정상적으로 생성됐다면 다음 값이 출력된다.
+
+```text
+ACTIVE
+```
+
+#### Managed Node Group 생성
+
+클러스터 상세 화면의 `Compute` 메뉴에서 Managed Node Group을 추가한다.
+
+##### Node Group 기본 설정
+
+| 설정 | 실습 값 | 설명 |
+|---|---|---|
+| Node Group name | `sns-node` | Node Group 식별 이름 |
+| Node IAM Role | `eks-node` | EC2 Worker Node의 IAM Role |
+| Capacity type | On-Demand | 안정적인 실습을 위한 과금 방식 |
+| Instance type | `t3.medium` | 실습용 범용 인스턴스 |
+| Desired size | `2` | 최초 생성할 Node 수 |
+| Minimum size | `2` | 축소 가능한 최소 Node 수 |
+| Maximum size | `2` | 확장 가능한 최대 Node 수 |
+
+강의 흐름을 그대로 재현하는 고정된 실습 환경에서는 최소, 희망, 최대 크기를 모두 2로 지정할 수 있다. 다만 이렇게 설정하면 Cluster Autoscaler나 Karpenter가 Node를 추가할 수 없다.
+
+자동 확장까지 고려한다면 다음과 같이 구성할 수 있다.
+
+```text
+Minimum size: 2
+Desired size: 2
+Maximum size: 4
+```
+
+`t3.medium`은 버스트 가능한 2 vCPU, 4GiB 메모리 계열로 기본 애플리케이션 실습에는 사용할 수 있다. 그러나 Redis, Kafka, 로그 수집기와 여러 Spring Boot 애플리케이션을 동시에 실행하면 메모리가 부족해질 가능성이 높다.
+
+특히 EC2의 전체 메모리를 Pod가 모두 사용할 수 있는 것은 아니다. kubelet과 운영체제, Kubernetes 시스템 구성 요소가 일부 자원을 사용하므로 실제 `Allocatable` 자원은 인스턴스 전체 용량보다 작다.
+
+##### Node 네트워크 설정
+
+Node Group의 Subnet은 클러스터를 생성할 때 지정한 VPC 내부에서 선택한다. 실습에서는 기본 Subnet을 사용할 수 있지만 운영 환경의 Worker Node는 Private Subnet에 배치하는 것이 일반적이다.
+
+Private Subnet의 Node가 다음 서비스에 접근할 수 있는지도 확인해야 한다.
+
+- EKS API Server
+- Amazon ECR API
+- Amazon ECR Docker Registry
+- Amazon S3
+- CloudWatch Logs
+- 외부 패키지 저장소
+
+NAT Gateway 또는 VPC Endpoint가 없으면 Node가 ECR에서 컨테이너 이미지를 가져오지 못해 `ImagePullBackOff`가 발생할 수 있다.
+
+설정을 완료하고 Node Group을 생성한 뒤 상태가 `ACTIVE`가 될 때까지 기다린다.
+
+#### kubeconfig에 EKS 클러스터 등록
+
+로컬 `kubectl`은 kubeconfig 파일을 통해 접속할 Kubernetes 클러스터와 인증 정보를 찾는다.
+
+다음 명령으로 EKS 클러스터 정보를 kubeconfig에 추가한다.
+
+```shell
+aws eks update-kubeconfig \
+  --region ap-northeast-2 \
+  --name sns-cluster \
+  --profile sns-admin \
+  --alias sns-cluster-seoul
+```
+
+각 옵션의 의미는 다음과 같다.
+
+| 옵션 | 설명 |
+|---|---|
+| `--region` | EKS 클러스터가 생성된 AWS 리전 |
+| `--name` | 연결할 EKS 클러스터 이름 |
+| `--profile` | 사용할 AWS CLI 프로파일 |
+| `--alias` | kubeconfig에 저장할 Context 이름 |
+
+`aws eks update-kubeconfig`는 기존 kubeconfig를 삭제하지 않고 새로운 Cluster, User, Context 정보를 병합한다. 명령 실행 후 새로 추가된 Context가 현재 Context로 설정될 수 있으므로 여러 클러스터를 관리한다면 반드시 현재 대상을 확인해야 한다. 자세한 동작은 [AWS CLI update-kubeconfig 명령](https://docs.aws.amazon.com/cli/latest/reference/eks/update-kubeconfig.html)에서 확인할 수 있다.
+
+등록된 Context 목록과 현재 Context를 확인한다.
+
+```shell
+kubectl config get-contexts
+kubectl config current-context
+```
+
+현재 Context가 다른 클러스터를 가리킨다면 다음과 같이 변경한다.
+
+```shell
+kubectl config use-context sns-cluster-seoul
+```
+
+운영 클러스터와 개발 클러스터를 함께 관리할 때는 명령을 실행하기 전에 `kubectl config current-context`를 확인하는 습관이 중요하다.
+
+#### EKS 클러스터 연결 확인
+
+먼저 Control Plane 연결 상태를 확인한다.
+
+```shell
+kubectl cluster-info
+```
+
+이어서 Worker Node를 조회한다.
+
+```shell
+kubectl get nodes -o wide
+```
+
+정상적으로 생성됐다면 두 개의 Node가 `Ready` 상태로 표시된다.
+
+```text
+NAME                                               STATUS   ROLES    AGE   VERSION
+ip-10-0-1-10.ap-northeast-2.compute.internal       Ready    <none>   5m    v1.xx.x
+ip-10-0-2-20.ap-northeast-2.compute.internal       Ready    <none>   5m    v1.xx.x
+```
+
+각 Node의 상세한 자원 상태도 확인할 수 있다.
+
+```shell
+kubectl describe node
+```
+
+Node가 Pod에 할당할 수 있는 실제 자원은 다음 명령으로 확인한다.
+
+```shell
+kubectl get nodes \
+  -o custom-columns="NAME:.metadata.name,CPU:.status.allocatable.cpu,MEMORY:.status.allocatable.memory,PODS:.status.allocatable.pods"
+```
+
+Kubernetes 시스템 Pod의 상태도 확인한다.
+
+```shell
+kubectl get pods -n kube-system -o wide
+```
+
+다음 구성 요소가 `Running` 상태인지 확인해야 한다.
+
+- CoreDNS
+- kube-proxy
+- VPC CNI의 `aws-node`
+- 설치한 EKS Add-on 관련 Pod
+
+마지막으로 현재 사용자에게 기본 조회 권한이 있는지 검사한다.
+
+```shell
+kubectl auth can-i get pods --all-namespaces
+```
+
+정상적으로 권한이 부여됐다면 다음 결과가 출력된다.
+
+```text
+yes
+```
+
+#### 클러스터 생성 과정에서 자주 발생하는 문제
+
+| 현상 | 주요 원인 | 확인 및 해결 방법 |
+|---|---|---|
+| 클러스터 생성 실패 | Cluster IAM Role의 정책 또는 신뢰 관계 오류 | `AmazonEKSClusterPolicy`와 `eks.amazonaws.com` 확인 |
+| Node Group이 `CREATE_FAILED` | Node IAM Role 정책 부족 | Worker Node와 ECR 정책 확인 |
+| Node가 클러스터에 등록되지 않음 | Subnet 라우팅, Security Group, IAM 접근 설정 문제 | NAT, Endpoint, Node Role, Access Entry 확인 |
+| `Unauthorized` 발생 | 다른 AWS 프로파일 사용 또는 EKS 접근 권한 누락 | `aws sts get-caller-identity`와 Access Entry 확인 |
+| `kubectl` 연결 시간 초과 | Public Endpoint CIDR 또는 Private Endpoint 접근 문제 | 현재 공인 IP, VPN, VPC 접근 경로 확인 |
+| Node가 `NotReady` | VPC CNI 또는 kube-proxy 장애 | `kube-system` Pod와 Add-on 상태 확인 |
+| Pod가 `Pending` | CPU 또는 메모리 부족 | Pod의 `requests`와 Node Allocatable 확인 |
+| `ImagePullBackOff` 발생 | ECR 권한 또는 외부 네트워크 경로 부족 | Node Role, NAT Gateway, VPC Endpoint 확인 |
+
+인증 오류가 발생하면 먼저 현재 사용 중인 AWS 자격 증명을 확인한다.
+
+```shell
+aws sts get-caller-identity --profile sns-admin
+kubectl config current-context
+```
+
+Node가 `NotReady`라면 다음 명령으로 상태와 이벤트를 확인한다.
+
+```shell
+kubectl describe node <NODE_NAME>
+kubectl get pods -n kube-system
+kubectl get events --all-namespaces --sort-by=.metadata.creationTimestamp
+```
+
+#### 운영 환경으로 확장할 때 개선할 부분
+
+실습 환경과 운영 환경은 보안, 가용성, 관측 가능성에서 다른 기준이 필요하다.
+
+| 영역 | 간단한 실습 환경 | 운영 환경 권장 구성 |
+|---|---|---|
+| AWS 인증 | 실습용 IAM 사용자 | IAM Identity Center와 임시 자격 증명 |
+| 관리자 권한 | 제한적인 `AdministratorAccess` 사용 | 역할별 최소 권한 정책 |
+| VPC | Default VPC | EKS 전용 VPC |
+| Worker Node | 기본 Subnet | 여러 AZ의 Private Subnet |
+| API Endpoint | Public and Private | Private 또는 제한된 Public CIDR |
+| 접근 제어 | 클러스터 생성자 관리자 권한 | Access Entry와 역할별 Kubernetes 권한 |
+| Node 확장 | Node 수 고정 | Cluster Autoscaler 또는 Karpenter |
+| 로깅 | 비용 절감을 위해 일부 비활성화 | Control Plane 및 애플리케이션 로그 중앙화 |
+| CNI 권한 | Node Role에 정책 연결 | VPC CNI 전용 IAM Role |
+| 스토리지 | 기본 구성 | EBS CSI Driver와 StorageClass 구성 |
+
+#### 비용과 리소스 정리
+
+EKS는 Worker Node가 없어도 Control Plane 비용이 발생한다. 여기에 EC2, EBS, Load Balancer, NAT Gateway, CloudWatch Logs 등의 비용이 추가될 수 있다.
+
+실습이 끝났다면 다음 순서로 리소스를 정리한다.
+
+1. Kubernetes의 Service와 Ingress를 삭제한다.
+2. PVC와 연결된 EBS Volume을 확인한다.
+3. Managed Node Group을 삭제한다.
+4. EKS 클러스터를 삭제한다.
+5. 남아 있는 Load Balancer, EBS Volume, Elastic IP와 NAT Gateway를 확인한다.
+6. 사용하지 않는 IAM Access Key를 비활성화하거나 삭제한다.
+
+CLI로 Node Group을 삭제할 수 있다.
+
+```shell
+aws eks delete-nodegroup \
+  --cluster-name sns-cluster \
+  --nodegroup-name sns-node \
+  --region ap-northeast-2 \
+  --profile sns-admin
+```
+
+Node Group 삭제가 완료된 후 클러스터를 삭제한다.
+
+```shell
+aws eks delete-cluster \
+  --name sns-cluster \
+  --region ap-northeast-2 \
+  --profile sns-admin
+```
+
+클러스터를 먼저 삭제하면 Kubernetes가 생성한 Load Balancer나 Volume을 정상적으로 정리하기 어려울 수 있다. 따라서 애플리케이션 리소스와 외부 AWS 리소스를 먼저 제거한 후 클러스터를 삭제해야 한다.
+
+### 정리
+
+Amazon EKS 환경을 구성할 때는 클러스터 생성만으로 전체 환경이 완성되는 것이 아니다. EKS Cluster IAM Role, Node IAM Role, VPC와 Subnet, API Endpoint, Kubernetes 접근 권한을 함께 설계해야 한다.
+
+클러스터 상태가 `ACTIVE`라는 것은 Control Plane이 준비됐다는 의미다. 실제 Pod를 실행하려면 Managed Node Group을 생성하고 Node가 `Ready` 상태인지 확인해야 한다.
+
+로컬에서는 `aws eks update-kubeconfig`를 이용해 EKS 정보를 기존 kubeconfig에 병합할 수 있다. 여러 클러스터를 함께 관리한다면 AWS 프로파일과 kubectl Context를 명확하게 구분해야 운영 클러스터에 잘못된 명령을 실행하는 사고를 방지할 수 있다.
+
+이번 단계에서 준비한 EKS 클러스터는 이후 Spring Boot 애플리케이션, Redis, Kafka 및 영구 스토리지를 배포하기 위한 기반이 된다. 다음 구성에서는 Amazon EBS CSI Driver와 StorageClass를 연결하여 Pod가 동적으로 영구 볼륨을 생성하고 사용할 수 있는 환경을 마련할 수 있다.
