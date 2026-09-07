@@ -2077,3 +2077,725 @@ Amazon EKS 환경을 구성할 때는 클러스터 생성만으로 전체 환경
 로컬에서는 `aws eks update-kubeconfig`를 이용해 EKS 정보를 기존 kubeconfig에 병합할 수 있다. 여러 클러스터를 함께 관리한다면 AWS 프로파일과 kubectl Context를 명확하게 구분해야 운영 클러스터에 잘못된 명령을 실행하는 사고를 방지할 수 있다.
 
 이번 단계에서 준비한 EKS 클러스터는 이후 Spring Boot 애플리케이션, Redis, Kafka 및 영구 스토리지를 배포하기 위한 기반이 된다. 다음 구성에서는 Amazon EBS CSI Driver와 StorageClass를 연결하여 Pod가 동적으로 영구 볼륨을 생성하고 사용할 수 있는 환경을 마련할 수 있다.
+
+## 04. EFS를 이용한 StorageClass 정의
+
+### 04. Amazon EFS를 이용한 Kubernetes 영구 스토리지 구성
+
+Kubernetes의 Pod는 특정 Node에 영구적으로 고정되지 않는다. Deployment가 Pod를 다시 생성하거나 Node 장애로 스케줄링 위치가 변경되면 컨테이너 내부에 저장한 파일은 유지되지 않는다.
+
+사용자가 업로드한 이미지처럼 Pod가 다시 생성된 후에도 유지되어야 하는 데이터는 컨테이너 파일 시스템이 아닌 외부 영구 스토리지에 저장해야 한다.
+
+이번 실습에서는 Amazon EKS 클러스터에 Amazon EFS CSI Driver를 설치하고, `StorageClass`와 `PersistentVolumeClaim`을 이용해 여러 Pod가 공유할 수 있는 영구 스토리지를 구성한다.
+
+#### 실습 목표
+
+이번 실습에서 구성할 내용은 다음과 같다.
+
+- Amazon EFS 파일 시스템 생성
+- EKS와 EFS 사이의 NFS 네트워크 설정
+- EFS CSI Driver에 AWS 권한 부여
+- EFS CSI Driver EKS Add-on 설치
+- EFS 기반 `StorageClass` 생성
+- PVC를 이용한 동적 프로비저닝
+- 여러 Pod에서 동일한 파일을 읽고 쓰는지 확인
+- 장애 상황과 운영 환경의 개선 사항 확인
+
+#### 전체 구성과 동작 흐름
+
+```mermaid
+flowchart TD
+    A["Pod에서 PersistentVolumeClaim 요청"] --> B["StorageClass efs-sc 선택"]
+    B --> C["EFS CSI Controller"]
+    C --> D["AWS EFS API 호출"]
+    D --> E["EFS Access Point 생성"]
+    E --> F["PersistentVolume 동적 생성"]
+    F --> G["PVC와 PV 바인딩"]
+    G --> H["EFS CSI Node Plugin"]
+    H --> I["EFS Mount Target"]
+    I --> J["Amazon EFS 공유 디렉터리"]
+```
+
+PVC를 생성하면 EFS CSI Driver가 새로운 EFS 파일 시스템을 생성하는 것은 아니다. 미리 생성한 하나의 EFS 파일 시스템 안에 Access Point와 전용 디렉터리를 생성하고 이를 Kubernetes PV로 제공한다.
+
+#### EBS와 EFS의 차이
+
+AWS에서 EKS의 영구 스토리지로 주로 사용하는 서비스는 Amazon EBS와 Amazon EFS다.
+
+| 구분 | Amazon EBS | Amazon EFS |
+|---|---|---|
+| 스토리지 유형 | 블록 스토리지 | NFS 기반 파일 스토리지 |
+| 일반적인 접근 모드 | `ReadWriteOnce` | `ReadWriteMany` |
+| 여러 Node의 동시 접근 | 일반적으로 제한됨 | 가능 |
+| 가용 영역 | Volume이 특정 AZ에 종속 | Regional EFS는 여러 AZ에서 접근 가능 |
+| 주요 사용 사례 | 데이터베이스, 단일 Pod의 디스크 | 공유 이미지, 정적 파일, 공용 디렉터리 |
+| Kubernetes Driver | EBS CSI Driver | EFS CSI Driver |
+
+EBS Volume은 특정 가용 영역에 생성된다. Pod가 다른 Node로 이동하더라도 같은 가용 영역이라면 Volume을 분리한 후 다시 연결할 수 있지만, 다른 가용 영역으로 이동하면 Volume을 직접 연결할 수 없다.
+
+EFS는 여러 가용 영역에 Mount Target을 생성할 수 있으며 여러 Node와 Pod가 동일한 파일 시스템에 동시에 접근할 수 있다. 따라서 여러 애플리케이션 인스턴스가 같은 업로드 디렉터리를 공유해야 하는 구조에 적합하다.
+
+```mermaid
+flowchart LR
+    P1["Pod A"] --> AP["EFS Access Point"]
+    P2["Pod B"] --> AP
+    P3["Pod C"] --> AP
+    AP --> EFS["Amazon EFS File System"]
+```
+
+다만 사용자 이미지와 같은 객체 데이터는 장기적으로 Amazon S3와 CDN을 사용하는 편이 더 적합할 수 있다. EFS는 기존 애플리케이션이 로컬 파일 경로 기반으로 동작하거나 여러 Pod가 POSIX 파일 시스템을 공유해야 할 때 유용하다.
+
+#### `emptyDir`와 영구 스토리지의 차이
+
+EFS 설정을 생략하고 단순한 애플리케이션 동작만 확인하려면 `emptyDir` Volume을 사용할 수 있다. 하지만 `emptyDir`는 Pod가 존재하는 동안에만 유지되는 임시 Volume이다.
+
+컨테이너가 재시작될 때는 같은 Pod의 `emptyDir` 데이터가 유지되지만, Pod 자체가 삭제되거나 다른 Node에 새로 생성되면 데이터가 사라진다. 또한 서로 다른 Pod가 하나의 `emptyDir`를 공유할 수 없다.
+
+따라서 다음 데이터에는 `emptyDir`를 사용하면 안 된다.
+
+- 사용자가 업로드한 이미지
+- 복구가 필요한 업무 파일
+- Pod 간에 공유해야 하는 파일
+- 애플리케이션 재배포 이후에도 유지해야 하는 데이터
+
+#### 사전 조건
+
+실습을 시작하기 전에 다음 상태를 확인한다.
+
+```shell
+aws sts get-caller-identity --profile sns-admin
+kubectl config current-context
+kubectl get nodes -o wide
+kubectl get pods -n kube-system
+```
+
+다음 조건을 만족해야 한다.
+
+- `sns-cluster` EKS 클러스터가 `ACTIVE` 상태다.
+- Managed Node Group의 Node가 두 개 이상 `Ready` 상태다.
+- AWS CLI에서 사용할 `sns-admin` 프로파일이 설정되어 있다.
+- 현재 kubectl Context가 실습용 EKS 클러스터를 가리킨다.
+- EKS 클러스터와 EFS를 생성할 VPC가 동일하다.
+- EFS CSI Driver와 IAM Role을 생성할 권한이 있다.
+
+#### EFS CSI Driver의 역할
+
+CSI는 Container Storage Interface의 약자다. Kubernetes가 특정 스토리지 제품의 구현에 직접 의존하지 않고 표준 인터페이스를 통해 Volume을 생성하고 마운트하도록 한다.
+
+EFS CSI Driver는 크게 두 구성 요소로 동작한다.
+
+| 구성 요소 | 배포 방식 | 역할 |
+|---|---|---|
+| EFS CSI Controller | Deployment | PVC를 감지하고 EFS Access Point와 PV 생성 |
+| EFS CSI Node | DaemonSet | 각 Node에서 EFS를 Pod에 마운트 |
+
+Controller는 AWS EFS API를 호출해야 하므로 IAM 권한이 필요하다. 반면 Node Plugin은 각 Worker Node에서 실제 NFS 마운트 작업을 수행한다.
+
+#### EFS CSI Driver 권한 구성
+
+EFS CSI Driver의 Controller Pod에 AWS 권한을 부여하는 방법으로 EKS Pod Identity와 IRSA가 있다.
+
+| 방식 | 특징 |
+|---|---|
+| EKS Pod Identity | EKS가 ServiceAccount와 IAM Role 연결을 관리하는 권장 방식 |
+| IRSA | EKS OIDC Provider와 ServiceAccount를 IAM Role의 신뢰 정책으로 연결 |
+| Node IAM Role | Node의 모든 Pod가 권한에 접근할 수 있어 권장하지 않음 |
+
+신규 환경에서는 EKS Pod Identity를 우선 고려한다. 이번 실습에서는 OIDC Provider와 Web Identity Role의 관계를 이해할 수 있도록 IRSA 방식으로 구성한다. EFS CSI Driver에는 `AmazonEFSCSIDriverPolicy`가 필요하다. [Amazon EFS CSI Driver 구성](https://docs.aws.amazon.com/eks/latest/userguide/efs-csi.html)
+
+```mermaid
+sequenceDiagram
+    participant SA as "EFS CSI ServiceAccount"
+    participant OIDC as "EKS OIDC Provider"
+    participant STS as "AWS STS"
+    participant IAM as "EFS CSI IAM Role"
+    participant EFS as "Amazon EFS API"
+
+    SA->>OIDC: "ServiceAccount Token 제시"
+    OIDC->>STS: "토큰 서명과 클레임 검증"
+    STS->>IAM: "AssumeRoleWithWebIdentity"
+    IAM-->>SA: "임시 자격 증명 발급"
+    SA->>EFS: "Access Point 생성 요청"
+```
+
+##### EKS OIDC Provider 확인
+
+EKS 클러스터의 OIDC 발급자 주소를 확인한다.
+
+```shell
+aws eks describe-cluster \
+  --region ap-northeast-2 \
+  --name sns-cluster \
+  --profile sns-admin \
+  --query "cluster.identity.oidc.issuer" \
+  --output text
+```
+
+다음과 같은 형식의 주소가 출력된다.
+
+```text
+https://oidc.eks.ap-northeast-2.amazonaws.com/id/EXAMPLEOIDCID
+```
+
+IAM의 `Identity providers` 메뉴에서 같은 주소의 Provider가 이미 존재하는지 확인한다. 이미 존재한다면 중복으로 생성할 필요가 없다.
+
+Provider가 없다면 다음 순서로 추가한다.
+
+1. IAM의 `Identity providers` 메뉴로 이동한다.
+2. `Add provider`를 선택한다.
+3. Provider 유형으로 `OpenID Connect`를 선택한다.
+4. EKS 클러스터의 OIDC Provider URL을 입력한다.
+5. Audience에 `sts.amazonaws.com`을 입력한다.
+6. 설정을 검토하고 Provider를 생성한다.
+
+`eksctl`이 설치되어 있다면 다음 명령으로도 연결할 수 있다.
+
+```shell
+eksctl utils associate-iam-oidc-provider \
+  --cluster sns-cluster \
+  --region ap-northeast-2 \
+  --approve
+```
+
+##### EFS CSI IAM Role 생성
+
+IAM에서 Web Identity용 Role을 생성한다.
+
+1. IAM의 `Roles` 메뉴에서 `Create role`을 선택한다.
+2. 신뢰할 수 있는 엔터티 유형으로 `Web identity`를 선택한다.
+3. 앞에서 등록한 EKS OIDC Provider를 선택한다.
+4. Audience로 `sts.amazonaws.com`을 선택한다.
+5. `AmazonEFSCSIDriverPolicy`를 연결한다.
+6. Role 이름을 `AmazonEKS_EFS_CSI_DriverRole`로 지정한다.
+7. Role을 생성한다.
+
+Role 생성 후 `Trust relationships`에서 신뢰 정책을 수정한다.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::<ACCOUNT_ID>:oidc-provider/oidc.eks.ap-northeast-2.amazonaws.com/id/<OIDC_ID>"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "oidc.eks.ap-northeast-2.amazonaws.com/id/<OIDC_ID>:aud": "sts.amazonaws.com"
+        },
+        "StringLike": {
+          "oidc.eks.ap-northeast-2.amazonaws.com/id/<OIDC_ID>:sub": "system:serviceaccount:kube-system:efs-csi-*"
+        }
+      }
+    }
+  ]
+}
+```
+
+다음 값은 실제 환경에 맞게 변경해야 한다.
+
+- `<ACCOUNT_ID>`: AWS 계정 ID
+- `<OIDC_ID>`: EKS 클러스터의 OIDC Provider ID
+- 리전: 클러스터가 생성된 AWS 리전
+
+`aud` 조건은 토큰의 대상이 AWS STS인지 확인한다. `sub` 조건은 `kube-system` Namespace의 `efs-csi-`로 시작하는 ServiceAccount만 Role을 사용할 수 있도록 제한한다.
+
+와일드카드를 사용하므로 `StringEquals`가 아니라 `StringLike`를 사용해야 한다. 신뢰 범위를 `system:serviceaccount:*:*`처럼 전체 Namespace와 ServiceAccount로 확장하면 다른 워크로드가 스토리지 관리 권한을 사용할 수 있으므로 피해야 한다.
+
+#### EFS 네트워크 보안 설정
+
+EFS는 NFS 프로토콜의 TCP 2049 포트를 사용한다. Worker Node에서 EFS Mount Target까지 이 포트로 통신할 수 있어야 한다.
+
+권장되는 방식은 CIDR 전체를 허용하는 것이 아니라 Worker Node Security Group을 EFS Security Group의 소스로 지정하는 것이다.
+
+```mermaid
+flowchart LR
+    NODE["EKS Worker Node Security Group"] -->|"TCP 2049"| EFSSG["EFS Mount Target Security Group"]
+    EFSSG --> MT["EFS Mount Target"]
+    MT --> FS["EFS File System"]
+```
+
+EFS 전용 Security Group을 다음과 같이 생성한다.
+
+| 방향 | 프로토콜 | 포트 | 대상 |
+|---|---|---|---|
+| EFS 인바운드 | TCP | 2049 | Worker Node Security Group |
+| Worker Node 아웃바운드 | TCP | 2049 | EFS Security Group |
+
+Security Group의 소스로 `172.31.0.0/16`과 같은 VPC CIDR을 지정할 수도 있지만 허용 범위가 더 넓다. 운영 환경에서는 Security Group 참조 방식을 사용해 EKS Node에서 들어오는 NFS 연결만 허용하는 것이 좋다. [EFS Security Group 규칙](https://docs.aws.amazon.com/efs/latest/ug/network-access.html)
+
+Default Security Group을 EKS와 EFS가 함께 사용하면 자체 참조 규칙으로 통신할 수 있는 경우가 있지만, 접근 범위와 책임이 불분명해진다. 실무에서는 Node용 Security Group과 EFS Mount Target용 Security Group을 분리한다.
+
+#### Amazon EFS 파일 시스템 생성
+
+AWS Console에서 Amazon EFS로 이동해 파일 시스템을 생성한다.
+
+| 설정 | 실습 값 | 설명 |
+|---|---|---|
+| Name | `sns-efs` | EFS 식별 이름 |
+| File system type | Regional | 여러 가용 영역에서 접근 |
+| VPC | EKS와 동일한 VPC | Node와 Mount Target 통신 |
+| Encryption | 활성화 | 저장 데이터 암호화 |
+| Performance mode | General Purpose | 일반적인 애플리케이션 파일 공유 |
+| Throughput mode | Elastic 또는 Bursting | 워크로드에 맞는 처리량 모드 |
+
+네트워크 설정에서는 EKS Worker Node가 배치된 각 가용 영역에 Mount Target을 생성한다. 각 Mount Target에는 앞에서 생성한 EFS 전용 Security Group을 연결한다.
+
+Regional EFS는 가용 영역과 관계없이 데이터가 공유되지만, Node는 네트워크를 통해 Mount Target에 접속한다. 따라서 Node가 배치될 수 있는 가용 영역마다 Mount Target을 생성하는 것이 가용성과 네트워크 효율 측면에서 적절하다.
+
+생성이 완료되면 다음 형식의 File System ID를 기록한다.
+
+```text
+fs-0123456789abcdef0
+```
+
+AWS CLI로도 확인할 수 있다.
+
+```shell
+aws efs describe-file-systems \
+  --region ap-northeast-2 \
+  --profile sns-admin \
+  --query "FileSystems[].{Name:Name,FileSystemId:FileSystemId,State:LifeCycleState}" \
+  --output table
+```
+
+Mount Target 상태도 확인한다.
+
+```shell
+aws efs describe-mount-targets \
+  --file-system-id fs-0123456789abcdef0 \
+  --region ap-northeast-2 \
+  --profile sns-admin
+```
+
+EFS를 사용하기 전에 Mount Target의 상태가 `available`이어야 한다.
+
+#### EFS CSI Driver Add-on 설치
+
+Amazon EKS Console에서 다음 순서로 Add-on을 설치한다.
+
+1. `sns-cluster`의 상세 화면으로 이동한다.
+2. `Add-ons` 탭을 선택한다.
+3. `Get more add-ons`를 선택한다.
+4. `Amazon EFS CSI Driver`를 선택한다.
+5. 현재 Kubernetes 버전과 호환되는 Add-on 버전을 선택한다.
+6. IAM Role로 `AmazonEKS_EFS_CSI_DriverRole`을 선택한다.
+7. 설정을 검토하고 Add-on을 생성한다.
+
+Add-on 이름은 `aws-efs-csi-driver`다. 설치 상태를 AWS CLI로 확인할 수 있다.
+
+```shell
+aws eks describe-addon \
+  --cluster-name sns-cluster \
+  --addon-name aws-efs-csi-driver \
+  --region ap-northeast-2 \
+  --profile sns-admin \
+  --query "addon.{Status:status,Version:addonVersion}" \
+  --output table
+```
+
+정상적으로 설치되면 상태가 `ACTIVE`로 표시된다.
+
+Kubernetes 내부의 Controller와 Node Plugin도 확인한다.
+
+```shell
+kubectl get deployment,daemonset -n kube-system
+kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-efs-csi-driver
+kubectl get csidriver efs.csi.aws.com
+```
+
+다음 상태를 확인한다.
+
+- `efs-csi-controller` Deployment의 Pod가 `Running`이다.
+- `efs-csi-node` DaemonSet의 Pod가 각 Linux Node에서 실행 중이다.
+- `efs.csi.aws.com` CSIDriver 객체가 존재한다.
+
+EFS CSI Driver는 Windows 컨테이너를 지원하지 않는다. 또한 Fargate에서는 기존 EFS 파일 시스템을 정적으로 연결할 수 있지만 Access Point 기반 동적 프로비저닝은 EC2 Worker Node 환경에서 사용해야 한다.
+
+#### EFS StorageClass 작성
+
+`efs-sc.yaml` 파일을 작성한다.
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: efs-sc
+provisioner: efs.csi.aws.com
+parameters:
+  provisioningMode: efs-ap
+  fileSystemId: fs-0123456789abcdef0
+  directoryPerms: "700"
+  basePath: "/sns"
+  subPathPattern: "${.PVC.namespace}/${.PVC.name}"
+  ensureUniqueDirectory: "true"
+reclaimPolicy: Retain
+volumeBindingMode: Immediate
+mountOptions:
+  - tls
+```
+
+`fileSystemId`는 실제로 생성한 EFS File System ID로 변경해야 한다.
+
+##### StorageClass 필드 설명
+
+| 필드 | 설명 |
+|---|---|
+| `apiVersion` | StorageClass가 속한 Kubernetes API 그룹과 버전 |
+| `kind` | 생성할 객체가 StorageClass임을 지정 |
+| `metadata.name` | PVC의 `storageClassName`에서 사용할 이름 |
+| `provisioner` | EFS CSI Driver의 프로비저너 이름 |
+| `provisioningMode` | EFS Access Point 기반 동적 프로비저닝 사용 |
+| `fileSystemId` | Access Point를 생성할 기존 EFS 파일 시스템 |
+| `directoryPerms` | Access Point 루트 디렉터리의 POSIX 권한 |
+| `basePath` | 동적 디렉터리를 생성할 기준 경로 |
+| `subPathPattern` | Namespace와 PVC 이름을 사용한 하위 경로 규칙 |
+| `ensureUniqueDirectory` | 재생성된 PVC가 기존 디렉터리와 충돌하지 않도록 고유 경로 사용 |
+| `reclaimPolicy` | PVC 삭제 이후 PV와 외부 스토리지 처리 정책 |
+| `volumeBindingMode` | PVC 생성 시점에 즉시 PV를 프로비저닝 |
+| `mountOptions` | EFS를 마운트할 때 적용할 옵션 |
+
+`provisioningMode`는 동적 프로비저닝에서 `efs-ap`를 사용한다. PVC마다 EFS Access Point가 생성되며 Access Point는 각 볼륨의 POSIX 사용자와 디렉터리 경계를 관리한다.
+
+`directoryPerms: "700"`은 소유자에게만 읽기, 쓰기, 실행 권한을 부여한다. 여러 애플리케이션이 같은 PVC를 사용하는 것은 가능하지만 서로 다른 PVC의 디렉터리에 임의로 접근하는 것을 줄일 수 있다.
+
+`reclaimPolicy: Retain`은 PVC를 삭제해도 PV와 외부 데이터가 자동으로 제거되지 않도록 한다. 운영 데이터에는 안전하지만 사용하지 않는 PV와 Access Point를 관리자가 직접 정리해야 한다.
+
+#### StorageClass 적용
+
+작성한 StorageClass를 적용한다.
+
+```shell
+kubectl apply -f efs-sc.yaml
+```
+
+생성 결과를 확인한다.
+
+```shell
+kubectl get storageclass
+kubectl describe storageclass efs-sc
+```
+
+정상적으로 생성되면 다음과 비슷한 결과가 출력된다.
+
+```text
+NAME     PROVISIONER         RECLAIMPOLICY   VOLUMEBINDINGMODE
+efs-sc   efs.csi.aws.com     Retain          Immediate
+```
+
+StorageClass를 생성한 것만으로 PV나 EFS Access Point가 만들어지지는 않는다. 실제 동적 프로비저닝은 해당 StorageClass를 사용하는 PVC가 생성될 때 시작된다.
+
+#### PVC와 공유 Volume 테스트
+
+두 개의 Pod가 같은 PVC를 마운트하고 각각 파일을 생성하도록 테스트한다.
+
+`efs-test.yaml`을 작성한다.
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: storage-lab
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: shared-image-pvc
+  namespace: storage-lab
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: efs-sc
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: efs-test
+  namespace: storage-lab
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: efs-test
+  template:
+    metadata:
+      labels:
+        app: efs-test
+    spec:
+      containers:
+        - name: writer
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "$(hostname) wrote this file" > "/data/$(hostname).txt"
+              sleep 3600
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          volumeMounts:
+            - name: shared-storage
+              mountPath: /data
+      volumes:
+        - name: shared-storage
+          persistentVolumeClaim:
+            claimName: shared-image-pvc
+```
+
+##### 테스트 YAML 필드 설명
+
+- `Namespace`는 테스트 리소스를 `storage-lab`이라는 논리적 공간으로 분리한다.
+- PVC의 `storageClassName`은 앞에서 생성한 `efs-sc`를 선택한다.
+- `ReadWriteMany`는 여러 Node의 Pod가 Volume을 동시에 읽고 쓸 수 있도록 요청한다.
+- `resources.requests.storage`는 Kubernetes가 PVC를 처리하기 위해 요구하는 용량 값이다.
+- Deployment는 같은 PVC를 사용하는 Pod 두 개를 생성한다.
+- `volumeMounts.mountPath`는 EFS가 컨테이너 내부에 연결되는 경로다.
+- `volumes.persistentVolumeClaim.claimName`은 Pod와 PVC를 연결한다.
+- 각 Pod는 자신의 호스트 이름을 파일명으로 사용해 `/data`에 파일을 생성한다.
+
+EFS는 일반적인 디스크 파티션처럼 PVC의 `5Gi`를 실제 사용 한도로 강제하지 않는다. EFS 사용량과 비용은 파일 시스템에 실제로 저장된 데이터와 처리량 정책을 기준으로 계산된다. 따라서 PVC의 요청 용량만으로 사용자별 저장 공간 제한이 적용된다고 생각하면 안 된다.
+
+#### 테스트 리소스 적용
+
+```shell
+kubectl apply -f efs-test.yaml
+```
+
+PVC와 PV 상태를 확인한다.
+
+```shell
+kubectl get pvc -n storage-lab
+kubectl get pv
+```
+
+정상적으로 프로비저닝되면 PVC 상태가 `Bound`로 변경된다.
+
+```text
+NAME               STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS
+shared-image-pvc   Bound    pvc-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx   5Gi        RWX            efs-sc
+```
+
+Pod가 모두 실행될 때까지 기다린다.
+
+```shell
+kubectl rollout status deployment/efs-test -n storage-lab
+kubectl get pods -n storage-lab -o wide
+```
+
+각 Pod가 서로 다른 Node에 배치되더라도 같은 EFS 디렉터리를 확인할 수 있다.
+
+```shell
+kubectl exec -n storage-lab deployment/efs-test -- sh -c "ls -l /data && cat /data/*.txt"
+```
+
+정상적인 경우 두 Pod가 생성한 파일이 함께 출력된다.
+
+```text
+efs-test-6d8f7b8d7b-abcde.txt
+efs-test-6d8f7b8d7b-fghij.txt
+efs-test-6d8f7b8d7b-abcde wrote this file
+efs-test-6d8f7b8d7b-fghij wrote this file
+```
+
+이 결과는 다음 동작을 확인한 것이다.
+
+1. PVC가 EFS StorageClass를 선택했다.
+2. EFS CSI Driver가 Access Point와 PV를 생성했다.
+3. 서로 다른 Pod가 같은 EFS Volume을 마운트했다.
+4. 한 Pod가 작성한 파일을 다른 Pod에서도 확인할 수 있다.
+
+#### 실제 프로비저닝 과정
+
+```mermaid
+sequenceDiagram
+    participant PVC as "PersistentVolumeClaim"
+    participant SC as "StorageClass"
+    participant CSI as "EFS CSI Controller"
+    participant AWS as "Amazon EFS"
+    participant PV as "PersistentVolume"
+    participant POD as "Application Pod"
+
+    PVC->>SC: "efs-sc를 이용한 저장 공간 요청"
+    SC->>CSI: "동적 프로비저닝 요청"
+    CSI->>AWS: "EFS Access Point 생성"
+    AWS-->>CSI: "Access Point ID 반환"
+    CSI->>PV: "CSI Volume 정보가 포함된 PV 생성"
+    PV-->>PVC: "PVC와 PV 바인딩"
+    POD->>PVC: "Volume 마운트 요청"
+    POD->>AWS: "NFS를 통해 공유 디렉터리 사용"
+```
+
+Kubernetes API Server가 직접 EFS를 생성하거나 마운트하지 않는다. EFS CSI Controller와 각 Node의 CSI Plugin이 Kubernetes 객체의 상태를 감지하고 실제 AWS 리소스 및 운영체제 마운트 작업을 수행한다.
+
+#### 문제 발생 시 확인 방법
+
+PVC가 `Pending` 상태에서 변경되지 않으면 다음 명령으로 이벤트를 확인한다.
+
+```shell
+kubectl describe pvc shared-image-pvc -n storage-lab
+kubectl get events -n storage-lab --sort-by=.metadata.creationTimestamp
+```
+
+EFS CSI Controller 로그도 확인한다.
+
+```shell
+kubectl logs \
+  -n kube-system \
+  deployment/efs-csi-controller \
+  -c csi-provisioner \
+  --tail=100
+```
+
+EFS Plugin 로그는 다음과 같이 확인한다.
+
+```shell
+kubectl logs \
+  -n kube-system \
+  deployment/efs-csi-controller \
+  -c efs-plugin \
+  --tail=100
+```
+
+자주 발생하는 문제는 다음과 같다.
+
+| 현상 | 주요 원인 | 확인 사항 |
+|---|---|---|
+| PVC가 `Pending` | CSI Driver 미설치 | EKS Add-on과 Controller Pod 상태 확인 |
+| `AccessDenied` | IAM Role 또는 신뢰 정책 오류 | `AmazonEFSCSIDriverPolicy`, OIDC `sub`, `aud` 확인 |
+| `FailedMount` | NFS 통신 차단 | EFS Security Group의 TCP 2049 확인 |
+| Mount 시간 초과 | Mount Target 누락 | Node가 있는 AZ에 Mount Target이 존재하는지 확인 |
+| DNS 이름 확인 실패 | VPC DNS 또는 네트워크 문제 | VPC DNS 설정과 Mount Target 상태 확인 |
+| `Permission denied` | POSIX 권한 불일치 | Access Point의 UID, GID, `directoryPerms` 확인 |
+| Add-on이 `DEGRADED` | IAM Role 또는 버전 호환 문제 | Add-on 상태와 Kubernetes 버전 확인 |
+| Pod가 `Pending` | Node CPU 또는 메모리 부족 | Pod Events와 Node Allocatable 확인 |
+
+`AccessDenied`가 발생하면 ServiceAccount에 연결된 IAM Role을 확인한다.
+
+```shell
+kubectl get serviceaccount efs-csi-controller-sa \
+  -n kube-system \
+  -o yaml
+```
+
+IRSA 방식에서는 다음 Annotation에 EFS CSI IAM Role ARN이 설정되어 있어야 한다.
+
+```yaml
+metadata:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::<ACCOUNT_ID>:role/AmazonEKS_EFS_CSI_DriverRole
+```
+
+이 코드는 확인해야 할 핵심 부분을 나타낸 것이다. 실제 ServiceAccount 전체 YAML은 EKS Add-on이 관리하므로 직접 덮어쓰기보다는 Add-on의 IAM Role 연결 설정을 수정하는 것이 안전하다.
+
+#### EFS를 이미지 저장소로 사용할 때의 주의사항
+
+EFS는 공유 파일 시스템이므로 여러 애플리케이션 Pod가 동일한 이미지 경로를 사용할 수 있다. 하지만 운영 환경에서는 다음 항목을 추가로 고려해야 한다.
+
+##### 동시성
+
+여러 Pod가 같은 파일명을 동시에 쓰면 파일 덮어쓰기나 불완전한 파일 노출이 발생할 수 있다.
+
+- UUID 기반 파일명을 사용한다.
+- 임시 파일에 기록한 뒤 원자적으로 이름을 변경한다.
+- 데이터베이스에는 저장 경로와 상태를 함께 기록한다.
+- 삭제와 조회가 동시에 발생하는 경우를 고려한다.
+
+##### 보안
+
+EFS의 Access Point와 디렉터리 권한만으로 애플리케이션 수준의 권한 검사가 대체되지는 않는다.
+
+- 원본 파일명을 그대로 저장 경로로 사용하지 않는다.
+- `../`와 같은 경로 순회 문자를 제거한다.
+- MIME 타입과 실제 파일 형식을 함께 검증한다.
+- 실행 파일 업로드와 임의 스크립트 실행을 차단한다.
+- 민감한 파일은 별도의 파일 시스템이나 Access Point로 격리한다.
+
+##### 성능
+
+EFS는 네트워크 파일 시스템이므로 로컬 디스크나 EBS보다 파일 접근 지연 시간이 커질 수 있다.
+
+- 작은 파일을 매우 빈번하게 읽는 경우 캐시를 고려한다.
+- 정적 파일 제공에는 CDN을 함께 사용한다.
+- 처리량 모드와 실제 사용량을 모니터링한다.
+- 애플리케이션 요청마다 전체 디렉터리를 탐색하지 않는다.
+
+##### 백업과 삭제 정책
+
+EFS를 사용한다고 해서 백업이 자동으로 완성되는 것은 아니다.
+
+- AWS Backup을 이용한 정기 백업을 구성한다.
+- 파일 시스템 삭제 방지 정책을 검토한다.
+- PVC 삭제와 실제 데이터 삭제 정책을 구분한다.
+- Access Point 삭제 이후 남아 있는 디렉터리를 확인한다.
+- 복구 절차를 정기적으로 테스트한다.
+
+#### 실습 리소스 정리
+
+테스트가 끝나면 Deployment와 PVC를 삭제한다.
+
+```shell
+kubectl delete -f efs-test.yaml
+```
+
+이번 StorageClass는 `reclaimPolicy: Retain`을 사용했으므로 PVC를 삭제해도 PV가 `Released` 상태로 남을 수 있다.
+
+```shell
+kubectl get pv
+```
+
+데이터가 필요하지 않다는 것을 확인한 후 PV를 삭제한다.
+
+```shell
+kubectl delete pv <PV_NAME>
+```
+
+StorageClass도 더 이상 사용하지 않는다면 삭제한다.
+
+```shell
+kubectl delete storageclass efs-sc
+```
+
+Kubernetes 객체를 삭제했다고 EFS 파일 시스템의 모든 데이터와 Mount Target이 반드시 삭제되는 것은 아니다. AWS Console에서 다음 리소스를 별도로 확인해야 한다.
+
+- EFS Access Point
+- EFS 파일 시스템
+- EFS Mount Target
+- EFS Security Group
+- EFS CSI Driver Add-on
+- EFS CSI IAM Role
+- OIDC Provider
+
+하나의 OIDC Provider는 같은 EKS 클러스터의 다른 워크로드에서도 사용할 수 있다. 따라서 EFS 실습이 끝났다는 이유만으로 OIDC Provider를 바로 삭제하면 다른 IRSA 구성에 장애가 발생할 수 있다.
+
+#### 실무적인 구성 기준
+
+| 요구사항 | 적합한 스토리지 |
+|---|---|
+| 한 Pod에서 사용하는 데이터베이스 디스크 | Amazon EBS |
+| 여러 Pod가 동일한 파일 경로 공유 | Amazon EFS |
+| 사용자 이미지와 동영상 저장 | Amazon S3와 CDN |
+| 임시 계산 파일 | `emptyDir` |
+| Node 로컬 캐시 | Local Volume 또는 `emptyDir` |
+| 여러 가용 영역에서 공유하는 POSIX 파일 | Regional Amazon EFS |
+
+EFS는 Pod가 어느 Node에 배치되더라도 같은 파일을 읽어야 하는 구조에 적합하다. 그러나 모든 영구 데이터를 EFS에 저장하는 것이 정답은 아니다. 데이터베이스는 데이터베이스에, 객체 파일은 객체 스토리지에, 공유 파일 시스템이 필요한 데이터만 EFS에 저장해야 관리와 비용을 합리적으로 통제할 수 있다.
+
+### 정리
+
+Amazon EFS는 여러 EKS Worker Node와 Pod가 동시에 접근할 수 있는 NFS 기반 공유 파일 시스템이다. EBS가 특정 가용 영역에 종속되는 블록 스토리지인 것과 달리 Regional EFS는 여러 가용 영역에 Mount Target을 구성하여 Pod의 스케줄링 위치 변화에 대응할 수 있다.
+
+EKS에서 EFS를 사용하려면 파일 시스템만 생성해서는 충분하지 않다. EFS CSI Driver, IAM Role, OIDC Provider 또는 Pod Identity, TCP 2049 보안 규칙, Mount Target, StorageClass가 함께 구성되어야 한다.
+
+EFS StorageClass의 동적 프로비저닝은 PVC마다 새로운 EFS 파일 시스템을 만드는 작업이 아니다. 기존 EFS 파일 시스템에 Access Point와 전용 디렉터리를 생성하고 이를 PV로 제공하는 방식이다.
+
+실습 환경에서는 Default VPC와 CIDR 기반 보안 규칙을 사용할 수 있지만, 운영 환경에서는 전용 VPC, 가용 영역별 Mount Target, Security Group 참조, 최소 권한 IAM Role, 백업과 모니터링을 함께 구성해야 한다. 또한 이미지 저장처럼 객체 스토리지에 더 적합한 데이터라면 Amazon S3와 CDN 구조도 함께 검토해야 한다.
