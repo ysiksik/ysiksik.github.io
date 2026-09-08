@@ -22,6 +22,7 @@ hide_description: false
 * [유튜브]{:.heading.flip-title}
 * [스터디 랩]{:.heading.flip-title}
 * [스파르타]{:.heading.flip-title}
+* [스마트러닝 ENT]{:.heading.flip-title}
 
   
 [알고리즘]: /algorithm/
@@ -31,3 +32,4 @@ hide_description: false
 [유튜브]: /study-youtube/
 [스터디 랩]: /study-lab/
 [스파르타]: /sparta/
+[스마트러닝 ENT]: /smart-learning-ent/

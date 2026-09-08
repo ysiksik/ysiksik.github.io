@@ -2799,3 +2799,514 @@ EKS에서 EFS를 사용하려면 파일 시스템만 생성해서는 충분하�
 EFS StorageClass의 동적 프로비저닝은 PVC마다 새로운 EFS 파일 시스템을 만드는 작업이 아니다. 기존 EFS 파일 시스템에 Access Point와 전용 디렉터리를 생성하고 이를 PV로 제공하는 방식이다.
 
 실습 환경에서는 Default VPC와 CIDR 기반 보안 규칙을 사용할 수 있지만, 운영 환경에서는 전용 VPC, 가용 영역별 Mount Target, Security Group 참조, 최소 권한 IAM Role, 백업과 모니터링을 함께 구성해야 한다. 또한 이미지 저장처럼 객체 스토리지에 더 적합한 데이터라면 Amazon S3와 CDN 구조도 함께 검토해야 한다.
+
+## 05. ECR 구성 및 MySQL, Redis, Kafka 설치
+
+### 05. Amazon RDS, Redis, Kafka, ECR을 이용한 개발 인프라 구성
+
+EKS 클러스터와 영구 스토리지를 준비했다면 애플리케이션 개발에 필요한 데이터베이스, 캐시, 메시지 브로커, 컨테이너 이미지 저장소를 구성해야 한다.
+
+이번 실습에서는 MySQL은 클러스터 외부의 Amazon RDS로 운영하고, Redis와 Kafka는 Helm을 이용해 EKS 내부에 설치한다. 마지막으로 각 마이크로서비스의 컨테이너 이미지를 저장할 Amazon ECR Private Repository를 생성한다.
+
+#### 실습 목표
+
+- Amazon RDS for MySQL 생성
+- EKS에서만 RDS에 접근하도록 Security Group 구성
+- 임시 MySQL Client Pod를 이용한 초기 스키마 생성
+- RDS Endpoint를 가리키는 `ExternalName` Service 생성
+- Helm을 이용한 Redis와 Kafka 설치
+- Redis와 Kafka Service 연결 확인
+- 마이크로서비스별 ECR Private Repository 생성
+- 실습 구성과 운영 구성의 차이 이해
+
+#### 전체 인프라 구성
+
+```mermaid
+flowchart TD
+    ECR["Amazon ECR"] --> NODE["EKS Worker Node"]
+    NODE --> APP["Spring Boot Application Pod"]
+    APP --> MYSQL["mysql.infra.svc.cluster.local"]
+    MYSQL --> RDS["Amazon RDS for MySQL"]
+    APP --> REDIS["redis-master.infra.svc.cluster.local"]
+    APP --> KAFKA["kafka.infra.svc.cluster.local"]
+    REDIS --> RTMP["Redis emptyDir"]
+    KAFKA --> KTMP["Kafka emptyDir"]
+```
+
+MySQL은 관리형 데이터베이스인 RDS에서 실행되므로 EKS Node 장애와 생명주기가 분리된다. Redis와 Kafka는 비용과 구성 복잡도를 줄이기 위해 클러스터 내부에 설치하지만, 이번 실습에서는 영구 스토리지를 연결하지 않는다.
+
+#### 사전 조건
+
+```shell
+aws sts get-caller-identity --profile sns-admin
+kubectl config current-context
+kubectl get nodes -o wide
+helm version
+```
+
+EKS Node가 `Ready` 상태여야 하며 AWS CLI, kubectl, Helm이 설치되어 있어야 한다. EKS와 RDS는 동일한 VPC에 생성하는 것이 가장 단순하다.
+
+인프라용 Namespace도 먼저 생성한다.
+
+```shell
+kubectl create namespace infra
+```
+
+이미 존재한다면 `AlreadyExists` 오류가 발생할 수 있으며, 이는 문제가 아니다.
+
+#### Amazon RDS for MySQL 생성
+
+데이터베이스를 Kubernetes 내부의 Pod로 실행할 수도 있지만 백업, 장애 조치, 버전 업그레이드, 스토리지 관리까지 직접 책임져야 한다. 운영 환경에서는 이러한 부담을 줄이기 위해 Amazon RDS, Aurora와 같은 관리형 데이터베이스를 사용하는 경우가 많다.
+
+AWS Console에서 RDS의 `Databases` 메뉴로 이동해 데이터베이스를 생성한다.
+
+| 설정 | 실습 값 | 설명 |
+|---|---|---|
+| 생성 방식 | Easy create | 빠른 실습 구성 |
+| Engine | MySQL | 애플리케이션 데이터베이스 |
+| DB instance identifier | `sns-db` | RDS 인스턴스 식별자 |
+| Master username | `admin` | 초기 관리 계정 |
+| Instance class | 개발용 최소 사양 | 계정과 리전별 비용 확인 필요 |
+| Public access | No | 인터넷에서 직접 접근 차단 |
+| VPC | EKS와 동일한 VPC | EKS와 사설 통신 |
+| Encryption | 활성화 | 저장 데이터 암호화 |
+
+DB Instance Identifier와 MySQL 내부의 Database 이름은 다른 개념이다. `sns-db`라는 RDS 인스턴스를 생성해도 `sns` Database가 자동으로 만들어진다고 가정해서는 안 된다.
+
+간단한 실습에서는 Easy create를 사용할 수 있지만 운영 환경에서는 Standard create를 이용해 Multi-AZ, 백업 보존 기간, 삭제 방지, 모니터링, 암호화, DB Subnet Group을 명시적으로 설정해야 한다.
+
+#### RDS Security Group 설정
+
+MySQL은 기본적으로 TCP 3306 포트를 사용한다. RDS Security Group의 인바운드 규칙에 EKS Worker Node의 Security Group을 소스로 지정한다.
+
+```mermaid
+flowchart LR
+    POD["Application Pod"] --> NODE["EKS Worker Node Security Group"]
+    NODE -->|"TCP 3306"| DBSEC["RDS Security Group"]
+    DBSEC --> RDS["RDS MySQL"]
+```
+
+| 유형 | 프로토콜 | 포트 | 소스 |
+|---|---|---|---|
+| MySQL/Aurora | TCP | 3306 | EKS Worker Node Security Group |
+
+`172.31.0.0/16`과 같이 VPC 전체 CIDR을 허용할 수도 있지만 같은 VPC의 불필요한 리소스까지 접근할 수 있다. Security Group 참조를 사용하면 EKS Node에서 시작된 연결만 허용할 수 있다. RDS는 명시적인 Security Group 규칙이 없으면 네트워크 접근을 차단한다. [RDS Security Group 구성](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Overview.RDSSecurityGroups.html)
+
+운영 데이터베이스는 Private Subnet에 배치하고 Public Access를 비활성화하는 것이 기본이다. 로컬 PC에서 직접 접속해야 한다면 데이터베이스를 공개하기보다 VPN, Bastion Host, AWS Systems Manager 또는 EKS 내부의 관리용 Pod를 사용하는 편이 안전하다.
+
+#### 임시 MySQL Client Pod로 접속
+
+RDS 상태가 `Available`로 변경되면 Endpoint를 확인한다.
+
+```text
+sns-db.xxxxxxxxxxxx.ap-northeast-2.rds.amazonaws.com
+```
+
+EKS 내부에서 임시 MySQL Client Pod를 실행한다.
+
+```shell
+kubectl run mysql-client \
+  --namespace infra \
+  --rm \
+  --interactive \
+  --tty \
+  --restart=Never \
+  --image=mysql:8.4 \
+  -- mysql \
+  --host=sns-db.xxxxxxxxxxxx.ap-northeast-2.rds.amazonaws.com \
+  --port=3306 \
+  --user=admin \
+  --password \
+  --ssl-mode=REQUIRED
+```
+
+`--rm`은 MySQL Client 프로세스가 종료되면 임시 Pod도 삭제한다. 이는 컨테이너만 재시작하는 동작이 아니라 Pod 객체 자체를 제거하는 동작이다. 비밀번호는 명령에 직접 작성하지 않고 프롬프트에서 입력한다.
+
+접속이 되지 않으면 RDS Endpoint, VPC, Security Group, Public Access 여부가 아니라 EKS에서 RDS까지의 사설 네트워크 경로를 확인해야 한다.
+
+#### Database와 초기 테이블 생성
+
+다음은 SNS 애플리케이션을 실행하기 위한 최소 예시다. 실제 서비스에서는 각 마이크로서비스가 자신의 데이터 저장소를 소유하도록 분리하는 것이 바람직하다.
+
+```sql
+CREATE DATABASE IF NOT EXISTS sns
+    CHARACTER SET utf8mb4
+    COLLATE utf8mb4_0900_ai_ci;
+
+CREATE USER IF NOT EXISTS 'sns_server'@'%'
+    IDENTIFIED BY 'CHANGE_ME_STRONG_PASSWORD';
+
+GRANT SELECT, INSERT, UPDATE, DELETE
+    ON sns.*
+    TO 'sns_server'@'%';
+
+USE sns;
+
+CREATE TABLE member (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    username VARCHAR(50) NOT NULL,
+    display_name VARCHAR(100) NOT NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_member_username (username)
+) ENGINE=InnoDB;
+
+CREATE TABLE feed (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    author_id BIGINT UNSIGNED NOT NULL,
+    content VARCHAR(2000) NOT NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
+        ON UPDATE CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (id),
+    KEY idx_feed_author_created_at (author_id, created_at)
+) ENGINE=InnoDB;
+
+CREATE TABLE image (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    feed_id BIGINT UNSIGNED NOT NULL,
+    storage_path VARCHAR(500) NOT NULL,
+    content_type VARCHAR(100) NOT NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (id),
+    KEY idx_image_feed_id (feed_id)
+) ENGINE=InnoDB;
+```
+
+관리 계정은 스키마 생성과 사용자 관리에만 사용한다. 애플리케이션은 테이블 생성 권한이 없는 `sns_server` 계정으로 접속하도록 구성한다.
+
+생성 결과를 확인한다.
+
+```sql
+SHOW DATABASES;
+USE sns;
+SHOW TABLES;
+SHOW GRANTS FOR 'sns_server'@'%';
+```
+
+비밀번호는 Kubernetes YAML이나 Git 저장소에 평문으로 저장하면 안 된다. 실습에서는 Kubernetes Secret을 사용할 수 있지만 운영 환경에서는 AWS Secrets Manager와 External Secrets Operator 같은 비밀 관리 체계를 고려해야 한다.
+
+#### RDS용 ExternalName Service 생성
+
+RDS Endpoint를 애플리케이션 설정마다 반복하지 않도록 Kubernetes DNS 별칭을 만들 수 있다.
+
+`mysql-service.yaml`을 작성한다.
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  namespace: infra
+spec:
+  type: ExternalName
+  externalName: sns-db.xxxxxxxxxxxx.ap-northeast-2.rds.amazonaws.com
+```
+
+- `apiVersion: v1`은 Service가 Kubernetes Core API에 속한다는 의미다.
+- `kind: Service`는 DNS 이름으로 접근할 Service 객체를 생성한다.
+- `metadata.namespace`는 Service가 `infra` Namespace에 생성되도록 한다.
+- `type: ExternalName`은 ClusterIP를 만들지 않고 외부 DNS 이름으로 CNAME 응답을 반환한다.
+- `externalName`에는 IP 주소가 아닌 RDS의 DNS Endpoint를 지정한다.
+
+```shell
+kubectl apply -f mysql-service.yaml
+kubectl get service mysql -n infra
+kubectl get service mysql -n infra -o wide
+```
+
+다른 Namespace의 애플리케이션에서는 다음 주소로 접근할 수 있다.
+
+```text
+mysql.infra.svc.cluster.local:3306
+```
+
+`ExternalName` Service는 트래픽을 프록시하거나 RDS 상태를 검사하지 않는다. 또한 TLS 인증서의 호스트 이름은 실제 RDS Endpoint와 일치하므로 엄격한 호스트 검증을 사용할 때 Kubernetes 별칭과 인증서 이름이 충돌할 수 있다. 운영 환경에서는 실제 RDS Endpoint를 ConfigMap이나 환경별 설정으로 주입하는 방식도 함께 검토해야 한다.
+
+#### Helm으로 Redis 설치
+
+이번 Redis는 캐시와 간단한 작업 상태 저장을 위한 단일 인스턴스로 설치한다. 영구 스토리지와 인증을 비활성화하므로 개발 환경에서만 사용해야 한다.
+
+`redis-values.yaml`을 작성한다.
+
+```yaml
+architecture: standalone
+
+auth:
+  enabled: false
+
+master:
+  persistence:
+    enabled: false
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+```
+
+`architecture: standalone`은 Master 한 개만 생성한다. `master.persistence.enabled: false`이면 PVC 대신 `emptyDir`를 사용하므로 Pod가 삭제되거나 다른 Node에 재생성될 때 데이터가 사라진다. 컨테이너만 재시작되고 Pod가 유지되는 동안에는 `emptyDir`도 유지될 수 있다.
+
+```shell
+helm upgrade --install redis \
+  oci://registry-1.docker.io/bitnamicharts/redis \
+  --namespace infra \
+  --values redis-values.yaml \
+  --wait \
+  --timeout 10m
+```
+
+Bitnami Chart의 설정 키와 이미지 제공 정책은 버전에 따라 달라질 수 있다. 적용 전 `helm show values`로 현재 Chart의 값을 확인하고, 재현 가능한 환경에서는 검증한 Chart 버전을 고정해야 한다. [Bitnami Redis Chart 설정](https://github.com/bitnami/charts/blob/main/bitnami/redis/README.md)
+
+Redis 상태를 확인한다.
+
+```shell
+helm list -n infra
+kubectl get pods,services -n infra
+kubectl get statefulset -n infra
+```
+
+접속 테스트를 실행한다.
+
+```shell
+kubectl run redis-client \
+  --namespace infra \
+  --rm \
+  --interactive \
+  --tty \
+  --restart=Never \
+  --image=redis:8-alpine \
+  -- redis-cli \
+  --host redis-master.infra.svc.cluster.local \
+  ping
+```
+
+정상적인 경우 다음 결과가 출력된다.
+
+```text
+PONG
+```
+
+#### Helm으로 Kafka 설치
+
+Kafka는 최근 구성에서 ZooKeeper 대신 KRaft를 사용한다. 세 개의 Controller-eligible Node가 Controller와 Broker 역할을 함께 수행하도록 구성한다.
+
+먼저 인증 정보를 Secret으로 생성한다. 다음 비밀번호는 반드시 실제 강력한 값으로 교체한다.
+
+```shell
+kubectl create secret generic kafka-auth \
+  --namespace infra \
+  --from-literal=client-passwords='CHANGE_ME_CLIENT_PASSWORD' \
+  --from-literal=inter-broker-password='CHANGE_ME_INTER_BROKER_PASSWORD' \
+  --from-literal=controller-password='CHANGE_ME_CONTROLLER_PASSWORD'
+```
+
+`kafka-values.yaml`을 작성한다.
+
+```yaml
+controller:
+  replicaCount: 3
+  controllerOnly: false
+  persistence:
+    enabled: false
+  resources:
+    requests:
+      cpu: 200m
+      memory: 384Mi
+    limits:
+      cpu: 750m
+      memory: 768Mi
+
+broker:
+  replicaCount: 0
+
+listeners:
+  client:
+    protocol: SASL_PLAINTEXT
+  controller:
+    protocol: SASL_PLAINTEXT
+  interbroker:
+    protocol: SASL_PLAINTEXT
+
+sasl:
+  enabledMechanisms: PLAIN
+  interBrokerMechanism: PLAIN
+  controllerMechanism: PLAIN
+  client:
+    users:
+      - sns-app
+  existingSecret: kafka-auth
+```
+
+`controller.replicaCount: 3`은 과반수 합의를 위한 세 개의 KRaft 구성원을 생성한다. `controllerOnly: false`이므로 각 Pod가 Controller와 Broker 역할을 함께 수행한다. `broker.replicaCount: 0`은 별도의 Broker 전용 StatefulSet을 만들지 않는다.
+
+`persistence.enabled: false`이면 Kafka 로그가 `emptyDir`에 저장된다. Pod가 다시 생성되면 메시지, Offset, 메타데이터를 잃을 수 있으므로 운영 환경에서는 EBS 기반 PVC를 사용해야 한다.
+
+```shell
+helm upgrade --install kafka \
+  oci://registry-1.docker.io/bitnamicharts/kafka \
+  --namespace infra \
+  --values kafka-values.yaml \
+  --wait \
+  --timeout 15m
+```
+
+Kafka 상태를 확인한다.
+
+```shell
+helm list -n infra
+kubectl get pods,services,statefulsets -n infra
+kubectl rollout status statefulset/kafka-controller -n infra --timeout=10m
+```
+
+애플리케이션은 다음 Bootstrap Server를 사용한다.
+
+```text
+kafka.infra.svc.cluster.local:9092
+```
+
+세 개의 Kafka Pod를 두 개의 EKS Node에 배치하면 하나의 Node에 여러 Kafka Pod가 함께 배치될 수 있다. 해당 Node가 장애를 일으키면 KRaft 과반수를 동시에 잃을 수 있으므로 실제 고가용성 구성에서는 최소 세 개의 Worker Node를 서로 다른 가용 영역에 배치해야 한다.
+
+#### Redis와 Kafka의 실습 구성 한계
+
+| 항목 | 현재 실습 구성 | 운영 환경 권장 구성 |
+|---|---|---|
+| Redis 구조 | Standalone | ElastiCache 또는 Sentinel 및 Replication |
+| Redis 인증 | 비활성화 | 인증, ACL, TLS 적용 |
+| Redis 저장소 | `emptyDir` | 필요에 따라 PVC 또는 관리형 서비스 |
+| Kafka 구성 | Controller와 Broker 결합 | 규모에 따라 역할 분리 |
+| Kafka 저장소 | `emptyDir` | 가용 영역별 EBS PVC |
+| Kafka 인증 | SASL PLAIN | SASL_SSL 또는 IAM 기반 관리형 서비스 |
+| 장애 복구 | Pod 재생성만 가능 | 복제, 백업, 다중 AZ 구성 |
+| 운영 대안 | EKS 내부 설치 | Amazon ElastiCache와 Amazon MSK |
+
+Kubernetes가 Redis나 Kafka Pod를 다시 생성하는 것은 프로세스 가용성을 복구하는 Self-Healing이다. `emptyDir`에 있던 데이터까지 복구하는 것은 아니다. 데이터 복제와 로그 복구는 Redis와 Kafka 자체의 복제 설정 및 영구 스토리지가 담당해야 한다.
+
+#### Amazon ECR Repository 생성
+
+MSA에서는 서비스별로 독립적인 컨테이너 이미지를 빌드하고 배포하므로 Repository도 서비스 단위로 분리하는 것이 관리하기 쉽다.
+
+이번 프로젝트에서는 다음 Repository를 생성한다.
+
+- `feed-server`
+- `user-server`
+- `image-server`
+- `notification-batch`
+- `sns-frontend`
+
+AWS Console의 ECR에서 `Private repositories`를 선택하고 각각 생성할 수 있다. CLI에서는 다음과 같이 생성한다.
+
+```powershell
+$repositories = @(
+  "feed-server",
+  "user-server",
+  "image-server",
+  "notification-batch",
+  "sns-frontend"
+)
+
+foreach ($repository in $repositories) {
+  aws ecr create-repository `
+    --repository-name $repository `
+    --region ap-northeast-2 `
+    --profile sns-admin `
+    --image-tag-mutability IMMUTABLE `
+    --image-scanning-configuration scanOnPush=true `
+    --encryption-configuration encryptionType=AES256
+}
+```
+
+`IMMUTABLE`은 이미 사용된 태그를 다른 이미지로 덮어쓰지 못하게 한다. 배포 추적을 위해 `latest` 대신 Git Commit SHA나 빌드 번호를 태그로 사용하는 것이 좋다. ECR은 이미지 스캔과 Lifecycle Policy를 제공하므로 취약점 확인과 오래된 이미지 정리를 자동화할 수 있다. [Amazon ECR 기능](https://docs.aws.amazon.com/AmazonECR/latest/userguide/what-is-ecr.html)
+
+생성 결과를 확인한다.
+
+```shell
+aws ecr describe-repositories \
+  --region ap-northeast-2 \
+  --profile sns-admin \
+  --query "repositories[].repositoryUri" \
+  --output table
+```
+
+#### 컨테이너 이미지 Push 테스트
+
+AWS 계정 ID를 확인한다.
+
+```shell
+aws sts get-caller-identity \
+  --profile sns-admin \
+  --query Account \
+  --output text
+```
+
+ECR에 로그인한다.
+
+```shell
+aws ecr get-login-password \
+  --region ap-northeast-2 \
+  --profile sns-admin \
+  | docker login \
+  --username AWS \
+  --password-stdin <ACCOUNT_ID>.dkr.ecr.ap-northeast-2.amazonaws.com
+```
+
+이미지를 빌드하고 Push한다.
+
+```shell
+docker build -t feed-server:local .
+docker tag feed-server:local <ACCOUNT_ID>.dkr.ecr.ap-northeast-2.amazonaws.com/feed-server:dev-001
+docker push <ACCOUNT_ID>.dkr.ecr.ap-northeast-2.amazonaws.com/feed-server:dev-001
+```
+
+ECR에 등록된 이미지를 확인한다.
+
+```shell
+aws ecr list-images \
+  --repository-name feed-server \
+  --region ap-northeast-2 \
+  --profile sns-admin
+```
+
+EKS의 EC2 Node가 같은 계정의 ECR에서 이미지를 가져올 때는 일반적으로 Node IAM Role의 ECR Pull 권한을 사용한다. Pod Identity는 애플리케이션의 AWS API 호출 권한을 위한 기능이며 kubelet의 이미지 Pull 인증을 대신하지 않는다.
+
+#### 최종 상태 확인
+
+```shell
+kubectl get all -n infra
+kubectl get service mysql -n infra
+helm list -n infra
+kubectl get events -n infra --sort-by=.metadata.creationTimestamp
+```
+
+정상적인 상태에서는 다음 조건을 만족한다.
+
+- RDS 상태가 `Available`이다.
+- EKS 내부 MySQL Client에서 RDS에 접속할 수 있다.
+- `mysql` Service가 RDS Endpoint를 가리킨다.
+- Redis Pod가 `Running`이고 `PING`에 `PONG`을 반환한다.
+- Kafka Pod 세 개가 `Running`과 `Ready` 상태다.
+- ECR에 다섯 개의 Private Repository가 존재한다.
+- 테스트 이미지를 ECR에 Push할 수 있다.
+
+#### 자주 발생하는 문제
+
+| 현상 | 원인 | 확인 방법 |
+|---|---|---|
+| MySQL 연결 시간 초과 | RDS Security Group 또는 VPC 불일치 | TCP 3306 소스와 VPC 확인 |
+| `Access denied for user` | DB 사용자나 권한 오류 | `SHOW GRANTS` 확인 |
+| ExternalName 해석 실패 | Namespace 또는 Endpoint 오타 | `kubectl get svc mysql -n infra` 확인 |
+| Redis Pod가 `Pending` | Node 자원 부족 | Pod Events와 `requests` 확인 |
+| Kafka Pod가 `Pending` | 세 개 Pod를 배치할 CPU와 메모리 부족 | Node Allocatable과 스케줄링 이벤트 확인 |
+| Kafka가 `CrashLoopBackOff` | 인증 Secret 또는 KRaft 설정 오류 | StatefulSet 로그와 Secret Key 확인 |
+| `ImagePullBackOff` | ECR URI 또는 Node IAM Role 오류 | 이미지 태그와 ECR Pull 권한 확인 |
+| Helm 설치 실패 | Chart 값 변경 또는 이미지 Pull 실패 | `helm show values`, `helm template`, Pod Events 확인 |
+
+### 정리
+
+이번 구성에서는 MySQL을 Amazon RDS에 배치해 Kubernetes 클러스터의 생명주기와 분리하고, Redis와 Kafka는 Helm을 이용해 `infra` Namespace에 설치했다. RDS는 Private Access를 유지한 상태에서 EKS Security Group만 TCP 3306으로 허용했으며, 임시 MySQL Client Pod로 초기 스키마를 생성했다.
+
+Redis와 Kafka는 비용을 줄이기 위해 `emptyDir`를 사용했으므로 Pod가 삭제되거나 Node 장애로 재생성되면 데이터가 사라진다. 이는 Kubernetes의 Self-Healing으로 복구할 수 없는 데이터 손실이며 운영 환경에서는 ElastiCache, MSK 또는 적절한 복제와 영구 스토리지를 사용해야 한다.
+
+마지막으로 각 마이크로서비스의 이미지를 저장할 ECR Private Repository를 생성했다. 이후 Spring Boot 애플리케이션을 컨테이너 이미지로 빌드해 ECR에 Push하고, Deployment에서 해당 이미지 URI를 지정하면 준비한 EKS 환경에 서비스를 배포할 수 있다.
