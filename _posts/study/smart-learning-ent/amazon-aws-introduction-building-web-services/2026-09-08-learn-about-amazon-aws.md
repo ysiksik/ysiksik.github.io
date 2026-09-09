@@ -296,3 +296,379 @@ sequenceDiagram
 AWS 기반 웹 서비스는 EC2 인스턴스 하나를 생성하는 것만으로 완성되지 않는다. 외부 요청이 서버에 도달하려면 Public Network와 Security Group이 필요하고, 사람이 기억하기 쉬운 주소를 제공하려면 DNS와 A Record가 필요하다. WordPress의 데이터를 보관하려면 MySQL과 애플리케이션 전용 계정도 구성해야 한다.
 
 이번 과정의 핵심은 개별 AWS 서비스의 메뉴를 암기하는 것이 아니라 요청이 DNS, 방화벽, EC2, WordPress, MySQL을 거쳐 처리되는 전체 구조를 이해하는 것이다. 이 흐름을 이해하면 이후 다른 웹 애플리케이션을 AWS에 배포할 때도 같은 원리를 적용할 수 있다.
+
+
+## Cloud Computing의 개념
+
+클라우드 컴퓨팅은 서버, 네트워크, 스토리지, 데이터베이스와 같은 IT 자원을 직접 구매하지 않고 필요할 때 빌려 사용하며, 사용량에 따라 비용을 지불하는 방식이다.
+
+### On-Premises란
+
+On-Premises는 조직이 서버와 네트워크 장비를 직접 구매하고 자체 데이터센터나 IDC에 설치해 운영하는 방식이다.
+
+```mermaid
+flowchart LR
+    A["서버와 네트워크 장비 구매"] --> B["데이터센터에 장비 설치"]
+    B --> C["운영체제와 네트워크 구성"]
+    C --> D["애플리케이션 배포"]
+    D --> E["장애 대응과 유지보수"]
+```
+
+On-Premises 환경에서는 다음 작업을 조직이 직접 책임진다.
+
+- 서버, 네트워크 장비와 스토리지 구매
+- 데이터센터 공간과 전력 확보
+- 방화벽과 네트워크 구성
+- 고장 난 장비 교체
+- 데이터 백업과 복구
+- 처리량 증가에 따른 장비 증설
+- 운영체제와 애플리케이션 관리
+
+물리 장비까지 직접 통제할 수 있다는 장점이 있지만, 초기 투자 비용이 크고 장비 구매부터 설치까지 많은 시간이 필요하다.
+
+### Cloud Computing이란
+
+클라우드 환경에서는 AWS와 같은 공급자가 구축한 데이터센터의 자원을 Management Console, CLI 또는 API를 통해 생성하고 사용한다.
+
+```mermaid
+flowchart LR
+    U["사용자"] --> AWS["AWS Management Console 또는 API"]
+    AWS --> EC2["컴퓨팅 자원"]
+    AWS --> VPC["네트워크 자원"]
+    AWS --> S3["스토리지 자원"]
+    AWS --> RDS["데이터베이스 자원"]
+```
+
+클라우드의 주요 특징은 다음과 같다.
+
+- 필요한 자원을 빠르게 생성할 수 있다.
+- 사용량에 따라 자원을 확장하거나 축소할 수 있다.
+- 초기 하드웨어 구매 비용을 줄일 수 있다.
+- 사용하지 않는 자원을 제거해 비용을 조절할 수 있다.
+- 데이터베이스, 모니터링, 메시징 등의 관리형 서비스를 이용할 수 있다.
+- API와 Infrastructure as Code를 이용해 인프라를 자동화할 수 있다.
+
+### On-Premises와 Cloud 비교
+
+| 구분 | On-Premises | Cloud Computing |
+|---|---|---|
+| 자원 확보 | 장비 구매와 설치 | Console 또는 API로 생성 |
+| 초기 비용 | 상대적으로 큼 | 상대적으로 작음 |
+| 확장 속도 | 장비 구매와 설치 기간 필요 | 비교적 빠르게 확장 |
+| 비용 구조 | 장비와 유지보수 비용 | 사용량 기반 과금 |
+| 하드웨어 관리 | 사용자가 직접 수행 | 클라우드 사업자가 담당 |
+| 통제 범위 | 물리 장비까지 통제 | 제공되는 서비스 범위에서 통제 |
+| 장애 대응 | 자체 인력과 예비 장비 필요 | 다중 AZ와 관리형 기능 활용 |
+
+클라우드가 항상 On-Premises보다 저렴한 것은 아니다. 사용하지 않는 인스턴스, 스토리지, Load Balancer 등을 방치하거나 데이터 전송량이 많아지면 오히려 비용이 증가할 수 있다.
+
+총소유비용인 TCO를 비교할 때는 서버 비용뿐만 아니라 다음 항목을 함께 고려해야 한다.
+
+- 소프트웨어 라이선스
+- 네트워크와 스토리지 장비
+- 데이터센터와 전력
+- 인프라 운영 인력
+- 장애 대응과 유지보수
+- 보안과 백업
+- 기술 교육
+- 서비스 확장에 필요한 시간
+
+클라우드의 핵심 가치는 단순한 비용 절감이 아니라 빠른 자원 제공, 탄력적인 확장, 자동화와 관리형 서비스 활용에 있다.
+
+### 클라우드 서비스 모델
+
+| 모델 | 사용자가 관리하는 주요 영역 | 예시 |
+|---|---|---|
+| IaaS | 운영체제, 미들웨어, 애플리케이션 | Amazon EC2 |
+| PaaS | 애플리케이션과 데이터 | AWS Elastic Beanstalk |
+| Managed Service | 서비스 설정과 데이터 | Amazon RDS |
+| SaaS | 사용자 설정과 업무 데이터 | 웹 메일과 협업 서비스 |
+
+EC2는 가상 서버를 제공하므로 운영체제와 웹 서버를 사용자가 관리해야 한다. RDS는 데이터베이스 설치, 백업과 장애 조치의 일부를 AWS에 위임할 수 있다. 관리형 서비스를 사용하면 운영 부담은 줄어들지만 비용과 설정 자유도는 달라질 수 있다.
+
+## AWS 가입
+
+AWS 계정을 생성하면 계정 전체를 제어할 수 있는 Root User가 만들어진다. Root User는 결제 정보 변경과 계정 해지 같은 일부 계정 수준 작업에 필요하지만, 일상적인 인프라 관리에는 사용하지 않는 것이 원칙이다.
+
+### 가입 준비물
+
+- 수신 가능한 이메일 주소
+- 본인 확인이 가능한 휴대전화
+- 유효한 결제 수단
+- 정확한 영문 주소와 연락처
+- MFA에 사용할 스마트폰 또는 보안 키
+
+업무용 계정은 개인 이메일보다 조직이 관리하는 이메일 주소를 사용하는 것이 안전하다. Root User 이메일은 계정 복구에 사용되므로 이메일 계정에도 MFA를 적용해야 한다.
+
+### 가입 절차
+
+1. AWS 계정 생성 화면에서 Root User 이메일과 계정 이름을 입력한다.
+2. 이메일로 전달된 인증 코드를 입력한다.
+3. Root User에 사용할 강력한 비밀번호를 설정한다.
+4. Free Plan 또는 Paid Plan을 선택한다.
+5. 개인 또는 비즈니스 계정 유형을 선택한다.
+6. 영문 주소와 연락처를 입력한다.
+7. 결제 정보를 등록한다.
+8. 전화번호 등을 이용해 본인 인증을 수행한다.
+9. 계정 활성화가 완료될 때까지 기다린다.
+10. Root User로 로그인해 MFA와 비용 알림을 설정한다.
+
+가입 화면과 절차는 계정 유형과 시점에 따라 달라질 수 있다. 비밀번호는 다른 서비스에서 사용한 값을 재사용하지 않고 충분히 길고 복잡하게 설정해야 한다.
+
+### 가입 직후 수행할 작업
+
+```mermaid
+flowchart TD
+    A["AWS 계정 생성"] --> B["Root User MFA 등록"]
+    B --> C["IAM Identity Center 또는 IAM User 구성"]
+    C --> D["AWS Budgets 설정"]
+    D --> E["기본 리전 확인"]
+    E --> F["Root User 로그아웃"]
+    F --> G["관리용 사용자로 로그인"]
+```
+
+AWS Resource는 대부분 리전 단위로 관리된다. 서울 리전에서 생성한 EC2는 도쿄 리전을 선택한 화면에서 보이지 않는다. 실습에 사용할 리전을 정하고 Resource를 생성하기 전에 현재 리전을 확인해야 한다.
+
+Root User로 기본 보안 설정을 완료한 다음에는 로그아웃하고 별도의 관리용 사용자로 작업한다.
+
+## MFA(2차 인증) 설정
+
+`MEA`가 아니라 `MFA`가 올바른 명칭이다. MFA는 Multi-Factor Authentication의 약자로, 비밀번호 외에 추가 인증 요소를 요구하는 보안 방식이다.
+
+비밀번호가 유출되더라도 등록된 인증 장치가 없으면 로그인을 완료하기 어렵게 만들기 때문에 Root User에는 반드시 MFA를 설정해야 한다.
+
+### AWS에서 지원하는 MFA 방식
+
+| 방식 | 특징 | 권장 상황 |
+|---|---|---|
+| Passkey | 생체 인증, PIN 또는 자격 증명 관리자를 이용 | 일반 사용자에게 우선 권장 |
+| FIDO Security Key | 물리 보안 키 사용 | 관리자와 중요 계정 |
+| Virtual Authenticator | 시간 기반 일회용 비밀번호 사용 | 스마트폰을 이용한 간단한 구성 |
+| Hardware TOTP Token | 전용 장치에서 인증 코드 생성 | 스마트폰 사용이 제한된 환경 |
+
+Virtual Authenticator에는 Google Authenticator뿐만 아니라 TOTP 표준을 지원하는 Microsoft Authenticator, 1Password 등의 애플리케이션도 사용할 수 있다.
+
+### Root User MFA 설정 절차
+
+1. AWS Management Console에 Root User로 로그인한다.
+2. 오른쪽 상단의 계정 메뉴에서 `Security credentials`를 선택한다.
+3. `Multi-factor authentication`에서 `Assign MFA device`를 선택한다.
+4. Passkey, Security Key 또는 Authenticator App을 선택한다.
+5. Authenticator App을 사용한다면 화면의 QR 코드를 스캔한다.
+6. 화면에서 요구하는 연속된 MFA 코드를 입력한다.
+7. 등록이 완료되면 AWS Console에서 로그아웃한다.
+8. Root User 이메일, 비밀번호와 MFA를 이용해 다시 로그인한다.
+
+```mermaid
+sequenceDiagram
+    participant U as "사용자"
+    participant AWS as "AWS 로그인"
+    participant MFA as "MFA 장치"
+
+    U->>AWS: "이메일과 비밀번호 입력"
+    AWS->>U: "추가 인증 요청"
+    U->>MFA: "Passkey 또는 TOTP 확인"
+    MFA-->>U: "추가 인증 정보 제공"
+    U->>AWS: "추가 인증 수행"
+    AWS-->>U: "로그인 완료"
+```
+
+### MFA 설정 시 주의사항
+
+- QR 코드와 초기 설정 키를 공개된 장소에 저장하지 않는다.
+- MFA 화면을 캡처해 메신저나 Git 저장소에 올리지 않는다.
+- 스마트폰의 시간 동기화 기능을 활성화한다.
+- 계정 복구에 사용하는 이메일과 전화번호를 최신 상태로 유지한다.
+- 중요한 계정에는 복구 가능한 추가 MFA 장치 등록을 검토한다.
+- Root User뿐만 아니라 Console에 로그인하는 IAM User에도 MFA를 적용한다.
+
+TOTP 인증 코드는 일반적으로 일정 시간마다 변경된다. 첫 번째 코드와 두 번째 코드를 입력해야 하는 화면에서는 코드가 변경된 후 다음 값을 입력해야 한다.
+
+## AWS Free Tier 설명
+
+AWS Free Tier는 AWS 서비스를 무제한으로 무료 사용할 수 있는 제도가 아니다. 가입 시점, 선택한 Account Plan, 서비스와 사용량에 따라 무료 적용 범위가 달라진다.
+
+현재 신규 고객은 가입 시 기본 크레딧을 받고 지정된 활동을 통해 추가 크레딧을 받을 수 있다. Free Plan은 최대 6개월 또는 크레딧을 모두 사용할 때까지 유지되며, 먼저 도달한 조건에 따라 종료된다.
+
+### Free Plan과 Paid Plan
+
+| 구분 | Free Plan | Paid Plan |
+|---|---|---|
+| 주요 목적 | 학습과 기능 체험 | 운영 및 확장 가능한 서비스 |
+| 사용 기간 | 최대 6개월 또는 크레딧 소진 시점 | 계정을 유지하는 동안 사용 |
+| 비용 | Plan 범위에서 과금 방지 | 크레딧 초과분을 종량제로 청구 |
+| 서비스 범위 | 일부 서비스와 기능 제한 | 더 넓은 서비스와 기능 사용 |
+| 종료 시점 | 계정 종료 및 Resource 접근 제한 가능 | 사용한 만큼 계속 과금 |
+
+과거에 사용되던 `가입 후 12개월 무료`, `EBS 30GB 무료`, `Elastic IP 한 개 무료`와 같은 기준을 현재의 모든 신규 계정에 적용하면 안 된다. Billing Console에서 현재 계정에 적용된 Plan, 크레딧과 서비스별 무료 사용량을 직접 확인해야 한다.
+
+### Free Tier에서도 비용이 발생하는 사례
+
+- 무료 범위를 초과한 EC2 인스턴스를 실행한 경우
+- EC2를 중지했지만 EBS Volume을 남겨 둔 경우
+- EBS Snapshot이나 AMI를 삭제하지 않은 경우
+- Public IPv4 또는 Elastic IP를 계속 보유한 경우
+- RDS에서 Multi-AZ나 높은 사양을 선택한 경우
+- Provisioned IOPS와 추가 스토리지를 사용한 경우
+- NAT Gateway나 Load Balancer를 생성한 경우
+- 다른 리전이나 인터넷으로 대량의 데이터를 전송한 경우
+- CloudWatch Log를 장기간 저장한 경우
+- 사용하지 않는 컨테이너 이미지와 백업을 보관한 경우
+
+EC2를 중지하면 일반적으로 인스턴스 컴퓨팅 비용은 중단되지만 EBS Volume, Snapshot, Public IPv4 등의 비용은 계속 발생할 수 있다. 중지와 삭제를 동일하게 생각하면 안 된다.
+
+### 비용 사고를 방지하는 방법
+
+1. Billing Console에서 현재 크레딧과 사용량을 확인한다.
+2. AWS Budgets에서 월간 예산을 설정한다.
+3. 예산 사용량의 50%, 80%, 100%에 알림을 설정한다.
+4. Cost Anomaly Detection을 활성화한다.
+5. 모든 Resource에 `Project`, `Environment`, `Owner` 태그를 추가한다.
+6. 실습이 끝나면 모든 리전에서 Resource를 확인한다.
+7. EC2뿐만 아니라 EBS, Snapshot, Elastic IP와 Load Balancer도 삭제한다.
+
+```mermaid
+flowchart LR
+    R["AWS Resource 생성"] --> C["비용 발생"]
+    C --> B["AWS Budgets"]
+    C --> A["Cost Anomaly Detection"]
+    B --> N["비용 알림"]
+    A --> N
+    N --> D["불필요한 Resource 정리"]
+```
+
+Free Tier 사용 여부와 관계없이 비용 모니터링은 주기적으로 수행해야 한다. 알림은 비용 발생을 차단하는 기능이 아니라 사용량을 알려주는 기능이므로, 알림을 받은 뒤 Resource를 직접 확인하고 조치해야 한다.
+
+## AWS IAM을 이용한 부계정 생성하기
+
+IAM은 Identity and Access Management의 약자로 AWS Resource에 접근할 수 있는 사용자, 역할과 권한을 관리하는 서비스다.
+
+IAM User를 흔히 AWS 부계정이라고 표현하지만 독립된 AWS 계정은 아니다. IAM User는 하나의 AWS Account 안에서 생성되는 Identity이며 결제 정보, 서비스 한도와 Resource를 상위 계정과 공유한다.
+
+별도의 Root User와 결제 경계를 가진 독립 환경이 필요하다면 AWS Organizations의 Member Account를 사용해야 한다.
+
+### Root User, IAM User와 IAM Role 비교
+
+| 구분 | Root User | IAM User | IAM Role |
+|---|---|---|---|
+| 범위 | AWS Account 전체 | Account 내부 Identity | 위임 가능한 Identity |
+| 자격 증명 | 장기 자격 증명 | 장기 자격 증명 | 임시 자격 증명 |
+| 주요 용도 | 계정 수준의 제한된 작업 | 소규모 실습 또는 호환 목적 | 사용자와 AWS 서비스의 권한 위임 |
+| 일상 사용 | 사용하지 않는 것이 원칙 | 가능하지만 신규 구성에는 비권장 | 권장 |
+| MFA | 반드시 설정 | Console 사용자에게 설정 | Role 사용자의 인증 단계에서 적용 |
+
+현재는 사람의 AWS 접근에 IAM User를 대량으로 생성하기보다 IAM Identity Center와 IAM Role 기반 임시 자격 증명을 사용하는 방식이 권장된다. 다만 IAM의 기본 구조를 이해하기 위한 실습에서는 제한된 IAM User를 생성할 수 있다.
+
+### IAM 권한 평가 원칙
+
+IAM은 기본적으로 모든 요청을 거부한다. Policy에서 명시적으로 허용한 작업만 실행할 수 있으며 명시적인 `Deny`는 다른 Policy의 `Allow`보다 우선한다.
+
+```mermaid
+flowchart TD
+    P["AWS API 요청"] --> D["기본적으로 접근 거부"]
+    D --> A{"Allow Policy가 존재하는가"}
+    A -->|"아니요"| DENY["접근 거부"]
+    A -->|"예"| E{"명시적인 Deny가 존재하는가"}
+    E -->|"예"| DENY
+    E -->|"아니요"| ALLOW["접근 허용"]
+```
+
+### IAM Policy 유형
+
+| Policy 유형 | 역할 |
+|---|---|
+| Identity-based Policy | User, Group과 Role에 권한 부여 |
+| Resource-based Policy | Resource에 접근 가능한 Principal 지정 |
+| Permissions Boundary | Identity가 가질 수 있는 최대 권한 제한 |
+| Organizations SCP | 조직 또는 Account의 최대 권한 제한 |
+| ACL | 일부 서비스의 Resource 접근 목록 |
+| Session Policy | 임시 Session의 권한을 추가로 제한 |
+
+Permissions Boundary와 SCP는 권한을 직접 부여하지 않는다. 다른 Policy에서 허용한 권한이 실제로 행사될 수 있는 최대 범위를 제한한다.
+
+### IAM Group과 User 생성
+
+1. Root User로 AWS Management Console에 로그인한다.
+2. IAM으로 이동한다.
+3. `User groups`에서 `Create group`을 선택한다.
+4. 그룹 이름을 `EC2Operators`로 지정한다.
+5. 실습에 필요한 EC2 Policy를 그룹에 연결한다.
+6. `Users`에서 `Create user`를 선택한다.
+7. 사용자 이름을 `user01`과 같이 지정한다.
+8. AWS Management Console 접근이 필요하면 Console Access를 활성화한다.
+9. 사용자가 최초 로그인 시 비밀번호를 변경하도록 설정한다.
+10. 사용자를 `EC2Operators` 그룹에 추가한다.
+11. IAM User에도 MFA를 등록한다.
+12. Root User에서 로그아웃한 후 IAM User로 다시 로그인한다.
+
+`AmazonEC2FullAccess`는 EC2 관련 Resource를 광범위하게 관리할 수 있는 권한이다. 간단한 실습에서는 사용할 수 있지만 운영 환경에서는 필요한 작업만 허용하도록 권한을 축소해야 한다.
+
+### 최소 권한 Policy 예시
+
+다음 Policy는 서울 리전에 있고 `Environment=study` 태그가 지정된 EC2 인스턴스의 시작, 중지와 재부팅만 허용한다.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ViewEC2Resources",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeInstances",
+        "ec2:DescribeInstanceStatus",
+        "ec2:DescribeTags"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ManageStudyInstances",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:StartInstances",
+        "ec2:StopInstances",
+        "ec2:RebootInstances"
+      ],
+      "Resource": "arn:aws:ec2:ap-northeast-2:<ACCOUNT_ID>:instance/*",
+      "Condition": {
+        "StringEquals": {
+          "ec2:ResourceTag/Environment": "study"
+        }
+      }
+    }
+  ]
+}
+```
+
+- `Version`은 IAM Policy 문법 버전이다.
+- `Statement`는 하나 이상의 권한 규칙을 포함한다.
+- `Effect`는 요청을 허용하거나 거부한다.
+- `Action`은 수행할 수 있는 AWS API를 지정한다.
+- `Resource`는 권한이 적용되는 Resource ARN이다.
+- `Condition`은 특정 태그가 있는 EC2로 권한 범위를 제한한다.
+
+`<ACCOUNT_ID>`는 실제 AWS Account ID로 변경해야 한다.
+
+### IAM User 로그인
+
+IAM User는 Account ID 또는 Account Alias가 포함된 URL로 로그인할 수 있다.
+
+```text
+https://<ACCOUNT_ID>.signin.aws.amazon.com/console
+```
+
+Account Alias를 설정했다면 다음 형식을 사용할 수 있다.
+
+```text
+https://<ACCOUNT_ALIAS>.signin.aws.amazon.com/console
+```
+
+로그인 URL, IAM 사용자 이름과 초기 비밀번호는 안전한 경로로 전달한다. 비밀번호와 MFA 초기 설정 정보를 같은 메시지로 전달해서는 안 된다.
+
+Access Key는 Console 로그인 정보와 별개다. AWS CLI나 API를 사용할 필요가 없다면 생성하지 않는다. 프로그램에서 AWS 서비스에 접근해야 한다면 Access Key를 소스 코드에 저장하지 말고 IAM Role과 임시 자격 증명을 사용해야 한다.
+
+### 정리
+
+Root User는 MFA와 계정 복구 설정을 관리하는 용도로 제한하고 일상적인 작업에는 IAM Identity Center, IAM Role 또는 권한이 제한된 IAM User를 사용해야 한다.
+
+IAM User를 생성할 때는 사용자에게 Policy를 직접 반복해서 연결하기보다 역할이 같은 사용자들을 Group으로 관리하는 것이 효율적이다. 또한 처음에는 AWS Managed Policy로 실습하더라도 실제 운영 환경에서는 사용 기록을 바탕으로 최소 권한 Policy로 축소해야 한다.
