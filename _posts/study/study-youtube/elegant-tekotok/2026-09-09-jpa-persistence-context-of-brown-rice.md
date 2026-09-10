@@ -1734,6 +1734,665 @@ Database 반영
 
 ---
 
+## Spring Batch에서 JPA를 사용할 때 주의할 점
+
+지금까지 살펴본 영속성 컨텍스트의 기능은 일반적인 웹 애플리케이션에서는 매우 편리하다.
+
+```text
+Entity 조회
+
+↓
+
+1차 캐시
+
+↓
+
+상태 변경
+
+↓
+
+Dirty Checking
+
+↓
+
+UPDATE
+```
+
+하지만 수십만 건, 수백만 건의 데이터를 처리하는 **Spring Batch에서는 영속성 컨텍스트의 특성이 오히려 성능과 메모리 문제로 이어질 수 있다.**
+
+그 이유는 영속성 컨텍스트가 자신이 관리하는 엔티티를 계속 기억하기 때문이다.
+
+예를 들어 배치에서 100만 개의 엔티티를 하나씩 조회하면서 수정한다고 생각해보자.
+
+```java
+for (Menu menu : menus) {
+    menu.changeStatus();
+}
+```
+
+영속성 컨텍스트가 계속 유지되는 구조라면 처리한 엔티티가 1차 캐시에 계속 쌓일 수 있다.
+
+```text
+Persistence Context
+
+1건
+↓
+
+1,000건
+↓
+
+10,000건
+↓
+
+100,000건
+↓
+
+...
+```
+
+JPA는 단순히 엔티티 객체만 보관하는 것도 아니다.
+
+변경 감지를 위해 엔티티의 상태를 관리해야 하고, 구현체에 따라 스냅샷과 여러 관리 정보도 함께 유지한다.
+
+따라서 관리하는 엔티티가 지나치게 많아지면 다음과 같은 문제가 발생할 수 있다.
+
+```text
+메모리 사용량 증가
+
+Dirty Checking 대상 증가
+
+GC 부담 증가
+
+Flush 비용 증가
+
+전체 Batch 처리 속도 저하
+```
+
+즉 웹 요청에서는 유용했던 1차 캐시와 변경 감지가 대량 처리에서는 관리해야 할 비용으로 바뀔 수 있다.
+
+---
+
+### Chunk 단위로 생각해야 한다
+
+Spring Batch에서 흔히 사용하는 방식은 Chunk-Oriented Processing이다.
+
+예를 들어 Chunk Size가 1,000이라면 개념적으로 다음처럼 동작한다.
+
+```text
+1,000건 Read
+
+↓
+
+Process
+
+↓
+
+1,000건 Write
+
+↓
+
+Transaction Commit
+
+↓
+
+다음 1,000건 처리
+```
+
+Spring Batch는 설정된 Chunk를 하나의 트랜잭션 경계로 처리한다.
+
+따라서 JPA를 사용할 때도 전체 데이터를 하나의 거대한 영속성 컨텍스트에서 처리하기보다 **Chunk 또는 Page 단위로 영속성 컨텍스트의 크기를 제한하는 것**이 중요하다.
+
+```text
+Chunk 1
+
+1 ~ 1,000
+→ 처리
+→ Flush / Commit
+→ Persistence Context 정리
+
+
+Chunk 2
+
+1,001 ~ 2,000
+→ 처리
+→ Flush / Commit
+→ Persistence Context 정리
+```
+
+이 구조를 이용하면 처리한 엔티티가 계속 메모리에 누적되는 것을 방지할 수 있다.
+
+---
+
+### flush()와 clear()의 역할을 구분해야 한다
+
+JPA 배치 처리에서 자주 등장하는 두 메서드가 있다.
+
+```java
+entityManager.flush();
+entityManager.clear();
+```
+
+둘은 역할이 다르다.
+
+`flush()`는 현재 영속성 컨텍스트의 변경사항을 데이터베이스와 동기화한다.
+
+```text
+Persistence Context
+
+↓
+
+flush()
+
+↓
+
+INSERT / UPDATE / DELETE SQL 실행
+```
+
+하지만 `flush()`를 호출했다고 영속성 컨텍스트가 비워지는 것은 아니다.
+
+엔티티들은 여전히 관리 상태로 남아 있을 수 있다.
+
+반면 `clear()`는 영속성 컨텍스트를 비운다.
+
+```text
+Persistence Context
+
+Entity A
+Entity B
+Entity C
+
+↓
+
+clear()
+
+↓
+
+Persistence Context
+
+empty
+```
+
+따라서 직접 JPA 기반 대량 처리를 구현한다면 상황에 따라 다음과 같은 패턴을 고려할 수 있다.
+
+```java
+for (int i = 0; i < menus.size(); i++) {
+    Menu menu = menus.get(i);
+    menu.changeStatus();
+
+    if (i % batchSize == 0) {
+        entityManager.flush();
+        entityManager.clear();
+    }
+}
+```
+
+핵심은 일정한 단위로 데이터베이스에 변경사항을 반영하고, 더 이상 관리할 필요가 없는 엔티티를 영속성 컨텍스트에서 제거하는 것이다.
+
+다만 Spring Batch가 제공하는 JPA 전용 Reader와 Writer를 사용한다면 해당 컴포넌트가 영속성 컨텍스트를 어떻게 관리하는지도 함께 확인해야 한다.
+
+---
+
+### JpaPagingItemReader는 페이지마다 영속성 컨텍스트를 정리한다
+
+Spring Batch에는 JPA를 이용한 Paging Reader인 `JpaPagingItemReader`가 있다.
+
+개념적으로 다음과 같이 사용할 수 있다.
+
+```java
+@Bean
+public JpaPagingItemReader<Menu> menuReader(
+        EntityManagerFactory entityManagerFactory
+) {
+    return new JpaPagingItemReaderBuilder<Menu>()
+            .name("menuReader")
+            .entityManagerFactory(entityManagerFactory)
+            .queryString("select m from Menu m order by m.id")
+            .pageSize(1000)
+            .build();
+}
+```
+
+`JpaPagingItemReader`가 중요한 이유는 대량 데이터를 읽으면서 영속성 컨텍스트가 계속 커지는 문제를 고려하고 있기 때문이다.
+
+페이지를 읽은 뒤 영속성 컨텍스트를 정리하여 이전에 조회한 엔티티를 계속 관리하지 않도록 한다.
+
+```text
+Page 1 조회
+
+1 ~ 1,000
+
+↓
+
+Persistence Context 정리
+
+
+Page 2 조회
+
+1,001 ~ 2,000
+
+↓
+
+Persistence Context 정리
+```
+
+이 덕분에 수십만 건을 읽더라도 모든 엔티티가 하나의 영속성 컨텍스트에 계속 남아 있는 상황을 피할 수 있다.
+
+하지만 여기에는 중요한 특징이 있다.
+
+영속성 컨텍스트가 정리되면 Reader가 반환한 엔티티는 **detached 상태**가 될 수 있다.
+
+---
+
+### Detached Entity에서는 변경 감지를 그대로 기대하면 안 된다
+
+일반적인 서비스 코드에서는 다음과 같은 코드가 자연스럽다.
+
+```java
+@Transactional
+public void changeMenu(Long id) {
+    Menu menu = menuRepository.findById(id)
+            .orElseThrow();
+
+    menu.changeStatus();
+}
+```
+
+Menu가 영속 상태이므로 Dirty Checking에 의해 변경사항이 반영된다.
+
+```text
+Managed Entity
+
+↓
+
+상태 변경
+
+↓
+
+Dirty Checking
+
+↓
+
+UPDATE
+```
+
+하지만 Batch Reader가 영속성 컨텍스트를 비운 뒤 반환한 엔티티는 상황이 다르다.
+
+```text
+Entity 조회
+
+↓
+
+Persistence Context clear
+
+↓
+
+Detached Entity
+```
+
+Detached 상태의 엔티티는 현재 영속성 컨텍스트가 관리하지 않는다.
+
+따라서 단순히 객체의 값을 변경했다고 해서 일반적인 영속 엔티티처럼 변경 감지가 이루어진다고 가정해서는 안 된다.
+
+```java
+public Menu process(Menu menu) {
+    menu.changeStatus();
+
+    return menu;
+}
+```
+
+여기에서 반환되는 `menu`가 Detached 상태라면 Writer에서 다시 영속성 컨텍스트와 연결하는 과정이 필요할 수 있다.
+
+Spring Batch의 `JpaItemWriter`는 이러한 상황을 고려하여 영속성 컨텍스트에 포함되어 있지 않은 엔티티를 `merge()`하는 방식으로 처리할 수 있다.
+
+```text
+Detached Entity
+
+↓
+
+JpaItemWriter
+
+↓
+
+merge
+
+↓
+
+Managed Entity
+
+↓
+
+flush
+```
+
+따라서 Batch에서는
+
+```text
+Reader에서 조회했으니까
+계속 Managed 상태겠지.
+```
+
+라고 단정해서는 안 된다.
+
+---
+
+### clear() 이후에는 지연 로딩에도 주의해야 한다
+
+앞에서 JPA의 지연 로딩을 다음처럼 설명했다.
+
+```text
+Reservation
+
+↓
+
+Theme Proxy
+
+↓
+
+getName()
+
+↓
+
+Theme SELECT
+```
+
+하지만 Proxy가 실제 데이터를 가져오려면 일반적으로 해당 지연 로딩을 수행할 수 있는 영속성 컨텍스트가 필요하다.
+
+Batch Reader에서 엔티티를 읽은 후 영속성 컨텍스트가 정리되어 Detached 상태가 되었다고 생각해보자.
+
+```text
+Reservation 조회
+
+↓
+
+Theme Proxy 존재
+
+↓
+
+Persistence Context clear
+
+↓
+
+Detached Reservation
+```
+
+이후 Processor에서 다음 코드를 실행한다.
+
+```java
+public Reservation process(
+        Reservation reservation
+) {
+    String themeName =
+            reservation.getTheme().getName();
+
+    return reservation;
+}
+```
+
+필요한 연관 데이터가 미리 로딩되어 있지 않다면 지연 로딩 시 문제가 발생할 수 있다.
+
+따라서 Batch에서 JPA Entity를 Reader → Processor → Writer로 전달할 때는
+
+```text
+Processor에서 어떤 연관 데이터를 사용하는가?
+
+Reader에서 필요한 관계를 미리 조회해야 하는가?
+
+DTO 형태로 조회하는 것이 더 적절한가?
+```
+
+를 함께 고려해야 한다.
+
+---
+
+### Batch에서 N+1 문제는 더 큰 문제가 될 수 있다
+
+웹 API에서 N+1 문제가 발생하면 요청 하나가 느려질 수 있다.
+
+하지만 Batch에서 수십만 건을 처리하면서 N+1이 발생하면 영향이 훨씬 커질 수 있다.
+
+예를 들어 Reservation 10만 건을 읽는다.
+
+```text
+Reservation SELECT
+
+1회
+```
+
+그리고 Processor에서 각각 Theme에 접근한다.
+
+```java
+reservation.getTheme().getName();
+```
+
+만약 각 Reservation마다 추가 쿼리가 발생한다면
+
+```text
+Reservation
+100,000건
+
+↓
+
+Theme SELECT
+100,000회
+```
+
+와 같은 문제가 발생할 수 있다.
+
+따라서 Batch에서는 특히 다음을 확인해야 한다.
+
+```text
+연관 데이터 접근이 필요한가?
+
+Fetch Join이 적절한가?
+
+DTO Projection이 더 적절한가?
+
+Reader Query 자체에서 필요한 데이터만 가져올 수 있는가?
+```
+
+지연 로딩이 항상 성능을 높여주는 것은 아니다.
+
+데이터 접근 패턴에 맞지 않으면 오히려 대량의 추가 쿼리를 발생시킬 수 있다.
+
+---
+
+### Chunk Size가 크다고 무조건 좋은 것은 아니다
+
+Chunk Size를 크게 만들면 Commit 횟수를 줄일 수 있다.
+
+```text
+Chunk Size 10
+
+100,000건
+→ 약 10,000번 Chunk
+
+
+Chunk Size 1,000
+
+100,000건
+→ 약 100번 Chunk
+```
+
+따라서 Chunk Size를 크게 하면 트랜잭션 시작과 Commit 횟수를 줄이는 데 도움이 될 수 있다.
+
+하지만 너무 크게 설정하면 하나의 트랜잭션에서 관리하는 데이터도 많아진다.
+
+```text
+Chunk Size 증가
+
+↓
+
+한 Transaction에서 처리하는 Entity 증가
+
+↓
+
+Persistence Context 부담 증가
+
+↓
+
+메모리 사용 증가
+
+↓
+
+Rollback 범위 증가
+```
+
+따라서 Chunk Size는 단순히
+
+```text
+클수록 빠르다.
+```
+
+라고 판단하면 안 된다.
+
+다음 요소를 함께 고려해야 한다.
+
+```text
+한 Item의 크기
+
+DB 처리 비용
+
+트랜잭션 시간
+
+메모리 사용량
+
+실패 시 재처리 비용
+
+Reader Page Size
+```
+
+---
+
+### Page Size와 Chunk Size도 함께 생각해야 한다
+
+Paging Reader를 사용하는 경우에는 Page Size와 Chunk Size가 함께 등장한다.
+
+예를 들어
+
+```text
+Page Size = 1,000
+
+Chunk Size = 1,000
+```
+
+처럼 구성할 수 있다.
+
+Spring Batch의 JPA Paging Reader에서도 Page Size와 Commit Interval을 적절하게 맞추는 것이 성능 측면에서 유리할 수 있다.
+
+하지만 이것 역시 모든 서비스에서 반드시 같은 값이어야 한다는 규칙은 아니다.
+
+데이터 크기와 Query 비용, Transaction 처리량을 측정하면서 결정해야 한다.
+
+---
+
+### 모든 대량 처리를 JPA Entity로 처리할 필요는 없다
+
+JPA의 가장 큰 장점은 객체 상태를 중심으로 비즈니스 로직을 작성할 수 있다는 것이다.
+
+```java
+order.cancel();
+```
+
+이처럼 복잡한 도메인 규칙이 필요한 Batch에서는 JPA가 매우 유용할 수 있다.
+
+반면 단순히 100만 건의 상태값 하나를 변경하는 작업이라면 이야기가 달라질 수 있다.
+
+```text
+status = READY
+
+↓
+
+status = EXPIRED
+```
+
+모든 데이터를 Entity로 조회하고
+
+```text
+SELECT
+→ Entity 생성
+→ Snapshot 생성
+→ Dirty Checking
+→ UPDATE
+```
+
+하는 것보다 목적에 따라 Bulk Update나 JDBC 기반 처리가 더 적합할 수도 있다.
+
+예를 들어 다음과 같은 단순 일괄 변경이라면
+
+```sql
+UPDATE coupon
+SET status = 'EXPIRED'
+WHERE expired_at < CURRENT_TIMESTAMP
+  AND status = 'AVAILABLE';
+```
+
+객체 하나하나를 영속성 컨텍스트에 올리는 것이 반드시 최선이라고 할 수는 없다.
+
+따라서 Spring Batch에서 기술을 선택할 때는 다음과 같이 생각할 수 있다.
+
+```text
+복잡한 Domain 로직이 필요한가?
+
+→ JPA Entity 활용 고려
+
+
+단순 대량 INSERT / UPDATE인가?
+
+→ JDBC / Bulk Query도 고려
+```
+
+JPA와 JDBC 중 하나가 항상 우월한 것이 아니라 Batch 작업의 특성에 따라 선택하는 것이 중요하다.
+
+---
+
+### Spring Batch에서 JPA를 사용할 때 기억할 핵심
+
+일반적인 웹 요청에서는 영속성 컨텍스트를 다음과 같이 바라보기 쉽다.
+
+```text
+편리한 Entity 관리 공간
+```
+
+하지만 Batch에서는 한 가지 의미를 추가해야 한다.
+
+```text
+편리한 Entity 관리 공간
+
++
+
+크기를 통제해야 하는 메모리 공간
+```
+
+따라서 대용량 배치에서는 다음을 확인하는 것이 좋다.
+
+```text
+영속성 컨텍스트에 Entity가 계속 쌓이지 않는가?
+
+Chunk 단위가 적절한가?
+
+flush / clear가 적절하게 수행되는가?
+
+Reader가 반환한 Entity가 Managed 상태인가 Detached 상태인가?
+
+Processor에서 Lazy Loading이 발생하지 않는가?
+
+N+1 Query가 발생하지 않는가?
+
+단순 대량 작업인데 굳이 Entity를 전부 조회하고 있지는 않은가?
+
+JPA보다 JDBC 또는 Bulk Query가 더 적절하지 않은가?
+```
+
+JPA의 영속성 컨텍스트는 매우 강력하지만, Batch에서는 그 기능을 무조건 많이 활용하는 것이 아니라 **관리 범위를 제한하면서 사용하는 것**이 중요하다.
+
+### 한 줄 요약
+
+**Spring Batch에서 JPA를 사용할 때는 대량의 엔티티가 영속성 컨텍스트에 누적되지 않도록 Chunk·Page 단위와 `flush`·`clear`를 고려해야 하며, Detached Entity와 Lazy Loading, N+1 문제를 주의하고 단순 대량 처리에서는 JPA보다 JDBC나 Bulk Query가 더 적합한지도 함께 판단해야 한다.**
+
+
+
+
 ## 조회에서도 같은 원리가 적용된다
 
 다음과 같이 같은 엔티티를 여러 곳에서 조회한다고 생각해보자.
