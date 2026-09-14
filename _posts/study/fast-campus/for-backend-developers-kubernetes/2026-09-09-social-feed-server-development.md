@@ -1034,3 +1034,787 @@ Jib을 이용하면 Dockerfile 없이 Spring Boot 애플리케이션을 컨테�
 Deployment는 Feed Server Pod 두 개를 유지하며 Rolling Update로 버전을 교체한다. ConfigMap과 Secret은 `envFrom`을 통해 환경 변수로 주입하고, Service는 Label Selector로 Ready 상태의 Pod에 요청을 전달한다.
 
 Resource와 Probe 설정은 고정된 정답이 아니다. 실제 CPU, JVM Memory, 시작 시간, 응답 지연과 장애 상황을 관찰하면서 조정해야 한다. Graceful Shutdown, `preStop`, `terminationGracePeriodSeconds`도 하나의 종료 흐름으로 설계해야 Rolling Update 중 요청 손실을 줄일 수 있다.
+
+## 03. Social Feed 기능 개발
+
+### Spring Data JPA로 Feed CRUD API 구현하기
+
+SNS의 핵심 기능은 사용자가 작성한 게시물을 저장하고 다시 조회하는 것이다. 이번 실습에서는 Feed Server에 Spring Data JPA를 적용하여 다음 기능을 구현한다.
+
+- Feed 전체 목록 조회
+- 특정 사용자가 작성한 Feed 조회
+- Feed 단건 조회
+- Feed 생성
+- Feed 삭제
+- 존재하지 않는 Feed 요청에 대한 예외 처리
+- Docker 이미지 빌드 및 Kubernetes 재배포
+- `kubectl port-forward`를 이용한 API 테스트
+
+Feed Server는 User Server나 Image Server의 데이터를 직접 관리하지 않는다. 사용자와 이미지의 실제 데이터 대신 식별자만 저장하여 서비스 간 결합도를 낮춘다.
+
+#### 실습 목표
+
+이번 실습의 전체 요청 흐름은 다음과 같다.
+
+```mermaid
+flowchart LR
+    A["API Client"] --> B["FeedController"]
+    B --> C["CreateFeedRequest"]
+    B --> D["SocialFeedService"]
+    D --> E["SocialFeedRepository"]
+    E --> F["MySQL social_feed"]
+    D --> G["FeedResponse"]
+    G --> A
+```
+
+각 계층은 다음 역할을 담당한다.
+
+| 계층 | 역할 |
+|---|---|
+| Controller | HTTP 요청과 응답 처리 |
+| Request DTO | 클라이언트 입력값 검증 |
+| Service | Feed 조회, 생성, 삭제와 트랜잭션 처리 |
+| Repository | Spring Data JPA를 이용한 데이터 접근 |
+| Entity | `social_feed` 테이블과 Java 객체 매핑 |
+| Response DTO | 외부에 공개할 응답 구조 정의 |
+
+#### Feed 데이터 모델 설계
+
+Feed Server가 저장할 기본 데이터는 다음과 같다.
+
+| 필드 | 설명 |
+|---|---|
+| `feed_id` | Feed를 식별하는 자동 증가 ID |
+| `image_id` | Image Server에서 관리하는 이미지 식별자 |
+| `uploader_id` | User Server에서 관리하는 작성자 식별자 |
+| `uploaded_at` | Feed가 등록된 시각 |
+| `content` | 게시물 본문 |
+
+User와 Image가 별도 마이크로서비스에서 관리된다면 Feed 테이블에 해당 서비스의 Entity를 직접 연결하지 않는 것이 좋다. 예를 들어 `@ManyToOne User` 같은 연관관계를 만들면 Feed Server가 User Server의 데이터베이스 구조에 의존하게 된다.
+
+따라서 Feed Server에는 `uploader_id`와 `image_id`만 저장하고, 상세 사용자나 이미지 정보가 필요할 때 해당 서비스의 API를 호출하는 방식으로 구성한다.
+
+```mermaid
+flowchart TD
+    A["Feed Server"] --> B["social_feed"]
+    B --> C["uploader_id만 저장"]
+    B --> D["image_id만 저장"]
+    A -. "사용자 정보가 필요한 경우" .-> E["User Server"]
+    A -. "이미지 정보가 필요한 경우" .-> F["Image Server"]
+```
+
+##### 테이블 생성
+
+```sql
+CREATE TABLE social_feed (
+    feed_id BIGINT NOT NULL AUTO_INCREMENT,
+    image_id VARCHAR(100) NULL,
+    uploader_id BIGINT NOT NULL,
+    uploaded_at DATETIME(6) NOT NULL,
+    content VARCHAR(2000) NOT NULL,
+    PRIMARY KEY (feed_id),
+    INDEX idx_social_feed_uploader_uploaded_at (
+        uploader_id,
+        uploaded_at
+    )
+) ENGINE=InnoDB
+  DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_unicode_ci;
+```
+
+`idx_social_feed_uploader_uploaded_at` 인덱스는 특정 사용자의 Feed를 최신순으로 조회할 때 사용된다.
+
+실제 SNS에서는 이미지가 없는 텍스트 게시물도 존재할 수 있으므로 `image_id`는 `NULL`을 허용했다. 한 게시물에 여러 이미지를 연결해야 한다면 이미지 ID를 쉼표로 연결해 저장하기보다 별도의 `feed_image` 테이블을 사용하는 편이 적절하다.
+
+#### SocialFeed Entity 작성
+
+```java
+package com.sns.feed.domain.feed;
+
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.Index;
+import jakarta.persistence.PrePersist;
+import jakarta.persistence.Table;
+
+import java.time.Instant;
+
+@Entity
+@Table(
+    name = "social_feed",
+    indexes = {
+        @Index(
+            name = "idx_social_feed_uploader_uploaded_at",
+            columnList = "uploader_id, uploaded_at"
+        )
+    }
+)
+public class SocialFeed {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Column(name = "feed_id")
+    private Long id;
+
+    @Column(name = "image_id", length = 100)
+    private String imageId;
+
+    @Column(name = "uploader_id", nullable = false)
+    private Long uploaderId;
+
+    @Column(name = "uploaded_at", nullable = false, updatable = false)
+    private Instant uploadedAt;
+
+    @Column(name = "content", nullable = false, length = 2000)
+    private String content;
+
+    protected SocialFeed() {
+    }
+
+    private SocialFeed(String imageId, Long uploaderId, String content) {
+        this.imageId = imageId;
+        this.uploaderId = uploaderId;
+        this.content = content;
+    }
+
+    public static SocialFeed create(
+        String imageId,
+        Long uploaderId,
+        String content
+    ) {
+        return new SocialFeed(imageId, uploaderId, content);
+    }
+
+    @PrePersist
+    private void initializeUploadedAt() {
+        if (uploadedAt == null) {
+            uploadedAt = Instant.now();
+        }
+    }
+
+    public Long getId() {
+        return id;
+    }
+
+    public String getImageId() {
+        return imageId;
+    }
+
+    public Long getUploaderId() {
+        return uploaderId;
+    }
+
+    public Instant getUploadedAt() {
+        return uploadedAt;
+    }
+
+    public String getContent() {
+        return content;
+    }
+}
+```
+
+##### 주요 JPA 설정
+
+- `@Entity`: 해당 클래스를 JPA Entity로 등록한다.
+- `@Table`: Entity가 사용할 테이블과 인덱스를 지정한다.
+- `@Id`: Entity의 기본 키를 지정한다.
+- `GenerationType.IDENTITY`: MySQL의 `AUTO_INCREMENT`를 사용한다.
+- `nullable = false`: 데이터베이스의 `NOT NULL` 제약 조건과 일치시킨다.
+- `updatable = false`: 생성 시각이 UPDATE SQL에 포함되지 않도록 한다.
+- `@PrePersist`: INSERT가 실행되기 직전에 등록 시각을 초기화한다.
+
+`Instant`는 특정 시점을 UTC 기준으로 표현하기 때문에 여러 지역이나 여러 Node에 애플리케이션이 분산된 환경에서 사용하기 좋다.
+
+`java.util.Date`나 `Calendar`에 사용하던 `@Temporal`은 `Instant`, `LocalDateTime`, `OffsetDateTime`과 같은 `java.time` 타입에는 사용하지 않는다.
+
+애플리케이션에서 시간을 생성한다면 모든 Pod와 데이터베이스가 UTC를 기준으로 처리하도록 다음과 같은 설정을 유지하는 것이 좋다.
+
+```yaml
+spring:
+  jpa:
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+```
+
+#### Repository 작성
+
+```java
+package com.sns.feed.domain.feed;
+
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+public interface SocialFeedRepository
+    extends JpaRepository<SocialFeed, Long> {
+
+    Page<SocialFeed> findAllByOrderByUploadedAtDesc(Pageable pageable);
+
+    Page<SocialFeed> findAllByUploaderIdOrderByUploadedAtDesc(
+        Long uploaderId,
+        Pageable pageable
+    );
+}
+```
+
+`JpaRepository<SocialFeed, Long>`의 첫 번째 타입은 Entity, 두 번째 타입은 기본 키 타입이다.
+
+Feed 목록은 데이터가 계속 증가하기 때문에 `List`로 전체 데이터를 한 번에 반환하지 않고 `Pageable`을 사용한다. 전체 Feed와 사용자별 Feed는 모두 최신 게시물이 먼저 노출되도록 `uploadedAt DESC` 조건을 적용했다.
+
+#### 요청 DTO 작성
+
+Entity를 HTTP 요청 객체로 직접 사용하면 클라이언트가 `feedId`, `uploadedAt`처럼 서버가 관리해야 하는 값까지 전달할 수 있다. Entity 구조의 변경이 API 계약 변경으로 이어지는 문제도 발생한다.
+
+따라서 Feed 생성 요청에는 별도의 DTO를 사용한다.
+
+```java
+package com.sns.feed.api.dto;
+
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Positive;
+import jakarta.validation.constraints.Size;
+
+public record CreateFeedRequest(
+
+    @Size(max = 100)
+    String imageId,
+
+    @NotNull
+    @Positive
+    Long uploaderId,
+
+    @NotBlank
+    @Size(max = 2000)
+    String content
+) {
+}
+```
+
+- `imageId`: 이미지가 없는 게시물을 허용하므로 필수값으로 지정하지 않는다.
+- `uploaderId`: 식별자로 사용할 양수만 허용한다.
+- `content`: 공백만 전달되는 요청을 차단하고 최대 길이를 제한한다.
+
+이번 실습에서는 요청으로 `uploaderId`를 받는다. 그러나 인증이 적용된 운영 환경에서는 요청 본문의 작성자 ID를 신뢰하면 안 된다. 클라이언트가 다른 사용자의 ID를 전달해 게시물을 등록할 수 있기 때문이다.
+
+운영 환경에서는 JWT나 인증 세션에서 사용자 ID를 가져와야 한다.
+
+#### 응답 DTO 작성
+
+```java
+package com.sns.feed.api.dto;
+
+import com.sns.feed.domain.feed.SocialFeed;
+
+import java.time.Instant;
+
+public record FeedResponse(
+    Long feedId,
+    String imageId,
+    Long uploaderId,
+    Instant uploadedAt,
+    String content
+) {
+
+    public static FeedResponse from(SocialFeed feed) {
+        return new FeedResponse(
+            feed.getId(),
+            feed.getImageId(),
+            feed.getUploaderId(),
+            feed.getUploadedAt(),
+            feed.getContent()
+        );
+    }
+}
+```
+
+응답 DTO를 별도로 만들면 Entity에 내부 관리 필드가 추가되더라도 API 응답에 자동으로 노출되지 않는다. 지연 로딩 연관관계가 추가됐을 때 JSON 직렬화 과정에서 발생할 수 있는 문제도 줄일 수 있다.
+
+#### Feed를 찾을 수 없는 경우의 예외 처리
+
+Feed가 존재하지 않을 때 `null`을 반환하면 Controller에서 누락하기 쉽고, 잘못하면 상태 코드 `200 OK`와 함께 빈 응답이 반환될 수 있다.
+
+존재하지 않는 리소스는 명시적인 예외로 처리한다.
+
+```java
+package com.sns.feed.domain.feed;
+
+public class FeedNotFoundException extends RuntimeException {
+
+    public FeedNotFoundException(Long feedId) {
+        super("Feed를 찾을 수 없습니다. feedId=" + feedId);
+    }
+}
+```
+
+Spring Boot 3와 Spring Framework 6에서는 `ProblemDetail`을 사용해 표준화된 오류 응답을 만들 수 있다.
+
+```java
+package com.sns.feed.api;
+
+import com.sns.feed.domain.feed.FeedNotFoundException;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ProblemDetail;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+@RestControllerAdvice
+public class ApiExceptionHandler {
+
+    @ExceptionHandler(FeedNotFoundException.class)
+    public ProblemDetail handleFeedNotFound(
+        FeedNotFoundException exception
+    ) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+            HttpStatus.NOT_FOUND,
+            exception.getMessage()
+        );
+        problem.setTitle("Feed Not Found");
+        return problem;
+    }
+}
+```
+
+#### Service 작성
+
+```java
+package com.sns.feed.domain.feed;
+
+import com.sns.feed.api.dto.CreateFeedRequest;
+import com.sns.feed.api.dto.FeedResponse;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+@Service
+@Transactional(readOnly = true)
+public class SocialFeedService {
+
+    private final SocialFeedRepository socialFeedRepository;
+
+    public SocialFeedService(
+        SocialFeedRepository socialFeedRepository
+    ) {
+        this.socialFeedRepository = socialFeedRepository;
+    }
+
+    public Page<FeedResponse> getFeeds(Pageable pageable) {
+        return socialFeedRepository
+            .findAllByOrderByUploadedAtDesc(pageable)
+            .map(FeedResponse::from);
+    }
+
+    public Page<FeedResponse> getFeedsByUploader(
+        Long uploaderId,
+        Pageable pageable
+    ) {
+        return socialFeedRepository
+            .findAllByUploaderIdOrderByUploadedAtDesc(
+                uploaderId,
+                pageable
+            )
+            .map(FeedResponse::from);
+    }
+
+    public FeedResponse getFeed(Long feedId) {
+        return FeedResponse.from(findFeed(feedId));
+    }
+
+    @Transactional
+    public FeedResponse createFeed(CreateFeedRequest request) {
+        SocialFeed feed = SocialFeed.create(
+            request.imageId(),
+            request.uploaderId(),
+            request.content()
+        );
+
+        SocialFeed savedFeed = socialFeedRepository.save(feed);
+        return FeedResponse.from(savedFeed);
+    }
+
+    @Transactional
+    public void deleteFeed(Long feedId) {
+        SocialFeed feed = findFeed(feedId);
+        socialFeedRepository.delete(feed);
+    }
+
+    private SocialFeed findFeed(Long feedId) {
+        return socialFeedRepository.findById(feedId)
+            .orElseThrow(() -> new FeedNotFoundException(feedId));
+    }
+}
+```
+
+클래스에는 `@Transactional(readOnly = true)`를 적용하여 조회 메서드를 읽기 전용으로 처리한다. 데이터를 변경하는 생성 및 삭제 메서드에는 별도로 `@Transactional`을 선언한다.
+
+삭제할 때는 바로 `deleteById()`를 호출하지 않고 먼저 Entity의 존재 여부를 확인한다. 이를 통해 존재하지 않는 Feed 삭제 요청에 `404 Not Found`를 일관되게 반환할 수 있다.
+
+#### Controller 작성
+
+```java
+package com.sns.feed.api;
+
+import com.sns.feed.api.dto.CreateFeedRequest;
+import com.sns.feed.api.dto.FeedResponse;
+import com.sns.feed.domain.feed.SocialFeedService;
+import jakarta.validation.Valid;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.web.PageableDefault;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
+
+import java.net.URI;
+
+@RestController
+@RequestMapping("/api/feeds")
+public class FeedController {
+
+    private final SocialFeedService socialFeedService;
+
+    public FeedController(SocialFeedService socialFeedService) {
+        this.socialFeedService = socialFeedService;
+    }
+
+    @GetMapping
+    public Page<FeedResponse> getFeeds(
+        @PageableDefault(size = 20)
+        Pageable pageable
+    ) {
+        return socialFeedService.getFeeds(pageable);
+    }
+
+    @GetMapping("/users/{uploaderId}")
+    public Page<FeedResponse> getFeedsByUploader(
+        @PathVariable Long uploaderId,
+        @PageableDefault(size = 20)
+        Pageable pageable
+    ) {
+        return socialFeedService.getFeedsByUploader(
+            uploaderId,
+            pageable
+        );
+    }
+
+    @GetMapping("/{feedId}")
+    public FeedResponse getFeed(@PathVariable Long feedId) {
+        return socialFeedService.getFeed(feedId);
+    }
+
+    @PostMapping
+    public ResponseEntity<FeedResponse> createFeed(
+        @Valid @RequestBody CreateFeedRequest request
+    ) {
+        FeedResponse response =
+            socialFeedService.createFeed(request);
+
+        URI location = ServletUriComponentsBuilder
+            .fromCurrentRequest()
+            .path("/{feedId}")
+            .buildAndExpand(response.feedId())
+            .toUri();
+
+        return ResponseEntity.created(location).body(response);
+    }
+
+    @DeleteMapping("/{feedId}")
+    public ResponseEntity<Void> deleteFeed(
+        @PathVariable Long feedId
+    ) {
+        socialFeedService.deleteFeed(feedId);
+        return ResponseEntity.noContent().build();
+    }
+}
+```
+
+API별 HTTP 메서드와 응답 상태는 다음과 같다.
+
+| HTTP 요청 | 기능 | 정상 상태 코드 |
+|---|---|---:|
+| `GET /api/feeds` | 전체 Feed 조회 | `200 OK` |
+| `GET /api/feeds/users/{uploaderId}` | 사용자별 Feed 조회 | `200 OK` |
+| `GET /api/feeds/{feedId}` | Feed 단건 조회 | `200 OK` |
+| `POST /api/feeds` | Feed 생성 | `201 Created` |
+| `DELETE /api/feeds/{feedId}` | Feed 삭제 | `204 No Content` |
+
+생성 API는 `201 Created`와 함께 생성된 리소스의 주소를 `Location` 헤더로 반환한다. 삭제 API는 응답 본문이 필요하지 않으므로 `204 No Content`를 반환한다.
+
+#### 컨테이너 이미지 빌드
+
+애플리케이션 코드가 변경됐으므로 새로운 버전의 컨테이너 이미지를 생성한다. 기존 이미지가 `0.0.1`이었다면 이번 버전은 `0.0.2`로 구분한다.
+
+```powershell
+.\gradlew.bat clean test jib `
+  -Djib.to.image=<AWS_ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/feed-server:0.0.2
+```
+
+Jib가 ECR에 이미지를 Push하려면 먼저 인증이 완료되어 있어야 한다.
+
+```powershell
+aws ecr get-login-password --region <REGION> |
+    docker login `
+        --username AWS `
+        --password-stdin `
+        <AWS_ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com
+```
+
+동일한 태그를 반복해서 덮어쓰면 어떤 소스 코드가 배포됐는지 추적하기 어렵다. 실무에서는 애플리케이션 버전이나 Git 커밋 해시를 이미지 태그로 사용하는 것이 좋다.
+
+#### Kubernetes Deployment 이미지 변경
+
+기존 Deployment의 컨테이너 이름이 `feed-server`라면 다음 명령으로 이미지를 변경할 수 있다.
+
+```shell
+kubectl set image deployment/feed-server \
+  feed-server=<AWS_ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/feed-server:0.0.2 \
+  -n sns
+```
+
+배포 진행 상태를 확인한다.
+
+```shell
+kubectl rollout status deployment/feed-server -n sns
+```
+
+Pod와 이미지 버전도 함께 확인한다.
+
+```shell
+kubectl get pods -n sns -l app=feed-server
+```
+
+```shell
+kubectl get deployment feed-server \
+  -n sns \
+  -o jsonpath="{.spec.template.spec.containers[0].image}"
+```
+
+정상적으로 배포되면 새 ReplicaSet의 Pod가 생성되고 Readiness Probe를 통과한 뒤 기존 Pod가 순차적으로 종료된다.
+
+```mermaid
+flowchart LR
+    A["Deployment 이미지 0.0.2 변경"] --> B["새 ReplicaSet 생성"]
+    B --> C["새 Feed Server Pod 생성"]
+    C --> D["컨테이너 시작"]
+    D --> E["Readiness Probe 성공"]
+    E --> F["Service Endpoint 등록"]
+    F --> G["기존 Pod 순차 종료"]
+```
+
+#### API 테스트
+
+Ingress를 아직 구성하지 않았다면 `kubectl port-forward`를 사용해 로컬에서 Service에 접근할 수 있다.
+
+```shell
+kubectl port-forward service/feed-service 8080:8080 -n sns
+```
+
+##### Feed 생성
+
+```shell
+curl -i -X POST http://localhost:8080/api/feeds \
+  -H "Content-Type: application/json" \
+  -d '{
+    "imageId": "image-20260914-001",
+    "uploaderId": 1,
+    "content": "Kubernetes에서 실행되는 첫 번째 Feed입니다."
+  }'
+```
+
+정상적으로 생성되면 `201 Created`와 `Location` 헤더가 반환된다.
+
+```http
+HTTP/1.1 201 Created
+Location: http://localhost:8080/api/feeds/1
+Content-Type: application/json
+```
+
+##### 전체 Feed 조회
+
+```shell
+curl "http://localhost:8080/api/feeds?page=0&size=20"
+```
+
+응답의 `content` 배열에는 최신 Feed부터 저장된다.
+
+##### 사용자별 Feed 조회
+
+```shell
+curl "http://localhost:8080/api/feeds/users/1?page=0&size=20"
+```
+
+##### Feed 단건 조회
+
+```shell
+curl http://localhost:8080/api/feeds/1
+```
+
+##### Feed 삭제
+
+```shell
+curl -i -X DELETE http://localhost:8080/api/feeds/1
+```
+
+정상 삭제된 경우 다음 상태 코드가 반환된다.
+
+```http
+HTTP/1.1 204 No Content
+```
+
+삭제한 Feed를 다시 조회하면 `404 Not Found`가 반환되어야 한다.
+
+```shell
+curl -i http://localhost:8080/api/feeds/1
+```
+
+#### 실패 상황과 원인 확인
+
+##### `400 Bad Request`가 반환되는 경우
+
+다음 요청은 `uploaderId`가 없거나 `content`가 공백이므로 검증에 실패한다.
+
+```json
+{
+  "imageId": "image-001",
+  "content": " "
+}
+```
+
+`@Valid`와 Bean Validation이 동작하려면 다음 의존성이 필요하다.
+
+```groovy
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+}
+```
+
+##### Feed 생성 시 `500 Internal Server Error`가 발생하는 경우
+
+다음 항목을 확인한다.
+
+- `social_feed` 테이블이 실제로 생성됐는지
+- Entity의 컬럼명과 실제 테이블 컬럼명이 일치하는지
+- 애플리케이션이 올바른 MySQL 호스트를 사용하는지
+- Secret의 사용자명과 비밀번호가 정확한지
+- Feed Server가 실행되는 Namespace에서 MySQL Service DNS를 조회할 수 있는지
+- `uploaded_at`에 정상적인 값이 설정되는지
+
+```shell
+kubectl logs deployment/feed-server -n sns --tail=200
+```
+
+##### 변경한 API가 보이지 않는 경우
+
+Deployment가 여전히 이전 이미지 태그를 사용하고 있을 가능성이 있다.
+
+```shell
+kubectl describe deployment feed-server -n sns
+```
+
+이미지 태그를 변경하지 않고 같은 태그를 재사용했다면 Node에 캐시된 이전 이미지가 사용될 수 있다. 이미지마다 새로운 태그를 사용하는 방식이 가장 명확하다.
+
+##### Pod는 Running이지만 요청이 실패하는 경우
+
+`Running`은 컨테이너 프로세스가 실행 중이라는 뜻일 뿐, 애플리케이션이 트래픽을 처리할 준비가 됐다는 의미는 아니다.
+
+다음 항목을 함께 확인해야 한다.
+
+```shell
+kubectl get pods -n sns
+kubectl get service feed-service -n sns
+kubectl get endpointslice -n sns \
+  -l kubernetes.io/service-name=feed-service
+```
+
+Readiness Probe가 실패하면 Pod는 실행 중이어도 Service Endpoint에 등록되지 않는다.
+
+#### 실무에서 추가로 고려할 사항
+
+##### 작성자 ID를 요청에서 신뢰하지 않는다
+
+인증이 적용된 환경에서는 `uploaderId`를 요청 DTO에서 제거하고 인증 컨텍스트에서 가져와야 한다.
+
+```mermaid
+flowchart LR
+    A["Client와 JWT"] --> B["인증 필터"]
+    B --> C["인증된 사용자 ID"]
+    C --> D["FeedController"]
+    D --> E["Feed 생성"]
+```
+
+이를 통해 다른 사용자의 ID를 전달해 게시물을 생성하는 위조 요청을 방지할 수 있다.
+
+##### 목록 API에는 페이지 크기 제한이 필요하다
+
+클라이언트가 지나치게 큰 `size` 값을 전달하면 데이터베이스와 애플리케이션 메모리에 부담을 줄 수 있다.
+
+```yaml
+spring:
+  data:
+    web:
+      pageable:
+        default-page-size: 20
+        max-page-size: 100
+```
+
+##### Feed 삭제 정책을 명확히 해야 한다
+
+실제 SNS에서는 게시물을 즉시 물리 삭제하지 않고 삭제 상태를 기록하는 Soft Delete를 사용할 수 있다. 신고 처리, 감사 기록, 복구 요구사항이 있다면 `deleted_at` 또는 상태 컬럼을 두는 방식을 검토해야 한다.
+
+##### 서비스 간 참조는 데이터 정합성을 별도로 관리해야 한다
+
+마이크로서비스 간에는 데이터베이스 Foreign Key를 설정하기 어렵다. 따라서 다음 상황을 애플리케이션 수준에서 처리해야 한다.
+
+- 존재하지 않는 `uploaderId`로 Feed가 생성되는 문제
+- 삭제된 이미지의 `imageId`가 Feed에 남는 문제
+- User Server 또는 Image Server 장애로 상세 정보를 가져오지 못하는 문제
+- 서비스 간 이벤트 전달 지연으로 데이터가 일시적으로 불일치하는 문제
+
+필요하다면 동기 API 검증, 이벤트 기반 동기화, Outbox Pattern, 보상 처리 등을 적용할 수 있다.
+
+##### Feed 전체 조회는 장기적으로 별도 읽기 모델이 필요할 수 있다
+
+초기 단계에서는 Feed Server의 데이터베이스를 직접 조회해도 충분하다. 하지만 팔로우 관계를 기준으로 개인화된 타임라인을 생성하려면 단순한 `SELECT`만으로 처리하기 어렵다.
+
+트래픽이 증가하면 다음과 같은 구조로 발전시킬 수 있다.
+
+```mermaid
+flowchart LR
+    A["Feed 생성"] --> B["Feed Server"]
+    B --> C["Feed 저장"]
+    B --> D["Feed Created 이벤트"]
+    D --> E["Timeline Worker"]
+    E --> F["Redis Timeline"]
+    G["Feed 조회 요청"] --> F
+```
+
+이 구조에서는 Feed 생성과 타임라인 구성을 분리하고, Redis와 비동기 Worker를 이용해 조회 성능을 개선할 수 있다.
+
+### 정리
+
+이번 실습에서는 Spring Data JPA를 사용하여 Feed Server의 기본 CRUD API를 구현했다.
+
+- Feed Entity는 이미지와 사용자의 실제 데이터 대신 식별자만 저장한다.
+- `Instant`와 `@PrePersist`를 사용해 Feed 생성 시각을 기록한다.
+- Repository에는 전체 및 사용자별 최신 Feed 조회 기능을 정의했다.
+- Request DTO와 Response DTO를 분리해 Entity가 API 계약에 직접 노출되지 않도록 구성했다.
+- Service에서 조회 트랜잭션과 변경 트랜잭션을 구분했다.
+- 존재하지 않는 Feed는 `null` 대신 예외를 발생시켜 `404 Not Found`로 처리했다.
+- Feed 생성은 `201 Created`, 삭제는 `204 No Content`를 반환하도록 REST 원칙에 맞췄다.
+- 변경된 애플리케이션을 `0.0.2` 이미지로 빌드하고 Kubernetes Deployment에 반영했다.
+- 외부 Ingress가 없어도 `kubectl port-forward`를 이용해 API를 검증할 수 있다.
+
+이 단계에서 구현한 CRUD API는 SNS Feed 기능의 출발점이다. 이후 인증된 사용자 식별, 이미지 서비스 연동, 페이지네이션 최적화, 개인화 타임라인과 이벤트 기반 처리 구조를 추가하면 실제 서비스에 가까운 Feed 시스템으로 확장할 수 있다.

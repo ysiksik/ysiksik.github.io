@@ -134,6 +134,8 @@ menu:
         submenu:
           - title: 아마존 AWS 입문 웹 서비스 만들기
             url: /amazon-aws-introduction-building-web-services/
+          - title: 처음 배우는 쿠버네티스 개발 전략
+            url: /kubernetes-development-strategy-for-beginners/
 #      - title: 독서
 #        url:    /book/
 #      - title:    페이먼츠
