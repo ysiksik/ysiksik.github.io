@@ -378,13 +378,13 @@ http
 
 ```mermaid
 flowchart TD
-    C[Client] --> A[GET /admin]
+    C[Client] --> A["GET /admin"]
 
     A --> S[Spring Security]
 
     S --> Q{로그인 상태인가?}
 
-    Q -->|No| L[/login으로 이동]
+    Q -->|No| L["/login으로 이동"]
     Q -->|Yes| R{권한 확인}
 
     R -->|허용| CT[AdminController]
@@ -1416,27 +1416,25 @@ GET /admin
 
 ```mermaid
 flowchart TD
-    C[Client] --> S[Spring Security]
+    C["Client"] --> S["Spring Security"]
+    S --> R{"공개 경로인가?"}
 
-    S --> R{요청 경로}
+    R -->|Yes| P["permitAll"]
+    P --> CT["Controller"]
 
-    R -->|Public| P[permitAll]
-    P --> CT[Controller]
+    R -->|No| A{"인증된 사용자인가?"}
 
-    R -->|Protected| A{Authenticated?}
+    A -->|No| L["/login Redirect"]
+    L --> LC["LoginController"]
+    LC --> LV["login.mustache"]
 
-    A -->|No| L[/login]
-    L --> LC[LoginController]
-    LC --> LV[login.mustache]
+    LV --> LP["POST /loginProc"]
+    LP --> SS["Spring Security 인증 처리"]
+    SS --> AU["Authentication 생성"]
 
-    LV --> LP[POST /loginProc]
-    LP --> SS[Spring Security 인증]
-
-    SS --> AU[Authentication 생성]
-
-    A -->|Yes| Z{Authorization}
-    Z -->|허용| CT2[Controller]
-    Z -->|거부| X[Access Denied]
+    A -->|Yes| Z{"접근 권한이 있는가?"}
+    Z -->|Yes| CT2["Controller"]
+    Z -->|No| X["Access Denied"]
 ```
 
 ---
