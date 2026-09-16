@@ -1818,3 +1818,600 @@ flowchart LR
 - 외부 Ingress가 없어도 `kubectl port-forward`를 이용해 API를 검증할 수 있다.
 
 이 단계에서 구현한 CRUD API는 SNS Feed 기능의 출발점이다. 이후 인증된 사용자 식별, 이미지 서비스 연동, 페이지네이션 최적화, 개인화 타임라인과 이벤트 기반 처리 구조를 추가하면 실제 서비스에 가까운 Feed 시스템으로 확장할 수 있다.
+
+
+## 04. Telepresence를 이용한 마이크로서비스 개발환경 구성
+
+### 09. Telepresence를 이용한 Kubernetes 내부 API 테스트
+
+Kubernetes에 배포한 Feed Server는 `ClusterIP` 타입의 Service를 통해 클러스터 내부에 노출되어 있다. `ClusterIP`는 기본적으로 클러스터 내부 통신을 위한 주소이므로 로컬 개발 환경에서는 `feed-service.sns.svc.cluster.local`과 같은 Service DNS를 바로 호출할 수 없다.
+
+내부 API를 테스트하는 방법은 여러 가지다.
+
+| 방법 | 특징 | 적합한 상황 |
+|---|---|---|
+| `kubectl exec` | Pod 내부에서 직접 API 호출 | 간단한 네트워크 확인 |
+| `kubectl port-forward` | Service 또는 Pod의 포트를 로컬로 전달 | 단일 서비스의 임시 테스트 |
+| NodePort | Node의 특정 포트를 외부에 공개 | 제한적인 테스트 환경 |
+| LoadBalancer | 클라우드 Load Balancer 생성 | 외부 서비스 공개 |
+| Ingress | 도메인과 경로 기반 라우팅 | 실제 외부 API 구성 |
+| Telepresence | 로컬 환경을 클러스터 네트워크에 연결 | 마이크로서비스 개발과 내부 API 테스트 |
+
+이번 실습에서는 Telepresence를 사용하여 로컬 환경에서 Kubernetes 내부 Service DNS를 직접 호출한다.
+
+#### Telepresence란
+
+Telepresence는 로컬 워크스테이션과 Kubernetes 클러스터 사이에 네트워크 터널을 구성하는 개발 도구다.
+
+Telepresence에 연결하면 로컬에서 실행하는 `curl`, Postman, IDE, Spring Boot 애플리케이션 등이 Kubernetes Service DNS와 ClusterIP에 접근할 수 있다. 로컬 프로세스가 실제 Pod로 바뀌는 것은 아니지만, 네트워크 관점에서는 클러스터 내부 서비스에 접근할 수 있는 환경이 만들어진다.
+
+```mermaid
+flowchart LR
+    A["로컬 curl 또는 Postman"] --> B["Telepresence 로컬 Daemon"]
+    B --> C["가상 네트워크와 DNS 처리"]
+    C --> D["Kubernetes Traffic Manager"]
+    D --> E["feed-service.sns.svc.cluster.local"]
+    E --> F["Feed Server Pod"]
+    F --> G["Amazon RDS"]
+```
+
+Telepresence는 로컬에 가상 네트워크 인터페이스를 만들고 Kubernetes의 Service 및 Pod 대역으로 향하는 트래픽을 클러스터로 전달한다. DNS 요청도 처리하므로 로컬에서 `*.svc.cluster.local` 형식의 Service DNS를 사용할 수 있다. [Telepresence Connection Routing](https://telepresence.io/docs/reference/routing)
+
+#### Telepresence가 유용한 이유
+
+마이크로서비스를 로컬에서 개발할 때는 현재 수정하는 서버 외에도 여러 의존 서비스가 필요하다.
+
+예를 들어 Feed Server를 개발하는 경우 다음 서비스가 필요할 수 있다.
+
+- User Server
+- Image Server
+- Timeline Server
+- Redis
+- Kafka
+- MySQL
+- 각 서비스가 사용하는 별도 저장소
+
+모든 마이크로서비스와 인프라를 로컬에 실행하면 CPU와 메모리 사용량이 증가하고, 실제 Kubernetes 환경과 다른 설정 때문에 테스트 결과가 달라질 수 있다.
+
+Telepresence를 이용하면 현재 개발 중인 애플리케이션만 로컬에서 실행하고 나머지 서비스는 Kubernetes 클러스터에 배포된 환경을 사용할 수 있다.
+
+```mermaid
+flowchart TD
+    A["로컬 개발 환경"] --> B["현재 개발 중인 Feed Server"]
+    A --> C["Telepresence"]
+    C --> D["Kubernetes 개발 클러스터"]
+    D --> E["User Server"]
+    D --> F["Image Server"]
+    D --> G["Redis"]
+    D --> H["Kafka"]
+    D --> I["MySQL 연결 경로"]
+```
+
+다만 이번 실습에서는 로컬 애플리케이션으로 트래픽을 전환하지 않고, 로컬에서 클러스터 내부의 Feed Server API를 호출하는 기능만 사용한다.
+
+#### `connect`와 `intercept`의 차이
+
+Telepresence의 `connect`와 `intercept`는 목적이 다르다.
+
+| 명령 | 역할 |
+|---|---|
+| `telepresence connect` | 로컬에서 Kubernetes 내부 서비스로 접근할 수 있게 연결 |
+| `telepresence intercept` | 특정 Kubernetes Workload로 들어오는 요청을 로컬 애플리케이션으로 전달 |
+
+이번 실습에서는 이미 Kubernetes에 배포된 Feed Server를 테스트하므로 `connect`만 사용한다. `intercept`는 클러스터 트래픽을 로컬 프로세스로 전환하므로 공유 개발 환경에서는 적용 범위와 다른 개발자에게 미치는 영향을 먼저 확인해야 한다.
+
+#### 실습 목표
+
+이번 실습에서는 다음 작업을 수행한다.
+
+1. 현재 `kubectl` Context와 Feed Server 상태를 확인한다.
+2. 로컬 환경에 Telepresence Client를 설치한다.
+3. Kubernetes 클러스터에 Traffic Manager를 설치한다.
+4. 로컬 환경과 `sns` Namespace를 연결한다.
+5. Service DNS로 Feed Server Health Check API를 호출한다.
+6. Feed 생성, 조회, 삭제 API를 테스트한다.
+7. 연결을 종료하고 장애 상황을 점검한다.
+
+#### 사전 조건
+
+다음 구성이 준비되어 있어야 한다.
+
+- AWS EKS 클러스터가 실행 중이다.
+- `kubectl`이 EKS 클러스터에 연결되어 있다.
+- `sns` Namespace가 생성되어 있다.
+- Feed Server Deployment가 정상 실행 중이다.
+- `feed-service`라는 ClusterIP Service가 생성되어 있다.
+- Feed Server가 MySQL에 정상적으로 연결되어 있다.
+- Traffic Manager를 설치할 수 있는 Kubernetes 권한이 있다.
+
+먼저 현재 Context를 확인한다.
+
+```shell
+kubectl config current-context
+```
+
+클러스터 연결 상태를 확인한다.
+
+```shell
+kubectl cluster-info
+```
+
+Feed Server의 Kubernetes 객체를 확인한다.
+
+```shell
+kubectl get deployment,pod,service -n sns
+```
+
+예상되는 Service 구성은 다음과 같다.
+
+```text
+NAME                   TYPE        CLUSTER-IP      PORT(S)
+service/feed-service   ClusterIP   172.20.10.120   8080/TCP
+```
+
+Service가 연결할 준비가 된 Pod를 가지고 있는지도 확인한다.
+
+```shell
+kubectl get endpointslice \
+  -n sns \
+  -l kubernetes.io/service-name=feed-service
+```
+
+Endpoint가 비어 있다면 Telepresence를 설치해도 API를 호출할 수 없다. 이 경우 먼저 Service의 `selector`, Pod의 Label, Readiness Probe 상태를 확인해야 한다.
+
+#### Telepresence Client 설치
+
+Telepresence는 로컬 Client와 클러스터 내부의 Traffic Manager로 구성된다.
+
+Windows에서는 Setup Installer를 사용하는 방식이 권장된다. 수동 설치가 필요하다면 관리자 권한 PowerShell에서 다음과 같이 최신 압축 파일을 설치할 수 있다. 설치 방식과 파일명은 버전에 따라 달라질 수 있으므로 실행 전 [Telepresence Client 설치 페이지](https://telepresence.io/docs/install/client/?os=windows)를 함께 확인하는 것이 좋다.
+
+```powershell
+$ProgressPreference = "SilentlyContinue"
+
+Invoke-WebRequest `
+  https://github.com/telepresenceio/telepresence/releases/latest/download/telepresence-windows-amd64.zip `
+  -OutFile telepresence.zip
+
+Expand-Archive `
+  -Path telepresence.zip `
+  -DestinationPath telepresenceInstaller/telepresence
+
+Set-Location telepresenceInstaller/telepresence
+
+powershell.exe `
+  -ExecutionPolicy bypass `
+  -Command ". '.\install-telepresence.ps1';"
+```
+
+설치가 끝나면 버전을 확인한다.
+
+```shell
+telepresence version
+```
+
+Standalone Binary 방식으로 설치하면 네트워크를 변경하는 Root Daemon 실행을 위해 관리자 권한이나 `sudo`가 요구될 수 있다.
+
+#### Traffic Manager 설치
+
+Telepresence Client만으로는 클러스터 내부 네트워크에 연결할 수 없다. 클러스터에는 로컬 Client와 통신할 Traffic Manager가 필요하다.
+
+설치 전에 다시 한번 현재 Context를 확인한다.
+
+```shell
+kubectl config current-context
+```
+
+잘못된 Context가 선택된 상태에서 실행하면 의도하지 않은 클러스터에 Traffic Manager와 RBAC 객체가 생성될 수 있다.
+
+Traffic Manager를 설치한다.
+
+```shell
+telepresence helm install
+```
+
+`telepresence helm install`은 Telepresence에 포함된 Helm Chart를 이용해 Traffic Manager를 설치한다. Traffic Manager는 클러스터마다 한 번만 설치하면 되며, 이후 각 개발자는 자신의 로컬 Client로 연결할 수 있다. [Telepresence Traffic Manager 설치](https://telepresence.io/docs/install/manager)
+
+설치 상태를 확인한다.
+
+```shell
+kubectl get deployment,pod,service -n ambassador
+```
+
+기본 설정에서는 `ambassador` Namespace에 Traffic Manager가 설치된다. 이미 조직에서 Telepresence를 관리하고 있다면 개인이 다시 설치하지 말고 기존 Manager Namespace와 운영 정책을 확인해야 한다.
+
+#### `sns` Namespace에 연결
+
+로컬 환경에서 다음 명령을 실행한다.
+
+```shell
+telepresence connect \
+  --namespace sns \
+  --mapped-namespaces sns
+```
+
+- `--namespace sns`: 짧은 Service 이름을 해석할 기본 Namespace를 `sns`로 지정한다.
+- `--mapped-namespaces sns`: DNS 및 네트워크 매핑 범위를 `sns` Namespace로 제한한다.
+
+연결 상태를 확인한다.
+
+```shell
+telepresence status
+```
+
+정상적으로 연결되면 현재 Kubernetes Context, Namespace, Traffic Manager 연결 상태를 확인할 수 있다.
+
+Telepresence는 현재 `kubeconfig`와 Context를 사용하므로 다른 클러스터로 연결하려면 먼저 `kubectl config use-context`로 Context를 변경하거나 `telepresence connect --context` 옵션을 사용해야 한다.
+
+#### Service DNS 호출 확인
+
+Feed Server는 `sns` Namespace의 `feed-service` Service를 통해 노출되어 있다.
+
+전체 Service DNS는 다음과 같다.
+
+```text
+feed-service.sns.svc.cluster.local
+```
+
+Telepresence가 `sns` Namespace에 연결된 상태에서는 짧은 이름도 사용할 수 있다.
+
+```text
+feed-service
+```
+
+먼저 Readiness Endpoint를 호출한다.
+
+```shell
+curl -i \
+  http://feed-service.sns.svc.cluster.local:8080/health-check/readiness
+```
+
+정상적으로 준비된 Feed Server라면 일반적으로 다음과 같이 `200 OK`가 반환된다.
+
+```http
+HTTP/1.1 200 OK
+Content-Type: text/plain
+
+UP
+```
+
+응답 본문의 형태는 Health Check 구현에 따라 달라질 수 있지만, 정상 상태를 판단하는 핵심은 HTTP 상태 코드 `200 OK`다. `205`는 일반적인 Health Check 성공 상태 코드가 아니다.
+
+짧은 Service 이름으로도 호출해 볼 수 있다.
+
+```shell
+curl -i http://feed-service:8080/health-check/readiness
+```
+
+#### Feed 생성 API 테스트
+
+현재 Image Server와 User Server가 구현되지 않았다면 `imageId`와 `uploaderId`는 테스트용 값을 사용한다.
+
+```shell
+curl -i -X POST \
+  http://feed-service.sns.svc.cluster.local:8080/api/feeds \
+  -H "Content-Type: application/json" \
+  -d '{
+    "imageId": "test-image-001",
+    "uploaderId": 1,
+    "content": "Telepresence를 이용한 Feed 등록 테스트"
+  }'
+```
+
+정상적으로 생성되면 `201 Created`가 반환된다.
+
+```http
+HTTP/1.1 201 Created
+Location: http://feed-service.sns.svc.cluster.local:8080/api/feeds/1
+Content-Type: application/json
+```
+
+응답 본문에서는 데이터베이스가 생성한 `feedId`와 서버에서 설정한 `uploadedAt`을 확인할 수 있다.
+
+```json
+{
+  "feedId": 1,
+  "imageId": "test-image-001",
+  "uploaderId": 1,
+  "uploadedAt": "2026-09-16T01:20:30.123Z",
+  "content": "Telepresence를 이용한 Feed 등록 테스트"
+}
+```
+
+실제 생성된 `feedId`는 데이터베이스 상태에 따라 달라진다.
+
+#### Feed 단건 조회 테스트
+
+생성 응답에서 확인한 `feedId`를 사용한다.
+
+```shell
+curl -i \
+  http://feed-service.sns.svc.cluster.local:8080/api/feeds/1
+```
+
+정상적인 경우 `200 OK`와 Feed 정보가 반환된다.
+
+```json
+{
+  "feedId": 1,
+  "imageId": "test-image-001",
+  "uploaderId": 1,
+  "uploadedAt": "2026-09-16T01:20:30.123Z",
+  "content": "Telepresence를 이용한 Feed 등록 테스트"
+}
+```
+
+#### 전체 Feed 조회 테스트
+
+```shell
+curl -i \
+  "http://feed-service.sns.svc.cluster.local:8080/api/feeds?page=0&size=20"
+```
+
+페이지네이션을 적용했다면 Feed 배열뿐 아니라 전체 데이터 수, 전체 페이지 수, 현재 페이지 번호 등의 정보가 함께 반환된다.
+
+#### 사용자별 Feed 조회 테스트
+
+```shell
+curl -i \
+  "http://feed-service.sns.svc.cluster.local:8080/api/feeds/users/1?page=0&size=20"
+```
+
+이 요청은 `uploaderId`가 `1`인 Feed를 최신순으로 조회한다.
+
+현재 User Server가 없으므로 `uploaderId`의 실제 사용자 존재 여부까지 검증되는 것은 아니다. 이번 단계에서는 Feed Server가 전달받은 식별자를 정상적으로 저장하고 조회하는지만 확인한다.
+
+#### Feed 삭제 API 테스트
+
+```shell
+curl -i -X DELETE \
+  http://feed-service.sns.svc.cluster.local:8080/api/feeds/1
+```
+
+정상적으로 삭제되면 응답 본문 없이 `204 No Content`가 반환된다.
+
+```http
+HTTP/1.1 204 No Content
+```
+
+삭제한 Feed를 다시 조회한다.
+
+```shell
+curl -i \
+  http://feed-service.sns.svc.cluster.local:8080/api/feeds/1
+```
+
+Feed가 삭제되었다면 `404 Not Found`가 반환되어야 한다.
+
+```json
+{
+  "title": "Feed Not Found",
+  "status": 404,
+  "detail": "Feed를 찾을 수 없습니다. feedId=1"
+}
+```
+
+#### 전체 API 테스트 흐름
+
+```mermaid
+sequenceDiagram
+    participant Client as "로컬 curl"
+    participant TP as "Telepresence"
+    participant Service as "feed-service"
+    participant Pod as "Feed Server Pod"
+    participant DB as "MySQL"
+
+    Client->>TP: "POST /api/feeds"
+    TP->>Service: "Service DNS 요청 전달"
+    Service->>Pod: "준비된 Pod로 라우팅"
+    Pod->>DB: "Feed INSERT"
+    DB-->>Pod: "생성된 feedId 반환"
+    Pod-->>Client: "201 Created"
+
+    Client->>TP: "GET /api/feeds/1"
+    TP->>Service: "조회 요청 전달"
+    Service->>Pod: "Pod 선택"
+    Pod->>DB: "Feed SELECT"
+    DB-->>Pod: "Feed 데이터 반환"
+    Pod-->>Client: "200 OK"
+
+    Client->>TP: "DELETE /api/feeds/1"
+    TP->>Service: "삭제 요청 전달"
+    Service->>Pod: "Pod 선택"
+    Pod->>DB: "Feed DELETE"
+    Pod-->>Client: "204 No Content"
+```
+
+#### Telepresence 연결 종료
+
+테스트가 끝나면 로컬 Telepresence Daemon과 연결을 종료한다.
+
+```shell
+telepresence quit
+```
+
+Traffic Manager는 클러스터에 계속 남아 있으므로 다음 연결에서는 다시 설치하지 않고 `telepresence connect`만 실행하면 된다.
+
+Traffic Manager 자체를 제거해야 한다면 다음 명령을 사용한다.
+
+```shell
+telepresence helm uninstall
+```
+
+다만 Traffic Manager는 여러 개발자가 공유할 수 있다. 공유 클러스터에서는 다른 사용자의 연결에 영향을 줄 수 있으므로 관리자 확인 없이 제거해서는 안 된다.
+
+#### 문제 상황과 원인 확인
+
+##### Service DNS를 찾을 수 없는 경우
+
+다음과 같은 오류가 발생할 수 있다.
+
+```text
+Could not resolve host: feed-service.sns.svc.cluster.local
+```
+
+다음 항목을 확인한다.
+
+```shell
+telepresence status
+kubectl get service feed-service -n sns
+kubectl config current-context
+```
+
+주요 원인은 다음과 같다.
+
+- Telepresence 연결이 종료되어 있다.
+- 현재 연결된 Kubernetes Context가 다르다.
+- `sns` Namespace가 DNS 매핑 대상에 포함되지 않았다.
+- Service 이름이나 Namespace 이름이 잘못됐다.
+- VPN 또는 로컬 DNS 소프트웨어와 충돌하고 있다.
+
+##### 연결 시간 초과가 발생하는 경우
+
+DNS는 정상적으로 해석되지만 요청이 시간 초과된다면 Service와 Pod 연결 상태를 확인한다.
+
+```shell
+kubectl describe service feed-service -n sns
+```
+
+```shell
+kubectl get endpointslice \
+  -n sns \
+  -l kubernetes.io/service-name=feed-service
+```
+
+```shell
+kubectl get pods -n sns -l app=feed-server
+```
+
+다음과 같은 원인이 있을 수 있다.
+
+- Service의 `selector`와 Pod Label이 일치하지 않는다.
+- Feed Server Pod가 Ready 상태가 아니다.
+- Service의 `targetPort`가 컨테이너 포트와 다르다.
+- NetworkPolicy가 Traffic Manager의 접근을 차단한다.
+- Feed Server 프로세스가 지정된 포트에서 Listen하지 않는다.
+
+##### `404 Not Found`가 반환되는 경우
+
+네트워크 연결 자체는 정상일 가능성이 높다. 다음 항목을 확인한다.
+
+- 요청 경로가 실제 Controller 경로와 일치하는가
+- 새 API가 포함된 이미지가 배포됐는가
+- Deployment가 이전 이미지 태그를 사용하고 있지 않은가
+- 요청한 `feedId`가 실제로 존재하는가
+
+```shell
+kubectl get deployment feed-server \
+  -n sns \
+  -o jsonpath="{.spec.template.spec.containers[0].image}"
+```
+
+##### `500 Internal Server Error`가 반환되는 경우
+
+Feed Server까지 요청은 도착했지만 애플리케이션 내부에서 실패한 상태다.
+
+```shell
+kubectl logs deployment/feed-server -n sns --tail=200
+```
+
+다음 항목을 확인한다.
+
+- MySQL 연결 정보
+- RDS Security Group
+- 데이터베이스 사용자 권한
+- `social_feed` 테이블 존재 여부
+- JPA Entity와 실제 컬럼 구조의 차이
+- 잘못된 JSON 필드 또는 데이터 타입
+- 트랜잭션 내부 예외
+
+##### Traffic Manager 설치 권한이 없는 경우
+
+Traffic Manager 설치에는 Deployment, Service, Webhook 및 RBAC 관련 객체를 생성할 수 있는 권한이 필요할 수 있다.
+
+권한이 부족하다면 개인이 권한을 우회하려고 하기보다 클러스터 관리자에게 설치를 요청해야 한다. 일반 개발자는 이미 설치된 Traffic Manager에 연결할 권한만 부여받는 구성이 적절하다.
+
+##### VPN과 네트워크 대역이 충돌하는 경우
+
+회사 VPN, 로컬 Docker 네트워크, Kubernetes Service CIDR 또는 Pod CIDR가 겹치면 잘못된 네트워크 경로로 요청이 전달될 수 있다.
+
+이 경우 무조건 충돌 허용 옵션을 추가하기보다 다음 항목을 먼저 확인해야 한다.
+
+- 로컬 라우팅 테이블
+- VPN이 사용하는 CIDR
+- Kubernetes Service CIDR
+- Kubernetes Pod CIDR
+- Telepresence가 생성한 가상 네트워크 경로
+
+충돌 허용 설정은 보안 및 라우팅 범위를 변경할 수 있으므로 원인을 확인한 뒤 제한적으로 적용해야 한다.
+
+#### Telepresence와 `kubectl port-forward` 비교
+
+두 방식 모두 로컬에서 Kubernetes 내부 서비스를 호출할 수 있지만 사용 목적이 다르다.
+
+| 항목 | Telepresence | `kubectl port-forward` |
+|---|---|---|
+| Service DNS 사용 | 가능 | 불가능 |
+| 여러 내부 서비스 접근 | 한 번의 연결로 가능 | 서비스마다 별도 실행 |
+| 로컬 애플리케이션 연동 | 편리함 | 포트별 설정 필요 |
+| 클러스터 구성 요소 | Traffic Manager 필요 | 추가 구성 요소 없음 |
+| 설치와 권한 | Client 및 RBAC 필요 | 상대적으로 단순 |
+| 단일 API 임시 확인 | 다소 무거움 | 적합 |
+| MSA 통합 개발 | 적합 | 서비스가 많으면 복잡 |
+
+한두 개의 API를 잠깐 확인한다면 `kubectl port-forward`가 더 단순하다. 여러 마이크로서비스를 호출하며 로컬 애플리케이션을 개발한다면 Telepresence가 더 편리하다.
+
+#### 실무에서 주의할 점
+
+##### 운영 클러스터에 무분별하게 연결하지 않는다
+
+Telepresence를 사용하면 로컬 워크스테이션이 클러스터 내부 서비스에 접근할 수 있다. 내부 서비스가 외부 노출을 전제로 하지 않아 인증이나 접근 통제가 약하다면 더 큰 위험이 생길 수 있다.
+
+따라서 일반적으로 다음 기준을 적용한다.
+
+- 개발 또는 테스트 클러스터에서 사용한다.
+- Namespace 매핑 범위를 필요한 범위로 제한한다.
+- Kubernetes RBAC에 최소 권한을 적용한다.
+- 운영 데이터베이스에 연결되는 서비스는 별도로 통제한다.
+- 로컬 장비의 보안 상태와 접근 로그를 관리한다.
+
+##### 실제 외부 요청 경로를 검증하는 도구는 아니다
+
+Telepresence로 Feed Server API를 호출하는 데 성공해도 다음 구성이 정상이라는 의미는 아니다.
+
+- Ingress Controller
+- 외부 Load Balancer
+- TLS 인증서
+- DNS 레코드
+- 외부 방화벽
+- WAF
+- 인증 Gateway
+
+Telepresence 테스트는 로컬 환경에서 Kubernetes 내부 Service와 애플리케이션이 정상적으로 통신하는지를 검증한다. 실제 사용자 요청 경로는 Ingress나 Load Balancer를 구성한 뒤 별도로 테스트해야 한다.
+
+##### API 테스트 데이터의 정리 기준이 필요하다
+
+공유 개발 환경에서 테스트 데이터를 반복적으로 생성하면 실제 개발 데이터와 구분하기 어려워질 수 있다.
+
+테스트 데이터에는 식별 가능한 Prefix를 사용하고, 생성한 `feedId`를 기록한 뒤 테스트가 끝나면 삭제하는 것이 좋다.
+
+```json
+{
+  "imageId": "test-telepresence-image-001",
+  "uploaderId": 1,
+  "content": "[TEST] Telepresence API 호출 확인"
+}
+```
+
+### 정리
+
+Telepresence를 사용하면 Ingress나 LoadBalancer를 만들지 않아도 로컬 환경에서 Kubernetes 내부 Service를 직접 호출할 수 있다.
+
+- `ClusterIP` Service는 일반적으로 클러스터 외부에서 직접 접근할 수 없다.
+- Telepresence는 로컬 네트워크와 DNS를 Kubernetes 클러스터에 연결한다.
+- Traffic Manager는 클러스터에 한 번 설치하고 각 개발자는 `telepresence connect`로 연결한다.
+- `--mapped-namespaces`를 사용하면 접근 범위를 필요한 Namespace로 제한할 수 있다.
+- `feed-service.sns.svc.cluster.local` 주소로 Health Check와 Feed CRUD API를 테스트할 수 있다.
+- Feed 생성은 `201 Created`, 조회는 `200 OK`, 삭제는 `204 No Content`, 삭제 후 조회는 `404 Not Found`로 확인한다.
+- 단순한 단일 서비스 테스트에는 `kubectl port-forward`가 더 가볍고, 여러 내부 서비스를 함께 사용하는 MSA 개발에는 Telepresence가 유용하다.
+- Telepresence 연결 성공은 Kubernetes 내부 통신 검증이며 Ingress, TLS, 외부 DNS까지 검증한 것은 아니다.
+- 공유 환경이나 운영 클러스터에서는 RBAC, Namespace 범위, 내부 서비스 접근 권한을 신중하게 관리해야 한다.
