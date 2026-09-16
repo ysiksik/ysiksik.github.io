@@ -145,6 +145,8 @@ menu:
   - title:             Project
     url:               /project/
     submenu:
+      - title: 가격 매경
+        url: /price-maegyeong/
       - title: 물류
         url: /logistics/
       - title: 결제 시스템 (PG)
