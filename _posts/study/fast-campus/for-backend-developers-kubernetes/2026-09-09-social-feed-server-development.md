@@ -1822,7 +1822,7 @@ flowchart LR
 
 ## 04. Telepresence를 이용한 마이크로서비스 개발환경 구성
 
-### 09. Telepresence를 이용한 Kubernetes 내부 API 테스트
+### Telepresence를 이용한 Kubernetes 내부 API 테스트
 
 Kubernetes에 배포한 Feed Server는 `ClusterIP` 타입의 Service를 통해 클러스터 내부에 노출되어 있다. `ClusterIP`는 기본적으로 클러스터 내부 통신을 위한 주소이므로 로컬 개발 환경에서는 `feed-service.sns.svc.cluster.local`과 같은 Service DNS를 바로 호출할 수 없다.
 
