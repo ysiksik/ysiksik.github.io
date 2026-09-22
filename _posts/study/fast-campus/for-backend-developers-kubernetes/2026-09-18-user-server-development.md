@@ -1125,3 +1125,1158 @@ User Server의 첫 단계로 회원가입, 사용자 조회, 로그인 검증 �
 - 변경된 애플리케이션을 새 이미지 태그로 빌드하고 Kubernetes Deployment에 반영했다.
 
 사용자 계정 기능이 준비됐으므로 다음 단계에서는 사용자 간 팔로우 관계를 저장하고, 팔로우와 언팔로우 및 팔로워 목록 조회 기능을 구현할 수 있다.
+
+## 02. Follow, Unfollow 기능 개발
+
+### User Server 팔로우와 언팔로우 기능 구현하기
+
+앞에서는 User Server에 회원가입, 로그인 검증, 사용자 조회 기능을 구현했다. 이번에는 SNS의 핵심 기능인 팔로우 관계를 추가한다.
+
+팔로우 관계는 다음 두 방향으로 조회할 수 있어야 한다.
+
+- 팔로워: 특정 사용자를 팔로우하는 사용자
+- 팔로잉: 특정 사용자가 팔로우하고 있는 사용자
+
+예를 들어 사용자 A가 사용자 B를 팔로우한다면 A는 팔로워이고 B는 팔로우 대상이다.
+
+```mermaid
+flowchart LR
+    A["사용자 A<br/>팔로워"] -->|"팔로우"| B["사용자 B<br/>팔로우 대상"]
+```
+
+이번 실습에서는 다음 기능을 구현한다.
+
+- 사용자 팔로우
+- 사용자 언팔로우
+- 팔로우 여부 확인
+- 특정 사용자의 팔로워 목록 조회
+- 특정 사용자의 팔로잉 목록 조회
+- 중복 팔로우와 자기 자신 팔로우 방지
+- User Server 컨테이너 이미지 재배포
+
+#### 팔로우 관계의 방향 이해하기
+
+팔로우 테이블을 설계할 때 가장 주의해야 하는 부분은 두 사용자 ID의 역할이다.
+
+| 필드 | 의미 |
+|---|---|
+| `follower_user_id` | 팔로우 버튼을 누른 사용자 |
+| `following_user_id` | 팔로우 대상이 된 사용자 |
+
+사용자 1이 사용자 2를 팔로우한다면 다음과 같이 저장된다.
+
+| `follower_user_id` | `following_user_id` | 의미 |
+|---:|---:|---|
+| 1 | 2 | 사용자 1이 사용자 2를 팔로우함 |
+
+사용자 2의 팔로워 목록을 조회하면 사용자 1이 나오고, 사용자 1의 팔로잉 목록을 조회하면 사용자 2가 나온다.
+
+```mermaid
+flowchart TD
+    A["사용자 1"] -->|"팔로우"| B["사용자 2"]
+    C["사용자 2의 팔로워 목록"] --> D["사용자 1"]
+    E["사용자 1의 팔로잉 목록"] --> F["사용자 2"]
+```
+
+`userId`, `followId`, `followerId`처럼 의미가 불분명한 이름을 혼합하면 조회 조건이 쉽게 반대로 구현된다. 코드에서는 `followerUserId`와 `followingUserId`처럼 역할이 드러나는 이름을 사용하는 것이 좋다.
+
+#### 팔로우 테이블 설계
+
+팔로우 관계를 저장할 `user_follow` 테이블을 생성한다.
+
+```sql
+CREATE TABLE user_follow (
+    follow_id BIGINT NOT NULL AUTO_INCREMENT,
+    follower_user_id BIGINT NOT NULL,
+    following_user_id BIGINT NOT NULL,
+    followed_at DATETIME(6) NOT NULL,
+    notification_sent_at DATETIME(6) NULL,
+    PRIMARY KEY (follow_id),
+    CONSTRAINT uk_user_follow_relation
+        UNIQUE (follower_user_id, following_user_id),
+    CONSTRAINT fk_user_follow_follower
+        FOREIGN KEY (follower_user_id)
+        REFERENCES users (user_id),
+    CONSTRAINT fk_user_follow_following
+        FOREIGN KEY (following_user_id)
+        REFERENCES users (user_id),
+    INDEX idx_user_follow_follower_time (
+        follower_user_id,
+        followed_at
+    ),
+    INDEX idx_user_follow_following_time (
+        following_user_id,
+        followed_at
+    )
+) ENGINE=InnoDB
+  DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_unicode_ci;
+```
+
+##### 주요 컬럼과 제약 조건
+
+- `follow_id`: 내부 관리를 위한 자동 증가 기본 키다.
+- `follower_user_id`: 팔로우를 요청한 사용자 ID다.
+- `following_user_id`: 팔로우 대상 사용자 ID다.
+- `followed_at`: 팔로우 관계가 생성된 시각이다.
+- `notification_sent_at`: 팔로우 알림 전송 완료 시각이다.
+- `uk_user_follow_relation`: 같은 관계가 두 번 생성되는 것을 방지한다.
+- Foreign Key: 존재하지 않는 사용자 간의 팔로우 관계가 저장되는 것을 방지한다.
+
+`notification_sent_at`은 이후 Notification Batch에서 사용할 수 있다. User Server에서 이 컬럼을 직접 사용하지 않는다면 JPA Entity에 매핑하지 않아도 된다. 다만 Entity에서 값을 설정하지 않으므로 데이터베이스 컬럼은 `NULL`을 허용하거나 기본값을 가져야 한다.
+
+#### Unique Constraint가 필요한 이유
+
+Service에서 팔로우 여부를 먼저 확인하더라도 동시에 여러 요청이 들어오면 중복 데이터가 생성될 수 있다.
+
+```mermaid
+flowchart TD
+    A["팔로우 요청 A"] --> C["팔로우 관계 조회"]
+    B["팔로우 요청 B"] --> C
+    C --> D["두 요청 모두 관계 없음 확인"]
+    D --> E["동시에 INSERT 시도"]
+    E --> F["데이터베이스 Unique Constraint"]
+    F --> G["첫 번째 요청 성공"]
+    F --> H["두 번째 요청 중복 오류"]
+```
+
+애플리케이션의 중복 검사는 친절한 오류 처리를 위한 것이고, 동시 요청까지 포함한 최종 정합성은 데이터베이스 Unique Constraint가 보장한다.
+
+#### Follow Entity 작성
+
+```java
+package com.sns.user.domain.follow;
+
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.Index;
+import jakarta.persistence.PrePersist;
+import jakarta.persistence.Table;
+import jakarta.persistence.UniqueConstraint;
+
+import java.time.Instant;
+
+@Entity
+@Table(
+    name = "user_follow",
+    uniqueConstraints = {
+        @UniqueConstraint(
+            name = "uk_user_follow_relation",
+            columnNames = {
+                "follower_user_id",
+                "following_user_id"
+            }
+        )
+    },
+    indexes = {
+        @Index(
+            name = "idx_user_follow_follower_time",
+            columnList = "follower_user_id, followed_at"
+        ),
+        @Index(
+            name = "idx_user_follow_following_time",
+            columnList = "following_user_id, followed_at"
+        )
+    }
+)
+public class Follow {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Column(name = "follow_id")
+    private Long id;
+
+    @Column(
+        name = "follower_user_id",
+        nullable = false
+    )
+    private Long followerUserId;
+
+    @Column(
+        name = "following_user_id",
+        nullable = false
+    )
+    private Long followingUserId;
+
+    @Column(
+        name = "followed_at",
+        nullable = false,
+        updatable = false
+    )
+    private Instant followedAt;
+
+    protected Follow() {
+    }
+
+    private Follow(
+        Long followerUserId,
+        Long followingUserId
+    ) {
+        this.followerUserId = followerUserId;
+        this.followingUserId = followingUserId;
+    }
+
+    public static Follow create(
+        Long followerUserId,
+        Long followingUserId
+    ) {
+        return new Follow(
+            followerUserId,
+            followingUserId
+        );
+    }
+
+    @PrePersist
+    private void initializeFollowedAt() {
+        if (followedAt == null) {
+            followedAt = Instant.now();
+        }
+    }
+
+    public Long getId() {
+        return id;
+    }
+
+    public Long getFollowerUserId() {
+        return followerUserId;
+    }
+
+    public Long getFollowingUserId() {
+        return followingUserId;
+    }
+
+    public Instant getFollowedAt() {
+        return followedAt;
+    }
+}
+```
+
+이번 구현에서는 사용자 Entity와 `@ManyToOne` 관계를 만들지 않고 ID만 저장한다. User Server 내부에서 관리되는 같은 데이터베이스이므로 JPA 연관관계를 사용할 수도 있지만, ID 중심으로 모델링하면 팔로우 관계의 방향과 조회 쿼리를 명시적으로 관리할 수 있다.
+
+#### 팔로우 목록 응답 DTO 작성
+
+앞서 만든 `UserResponse`에는 이메일이 포함되어 있다. 팔로워와 팔로잉 목록은 다른 사용자에게 공개될 가능성이 높으므로 이메일을 반환하지 않는 별도의 DTO를 사용한다.
+
+```java
+package com.sns.user.api.dto;
+
+public record UserSummaryResponse(
+    Long userId,
+    String username
+) {
+}
+```
+
+사용 목적에 따라 응답 DTO를 분리하면 개인정보가 의도하지 않은 API에서 노출되는 것을 방지할 수 있다.
+
+#### 팔로우 요청 DTO 작성
+
+```java
+package com.sns.user.api.dto;
+
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Positive;
+
+public record FollowRequest(
+
+    @NotNull
+    @Positive
+    Long followerUserId,
+
+    @NotNull
+    @Positive
+    Long followingUserId
+) {
+}
+```
+
+- `followerUserId`: 팔로우를 요청한 사용자
+- `followingUserId`: 팔로우 대상 사용자
+
+인증이 구현된 운영 환경에서는 `followerUserId`를 요청 본문에서 받아서는 안 된다. 클라이언트가 다른 사용자의 ID를 전달할 수 있기 때문이다. 실제 팔로우 요청자는 JWT 또는 Session의 인증 정보에서 가져와야 한다.
+
+#### 팔로우 응답 DTO 작성
+
+```java
+package com.sns.user.api.dto;
+
+import com.sns.user.domain.follow.Follow;
+
+import java.time.Instant;
+
+public record FollowResponse(
+    Long followId,
+    Long followerUserId,
+    Long followingUserId,
+    Instant followedAt
+) {
+
+    public static FollowResponse from(Follow follow) {
+        return new FollowResponse(
+            follow.getId(),
+            follow.getFollowerUserId(),
+            follow.getFollowingUserId(),
+            follow.getFollowedAt()
+        );
+    }
+}
+```
+
+팔로우 여부 확인 API에는 별도의 응답을 사용한다.
+
+```java
+package com.sns.user.api.dto;
+
+public record FollowStatusResponse(
+    Long followerUserId,
+    Long followingUserId,
+    boolean following
+) {
+}
+```
+
+#### FollowRepository 작성
+
+```java
+package com.sns.user.domain.follow;
+
+import com.sns.user.api.dto.UserSummaryResponse;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+
+import java.util.Optional;
+
+public interface FollowRepository
+    extends JpaRepository<Follow, Long> {
+
+    Optional<Follow>
+    findByFollowerUserIdAndFollowingUserId(
+        Long followerUserId,
+        Long followingUserId
+    );
+
+    boolean existsByFollowerUserIdAndFollowingUserId(
+        Long followerUserId,
+        Long followingUserId
+    );
+
+    @Query("""
+        select new com.sns.user.api.dto.UserSummaryResponse(
+            u.id,
+            u.username
+        )
+        from Follow f
+        join UserAccount u
+          on u.id = f.followerUserId
+        where f.followingUserId = :userId
+        order by f.followedAt desc
+        """)
+    Page<UserSummaryResponse> findFollowers(
+        @Param("userId") Long userId,
+        Pageable pageable
+    );
+
+    @Query("""
+        select new com.sns.user.api.dto.UserSummaryResponse(
+            u.id,
+            u.username
+        )
+        from Follow f
+        join UserAccount u
+          on u.id = f.followingUserId
+        where f.followerUserId = :userId
+        order by f.followedAt desc
+        """)
+    Page<UserSummaryResponse> findFollowing(
+        @Param("userId") Long userId,
+        Pageable pageable
+    );
+}
+```
+
+##### 팔로워 조회 쿼리
+
+팔로워 목록은 나를 팔로우한 사용자 목록이다.
+
+```text
+following_user_id = 조회 대상 사용자
+follower_user_id = 결과로 반환할 사용자
+```
+
+```mermaid
+flowchart LR
+    A["user_follow.following_user_id"] -->|"조회 조건"| B["조회 대상 사용자"]
+    C["user_follow.follower_user_id"] -->|"User와 JOIN"| D["팔로워 정보"]
+```
+
+##### 팔로잉 조회 쿼리
+
+팔로잉 목록은 내가 팔로우한 사용자 목록이다.
+
+```text
+follower_user_id = 조회 대상 사용자
+following_user_id = 결과로 반환할 사용자
+```
+
+```mermaid
+flowchart LR
+    A["user_follow.follower_user_id"] -->|"조회 조건"| B["조회 대상 사용자"]
+    C["user_follow.following_user_id"] -->|"User와 JOIN"| D["팔로잉 사용자 정보"]
+```
+
+목록 조회는 데이터가 계속 증가할 수 있으므로 `List`로 전체 데이터를 한 번에 반환하지 않고 `Pageable`을 사용한다.
+
+#### 팔로우 예외 정의
+
+##### 이미 팔로우 중인 경우
+
+```java
+package com.sns.user.domain.follow;
+
+public class AlreadyFollowingException
+    extends RuntimeException {
+
+    public AlreadyFollowingException() {
+        super("이미 팔로우 중인 사용자입니다.");
+    }
+}
+```
+
+##### 자기 자신을 팔로우한 경우
+
+```java
+package com.sns.user.domain.follow;
+
+public class SelfFollowNotAllowedException
+    extends RuntimeException {
+
+    public SelfFollowNotAllowedException() {
+        super("자기 자신은 팔로우할 수 없습니다.");
+    }
+}
+```
+
+#### FollowService 작성
+
+```java
+package com.sns.user.domain.follow;
+
+import com.sns.user.api.dto.FollowRequest;
+import com.sns.user.api.dto.FollowResponse;
+import com.sns.user.api.dto.FollowStatusResponse;
+import com.sns.user.api.dto.UserSummaryResponse;
+import com.sns.user.domain.user.UserNotFoundException;
+import com.sns.user.domain.user.UserRepository;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+@Service
+@Transactional(readOnly = true)
+public class FollowService {
+
+    private final FollowRepository followRepository;
+    private final UserRepository userRepository;
+
+    public FollowService(
+        FollowRepository followRepository,
+        UserRepository userRepository
+    ) {
+        this.followRepository = followRepository;
+        this.userRepository = userRepository;
+    }
+
+    public FollowStatusResponse getFollowStatus(
+        Long followerUserId,
+        Long followingUserId
+    ) {
+        boolean following = followRepository
+            .existsByFollowerUserIdAndFollowingUserId(
+                followerUserId,
+                followingUserId
+            );
+
+        return new FollowStatusResponse(
+            followerUserId,
+            followingUserId,
+            following
+        );
+    }
+
+    @Transactional
+    public FollowResponse follow(FollowRequest request) {
+        Long followerUserId = request.followerUserId();
+        Long followingUserId = request.followingUserId();
+
+        validateFollowRequest(
+            followerUserId,
+            followingUserId
+        );
+
+        boolean alreadyFollowing = followRepository
+            .existsByFollowerUserIdAndFollowingUserId(
+                followerUserId,
+                followingUserId
+            );
+
+        if (alreadyFollowing) {
+            throw new AlreadyFollowingException();
+        }
+
+        Follow follow = Follow.create(
+            followerUserId,
+            followingUserId
+        );
+
+        try {
+            Follow savedFollow =
+                followRepository.saveAndFlush(follow);
+
+            return FollowResponse.from(savedFollow);
+        } catch (DataIntegrityViolationException exception) {
+            throw new AlreadyFollowingException();
+        }
+    }
+
+    @Transactional
+    public void unfollow(
+        Long followerUserId,
+        Long followingUserId
+    ) {
+        followRepository
+            .findByFollowerUserIdAndFollowingUserId(
+                followerUserId,
+                followingUserId
+            )
+            .ifPresent(followRepository::delete);
+    }
+
+    public Page<UserSummaryResponse> getFollowers(
+        Long userId,
+        Pageable pageable
+    ) {
+        validateUserExists(userId);
+        return followRepository.findFollowers(
+            userId,
+            pageable
+        );
+    }
+
+    public Page<UserSummaryResponse> getFollowing(
+        Long userId,
+        Pageable pageable
+    ) {
+        validateUserExists(userId);
+        return followRepository.findFollowing(
+            userId,
+            pageable
+        );
+    }
+
+    private void validateFollowRequest(
+        Long followerUserId,
+        Long followingUserId
+    ) {
+        if (followerUserId.equals(followingUserId)) {
+            throw new SelfFollowNotAllowedException();
+        }
+
+        validateUserExists(followerUserId);
+        validateUserExists(followingUserId);
+    }
+
+    private void validateUserExists(Long userId) {
+        if (!userRepository.existsById(userId)) {
+            throw new UserNotFoundException();
+        }
+    }
+}
+```
+
+##### 팔로우 처리 과정
+
+```mermaid
+flowchart TD
+    A["팔로우 요청"] --> B["팔로워와 대상 ID 검증"]
+    B --> C{"같은 사용자 여부"}
+    C -->|"같음"| D["400 Bad Request"]
+    C -->|"다름"| E["두 사용자 존재 여부 확인"]
+    E --> F{"모두 존재"}
+    F -->|"아님"| G["404 Not Found"]
+    F -->|"맞음"| H["기존 팔로우 관계 확인"]
+    H --> I{"이미 팔로우 중"}
+    I -->|"맞음"| J["409 Conflict"]
+    I -->|"아님"| K["팔로우 관계 저장"]
+    K --> L["201 Created"]
+```
+
+##### 언팔로우 처리 과정
+
+언팔로우는 팔로우 관계를 데이터베이스에서 삭제하는 Hard Delete 방식으로 구현한다.
+
+```mermaid
+flowchart TD
+    A["언팔로우 요청"] --> B["팔로우 관계 조회"]
+    B --> C{"관계 존재 여부"}
+    C -->|"존재"| D["팔로우 행 삭제"]
+    C -->|"없음"| E["추가 작업 없음"]
+    D --> F["204 No Content"]
+    E --> F
+```
+
+존재하지 않는 관계에 대한 언팔로우도 `204 No Content`를 반환하도록 만들면 같은 요청을 여러 번 보내도 결과가 달라지지 않는 멱등성을 확보할 수 있다.
+
+#### Hard Delete 사용 시 주의사항
+
+Hard Delete는 현재 팔로우 상태를 판단하기에는 단순하고 효율적이다. 하지만 다음 정보는 남지 않는다.
+
+- 과거에 팔로우했던 시각
+- 언팔로우한 시각
+- 팔로우와 언팔로우 반복 이력
+- 과거 알림 전송 기록
+
+감사 기록이나 통계가 필요하다면 다음과 같은 대안을 고려할 수 있다.
+
+- `status`와 `unfollowed_at` 컬럼을 사용하는 Soft Delete
+- 팔로우 상태 테이블과 이벤트 이력 테이블 분리
+- 팔로우 및 언팔로우 이벤트를 Kafka에 발행
+- 별도의 감사 로그 저장소 사용
+
+이번 실습에서는 현재 관계만 필요하므로 Hard Delete를 사용한다.
+
+#### FollowController 작성
+
+```java
+package com.sns.user.api;
+
+import com.sns.user.api.dto.FollowRequest;
+import com.sns.user.api.dto.FollowResponse;
+import com.sns.user.api.dto.FollowStatusResponse;
+import com.sns.user.api.dto.UserSummaryResponse;
+import com.sns.user.domain.follow.FollowService;
+import jakarta.validation.Valid;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.web.PageableDefault;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
+
+import java.net.URI;
+
+@RestController
+@RequestMapping("/api/follows")
+public class FollowController {
+
+    private final FollowService followService;
+
+    public FollowController(FollowService followService) {
+        this.followService = followService;
+    }
+
+    @PostMapping
+    public ResponseEntity<FollowResponse> follow(
+        @Valid @RequestBody FollowRequest request
+    ) {
+        FollowResponse response =
+            followService.follow(request);
+
+        URI location = ServletUriComponentsBuilder
+            .fromCurrentRequest()
+            .path("/{followId}")
+            .buildAndExpand(response.followId())
+            .toUri();
+
+        return ResponseEntity
+            .created(location)
+            .body(response);
+    }
+
+    @DeleteMapping(
+        "/{followerUserId}/{followingUserId}"
+    )
+    public ResponseEntity<Void> unfollow(
+        @PathVariable Long followerUserId,
+        @PathVariable Long followingUserId
+    ) {
+        followService.unfollow(
+            followerUserId,
+            followingUserId
+        );
+
+        return ResponseEntity.noContent().build();
+    }
+
+    @GetMapping(
+        "/{followerUserId}/{followingUserId}"
+    )
+    public FollowStatusResponse getFollowStatus(
+        @PathVariable Long followerUserId,
+        @PathVariable Long followingUserId
+    ) {
+        return followService.getFollowStatus(
+            followerUserId,
+            followingUserId
+        );
+    }
+
+    @GetMapping("/{userId}/followers")
+    public Page<UserSummaryResponse> getFollowers(
+        @PathVariable Long userId,
+        @PageableDefault(size = 20)
+        Pageable pageable
+    ) {
+        return followService.getFollowers(
+            userId,
+            pageable
+        );
+    }
+
+    @GetMapping("/{userId}/following")
+    public Page<UserSummaryResponse> getFollowing(
+        @PathVariable Long userId,
+        @PageableDefault(size = 20)
+        Pageable pageable
+    ) {
+        return followService.getFollowing(
+            userId,
+            pageable
+        );
+    }
+}
+```
+
+API 구성은 다음과 같다.
+
+| HTTP 요청 | 기능 | 정상 응답 |
+|---|---|---:|
+| `POST /api/follows` | 새로운 팔로우 관계 생성 | `201 Created` |
+| `DELETE /api/follows/{followerId}/{followingId}` | 언팔로우 | `204 No Content` |
+| `GET /api/follows/{followerId}/{followingId}` | 팔로우 여부 확인 | `200 OK` |
+| `GET /api/follows/{userId}/followers` | 팔로워 목록 조회 | `200 OK` |
+| `GET /api/follows/{userId}/following` | 팔로잉 목록 조회 | `200 OK` |
+
+#### 예외 응답 처리 추가
+
+기존 `ApiExceptionHandler`에 팔로우 예외 처리를 추가한다.
+
+```java
+@ExceptionHandler(AlreadyFollowingException.class)
+public ProblemDetail handleAlreadyFollowing(
+    AlreadyFollowingException exception
+) {
+    ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+        HttpStatus.CONFLICT,
+        exception.getMessage()
+    );
+    problem.setTitle("Already Following");
+    return problem;
+}
+
+@ExceptionHandler(SelfFollowNotAllowedException.class)
+public ProblemDetail handleSelfFollow(
+    SelfFollowNotAllowedException exception
+) {
+    ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+        HttpStatus.BAD_REQUEST,
+        exception.getMessage()
+    );
+    problem.setTitle("Self Follow Not Allowed");
+    return problem;
+}
+```
+
+중복 팔로우 요청에 `null`이나 `200 OK`를 반환하면 요청이 성공했는지 판단하기 어렵다. 따라서 중복 상태를 명확하게 나타내는 `409 Conflict`를 사용한다.
+
+#### API 테스트를 위한 사용자 생성
+
+팔로우 기능을 테스트하려면 최소 두 명의 사용자가 필요하다.
+
+##### 첫 번째 사용자 생성
+
+```shell
+curl -i -X POST \
+  http://user-service.sns.svc.cluster.local:8080/api/users \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "user01",
+    "email": "user01@example.com",
+    "password": "StrongPassword123!"
+  }'
+```
+
+##### 두 번째 사용자 생성
+
+```shell
+curl -i -X POST \
+  http://user-service.sns.svc.cluster.local:8080/api/users \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "user02",
+    "email": "user02@example.com",
+    "password": "StrongPassword123!"
+  }'
+```
+
+다음 테스트에서는 `user01`의 ID를 `1`, `user02`의 ID를 `2`라고 가정한다. 실제 테스트에서는 회원가입 응답으로 반환된 `userId`를 사용해야 한다.
+
+#### 팔로우 API 테스트
+
+사용자 1이 사용자 2를 팔로우한다.
+
+```shell
+curl -i -X POST \
+  http://user-service.sns.svc.cluster.local:8080/api/follows \
+  -H "Content-Type: application/json" \
+  -d '{
+    "followerUserId": 1,
+    "followingUserId": 2
+  }'
+```
+
+정상 응답은 `201 Created`다.
+
+```json
+{
+  "followId": 1,
+  "followerUserId": 1,
+  "followingUserId": 2,
+  "followedAt": "2026-09-22T01:20:30.123Z"
+}
+```
+
+#### 팔로우 여부 확인
+
+```shell
+curl -i \
+  http://user-service.sns.svc.cluster.local:8080/api/follows/1/2
+```
+
+```json
+{
+  "followerUserId": 1,
+  "followingUserId": 2,
+  "following": true
+}
+```
+
+ID의 순서를 반대로 전달하면 의미도 반대가 된다.
+
+```shell
+curl \
+  http://user-service.sns.svc.cluster.local:8080/api/follows/2/1
+```
+
+사용자 2가 사용자 1을 팔로우하지 않았다면 다음 결과가 반환된다.
+
+```json
+{
+  "followerUserId": 2,
+  "followingUserId": 1,
+  "following": false
+}
+```
+
+#### 팔로워 목록 조회
+
+사용자 2를 팔로우하는 사용자 목록을 조회한다.
+
+```shell
+curl \
+  "http://user-service.sns.svc.cluster.local:8080/api/follows/2/followers?page=0&size=20"
+```
+
+결과에는 사용자 1이 포함되어야 한다.
+
+```json
+{
+  "content": [
+    {
+      "userId": 1,
+      "username": "user01"
+    }
+  ]
+}
+```
+
+#### 팔로잉 목록 조회
+
+사용자 1이 팔로우하는 사용자 목록을 조회한다.
+
+```shell
+curl \
+  "http://user-service.sns.svc.cluster.local:8080/api/follows/1/following?page=0&size=20"
+```
+
+결과에는 사용자 2가 포함되어야 한다.
+
+```json
+{
+  "content": [
+    {
+      "userId": 2,
+      "username": "user02"
+    }
+  ]
+}
+```
+
+#### 언팔로우 API 테스트
+
+```shell
+curl -i -X DELETE \
+  http://user-service.sns.svc.cluster.local:8080/api/follows/1/2
+```
+
+정상적으로 처리되면 다음 상태 코드가 반환된다.
+
+```http
+HTTP/1.1 204 No Content
+```
+
+다시 팔로우 여부를 조회한다.
+
+```shell
+curl \
+  http://user-service.sns.svc.cluster.local:8080/api/follows/1/2
+```
+
+```json
+{
+  "followerUserId": 1,
+  "followingUserId": 2,
+  "following": false
+}
+```
+
+#### 잘못된 요청 테스트
+
+##### 자기 자신 팔로우
+
+```shell
+curl -i -X POST \
+  http://user-service.sns.svc.cluster.local:8080/api/follows \
+  -H "Content-Type: application/json" \
+  -d '{
+    "followerUserId": 1,
+    "followingUserId": 1
+  }'
+```
+
+`400 Bad Request`가 반환되어야 한다.
+
+##### 중복 팔로우
+
+이미 사용자 1이 사용자 2를 팔로우하는 상태에서 같은 요청을 다시 전달하면 `409 Conflict`가 반환되어야 한다.
+
+##### 존재하지 않는 사용자 팔로우
+
+```shell
+curl -i -X POST \
+  http://user-service.sns.svc.cluster.local:8080/api/follows \
+  -H "Content-Type: application/json" \
+  -d '{
+    "followerUserId": 1,
+    "followingUserId": 999999
+  }'
+```
+
+존재하지 않는 사용자를 팔로우할 수 없으므로 `404 Not Found`가 반환되어야 한다.
+
+#### 데이터베이스에서 관계 확인
+
+```sql
+SELECT
+    f.follow_id,
+    f.follower_user_id,
+    follower.username AS follower_username,
+    f.following_user_id,
+    following_user.username AS following_username,
+    f.followed_at,
+    f.notification_sent_at
+FROM user_follow f
+JOIN users follower
+  ON follower.user_id = f.follower_user_id
+JOIN users following
+  ON following.user_id = f.following_user_id
+ORDER BY f.followed_at DESC;
+```
+
+이 쿼리를 통해 팔로우를 요청한 사용자와 팔로우 대상 사용자를 함께 확인할 수 있다.
+
+#### 컨테이너 이미지 빌드
+
+팔로우 기능을 추가했으므로 User Server 이미지 버전을 `0.0.3`으로 변경한다.
+
+```powershell
+.\gradlew.bat clean test jib `
+  -Djib.to.image=<AWS_ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/user-server:0.0.3
+```
+
+ECR 인증이 만료됐다면 다시 로그인한다.
+
+```powershell
+aws ecr get-login-password --region <REGION> |
+    docker login `
+        --username AWS `
+        --password-stdin `
+        <AWS_ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com
+```
+
+#### Kubernetes Deployment 업데이트
+
+```shell
+kubectl set image deployment/user-server \
+  user-server=<AWS_ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/user-server:0.0.3 \
+  -n sns
+```
+
+Rollout 상태를 확인한다.
+
+```shell
+kubectl rollout status deployment/user-server -n sns
+```
+
+실제 이미지와 Pod 상태도 확인한다.
+
+```shell
+kubectl get deployment user-server \
+  -n sns \
+  -o jsonpath="{.spec.template.spec.containers[0].image}"
+```
+
+```shell
+kubectl get pods -n sns -l app=user-server
+```
+
+```shell
+kubectl get endpointslice \
+  -n sns \
+  -l kubernetes.io/service-name=user-service
+```
+
+#### 실패 상황과 원인
+
+##### 팔로워와 팔로잉 결과가 반대로 나오는 경우
+
+`followerUserId`와 `followingUserId`의 의미가 쿼리에서 뒤바뀌었을 가능성이 크다.
+
+- 팔로워 조회: `followingUserId`가 조회 대상이고 `followerUserId`를 반환한다.
+- 팔로잉 조회: `followerUserId`가 조회 대상이고 `followingUserId`를 반환한다.
+
+테스트 데이터를 한 건만 넣고 SQL 결과와 API 결과를 비교하면 방향 오류를 쉽게 확인할 수 있다.
+
+##### 중복 팔로우 데이터가 저장되는 경우
+
+다음 Unique Constraint가 실제 데이터베이스에 생성됐는지 확인한다.
+
+```sql
+SHOW INDEX FROM user_follow;
+```
+
+애플리케이션의 `existsBy...` 검사만으로는 동시 요청을 완전히 막을 수 없다.
+
+##### 팔로우 생성 시 Foreign Key 오류가 발생하는 경우
+
+`followerUserId` 또는 `followingUserId`에 해당하는 사용자가 `users` 테이블에 존재하지 않는 상태다.
+
+API 테스트 전에 회원가입 응답에서 실제 `userId`를 확인해야 한다.
+
+##### 목록 조회에서 이메일이 노출되는 경우
+
+팔로워 목록이 `UserResponse`를 반환하고 있을 가능성이 있다. 공개 목록에는 이메일을 제외한 `UserSummaryResponse`를 사용해야 한다.
+
+##### 목록 조회가 느려지는 경우
+
+다음 인덱스가 존재하는지 확인한다.
+
+```sql
+SHOW INDEX FROM user_follow;
+```
+
+팔로워 조회에는 `following_user_id`, 팔로잉 조회에는 `follower_user_id` 인덱스가 필요하다. 목록 데이터가 많다면 반드시 페이지네이션을 적용해야 한다.
+
+#### 실무에서 추가로 고려할 사항
+
+##### 팔로우 요청자는 인증 정보에서 가져온다
+
+이번 실습에서는 테스트를 위해 `followerUserId`를 요청 본문으로 전달했다. 하지만 운영 환경에서는 다음과 같이 인증 정보에서 가져와야 한다.
+
+```mermaid
+flowchart LR
+    A["Client와 Access Token"] --> B["인증 필터"]
+    B --> C["인증된 사용자 ID"]
+    C --> D["팔로우 대상 ID"]
+    D --> E["FollowService"]
+```
+
+클라이언트는 팔로우 대상 ID만 전달하고, 팔로우 요청자 ID는 서버가 JWT 또는 Session에서 결정해야 한다.
+
+##### 사용자 차단 기능
+
+한 사용자가 다른 사용자를 차단한 경우에는 팔로우 생성뿐 아니라 기존 관계와 목록 노출 정책도 함께 정의해야 한다.
+
+- 차단 시 기존 팔로우 관계 제거
+- 차단 사용자에 대한 팔로우 요청 거부
+- 팔로워 및 팔로잉 목록에서 숨김 처리
+- Feed와 Timeline에서도 차단 관계 반영
+
+##### 팔로우 수 캐시
+
+사용자가 많아지면 프로필을 조회할 때마다 팔로워 수와 팔로잉 수를 `COUNT`하는 비용이 증가한다.
+
+다음 방식을 검토할 수 있다.
+
+- User 테이블에 카운트 컬럼 저장
+- Redis에 카운트 캐시
+- 팔로우 이벤트 기반 비동기 집계
+- 주기적인 정합성 보정 Batch
+
+카운트를 별도로 저장하면 실제 관계 테이블과 값이 달라질 수 있으므로 재계산과 복구 방법도 마련해야 한다.
+
+##### 팔로우 이벤트와 알림 처리
+
+팔로우가 생성됐을 때 User Server가 직접 이메일이나 Push 알림을 전송하면 외부 알림 시스템 장애가 팔로우 API에 영향을 줄 수 있다.
+
+```mermaid
+flowchart LR
+    A["팔로우 생성"] --> B["User Server"]
+    B --> C["user_follow 저장"]
+    B --> D["Follow Created 이벤트"]
+    D --> E["Notification Worker"]
+    E --> F["이메일 또는 Push 전송"]
+```
+
+이벤트 발행의 신뢰성이 중요하다면 Outbox Pattern이나 재시도 가능한 메시지 브로커를 적용할 수 있다. `notification_sent_at`을 이용한 Batch 방식도 가능하지만 중복 전송 방지와 실패 재시도 정책을 함께 설계해야 한다.
+
+### 정리
+
+User Server에 팔로우 관계를 관리하는 기능을 구현했다.
+
+- `followerUserId`는 팔로우를 요청한 사용자다.
+- `followingUserId`는 팔로우 대상 사용자다.
+- 팔로워와 팔로잉은 같은 테이블에서 방향을 반대로 조회한다.
+- 데이터베이스 Unique Constraint로 중복 팔로우를 방지했다.
+- 자기 자신과 존재하지 않는 사용자를 팔로우할 수 없도록 검증했다.
+- 팔로워와 팔로잉 목록에는 이메일을 제외한 공개 사용자 정보만 반환했다.
+- 목록이 계속 증가할 수 있으므로 페이지네이션을 적용했다.
+- 언팔로우는 관계가 없어도 `204 No Content`를 반환하는 멱등 연산으로 구성했다.
+- Hard Delete는 단순하지만 과거 팔로우 이력을 보존하지 않는다는 점을 고려해야 한다.
+- 운영 환경에서는 팔로우 요청자 ID를 요청 본문이 아니라 인증 정보에서 가져와야 한다.
+- 기능이 추가된 User Server를 `0.0.3` 이미지로 빌드하고 Kubernetes Deployment에 적용했다.
+
+이제 User Server는 사용자 계정과 팔로우 관계를 제공할 수 있다. 다음 단계에서는 Feed Server가 `uploaderId`를 이용해 User Server의 사용자 정보를 조회하도록 서비스 간 통신을 구성할 수 있다.
