@@ -2280,3 +2280,954 @@ User Server에 팔로우 관계를 관리하는 기능을 구현했다.
 - 기능이 추가된 User Server를 `0.0.3` 이미지로 빌드하고 Kubernetes Deployment에 적용했다.
 
 이제 User Server는 사용자 계정과 팔로우 관계를 제공할 수 있다. 다음 단계에서는 Feed Server가 `uploaderId`를 이용해 User Server의 사용자 정보를 조회하도록 서비스 간 통신을 구성할 수 있다.
+
+## 03. Social Feed 서버와 User 서버 연계
+
+### Feed Server와 User Server 간 HTTP 통신 구현하기
+
+Feed Server는 게시물을 저장할 때 작성자의 상세 정보를 함께 저장하지 않고 `uploaderId`만 보관한다. 사용자 이름과 이메일 같은 계정 정보의 소유권은 User Server에 있기 때문이다.
+
+하지만 실제 화면에 Feed를 표시할 때 숫자로 된 사용자 ID만 보여줄 수는 없다. 최소한 작성자의 사용자 이름은 함께 제공해야 한다. 이를 위해 Feed Server가 `uploaderId`를 이용해 User Server를 호출하고, 조회한 사용자 정보를 Feed 응답에 결합하도록 구성한다.
+
+```mermaid
+flowchart LR
+    A["Client"] -->|"Feed 목록 요청"| B["Feed Server"]
+    B -->|"Feed 조회"| C["Feed Database"]
+    C -->|"uploaderId 포함 Feed"| B
+    B -->|"GET /api/users/userId"| D["User Server"]
+    D -->|"사용자 정보 조회"| E["User Database"]
+    E -->|"사용자 정보"| D
+    D -->|"username 반환"| B
+    B -->|"Feed와 작성자 정보 결합"| A
+```
+
+#### Feed 테이블에 사용자 이름을 저장하지 않는 이유
+
+Feed 테이블에 `uploaderId`와 `username`을 함께 저장하면 조회할 때 User Server를 호출하지 않아도 된다. 그러나 사용자 이름이 변경됐을 때 문제가 발생한다.
+
+```mermaid
+flowchart TD
+    A["사용자가 username 변경"] --> B["User Database 갱신"]
+    B --> C["기존 Feed의 username은 이전 값 유지"]
+    C --> D["서비스 간 데이터 불일치"]
+```
+
+User Server가 사용자 정보의 원본을 관리한다면 Feed Server는 사용자 ID만 참조하는 것이 기본 원칙이다.
+
+| 방식 | 장점 | 단점 |
+|---|---|---|
+| Feed에 `uploaderId`만 저장 | 사용자 정보의 원본이 명확함 | 조회 시 User Server 호출 필요 |
+| Feed에 `username`도 저장 | Feed 조회가 빠름 | 사용자 이름 변경 시 동기화 필요 |
+| 별도 조회 모델 구성 | 빠른 조회와 확장성 확보 | 이벤트 처리와 데이터 동기화 필요 |
+
+초기 구현에서는 User Server를 동기 호출한다. 트래픽이 커지면 Cache, Batch API 또는 이벤트 기반 조회 모델을 적용할 수 있다.
+
+#### 서비스 간 호출 구조
+
+Kubernetes에서 Feed Server와 User Server가 같은 `sns` Namespace에 있다면 다음 주소로 호출할 수 있다.
+
+```text
+http://user-service:8080
+```
+
+전체 Service DNS는 다음과 같다.
+
+```text
+http://user-service.sns.svc.cluster.local:8080
+```
+
+전체 DNS를 사용하면 호출 대상 Namespace가 코드와 설정에 명확하게 드러난다. 다만 주소를 Java 코드에 직접 작성하지 않고 환경 변수로 주입해야 한다.
+
+#### 환경별 User Server 주소
+
+환경에 따라 User Server 주소는 달라진다.
+
+| 환경 | User Server 주소 예시 |
+|---|---|
+| 모든 서버를 로컬에서 실행 | `http://localhost:8081` |
+| Telepresence 사용 | `http://user-service.sns.svc.cluster.local:8080` |
+| Kubernetes Pod 내부 | `http://user-service.sns.svc.cluster.local:8080` |
+
+로컬에서 두 Spring Boot 애플리케이션을 함께 실행한다면 서로 다른 포트를 사용해야 한다.
+
+- Feed Server: `8080`
+- User Server: `8081`
+
+Telepresence에 연결된 상태라면 로컬 Feed Server에서도 Kubernetes Service DNS를 사용할 수 있다.
+
+#### User Server 주소 설정 클래스
+
+문자열 주소를 `@Value`로 Service에 직접 주입할 수도 있지만, 외부 서비스 설정이 늘어나면 관리하기 어렵다. 전용 설정 클래스를 만들어 관리하는 편이 좋다.
+
+```java
+package com.sns.feed.client.user;
+
+import jakarta.validation.constraints.NotNull;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.validation.annotation.Validated;
+
+import java.net.URI;
+
+@Validated
+@ConfigurationProperties(
+    prefix = "clients.user-service"
+)
+public record UserServiceProperties(
+
+    @NotNull
+    URI baseUrl
+) {
+}
+```
+
+Spring Boot의 Relaxed Binding을 통해 다음 환경 변수가 `baseUrl`에 연결된다.
+
+```text
+CLIENTS_USER_SERVICE_BASE_URL
+```
+
+환경 변수가 빠지면 애플리케이션 시작 시 설정 오류가 발생한다. 잘못된 기본 주소로 요청을 보내는 것보다 시작 단계에서 문제를 발견하는 편이 안전하다.
+
+#### RestClient 설정
+
+Spring Framework 6.1 이상에서는 동기 HTTP Client로 `RestClient`를 사용할 수 있다. 이전 버전이라면 `RestTemplate`, `WebClient`, OpenFeign 같은 대안을 사용할 수 있다.
+
+```java
+package com.sns.feed.client.user;
+
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
+import org.springframework.web.client.RestClient;
+
+import java.net.http.HttpClient;
+import java.time.Duration;
+
+@Configuration
+@EnableConfigurationProperties(
+    UserServiceProperties.class
+)
+public class UserServiceClientConfig {
+
+    @Bean
+    public RestClient userServiceRestClient(
+        RestClient.Builder builder,
+        UserServiceProperties properties
+    ) {
+        HttpClient httpClient = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(1))
+            .build();
+
+        JdkClientHttpRequestFactory requestFactory =
+            new JdkClientHttpRequestFactory(httpClient);
+
+        requestFactory.setReadTimeout(
+            Duration.ofSeconds(2)
+        );
+
+        return builder
+            .baseUrl(properties.baseUrl().toString())
+            .requestFactory(requestFactory)
+            .build();
+    }
+}
+```
+
+외부 서비스 호출에는 반드시 Timeout을 지정해야 한다.
+
+- Connection Timeout: 상대 서버와 연결을 맺을 때까지 기다리는 시간
+- Read Timeout: 연결 후 응답 데이터를 기다리는 시간
+
+Timeout이 없으면 User Server 장애가 Feed Server의 요청 처리 Thread를 장시간 점유할 수 있다. 예제의 1초와 2초는 고정된 정답이 아니며 실제 네트워크 지연과 서비스 응답 시간을 측정한 뒤 조정해야 한다.
+
+#### User Server 응답 DTO 작성
+
+Feed Server에서 User Server의 Entity나 Java 클래스를 직접 공유하지 않는다. 두 서비스는 독립적으로 배포되므로 HTTP 응답 계약에 맞는 DTO를 Feed Server 안에 별도로 정의한다.
+
+```java
+package com.sns.feed.client.user;
+
+import java.time.Instant;
+
+public record UserServiceResponse(
+    Long userId,
+    String username,
+    String email,
+    Instant createdAt
+) {
+}
+```
+
+User Server의 응답에 비밀번호나 비밀번호 해시가 포함되어서는 안 된다.
+
+Feed 화면에는 이메일이 필요하지 않으므로 최종 Feed 응답에는 `username`만 사용한다. User Server API도 장기적으로는 이메일을 제외한 내부 조회 전용 응답을 제공하는 것이 좋다.
+
+#### User Server 호출 예외 정의
+
+##### User Server에서 사용자를 찾지 못한 경우
+
+```java
+package com.sns.feed.client.user;
+
+public class RemoteUserNotFoundException
+    extends RuntimeException {
+
+    public RemoteUserNotFoundException(Long userId) {
+        super(
+            "User Server에서 사용자를 찾을 수 없습니다. "
+                + "userId=" + userId
+        );
+    }
+}
+```
+
+##### User Server를 호출할 수 없는 경우
+
+```java
+package com.sns.feed.client.user;
+
+public class UserServiceUnavailableException
+    extends RuntimeException {
+
+    public UserServiceUnavailableException() {
+        super("User Server를 호출할 수 없습니다.");
+    }
+
+    public UserServiceUnavailableException(
+        Throwable cause
+    ) {
+        super("User Server를 호출할 수 없습니다.", cause);
+    }
+}
+```
+
+#### UserServiceClient 작성
+
+HTTP 호출 책임을 기존 `SocialFeedService`에 직접 넣으면 데이터베이스 로직과 외부 통신 로직이 섞인다. User Server 호출은 별도의 Client 클래스로 분리한다.
+
+```java
+package com.sns.feed.client.user;
+
+import org.springframework.http.HttpStatusCode;
+import org.springframework.stereotype.Component;
+import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientException;
+
+@Component
+public class UserServiceClient {
+
+    private final RestClient restClient;
+
+    public UserServiceClient(
+        RestClient userServiceRestClient
+    ) {
+        this.restClient = userServiceRestClient;
+    }
+
+    public UserServiceResponse getUser(Long userId) {
+        try {
+            UserServiceResponse response = restClient
+                .get()
+                .uri("/api/users/{userId}", userId)
+                .retrieve()
+                .onStatus(
+                    status -> status.value() == 404,
+                    (request, remoteResponse) -> {
+                        throw new RemoteUserNotFoundException(
+                            userId
+                        );
+                    }
+                )
+                .onStatus(
+                    HttpStatusCode::is5xxServerError,
+                    (request, remoteResponse) -> {
+                        throw new UserServiceUnavailableException();
+                    }
+                )
+                .body(UserServiceResponse.class);
+
+            if (response == null) {
+                throw new UserServiceUnavailableException();
+            }
+
+            return response;
+        } catch (RemoteUserNotFoundException
+                 | UserServiceUnavailableException exception) {
+            throw exception;
+        } catch (RestClientException exception) {
+            throw new UserServiceUnavailableException(
+                exception
+            );
+        }
+    }
+}
+```
+
+`RestClientException`은 연결 실패, 응답 읽기 실패, 역직렬화 오류 등 HTTP Client 수준의 문제에서 발생할 수 있다.
+
+상대 서비스의 `404 Not Found`와 네트워크 장애를 같은 예외로 처리하지 않은 이유는 원인과 대응 방법이 다르기 때문이다.
+
+- `404 Not Found`: Feed가 참조하는 사용자 데이터의 정합성 문제
+- `5xx` 또는 연결 실패: User Server 장애나 네트워크 문제
+
+#### Feed 응답 DTO 확장
+
+기존 Feed 응답에 작성자 이름을 추가한다.
+
+```java
+package com.sns.feed.api.dto;
+
+import com.sns.feed.client.user.UserServiceResponse;
+import com.sns.feed.domain.feed.SocialFeed;
+
+import java.time.Instant;
+
+public record FeedInfoResponse(
+    Long feedId,
+    String imageId,
+    Long uploaderId,
+    String uploaderUsername,
+    Instant uploadedAt,
+    String content
+) {
+
+    public static FeedInfoResponse of(
+        SocialFeed feed,
+        UserServiceResponse user
+    ) {
+        return new FeedInfoResponse(
+            feed.getId(),
+            feed.getImageId(),
+            feed.getUploaderId(),
+            user.username(),
+            feed.getUploadedAt(),
+            feed.getContent()
+        );
+    }
+}
+```
+
+Feed Server는 User Server 응답 전체를 그대로 외부로 전달하지 않는다. Feed API에 필요한 필드만 선택해 새로운 응답을 만든다.
+
+이렇게 하면 User Server 응답 구조가 일부 변경되더라도 Feed API의 외부 계약을 별도로 관리할 수 있다.
+
+#### Feed 목록 조회 로직 변경
+
+가장 단순한 구현은 Feed를 순회하면서 각 `uploaderId`에 대해 User Server를 호출하는 것이다. 하지만 같은 사용자가 여러 Feed를 작성했다면 동일한 사용자 정보를 반복해서 조회하게 된다.
+
+우선 한 페이지 안에서는 같은 사용자를 한 번만 조회하도록 Map을 사용한다.
+
+```java
+package com.sns.feed.domain.feed;
+
+import com.sns.feed.api.dto.FeedInfoResponse;
+import com.sns.feed.client.user.UserServiceClient;
+import com.sns.feed.client.user.UserServiceResponse;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.HashMap;
+import java.util.Map;
+
+@Service
+@Transactional(readOnly = true)
+public class SocialFeedService {
+
+    private final SocialFeedRepository socialFeedRepository;
+    private final UserServiceClient userServiceClient;
+
+    public SocialFeedService(
+        SocialFeedRepository socialFeedRepository,
+        UserServiceClient userServiceClient
+    ) {
+        this.socialFeedRepository = socialFeedRepository;
+        this.userServiceClient = userServiceClient;
+    }
+
+    public Page<FeedInfoResponse> getFeeds(
+        Pageable pageable
+    ) {
+        Page<SocialFeed> feeds = socialFeedRepository
+            .findAllByOrderByUploadedAtDesc(pageable);
+
+        Map<Long, UserServiceResponse> usersById =
+            new HashMap<>();
+
+        return feeds.map(feed -> {
+            UserServiceResponse user =
+                usersById.computeIfAbsent(
+                    feed.getUploaderId(),
+                    userServiceClient::getUser
+                );
+
+            return FeedInfoResponse.of(feed, user);
+        });
+    }
+}
+```
+
+한 페이지에 Feed가 20개 있고 작성자가 모두 같다면 User Server 호출은 한 번만 발생한다. 작성자가 모두 다르면 여전히 20번 호출된다.
+
+따라서 이 Map은 중복 호출을 줄이는 작은 개선일 뿐, 서비스 간 N+1 호출 문제를 근본적으로 해결하지는 않는다.
+
+#### Controller 응답 변경
+
+```java
+package com.sns.feed.api;
+
+import com.sns.feed.api.dto.FeedInfoResponse;
+import com.sns.feed.domain.feed.SocialFeedService;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.web.PageableDefault;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequestMapping("/api/feeds")
+public class FeedController {
+
+    private final SocialFeedService socialFeedService;
+
+    public FeedController(
+        SocialFeedService socialFeedService
+    ) {
+        this.socialFeedService = socialFeedService;
+    }
+
+    @GetMapping
+    public Page<FeedInfoResponse> getFeeds(
+        @PageableDefault(size = 20)
+        Pageable pageable
+    ) {
+        return socialFeedService.getFeeds(pageable);
+    }
+}
+```
+
+전체 Feed를 제한 없이 조회하면 데이터베이스 부하뿐 아니라 User Server 호출 횟수도 함께 증가한다. 목록 API에는 반드시 페이지네이션과 최대 페이지 크기 제한을 적용해야 한다.
+
+#### Kubernetes 환경 변수 설정
+
+Feed Server Deployment에 User Server 주소를 추가한다.
+
+```shell
+kubectl set env deployment/feed-server \
+  CLIENTS_USER_SERVICE_BASE_URL=http://user-service.sns.svc.cluster.local:8080 \
+  -n sns
+```
+
+`kubectl set env`는 Deployment의 Pod Template을 변경하므로 새로운 ReplicaSet과 Pod가 생성된다.
+
+Rollout 상태를 확인한다.
+
+```shell
+kubectl rollout status deployment/feed-server -n sns
+```
+
+Deployment에 환경 변수가 반영됐는지 확인한다.
+
+```shell
+kubectl set env deployment/feed-server \
+  --list \
+  -n sns
+```
+
+실행 중인 Pod에서도 확인할 수 있다.
+
+```shell
+kubectl exec deployment/feed-server \
+  -n sns \
+  -- printenv CLIENTS_USER_SERVICE_BASE_URL
+```
+
+정상 결과는 다음과 같다.
+
+```text
+http://user-service.sns.svc.cluster.local:8080
+```
+
+환경 변수를 Deployment YAML에서 직접 관리한다면 다음 항목과 같은 의미다.
+
+```yaml
+env:
+  - name: CLIENTS_USER_SERVICE_BASE_URL
+    value: http://user-service.sns.svc.cluster.local:8080
+```
+
+실제 배포 파일에서는 기존 `env`, `envFrom`, Probe, Resource 설정을 유지한 상태에서 해당 환경 변수만 추가해야 한다.
+
+#### 로컬 개발 환경 설정
+
+##### User Server도 로컬에서 실행하는 경우
+
+User Server를 `8081` 포트로 실행한다.
+
+```powershell
+$env:CLIENTS_USER_SERVICE_BASE_URL="http://localhost:8081"
+.\gradlew.bat bootRun
+```
+
+Feed Server는 기본 포트 `8080`에서 실행한다.
+
+##### Telepresence를 사용하는 경우
+
+먼저 `sns` Namespace에 연결한다.
+
+```shell
+telepresence connect \
+  --namespace sns \
+  --mapped-namespaces sns
+```
+
+Feed Server를 실행하기 전에 User Server 주소를 Kubernetes Service DNS로 설정한다.
+
+```powershell
+$env:CLIENTS_USER_SERVICE_BASE_URL="http://user-service.sns.svc.cluster.local:8080"
+.\gradlew.bat bootRun
+```
+
+이 구성에서는 Feed Server만 로컬에서 실행하고 User Server와 MySQL 등은 Kubernetes 개발 환경의 서비스를 사용할 수 있다.
+
+#### Feed 조회 동작 과정
+
+```mermaid
+sequenceDiagram
+    participant Client as "Client"
+    participant Feed as "Feed Server"
+    participant FeedDB as "Feed Database"
+    participant User as "User Server"
+    participant UserDB as "User Database"
+
+    Client->>Feed: "GET /api/feeds"
+    Feed->>FeedDB: "Feed 페이지 조회"
+    FeedDB-->>Feed: "uploaderId가 포함된 Feed"
+    Feed->>User: "GET /api/users/userId"
+    User->>UserDB: "사용자 조회"
+    UserDB-->>User: "사용자 정보"
+    User-->>Feed: "username 반환"
+    Feed-->>Client: "Feed와 username 결합 응답"
+```
+
+Feed 데이터베이스와 User 데이터베이스가 같은 MySQL 인스턴스에 있더라도 Feed Server가 User 테이블을 직접 조회하지 않는 것이 중요하다.
+
+Feed Server가 User 테이블을 직접 조회하면 다음 문제가 발생한다.
+
+- User Server의 테이블 구조에 직접 의존한다.
+- User Server의 데이터 변경 규칙을 우회한다.
+- 서비스별 데이터 소유권이 무너진다.
+- 향후 데이터베이스를 분리하기 어려워진다.
+
+MSA에서는 물리적으로 같은 데이터베이스를 사용하더라도 논리적 소유권을 지키는 것이 중요하다.
+
+#### 서비스 간 N+1 호출 문제
+
+Feed 1건마다 User Server를 한 번 호출하면 Feed 수만큼 원격 요청이 발생한다.
+
+```mermaid
+flowchart TD
+    A["GET /api/feeds 한 번"] --> B["Feed 100건 조회"]
+    B --> C1["User Server 호출 1"]
+    B --> C2["User Server 호출 2"]
+    B --> C3["User Server 호출 3"]
+    B --> C4["User Server 호출 반복"]
+    C4 --> D["최대 100번의 원격 호출"]
+```
+
+데이터베이스 N+1 문제와 형태는 비슷하지만, 서비스 간 N+1은 네트워크 통신이 포함되므로 더 큰 비용을 만들 수 있다.
+
+각 호출에는 다음 비용이 들어간다.
+
+- DNS 조회
+- TCP 연결 또는 Connection Pool 사용
+- HTTP 요청과 응답
+- JSON 직렬화와 역직렬화
+- User Server의 Thread와 데이터베이스 Connection
+- 네트워크 지연
+- 장애와 Timeout 가능성
+
+Feed가 1,000개라고 해서 User Server를 1,000번 호출하는 방식은 실서비스에 적용하기 어렵다. 전체 Feed를 한 번에 조회하는 API도 피해야 한다.
+
+#### 개선 방법 1: 페이지네이션
+
+가장 먼저 적용해야 할 방법은 조회 범위를 제한하는 것이다.
+
+```text
+GET /api/feeds?page=0&size=20
+```
+
+페이지 크기를 제한하면 한 요청에서 발생할 수 있는 User Server 호출 수도 제한된다.
+
+```yaml
+spring:
+  data:
+    web:
+      pageable:
+        default-page-size: 20
+        max-page-size: 100
+```
+
+페이지네이션만으로 중복 호출 문제가 사라지지는 않지만, 한 요청이 시스템 전체에 미치는 영향을 제한할 수 있다.
+
+#### 개선 방법 2: 사용자 ID 중복 제거
+
+한 페이지에 같은 작성자의 Feed가 여러 개 있다면 `uploaderId`를 먼저 중복 제거한다.
+
+```mermaid
+flowchart LR
+    A["Feed 20건"] --> B["uploaderId 추출"]
+    B --> C["중복 제거"]
+    C --> D["고유 사용자 4명"]
+    D --> E["User Server 최대 4회 호출"]
+```
+
+앞에서 사용한 `Map<Long, UserServiceResponse>`가 이 역할을 한다.
+
+#### 개선 방법 3: User Server Batch API
+
+가장 직접적인 개선 방법은 여러 사용자 ID를 한 번에 조회하는 API를 제공하는 것이다.
+
+```text
+POST /api/users/batch
+```
+
+```json
+{
+  "userIds": [1, 2, 3, 4]
+}
+```
+
+```mermaid
+flowchart LR
+    A["Feed Server"] -->|"사용자 ID 목록 한 번 전송"| B["User Server Batch API"]
+    B -->|"WHERE user_id IN 쿼리"| C["User Database"]
+    C -->|"사용자 목록"| B
+    B -->|"한 번의 HTTP 응답"| A
+```
+
+Feed가 20개이고 고유 작성자가 10명이어도 HTTP 요청은 한 번만 발생한다. Batch API에서는 요청할 수 있는 ID 개수를 제한해야 한다.
+
+#### 개선 방법 4: 사용자 정보 Cache
+
+사용자 이름은 Feed보다 변경 빈도가 낮다. Feed Server에 짧은 TTL의 Local Cache나 Redis Cache를 적용하면 반복 호출을 줄일 수 있다.
+
+```mermaid
+flowchart TD
+    A["Feed Server"] --> B{"사용자 Cache 조회"}
+    B -->|"Cache Hit"| C["Cache의 username 사용"]
+    B -->|"Cache Miss"| D["User Server 호출"]
+    D --> E["Cache 저장"]
+    E --> C
+```
+
+Cache를 사용할 때는 다음을 고려해야 한다.
+
+- 사용자 이름 변경 후 이전 값이 잠시 노출될 수 있다.
+- TTL을 지나치게 길게 설정하면 데이터가 오래 불일치한다.
+- User Server 장애 시 오래된 Cache를 허용할지 결정해야 한다.
+- 삭제된 사용자 정보를 어떻게 처리할지 정해야 한다.
+
+#### 개선 방법 5: 이벤트 기반 조회 모델
+
+조회량이 매우 많다면 User Server의 사용자 변경 이벤트를 구독해 Feed 조회에 필요한 사용자 정보를 별도 조회 모델에 저장할 수 있다.
+
+```mermaid
+flowchart LR
+    A["User Server"] -->|"User Updated 이벤트"| B["Kafka"]
+    B --> C["Feed 조회 모델 Consumer"]
+    C --> D["Feed용 사용자 조회 모델"]
+    E["Feed Server"] --> D
+```
+
+이 방식은 Feed 조회 시 User Server를 호출하지 않아도 된다는 장점이 있다. 대신 이벤트 누락, 순서, 중복 처리와 최종적 일관성을 고려해야 한다.
+
+#### 무분별한 병렬 호출은 해결책이 아니다
+
+`parallelStream()`이나 다수의 비동기 요청으로 User Server를 동시에 호출하면 응답 시간이 일시적으로 줄어들 수 있다. 하지만 User Server의 Thread, CPU, 데이터베이스 Connection을 한꺼번에 소모해 전체 장애를 만들 수 있다.
+
+병렬 호출을 사용하려면 다음 제한이 필요하다.
+
+- 동시 요청 수 제한
+- Bulkhead
+- Connection Pool 크기 제한
+- Timeout
+- Circuit Breaker
+- 호출량과 실패율 Monitoring
+
+호출 횟수 자체를 줄이는 것이 우선이며, 병렬화는 그다음에 검토해야 한다.
+
+#### 장애 처리 정책
+
+User Server가 응답하지 못할 때 Feed Server가 어떤 결과를 반환할지도 정해야 한다.
+
+| 정책 | 장점 | 단점 |
+|---|---|---|
+| 전체 요청 실패 | 데이터가 정확함 | User Server 장애가 Feed 조회 장애로 전파됨 |
+| 작성자 이름을 기본값으로 표시 | Feed 조회 가능 | 불완전한 정보 노출 |
+| Cache의 이전 값 사용 | 가용성과 사용자 경험 개선 | 최신 정보가 아닐 수 있음 |
+| 사용자 정보 없는 Feed 제외 | 응답 형식 유지 | Feed가 조용히 누락됨 |
+
+이번 구현은 User Server 호출이 실패하면 Feed 목록 요청도 실패시키는 방식이다. 운영 환경에서는 Cache와 Circuit Breaker를 적용해 장애 전파 범위를 줄이는 것이 좋다.
+
+#### 예외 응답 처리
+
+```java
+package com.sns.feed.api;
+
+import com.sns.feed.client.user.RemoteUserNotFoundException;
+import com.sns.feed.client.user.UserServiceUnavailableException;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ProblemDetail;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+@RestControllerAdvice
+public class RemoteServiceExceptionHandler {
+
+    @ExceptionHandler(RemoteUserNotFoundException.class)
+    public ProblemDetail handleRemoteUserNotFound(
+        RemoteUserNotFoundException exception
+    ) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+            HttpStatus.BAD_GATEWAY,
+            exception.getMessage()
+        );
+        problem.setTitle("Invalid User Service Response");
+        return problem;
+    }
+
+    @ExceptionHandler(UserServiceUnavailableException.class)
+    public ProblemDetail handleUserServiceUnavailable(
+        UserServiceUnavailableException exception
+    ) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+            HttpStatus.SERVICE_UNAVAILABLE,
+            exception.getMessage()
+        );
+        problem.setTitle("User Service Unavailable");
+        return problem;
+    }
+}
+```
+
+Feed는 존재하지만 작성자를 User Server에서 찾지 못한 상황은 단순한 Feed `404 Not Found`와 다르다. 서비스 사이의 데이터 불일치이므로 원인을 구분해 Monitoring과 복구 대상으로 관리해야 한다.
+
+#### 컨테이너 이미지 빌드
+
+변경된 Feed Server 이미지를 `0.0.3` 태그로 빌드한다.
+
+```powershell
+.\gradlew.bat clean test jib `
+  -Djib.to.image=<AWS_ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/feed-server:0.0.3
+```
+
+ECR 인증이 만료됐다면 다시 로그인한다.
+
+```powershell
+aws ecr get-login-password --region <REGION> |
+    docker login `
+        --username AWS `
+        --password-stdin `
+        <AWS_ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com
+```
+
+#### Kubernetes Deployment 업데이트
+
+```shell
+kubectl set image deployment/feed-server \
+  feed-server=<AWS_ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/feed-server:0.0.3 \
+  -n sns
+```
+
+User Server 주소도 함께 확인한다.
+
+```shell
+kubectl set env deployment/feed-server \
+  CLIENTS_USER_SERVICE_BASE_URL=http://user-service.sns.svc.cluster.local:8080 \
+  -n sns
+```
+
+Rollout 상태를 확인한다.
+
+```shell
+kubectl rollout status deployment/feed-server -n sns
+```
+
+```shell
+kubectl get pods -n sns -l app=feed-server
+```
+
+```shell
+kubectl get endpointslice \
+  -n sns \
+  -l kubernetes.io/service-name=feed-service
+```
+
+#### 연동 테스트
+
+먼저 User Server와 Feed Server 상태를 확인한다.
+
+```shell
+kubectl get deployment,pod,service -n sns
+```
+
+User Server 조회 API를 직접 호출한다.
+
+```shell
+curl -i \
+  http://user-service.sns.svc.cluster.local:8080/api/users/1
+```
+
+사용자가 정상적으로 조회되면 Feed를 생성한다.
+
+```shell
+curl -i -X POST \
+  http://feed-service.sns.svc.cluster.local:8080/api/feeds \
+  -H "Content-Type: application/json" \
+  -d '{
+    "imageId": "test-image-001",
+    "uploaderId": 1,
+    "content": "User Server 연동 테스트 Feed"
+  }'
+```
+
+Feed 목록을 조회한다.
+
+```shell
+curl -i \
+  "http://feed-service.sns.svc.cluster.local:8080/api/feeds?page=0&size=20"
+```
+
+정상 응답에는 `uploaderId`와 `uploaderUsername`이 함께 포함된다.
+
+```json
+{
+  "content": [
+    {
+      "feedId": 1,
+      "imageId": "test-image-001",
+      "uploaderId": 1,
+      "uploaderUsername": "user01",
+      "uploadedAt": "2026-09-29T01:20:30.123Z",
+      "content": "User Server 연동 테스트 Feed"
+    }
+  ]
+}
+```
+
+#### Pod 로그로 서비스 간 호출 확인
+
+```shell
+kubectl logs deployment/feed-server \
+  -n sns \
+  --tail=200
+```
+
+User Server 로그도 함께 확인한다.
+
+```shell
+kubectl logs deployment/user-server \
+  -n sns \
+  --tail=200
+```
+
+운영 환경에서는 비밀번호, 이메일, Access Token 같은 민감한 값을 로그에 남기지 않아야 한다. 서비스 간 호출 로그에는 다음 정도의 정보만 포함하는 것이 좋다.
+
+- 요청 대상 서비스
+- API 경로 Template
+- HTTP 상태 코드
+- 응답 시간
+- Trace ID
+- 오류 유형
+
+#### 실패 상황과 확인 방법
+
+##### User Server의 주소를 찾지 못하는 경우
+
+다음과 같은 오류가 발생할 수 있다.
+
+```text
+UnknownHostException:
+user-service.sns.svc.cluster.local
+```
+
+Service와 DNS 이름을 확인한다.
+
+```shell
+kubectl get service user-service -n sns
+```
+
+Feed Server Pod 내부에서 DNS를 확인한다.
+
+```shell
+kubectl exec deployment/feed-server \
+  -n sns \
+  -- nslookup user-service.sns.svc.cluster.local
+```
+
+##### 연결은 되지만 요청이 거절되는 경우
+
+```text
+Connection refused
+```
+
+다음 항목을 확인한다.
+
+- User Server Pod가 실행 중인가
+- User Server가 `8080` 포트에서 Listen하는가
+- Service의 `targetPort`가 올바른가
+- EndpointSlice에 Ready Endpoint가 있는가
+
+```shell
+kubectl get endpointslice \
+  -n sns \
+  -l kubernetes.io/service-name=user-service
+```
+
+##### User Server 호출이 `404 Not Found`인 경우
+
+다음 두 가지를 구분해야 한다.
+
+- `/api/users/{userId}` 경로가 잘못됨
+- 경로는 맞지만 해당 사용자가 존재하지 않음
+
+User Server를 직접 호출해 응답 본문을 확인한다.
+
+```shell
+curl -i \
+  http://user-service.sns.svc.cluster.local:8080/api/users/1
+```
+
+##### Feed 조회가 느린 경우
+
+Feed 개수와 고유 작성자 수를 확인한다. Feed마다 User Server 호출이 발생한다면 서비스 간 N+1 문제일 가능성이 높다.
+
+단순히 Timeout을 늘리기보다 다음 순서로 개선한다.
+
+1. 페이지 크기를 제한한다.
+2. 같은 작성자 ID를 중복 제거한다.
+3. User Server Batch API를 추가한다.
+4. 사용자 정보를 Cache한다.
+5. 필요하면 이벤트 기반 조회 모델을 구성한다.
+
+### 정리
+
+Feed Server가 `uploaderId`를 이용해 User Server의 사용자 정보를 조회하도록 서비스 간 HTTP 통신을 구성했다.
+
+- 사용자 정보의 원본은 User Server가 관리한다.
+- Feed Server는 사용자 이름을 중복 저장하지 않고 `uploaderId`만 저장한다.
+- User Server 주소는 Java 코드에 직접 작성하지 않고 환경 변수로 주입한다.
+- Spring의 `RestClient`를 별도 Client 클래스로 분리했다.
+- 외부 서비스 호출에는 Connection Timeout과 Read Timeout을 설정했다.
+- Feed 응답에는 User Server 응답 전체가 아니라 필요한 `username`만 결합했다.
+- 같은 페이지에서 동일한 작성자가 반복되면 Map을 이용해 중복 호출을 줄였다.
+- Feed마다 User Server를 호출하는 방식은 서비스 간 N+1 문제를 만들 수 있다.
+- 페이지네이션, Batch API, Cache, 이벤트 기반 조회 모델을 이용해 호출 횟수를 줄일 수 있다.
+- User Server 장애를 Feed Server 장애로 그대로 확산시키지 않으려면 Timeout, Circuit Breaker, Cache 같은 보호 장치가 필요하다.
+- 변경된 Feed Server를 `0.0.3` 이미지로 빌드하고 Kubernetes에 재배포했다.
+
+이제 Feed API는 단순한 작성자 ID뿐 아니라 실제 사용자 이름을 함께 제공할 수 있다. 다음 단계에서는 이 데이터를 이용해 사용자별 Timeline을 구성하고, 팔로우 관계를 기준으로 Feed를 분배하는 구조로 확장할 수 있다.
