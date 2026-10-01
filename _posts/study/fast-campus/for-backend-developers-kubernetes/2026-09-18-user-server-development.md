@@ -3231,3 +3231,818 @@ Feed Server가 `uploaderId`를 이용해 User Server의 사용자 정보를 조�
 - 변경된 Feed Server를 `0.0.3` 이미지로 빌드하고 Kubernetes에 재배포했다.
 
 이제 Feed API는 단순한 작성자 ID뿐 아니라 실제 사용자 이름을 함께 제공할 수 있다. 다음 단계에서는 이 데이터를 이용해 사용자별 Timeline을 구성하고, 팔로우 관계를 기준으로 Feed를 분배하는 구조로 확장할 수 있다.
+
+## 04. 배포한 Pod를 무중단으로 업데이트 하기
+
+### Rolling Update로 Feed Server를 무중단 배포하기
+
+Feed Server에 User Server 연동 기능을 추가했다. 이제 변경된 이미지를 Kubernetes에 배포하고, Rolling Update가 진행되는 동안 기존 버전과 새 버전이 어떻게 함께 동작하는지 확인한다.
+
+이번 변경의 핵심은 Feed 조회 응답에 `uploaderUsername`이 추가된다는 점이다.
+
+기존 버전의 응답은 다음과 같다.
+
+```json
+{
+  "feedId": 1,
+  "imageId": "test-image-001",
+  "uploaderId": 1,
+  "uploadedAt": "2026-09-30T01:10:20.123Z",
+  "content": "test-post"
+}
+```
+
+새 버전은 User Server에서 사용자 정보를 조회한 뒤 작성자 이름을 추가한다.
+
+```json
+{
+  "feedId": 1,
+  "imageId": "test-image-001",
+  "uploaderId": 1,
+  "uploaderUsername": "test-user",
+  "uploadedAt": "2026-09-30T01:10:20.123Z",
+  "content": "test-post"
+}
+```
+
+Rolling Update 중에는 기존 버전과 새 버전의 Pod가 동시에 Service Endpoint에 포함되는 구간이 생긴다. 따라서 같은 API를 반복해서 호출하면 두 가지 응답이 번갈아 나타날 수 있다.
+
+#### Deployment 업데이트의 의미
+
+Deployment 이미지를 변경한다고 해서 실행 중인 Pod의 컨테이너 이미지가 제자리에서 교체되는 것은 아니다.
+
+Kubernetes는 새로운 Pod Template을 기준으로 새 ReplicaSet을 만들고, 새 Pod가 준비되면 기존 ReplicaSet의 Pod를 순차적으로 종료한다.
+
+```mermaid
+flowchart TD
+    A["기존 Deployment<br/>Feed Server 0.0.2"] --> B["이미지 태그를 0.0.3으로 변경"]
+    B --> C["새 ReplicaSet 생성"]
+    C --> D["새 Pod 생성"]
+    D --> E["Readiness Probe 성공"]
+    E --> F["새 Pod를 Service Endpoint에 추가"]
+    F --> G["기존 Pod 순차 종료"]
+    G --> H["새 버전으로 전환 완료"]
+```
+
+따라서 정확한 표현은 기존 Pod를 업데이트하는 것이 아니라 새 버전의 Pod로 교체하는 것이다.
+
+#### 실습 목표
+
+이번 실습에서는 다음 내용을 확인한다.
+
+1. User Server에 테스트 사용자를 생성한다.
+2. 기존 Feed Server에 테스트 Feed를 등록한다.
+3. 기존 버전의 Feed 응답을 확인한다.
+4. API를 1초 간격으로 반복 호출한다.
+5. 별도 Terminal에서 Pod와 ReplicaSet 변화를 관찰한다.
+6. Feed Server를 새 버전으로 Rolling Update한다.
+7. 배포 중 요청 실패가 발생하는지 확인한다.
+8. 기존 응답과 새로운 응답이 교차하는 구간을 확인한다.
+9. 배포 완료 후 응답이 새 형식으로 통일되는지 확인한다.
+
+#### 사전 조건
+
+다음 구성이 준비되어 있어야 한다.
+
+- `sns` Namespace가 생성되어 있다.
+- User Server가 정상 실행 중이다.
+- Feed Server가 2개 이상의 Replica로 실행 중이다.
+- `user-service`와 `feed-service`가 생성되어 있다.
+- Feed Server `0.0.3` 이미지가 ECR에 Push되어 있다.
+- Feed Server가 User Server 주소를 환경 변수로 전달받는다.
+- Readiness Probe가 정상적으로 설정되어 있다.
+- 로컬 환경에서 Telepresence에 연결되어 있다.
+
+Telepresence 연결 상태를 확인한다.
+
+```shell
+telepresence status
+```
+
+연결되지 않았다면 `sns` Namespace에 연결한다.
+
+```shell
+telepresence connect \
+  --namespace sns \
+  --mapped-namespaces sns
+```
+
+#### 배포 전 상태 확인
+
+현재 Feed Server Deployment와 Pod 상태를 확인한다.
+
+```shell
+kubectl get deployment feed-server -n sns
+```
+
+```shell
+kubectl get pods \
+  -n sns \
+  -l app=feed-server \
+  -o wide
+```
+
+현재 배포된 이미지도 확인한다.
+
+```shell
+kubectl get deployment feed-server \
+  -n sns \
+  -o jsonpath="{.spec.template.spec.containers[0].image}"
+```
+
+Feed Server가 2개의 Replica로 구성되어 있다면 다음과 비슷한 결과가 나와야 한다.
+
+```text
+NAME                          READY   STATUS    RESTARTS
+feed-server-6fd7f4c9d5-a1b2c  1/1     Running   0
+feed-server-6fd7f4c9d5-d3e4f  1/1     Running   0
+```
+
+#### 테스트 사용자 생성
+
+User Server에 테스트 사용자를 생성한다.
+
+```shell
+curl -i -X POST \
+  http://user-service.sns.svc.cluster.local:8080/api/users \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "test-user",
+    "email": "test-user@example.com",
+    "password": "StrongPassword123!"
+  }'
+```
+
+정상적으로 처리되면 `201 Created`와 생성된 사용자 정보가 반환된다.
+
+```json
+{
+  "userId": 1,
+  "username": "test-user",
+  "email": "test-user@example.com",
+  "createdAt": "2026-09-30T01:00:00.123Z"
+}
+```
+
+이미 같은 사용자가 존재한다면 `409 Conflict`가 반환될 수 있다. 이 경우 기존 사용자의 `userId`를 확인하거나 다른 사용자 이름으로 다시 요청한다.
+
+#### 사용자 조회 확인
+
+생성된 `userId`가 `1`이라고 가정하고 사용자 조회 API를 호출한다.
+
+```shell
+curl -i \
+  http://user-service.sns.svc.cluster.local:8080/api/users/1
+```
+
+Feed Server의 새 버전은 동일한 API를 호출해 `uploaderUsername`을 구성한다. 따라서 Feed Server를 배포하기 전에 User Server의 조회 API가 정상인지 먼저 확인해야 한다.
+
+#### 테스트 Feed 생성
+
+Feed Server에 테스트 게시물을 등록한다.
+
+```shell
+curl -i -X POST \
+  http://feed-service.sns.svc.cluster.local:8080/api/feeds \
+  -H "Content-Type: application/json" \
+  -d '{
+    "imageId": "test-image-001",
+    "uploaderId": 1,
+    "content": "Rolling Update 테스트 Feed"
+  }'
+```
+
+아직 Image Server를 구현하지 않았다면 `imageId`에는 테스트용 문자열을 사용해도 된다.
+
+정상적으로 등록되면 `201 Created`와 Feed 정보가 반환된다.
+
+#### 기존 Feed 응답 확인
+
+Feed 목록을 조회한다.
+
+```shell
+curl -sS \
+  "http://feed-service.sns.svc.cluster.local:8080/api/feeds?page=0&size=20"
+```
+
+아직 클러스터에 이전 Feed Server가 실행 중이라면 응답에는 `uploaderId`만 있고 `uploaderUsername`은 없다.
+
+이 상태가 배포 전 기준점이다.
+
+#### RollingUpdate 전략 설정
+
+무중단 배포를 명확하게 확인하려면 Deployment의 RollingUpdate 전략을 구체적으로 설정하는 것이 좋다.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: feed-server
+  namespace: sns
+  labels:
+    app: feed-server
+spec:
+  replicas: 2
+  minReadySeconds: 10
+  progressDeadlineSeconds: 600
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: feed-server
+  template:
+    metadata:
+      labels:
+        app: feed-server
+    spec:
+      terminationGracePeriodSeconds: 40
+      containers:
+        - name: feed-server
+          image: <AWS_ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/feed-server:0.0.3
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: CLIENTS_USER_SERVICE_BASE_URL
+              value: http://user-service.sns.svc.cluster.local:8080
+          envFrom:
+            - configMapRef:
+                name: feed-server-config
+            - secretRef:
+                name: feed-server-secret
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          readinessProbe:
+            httpGet:
+              path: /health-check/readiness
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health-check/liveness
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - sh
+                  - -c
+                  - sleep 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: feed-service
+  namespace: sns
+spec:
+  type: ClusterIP
+  selector:
+    app: feed-server
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+```
+
+##### `maxSurge`
+
+```yaml
+maxSurge: 1
+```
+
+기존 Replica 수보다 새 Pod를 최대 1개 더 생성할 수 있다는 의미다. Replica가 2개라면 Rolling Update 중 일시적으로 최대 3개의 Pod가 실행될 수 있다.
+
+Cluster에 추가 Pod를 배치할 CPU와 Memory가 부족하면 새 Pod가 `Pending` 상태에 머물면서 배포가 진행되지 않는다.
+
+##### `maxUnavailable`
+
+```yaml
+maxUnavailable: 0
+```
+
+배포 중 사용할 수 없는 Pod를 허용하지 않는다는 의미다. 새 Pod가 Ready 상태가 되기 전에는 기존 Pod를 종료하지 않는다.
+
+무중단 가능성을 높일 수 있지만 새 Pod를 추가로 실행할 Cluster 자원이 필요하다.
+
+##### `minReadySeconds`
+
+```yaml
+minReadySeconds: 10
+```
+
+Readiness Probe에 성공한 뒤 최소 10초 동안 정상 상태를 유지해야 사용 가능한 Pod로 판단한다. 애플리케이션이 시작 직후 잠시 정상처럼 보였다가 실패하는 상황을 어느 정도 방지할 수 있다.
+
+##### `progressDeadlineSeconds`
+
+```yaml
+progressDeadlineSeconds: 600
+```
+
+Rolling Update가 600초 동안 진행되지 못하면 Deployment가 진행 시간 초과 상태로 표시된다.
+
+시간을 초과했다고 해서 Kubernetes가 자동으로 이전 버전으로 Rollback하는 것은 아니다. 원인을 확인한 뒤 직접 `rollout undo`를 실행해야 한다.
+
+#### Readiness Probe가 중요한 이유
+
+새 컨테이너가 실행됐다고 해서 즉시 요청을 처리할 수 있는 것은 아니다.
+
+Spring Boot 애플리케이션이 시작되고 데이터베이스 Connection Pool과 내부 Component가 준비되기까지 시간이 필요하다.
+
+```mermaid
+flowchart LR
+    A["새 Pod 생성"] --> B["컨테이너 실행"]
+    B --> C["Spring Boot 시작 중"]
+    C --> D["Readiness Probe 실패"]
+    D --> E["Service 요청 전달 안 함"]
+    C --> F["애플리케이션 준비 완료"]
+    F --> G["Readiness Probe 성공"]
+    G --> H["Service Endpoint 등록"]
+```
+
+Readiness Probe가 없거나 너무 일찍 성공하면 아직 준비되지 않은 Pod로 요청이 전달되어 연결 오류나 `5xx` 응답이 발생할 수 있다.
+
+Liveness Probe는 컨테이너를 재시작할지 판단하는 용도다. 배포 중 트래픽을 받을 준비가 됐는지는 Readiness Probe로 판단해야 한다.
+
+#### API 응답 반복 조회
+
+Rolling Update 중 요청 결과를 관찰하기 위해 Feed API를 1초마다 호출한다.
+
+##### PowerShell
+
+```powershell
+$url = "http://feed-service.sns.svc.cluster.local:8080/api/feeds?page=0&size=20"
+
+while ($true) {
+    $time = Get-Date -Format "HH:mm:ss"
+
+    try {
+        $response = Invoke-RestMethod `
+            -Uri $url `
+            -Method Get `
+            -TimeoutSec 5
+
+        $feed = $response.content | Select-Object -First 1
+
+        [PSCustomObject]@{
+            Time = $time
+            FeedId = $feed.feedId
+            UploaderId = $feed.uploaderId
+            UploaderUsername = $feed.uploaderUsername
+            Result = "SUCCESS"
+        } | Format-Table -AutoSize
+    } catch {
+        Write-Host "$time REQUEST_FAILED $($_.Exception.Message)"
+    }
+
+    Start-Sleep -Seconds 1
+}
+```
+
+이전 버전의 응답에는 `uploaderUsername`이 없으므로 해당 값이 비어 있게 된다. 새 버전의 응답을 받으면 `test-user`가 표시된다.
+
+##### Linux 또는 macOS
+
+```shell
+while true; do
+  date "+%H:%M:%S"
+  curl -sS \
+    "http://feed-service.sns.svc.cluster.local:8080/api/feeds?page=0&size=20"
+  echo
+  sleep 1
+done
+```
+
+반복 요청마다 새로운 HTTP 연결이 만들어지더라도 Kubernetes Service가 반드시 Pod를 정확히 번갈아 선택하는 것은 아니다. 특정 Pod의 응답이 여러 번 연속해서 나타날 수도 있다.
+
+#### Pod와 ReplicaSet 변화 관찰
+
+API 요청을 실행한 Terminal은 그대로 두고 새로운 Terminal을 연다.
+
+Pod 변화를 실시간으로 확인한다.
+
+```shell
+kubectl get pods \
+  -n sns \
+  -l app=feed-server \
+  -w
+```
+
+다른 Terminal에서는 ReplicaSet을 확인한다.
+
+```shell
+kubectl get replicasets \
+  -n sns \
+  -l app=feed-server \
+  -w
+```
+
+Service Endpoint의 변화도 확인할 수 있다.
+
+```shell
+kubectl get endpointslice \
+  -n sns \
+  -l kubernetes.io/service-name=feed-service \
+  -w
+```
+
+#### 새 이미지 빌드와 Push
+
+Feed Server 이미지 버전을 `0.0.3`으로 변경한 뒤 빌드한다.
+
+```powershell
+.\gradlew.bat clean test jib `
+  -Djib.to.image=<AWS_ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/feed-server:0.0.3
+```
+
+ECR 인증이 만료됐다면 다시 로그인한다.
+
+```powershell
+aws ecr get-login-password --region <REGION> |
+    docker login `
+        --username AWS `
+        --password-stdin `
+        <AWS_ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com
+```
+
+이미지 태그는 기존 버전과 구분되는 새 값으로 지정한다. 같은 태그를 덮어쓰면 어떤 코드가 배포됐는지 추적하기 어렵고 Node의 이미지 Cache 때문에 예상과 다른 이미지가 실행될 수 있다.
+
+#### Deployment 적용
+
+Deployment와 Service가 포함된 Manifest를 적용한다.
+
+```shell
+kubectl apply -f feed-deployment.yaml
+```
+
+별도 Terminal에서 Rollout 상태를 확인한다.
+
+```shell
+kubectl rollout status \
+  deployment/feed-server \
+  -n sns \
+  --timeout=10m
+```
+
+배포 이력을 확인한다.
+
+```shell
+kubectl rollout history \
+  deployment/feed-server \
+  -n sns
+```
+
+#### Rolling Update 중 발생하는 상태 변화
+
+Replica가 2개이고 `maxSurge: 1`, `maxUnavailable: 0`이라면 일반적으로 다음 순서로 진행된다.
+
+```mermaid
+flowchart TD
+    A["기존 Pod 2개 실행"] --> B["새 Pod 1개 생성"]
+    B --> C["새 Pod 시작 중"]
+    C --> D["Readiness Probe 성공"]
+    D --> E["기존 Pod 1개 종료"]
+    E --> F["두 번째 새 Pod 생성"]
+    F --> G["두 번째 새 Pod Ready"]
+    G --> H["마지막 기존 Pod 종료"]
+    H --> I["새 Pod 2개로 배포 완료"]
+```
+
+새 Pod가 `Running`이더라도 `READY`가 `0/1`이면 아직 Service 요청을 받지 않는다.
+
+```text
+NAME                           READY   STATUS
+feed-server-old-abc12          1/1     Running
+feed-server-old-def34          1/1     Running
+feed-server-new-ghi56          0/1     Running
+```
+
+새 Pod가 준비되면 `READY`가 `1/1`로 변경되고 EndpointSlice에 추가된다.
+
+#### 기존 응답과 새 응답이 교차하는 이유
+
+새 Pod가 Service Endpoint에 추가된 직후에는 기존 Pod와 새 Pod가 동시에 요청을 처리한다.
+
+```mermaid
+flowchart LR
+    A["반복되는 Feed 요청"] --> B["feed-service"]
+    B --> C["기존 Pod 0.0.2"]
+    B --> D["새 Pod 0.0.3"]
+    C --> E["uploaderId만 반환"]
+    D --> F["uploaderId와 uploaderUsername 반환"]
+```
+
+이 구간에서 다음과 같은 출력이 나타날 수 있다.
+
+```text
+12:10:01  FeedId=1  UploaderId=1  UploaderUsername=
+12:10:02  FeedId=1  UploaderId=1  UploaderUsername=test-user
+12:10:03  FeedId=1  UploaderId=1  UploaderUsername=
+12:10:04  FeedId=1  UploaderId=1  UploaderUsername=test-user
+```
+
+이는 배포 오류가 아니라 Rolling Update에서 자연스럽게 발생할 수 있는 현상이다.
+
+배포가 완료되고 기존 Pod가 모두 종료되면 응답은 새 형식으로 통일된다.
+
+#### 요청 실패 여부 확인
+
+Rolling Update 테스트에서는 응답 필드만 볼 것이 아니라 HTTP 요청 자체가 실패하는지도 확인해야 한다.
+
+주의해서 볼 항목은 다음과 같다.
+
+- Connection refused
+- Connection reset
+- Timeout
+- `502 Bad Gateway`
+- `503 Service Unavailable`
+- 예상하지 못한 `404 Not Found`
+- User Server 호출 실패
+- JSON 역직렬화 오류
+
+요청 실패가 발생한다면 다음 항목을 우선 확인한다.
+
+- Readiness Probe 경로가 실제 API와 일치하는가
+- `maxUnavailable`이 적절한가
+- 종료 중인 Pod가 Endpoint에서 제거되기 전에 프로세스가 종료되는가
+- `preStop`과 Graceful Shutdown이 설정되어 있는가
+- 새 버전이 User Server를 정상적으로 호출할 수 있는가
+
+#### 하위 호환 가능한 API 변경
+
+이번 변경은 기존 응답에 `uploaderUsername`을 추가하는 방식이다.
+
+```json
+{
+  "uploaderId": 1,
+  "uploaderUsername": "test-user"
+}
+```
+
+기존 필드를 유지한 채 새로운 필드를 추가하는 변경은 비교적 하위 호환성을 지키기 쉽다. 기존 클라이언트가 알 수 없는 JSON 필드를 무시한다면 새 필드가 추가되어도 그대로 동작한다.
+
+하지만 다음 조건에서는 문제가 생길 수 있다.
+
+- 클라이언트가 알 수 없는 필드를 오류로 처리한다.
+- 새 클라이언트가 `uploaderUsername`이 항상 존재한다고 가정한다.
+- 새로운 응답 DTO에서 해당 필드를 필수값으로 처리한다.
+- 배포 순서가 서버보다 클라이언트가 먼저다.
+
+Rolling Update 중에는 새 클라이언트도 기존 서버를 호출할 수 있다. 따라서 새 클라이언트는 전환 기간 동안 `uploaderUsername`이 없거나 `null`인 응답도 처리할 수 있어야 한다.
+
+#### 호환성이 깨지는 변경
+
+다음 변경은 Rolling Update에서 특히 위험하다.
+
+##### 기존 필드 삭제
+
+```json
+{
+  "uploaderId": 1
+}
+```
+
+기존 클라이언트가 `uploaderId`를 사용하고 있는데 서버에서 즉시 삭제하면 배포 중이거나 아직 업데이트되지 않은 클라이언트가 실패할 수 있다.
+
+##### 필드 이름 변경
+
+```text
+uploaderId -> authorId
+```
+
+이름 변경은 필드 추가가 아니라 기존 계약 삭제와 새로운 계약 추가에 가깝다. 일정 기간 두 필드를 함께 제공한 뒤 기존 필드를 제거해야 한다.
+
+##### 데이터 타입 변경
+
+```text
+uploaderId: number -> string
+```
+
+JSON 역직렬화에 실패할 수 있으므로 기존 API에서 직접 변경하지 않는 것이 좋다.
+
+##### 의미 변경
+
+필드 이름과 타입이 같아도 의미가 달라지면 호환성이 깨질 수 있다. API 계약은 구조뿐 아니라 데이터의 의미도 포함한다.
+
+#### Expand and Contract 전략
+
+호환성이 필요한 변경은 한 번에 적용하지 않고 단계적으로 진행한다.
+
+```mermaid
+flowchart TD
+    A["기존 필드만 제공"] --> B["새 필드 추가"]
+    B --> C["서버와 클라이언트 모두 새 필드 지원"]
+    C --> D["기존 필드 사용 중단"]
+    D --> E["충분한 전환 기간 후 기존 필드 제거"]
+```
+
+이번 변경에 적용하면 다음과 같다.
+
+1. `uploaderId`를 유지하면서 `uploaderUsername`을 추가한다.
+2. Feed Server의 모든 Pod를 새 버전으로 교체한다.
+3. 클라이언트가 `uploaderUsername`을 선택적으로 사용하도록 배포한다.
+4. 모든 클라이언트가 전환된 뒤에만 기존 계약 변경을 검토한다.
+
+#### API Version 분리
+
+응답 구조가 완전히 달라져 하위 호환성을 유지하기 어렵다면 API 경로를 분리할 수 있다.
+
+```text
+GET /api/v1/feeds
+GET /api/v2/feeds
+```
+
+기존 클라이언트는 `/api/v1/feeds`를 계속 사용하고 새 클라이언트는 `/api/v2/feeds`로 전환한다.
+
+API Version을 늘리는 것은 운영 대상이 두 개로 늘어난다는 의미이므로 작은 변경마다 남발하면 안 된다. 기존 계약으로 표현하기 어려운 큰 변경에서 사용하는 편이 좋다.
+
+#### 데이터베이스 변경도 함께 고려해야 한다
+
+Rolling Update 중에는 기존 애플리케이션과 새 애플리케이션이 같은 데이터베이스를 동시에 사용한다. 따라서 데이터베이스 Migration도 두 버전이 함께 동작할 수 있어야 한다.
+
+안전한 순서는 다음과 같다.
+
+1. 새 컬럼을 `NULL` 허용 또는 기본값과 함께 추가한다.
+2. 기존 버전과 새 버전이 모두 동작하는지 확인한다.
+3. 새 버전을 모두 배포한다.
+4. 데이터를 Backfill한다.
+5. 애플리케이션 전환이 완료된 뒤 제약 조건을 강화한다.
+6. 더 이상 사용하지 않는 컬럼은 마지막에 제거한다.
+
+기존 컬럼을 먼저 삭제하거나 `NOT NULL` 제약을 바로 추가하면 아직 실행 중인 이전 Pod가 실패할 수 있다.
+
+#### User Server 연결 확인
+
+새 Feed Server는 User Server를 호출해야 하므로 새 Pod 내부에서 DNS와 API 호출을 확인한다.
+
+```shell
+kubectl exec deployment/feed-server \
+  -n sns \
+  -- nslookup user-service.sns.svc.cluster.local
+```
+
+HTTP 호출이 가능한지도 확인한다.
+
+```shell
+kubectl exec deployment/feed-server \
+  -n sns \
+  -- sh -c \
+  "wget -qO- http://user-service.sns.svc.cluster.local:8080/api/users/1"
+```
+
+컨테이너 이미지에 `nslookup`, `wget`, `curl`이 없을 수 있다. 이 경우 임시 진단 Pod를 사용한다.
+
+```shell
+kubectl run network-debug \
+  --rm \
+  -it \
+  --restart=Never \
+  --image=curlimages/curl \
+  -n sns \
+  -- curl -i \
+  http://user-service.sns.svc.cluster.local:8080/api/users/1
+```
+
+#### 배포 완료 확인
+
+Rollout이 끝나면 이전 ReplicaSet의 Replica가 0으로 줄어들었는지 확인한다.
+
+```shell
+kubectl get replicasets \
+  -n sns \
+  -l app=feed-server
+```
+
+Pod가 모두 새 이미지인지 확인한다.
+
+```shell
+kubectl get pods \
+  -n sns \
+  -l app=feed-server \
+  -o jsonpath="{range .items[*]}{.metadata.name}{' '}{.spec.containers[0].image}{'\n'}{end}"
+```
+
+Feed API를 여러 번 호출해 모든 응답에 `uploaderUsername`이 포함되는지 확인한다.
+
+```shell
+curl -sS \
+  "http://feed-service.sns.svc.cluster.local:8080/api/feeds?page=0&size=20"
+```
+
+#### 배포가 실패한 경우
+
+새 Pod가 Ready 상태가 되지 않으면 상태와 Event를 확인한다.
+
+```shell
+kubectl describe pod \
+  -n sns \
+  -l app=feed-server
+```
+
+로그도 확인한다.
+
+```shell
+kubectl logs deployment/feed-server \
+  -n sns \
+  --tail=200
+```
+
+이전 컨테이너 로그가 필요하다면 다음 명령을 사용한다.
+
+```shell
+kubectl logs <POD_NAME> \
+  -n sns \
+  --previous
+```
+
+주요 원인은 다음과 같다.
+
+- ECR 이미지 태그 또는 주소 오류
+- ECR 이미지 Pull 권한 문제
+- User Server 주소 환경 변수 누락
+- User Server DNS 조회 실패
+- 데이터베이스 연결 실패
+- Readiness Probe 경로 오류
+- Resource 부족으로 인한 `Pending`
+- Memory Limit 초과로 인한 `OOMKilled`
+
+#### Rollback
+
+새 버전에 문제가 있다면 이전 Revision으로 되돌린다.
+
+```shell
+kubectl rollout undo \
+  deployment/feed-server \
+  -n sns
+```
+
+특정 Revision으로 되돌릴 수도 있다.
+
+```shell
+kubectl rollout history \
+  deployment/feed-server \
+  -n sns
+```
+
+```shell
+kubectl rollout undo \
+  deployment/feed-server \
+  -n sns \
+  --to-revision=<REVISION>
+```
+
+Rollback 후 상태를 확인한다.
+
+```shell
+kubectl rollout status \
+  deployment/feed-server \
+  -n sns
+```
+
+Rollback은 애플리케이션 이미지를 되돌릴 뿐 이미 실행된 데이터베이스 Migration이나 외부 시스템 변경까지 되돌려주지는 않는다. 데이터베이스 변경도 이전 애플리케이션이 사용할 수 있도록 설계해야 하는 이유다.
+
+#### 실습에서 확인해야 할 핵심 포인트
+
+이번 테스트에서 단순히 새 기능이 보이는지만 확인해서는 안 된다.
+
+- 새 Pod가 Ready 상태가 되기 전까지 요청을 받지 않는가
+- Rolling Update 중 사용 가능한 기존 Pod가 유지되는가
+- API 요청에 연결 오류나 `5xx`가 발생하지 않는가
+- 기존 응답과 새 응답이 섞이는 구간이 존재하는가
+- 기존 클라이언트가 새 필드를 받아도 정상 동작하는가
+- 새 클라이언트가 이전 응답도 처리할 수 있는가
+- 새 Feed Server가 User Server를 정상적으로 호출하는가
+- 배포 완료 후 모든 Pod가 동일한 이미지인가
+- 문제가 생겼을 때 이전 Revision으로 Rollback할 수 있는가
+
+### 정리
+
+Feed Server에 User Server 연동 기능을 추가한 뒤 Rolling Update 과정을 직접 확인했다.
+
+- Deployment 변경은 기존 Pod를 수정하는 것이 아니라 새로운 ReplicaSet과 Pod를 생성하는 방식으로 진행된다.
+- `maxSurge: 1`, `maxUnavailable: 0`을 사용하면 새 Pod가 준비되기 전까지 기존 Pod를 유지할 수 있다.
+- Readiness Probe를 통과한 Pod만 Service Endpoint에 포함된다.
+- Rolling Update 중에는 기존 버전과 새 버전의 Pod가 동시에 요청을 처리할 수 있다.
+- 이 구간에서는 `uploaderUsername`이 있는 응답과 없는 응답이 함께 나타날 수 있다.
+- 응답 필드 추가는 비교적 안전하지만 새 클라이언트도 배포 전환 기간의 이전 응답을 처리할 수 있어야 한다.
+- 필드 삭제, 이름 변경, 타입 변경은 하위 호환성을 깨뜨릴 수 있다.
+- 호환성이 어려운 변경에는 Expand and Contract 전략이나 API Version 분리를 적용할 수 있다.
+- 애플리케이션뿐 아니라 데이터베이스 Migration도 이전 버전과 새 버전이 동시에 동작할 수 있게 설계해야 한다.
+- 배포 실패 시 `rollout undo`로 애플리케이션 Revision을 되돌릴 수 있지만 데이터베이스 변경은 별도로 관리해야 한다.
+
+이제 User Server와 Feed Server의 기본 기능과 서비스 간 연동까지 확인했다. 다음 단계에서는 실제 이미지 파일을 저장하고 조회하는 Image Server를 구성한다.
