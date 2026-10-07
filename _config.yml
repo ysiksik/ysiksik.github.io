@@ -140,7 +140,7 @@ menu:
 #        url:    /payments/
         #          - title:  실무 적용 SQL 성능 튜닝
         #            url:      /sql-performance-tuning/
-  - title: 독서
+  - title: Book
     url: /book/
     submenu:
       - title: 그림으로 이해하는 AWS 구조와 기술, 개정 2판
