@@ -1,12 +1,15 @@
 ---
-layout: list
+layout: page
+type: category
 bigtitle: 독서
 slug: book
+menu: true
+submenu: true
 description: >
   읽은 책의 핵심 개념과 실무 적용 관점을 정리한 기록
-list: true
-order: 3
+order: 4
 sitemap: true
+hide_description: false
 ---
 # 독서
 
