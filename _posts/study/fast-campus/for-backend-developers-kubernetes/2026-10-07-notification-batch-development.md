@@ -867,3 +867,648 @@ kubectl get cronjob,job,pod -n sns
 - Notification Batch의 첫 번째 이미지는 `0.0.1`로 빌드해 ECR에 Push할 수 있다.
 
 다음 단계에서는 Amazon SES SMTP 자격 증명을 Kubernetes ConfigMap과 Secret으로 주입하고, CronJob으로 Notification Batch를 주기적으로 실행한다.
+
+
+## 02. Job과 CronJob을 활용한 배치 수행
+
+### Amazon SES와 Kubernetes CronJob으로 팔로우 알림 발송하기
+
+Notification Batch는 아직 알림을 보내지 않은 팔로우 관계를 읽고, 이메일을 발송한 뒤 `notification_sent_at`을 기록한다. 이번에는 Amazon SES의 SMTP 설정을 연결하고 Kubernetes CronJob으로 Batch를 실행한다.
+
+설정이 끝나면 사용자가 다른 사용자를 팔로우할 때 다음 예약 실행에서 이메일이 발송된다.
+
+```mermaid
+flowchart LR
+    A["사용자 A가 사용자 B 팔로우"] --> B["User Server"]
+    B --> C["user_follow에 관계 저장"]
+    D["Kubernetes CronJob"] --> E["Notification Job"]
+    E --> F["Notification Batch Pod"]
+    F -->|"미발송 관계 조회"| C
+    F -->|"SMTP 전송"| G["Amazon SES"]
+    G --> H["사용자 B의 메일함"]
+    F -->|"발송 처리 시각 기록"| C
+```
+
+#### 실습 구성
+
+MySQL 접속 정보는 기존 ConfigMap과 Secret을 재사용한다. 새로 필요한 값은 SMTP 접속 정보와 발신자 주소다.
+
+| Kubernetes 객체 | 저장할 정보 |
+|---|---|
+| `mysql-config` | MySQL 호스트, 포트, 데이터베이스 이름 |
+| `mysql-secret` | MySQL 사용자와 비밀번호 |
+| `email-config` | SMTP 호스트, 포트, 인증 및 TLS 설정, 발신자 주소 |
+| `email-secret` | SMTP 사용자와 비밀번호 |
+| `notification-batch` CronJob | 실행 주기, 이미지, 환경 변수, 재시도 설정 |
+
+이 객체들은 Batch Pod가 실행될 `sns` Namespace에 있어야 한다. 데이터베이스가 다른 Namespace나 클러스터 외부에 있더라도, Pod가 참조하는 ConfigMap과 Secret은 같은 Namespace에 두어야 한다.
+
+#### Amazon SES Sandbox 확인
+
+Amazon SES의 Sandbox 상태와 발송 한도는 Region별로 관리된다. Sandbox에서는 인증된 이메일 주소 또는 도메인으로만 발송할 수 있으며, 기본 한도는 24시간 동안 200건, 초당 1건이다. 발신자와 테스트 수신자를 모두 확인해야 한다. [Amazon SES Sandbox 제한](https://docs.aws.amazon.com/ses/latest/dg/request-production-access.html)
+
+초당 1건은 SES가 요청을 자동으로 1초씩 기다렸다가 처리한다는 의미가 아니다. 애플리케이션에서 연속으로 전송하면 제한 초과 오류가 발생할 수 있다. 이번에는 팔로우 관계 한 건으로 먼저 테스트한다.
+
+#### 발신자와 수신자 이메일 인증
+
+SES Console에서 사용할 Region을 선택한 뒤 다음 순서로 이메일 주소를 인증한다.
+
+1. **Verified identities**에서 **Create identity**를 선택한다.
+2. Identity Type으로 이메일 주소를 선택한다.
+3. 실제 수신 가능한 이메일 주소를 입력한다.
+4. 해당 메일함으로 도착한 인증 링크를 연다.
+5. SES Console에서 상태가 `Verified`로 변경됐는지 확인한다.
+
+발신자와 수신자가 같은 주소여도 테스트할 수 있다. 서로 다른 주소를 사용한다면 각각 인증한다.
+
+이메일 인증을 다른 Region에서 완료했다고 해서 현재 SMTP Endpoint에서도 사용할 수 있는 것은 아니다. 인증 상태와 SMTP 설정은 같은 Region을 기준으로 맞춘다.
+
+#### SMTP 자격 증명 생성
+
+SES Console의 **SMTP settings**에서 Endpoint와 Port를 확인하고 **Create SMTP credentials**를 선택한다. 생성된 다음 두 값을 Kubernetes Secret에 저장한다.
+
+- SMTP Username
+- SMTP Password
+
+SES SMTP 자격 증명은 AWS Console 로그인 정보나 일반 AWS Access Key와 다르며 Region별로 생성해서 사용한다. [SES SMTP 연결 요구사항](https://docs.aws.amazon.com/ses/latest/dg/send-email-smtp.html)
+
+#### Email ConfigMap 작성
+
+`email-configmap.yaml`을 작성한다. 아래 Endpoint는 서울 Region의 예시이며, 실제 사용하는 Region의 SES SMTP Endpoint로 맞춘다.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: email-config
+  namespace: sns
+data:
+  SMTP_HOST: email-smtp.ap-northeast-2.amazonaws.com
+  SMTP_PORT: "587"
+  SMTP_AUTH: "true"
+  SMTP_STARTTLS_ENABLED: "true"
+  SMTP_STARTTLS_REQUIRED: "true"
+  MAIL_FROM_ADDRESS: verified-sender@example.com
+```
+
+`MAIL_FROM_ADDRESS`는 SES에서 인증한 실제 발신자 주소로 변경한다.
+
+| 설정 | 의미 |
+|---|---|
+| `SMTP_HOST` | SES SMTP Endpoint |
+| `SMTP_PORT` | SMTP 연결 포트 |
+| `SMTP_AUTH` | SMTP 사용자와 비밀번호로 인증 |
+| `SMTP_STARTTLS_ENABLED` | STARTTLS 사용 |
+| `SMTP_STARTTLS_REQUIRED` | TLS로 전환할 수 없다면 연결 실패 처리 |
+| `MAIL_FROM_ADDRESS` | 메일의 발신자 주소 |
+
+ConfigMap의 `data` 값은 문자열이다. 숫자와 Boolean 형태의 값도 `"587"`, `"true"`처럼 따옴표로 감싼다.
+
+587 포트는 SMTP 연결 후 STARTTLS로 암호화 통신을 시작하는 방식이다. 465 포트의 SMTPS와는 연결 방식이 다르므로 Port만 바꾸고 TLS 설정을 그대로 사용하는 것은 피해야 한다. [SES SMTP의 TLS 연결 방식](https://docs.aws.amazon.com/ses/latest/dg/smtp-connect.html)
+
+#### Email Secret 작성
+
+`email-secret.yaml`을 작성한다.
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: email-secret
+  namespace: sns
+type: Opaque
+stringData:
+  SMTP_USERNAME: REPLACE_WITH_SES_SMTP_USERNAME
+  SMTP_PASSWORD: REPLACE_WITH_SES_SMTP_PASSWORD
+```
+
+`stringData`를 사용하면 직접 Base64로 변환하지 않아도 된다. Kubernetes API Server가 입력값을 Secret의 `data` 형태로 처리한다.
+
+이미 Base64로 변환한 값을 사용하려면 `stringData` 대신 `data`에 넣어야 한다. Base64 값을 `stringData`에 입력하면 애플리케이션에는 원래 자격 증명이 아닌 인코딩된 문자열이 전달되어 인증에 실패한다.
+
+Base64는 암호화가 아니다. 실제 자격 증명이 들어간 파일은 Git에 올리지 않고, Secret 조회 권한도 제한한다.
+
+설정을 적용한다.
+
+```shell
+kubectl apply -f email-configmap.yaml
+kubectl apply -f email-secret.yaml
+```
+
+객체가 생성됐는지 확인한다.
+
+```shell
+kubectl get configmap email-config -n sns
+kubectl describe secret email-secret -n sns
+```
+
+`describe secret`에서는 키와 데이터 크기를 확인할 수 있다. 정상 생성 여부를 확인하기 위해 비밀번호를 화면에 출력할 필요는 없다.
+
+#### Spring Boot 설정 연결
+
+기존 MySQL 설정의 키인 `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD`를 그대로 사용한다.
+
+`application.yml`은 다음과 같이 구성한다. 예제는 앞에서 사용한 Spring Boot 3.x와 Spring Batch 5.x 구성을 기준으로 한다.
+
+```yaml
+spring:
+  application:
+    name: notification-batch
+  main:
+    web-application-type: none
+  datasource:
+    url: jdbc:mysql://${MYSQL_HOST}:${MYSQL_PORT:3306}/${MYSQL_DATABASE}?connectionTimeZone=UTC
+    username: ${MYSQL_USER}
+    password: ${MYSQL_PASSWORD}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 5
+      connection-timeout: 10000
+  batch:
+    job:
+      enabled: true
+      name: notificationJob
+    jdbc:
+      initialize-schema: ${BATCH_INITIALIZE_SCHEMA:never}
+  mail:
+    host: ${SMTP_HOST}
+    port: ${SMTP_PORT:587}
+    username: ${SMTP_USERNAME}
+    password: ${SMTP_PASSWORD}
+    default-encoding: UTF-8
+    properties:
+      mail:
+        smtp:
+          auth: ${SMTP_AUTH:true}
+          starttls:
+            enable: ${SMTP_STARTTLS_ENABLED:true}
+            required: ${SMTP_STARTTLS_REQUIRED:true}
+          connectiontimeout: 5000
+          timeout: 5000
+          writetimeout: 5000
+
+app:
+  notification:
+    mail:
+      from-address: ${MAIL_FROM_ADDRESS}
+```
+
+`spring.batch.job.name`은 Java Bean 메서드 이름이 아니라 `JobBuilder`에 지정한 Job 이름이다.
+
+```java
+new JobBuilder("notificationJob", jobRepository)
+```
+
+SMTP 연결, 읽기, 쓰기 Timeout도 지정했다. 응답하지 않는 SMTP Server 때문에 Batch가 끝나지 않으면 이후 예약 실행이 계속 대기하거나 건너뛰어질 수 있다.
+
+#### Batch 시작과 종료 처리
+
+CronJob의 Pod는 작업을 실행하고 종료해야 한다. Batch가 실패했는데 Java 프로세스가 종료 코드 `0`으로 끝나면 Kubernetes는 성공으로 판단할 수 있으므로 실행 결과를 프로세스 종료 코드에 반영한다.
+
+```java
+package com.sns.notification;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
+import org.springframework.context.ConfigurableApplicationContext;
+
+import java.util.Arrays;
+import java.util.UUID;
+
+@ConfigurationPropertiesScan
+@SpringBootApplication
+public class NotificationBatchApplication {
+
+    public static void main(String[] args) {
+        String[] executionArgs = Arrays.copyOf(
+            args,
+            args.length + 1
+        );
+
+        executionArgs[args.length] =
+            "execution.id=" + UUID.randomUUID();
+
+        ConfigurableApplicationContext context =
+            SpringApplication.run(
+                NotificationBatchApplication.class,
+                executionArgs
+            );
+
+        int exitCode = SpringApplication.exit(context);
+        System.exit(exitCode);
+    }
+}
+```
+
+이번 구성에서는 Spring Boot의 Batch 자동 설정을 사용하므로 `@EnableBatchProcessing`을 추가하지 않는다. 해당 Annotation을 직접 선언하면 Batch 자동 실행과 Schema 초기화 등 Spring Boot 자동 설정이 비활성화된다. [Spring Boot Batch 설정](https://docs.spring.io/spring-boot/3.5/how-to/batch.html)
+
+`execution.id`는 프로세스마다 새로운 JobInstance를 만드는 Parameter다. `--execution.id`처럼 앞에 `--`를 붙이면 Spring 설정값으로 취급되므로 Job Parameter와 구분해야 한다.
+
+앞에서 등록한 `RunIdIncrementer`는 실행 도구가 다음 Parameter를 요청할 때 동작한다. 모든 실행 경로에서 자동으로 호출된다고 가정하지 않고, 여기서는 실행마다 UUID를 명시적으로 전달한다.
+
+새 JobInstance는 `notification_sent_at IS NULL`인 데이터를 다시 읽는다. 실패한 Cursor의 저장 위치로 재시작하는 방식과는 다르며, 메일 중복 가능성을 없애주는 설정도 아니다.
+
+#### Batch Metadata Table 준비
+
+정기 실행 전에 `BATCH_JOB_INSTANCE`, `BATCH_JOB_EXECUTION` 등 Metadata Table이 있어야 한다.
+
+운영 환경에서는 사용 중인 Spring Batch 버전의 MySQL Schema를 Migration으로 적용하고 `initialize-schema: never`를 유지한다. 비어 있는 실습용 데이터베이스에서는 환경 변수로 초기화를 활성화할 수 있지만, 테이블이 준비된 뒤에는 다시 비활성화한다.
+
+```text
+BATCH_INITIALIZE_SCHEMA=always
+```
+
+업무 테이블인 `users`, `user_follow`와 Batch Metadata Table은 역할이 다르다. 전자는 알림 대상과 처리 상태를 저장하고, 후자는 Job과 Step 실행 이력을 저장한다.
+
+#### 컨테이너 이미지 빌드
+
+시작 코드와 설정을 수정했다면 해당 변경이 포함된 이미지를 새로 빌드한다.
+
+```powershell
+.\gradlew.bat clean test jib `
+  -Djib.to.image=<AWS_ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/notification-batch:0.0.2
+```
+
+아래 CronJob도 같은 `0.0.2` 태그를 사용한다. ECR Repository 주소와 Region은 자신의 환경에 맞춘다.
+
+#### CronJob 작성
+
+`notification-cronjob.yaml`을 작성한다.
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: notification-batch
+  namespace: sns
+spec:
+  schedule: "* * * * *"
+  timeZone: Asia/Seoul
+  suspend: true
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 30
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      parallelism: 1
+      completions: 1
+      backoffLimit: 2
+      activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 120
+      template:
+        metadata:
+          labels:
+            app: notification-batch
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: notification-container
+              image: <AWS_ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/notification-batch:0.0.2
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: SPRING_PROFILES_ACTIVE
+                  value: dev
+                - name: BATCH_INITIALIZE_SCHEMA
+                  value: never
+              envFrom:
+                - configMapRef:
+                    name: mysql-config
+                - secretRef:
+                    name: mysql-secret
+                - configMapRef:
+                    name: email-config
+                - secretRef:
+                    name: email-secret
+              resources:
+                requests:
+                  cpu: 250m
+                  memory: 256Mi
+                limits:
+                  cpu: "1"
+                  memory: 512Mi
+```
+
+처음에는 `suspend: true`로 생성한다. 수동 실행으로 접속과 발송을 확인한 뒤 예약 실행을 켜기 위해서다.
+
+##### 실행 주기와 중복 실행
+
+```yaml
+schedule: "* * * * *"
+concurrencyPolicy: Forbid
+```
+
+1분마다 Job 생성 시점을 확인하며, 이전 예약 Job이 실행 중이면 다음 실행은 건너뛴다. `parallelism: 1`은 한 Job 내부의 병렬 Pod 수만 제한하므로 예약 Job 간 중복을 막으려면 `Forbid`가 별도로 필요하다. 수동으로 만든 Job이나 다른 CronJob과의 중복까지 막아주지는 않는다. [Kubernetes CronJob 동작](https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/)
+
+##### 완료 조건과 재시도
+
+```yaml
+parallelism: 1
+completions: 1
+backoffLimit: 2
+restartPolicy: Never
+```
+
+한 Job에서 성공한 Pod 하나를 필요로 하며, 실패하면 Job Controller가 재시도할 수 있다.
+
+`restartPolicy: Never`는 같은 Pod 안에서 실패한 컨테이너를 재시작하지 않는다는 뜻이다. `backoffLimit: 2`가 있으므로 실패 후 새 Pod가 생성되는 것은 가능하다. 메일 중복 위험 때문에 자동 재시도를 원하지 않는다면 `backoffLimit: 0`을 선택할 수 있다.
+
+##### 실행 시간과 정리
+
+```yaml
+activeDeadlineSeconds: 300
+ttlSecondsAfterFinished: 120
+```
+
+Job 실행 시간은 최대 300초로 제한한다. 성공 또는 실패로 끝난 Job은 종료 후 120초가 지나면 삭제 대상이 되고, 연결된 Pod도 함께 정리된다. 시작한 지 120초 만에 삭제되는 설정은 아니다. [Kubernetes Job 제어](https://kubernetes.io/docs/concepts/workloads/controllers/job/)
+
+짧은 TTL은 실습 자원 정리에 편리하지만 로그도 빨리 사라진다. 장애 조사 중에는 TTL을 늘리거나 로그 중앙화를 사용한다.
+
+#### CronJob 적용 전 확인
+
+참조 객체가 모두 존재하는지 확인한다.
+
+```shell
+kubectl get configmap mysql-config email-config -n sns
+kubectl get secret mysql-secret email-secret -n sns
+```
+
+환경 변수 이름도 맞아야 한다.
+
+| 객체 | 필요한 키 |
+|---|---|
+| `mysql-config` | `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE` |
+| `mysql-secret` | `MYSQL_USER`, `MYSQL_PASSWORD` |
+| `email-config` | `SMTP_HOST`, `SMTP_PORT`, TLS 설정, `MAIL_FROM_ADDRESS` |
+| `email-secret` | `SMTP_USERNAME`, `SMTP_PASSWORD` |
+
+Secret이나 ConfigMap에 값이 있어도 키 이름이 다르면 Spring의 Placeholder를 해석하지 못한다.
+
+CronJob을 적용한다.
+
+```shell
+kubectl apply -f notification-cronjob.yaml
+kubectl get cronjob notification-batch -n sns
+```
+
+초기 상태에서는 `SUSPEND`가 `True`여야 한다.
+
+#### 수동 실행으로 환경 확인
+
+정기 실행 전에 CronJob Template으로 Job 하나를 만든다.
+
+```shell
+kubectl create job notification-smoke-test \
+  --from=cronjob/notification-batch \
+  -n sns
+```
+
+예약이 중지된 상태에서도 수동 Job은 실행할 수 있다.
+
+```shell
+kubectl get pods \
+  -n sns \
+  -l job-name=notification-smoke-test
+```
+
+```shell
+kubectl logs job/notification-smoke-test \
+  -n sns \
+  --all-containers=true
+```
+
+미발송 팔로우 관계가 없다면 메일을 보내지 않고 Job이 완료되는 것이 정상이다. 대상이 없다면 SMTP 발송 코드도 실행되지 않으므로, 이 결과만으로 SMTP 인증까지 검증됐다고 판단해서는 안 된다.
+
+또한 Reader는 미발송 데이터를 모두 읽는다. 테스트 전에 기존 데이터에 의도하지 않은 수신자가 포함되어 있지 않은지 확인한다.
+
+#### 알림 수신 사용자 생성
+
+메일을 받을 사용자의 `email`에는 SES에서 인증한 실제 주소를 입력한다.
+
+```shell
+curl -i -X POST \
+  http://user-service.sns.svc.cluster.local:8080/api/users \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "notification-recipient",
+    "email": "<VERIFIED_RECIPIENT_EMAIL>",
+    "password": "StrongPassword123!"
+  }'
+```
+
+팔로우하는 사용자도 필요하다. 기존 계정이 없다면 하나 더 생성한다.
+
+```shell
+curl -i -X POST \
+  http://user-service.sns.svc.cluster.local:8080/api/users \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "notification-follower",
+    "email": "notification-follower@example.com",
+    "password": "StrongPassword123!"
+  }'
+```
+
+이 테스트에서 메일 수신자는 팔로우 대상이다. 팔로워의 이메일로는 알림을 보내지 않는다.
+
+다음 명령은 두 사용자의 실제 ID가 각각 다음과 같다고 가정한다.
+
+- 팔로워: `1`
+- 수신자: `2`
+
+실제 회원가입 응답의 `userId`를 사용한다.
+
+#### 팔로우 관계 생성
+
+```shell
+curl -i -X POST \
+  http://user-service.sns.svc.cluster.local:8080/api/follows \
+  -H "Content-Type: application/json" \
+  -d '{
+    "followerUserId": 1,
+    "followingUserId": 2
+  }'
+```
+
+생성 직후에는 `notification_sent_at`이 `NULL`이어야 한다.
+
+```sql
+SELECT
+    f.follow_id,
+    follower.username AS follower_username,
+    recipient.username AS recipient_username,
+    recipient.email AS recipient_email,
+    f.notification_sent_at
+FROM user_follow f
+JOIN users follower
+  ON follower.user_id = f.follower_user_id
+JOIN users recipient
+  ON recipient.user_id = f.following_user_id
+WHERE f.follower_user_id = 1
+  AND f.following_user_id = 2;
+```
+
+#### 메일 발송 테스트
+
+앞의 수동 Job이 끝났는지 확인한 뒤, 새로운 이름으로 실행한다.
+
+```shell
+kubectl create job notification-mail-test \
+  --from=cronjob/notification-batch \
+  -n sns
+```
+
+로그를 확인한다.
+
+```shell
+kubectl logs job/notification-mail-test \
+  -n sns \
+  --all-containers=true
+```
+
+Job 완료 여부를 확인한다.
+
+```shell
+kubectl wait \
+  --for=condition=complete \
+  job/notification-mail-test \
+  -n sns \
+  --timeout=60s
+```
+
+메일함에는 다음과 같은 내용이 도착해야 한다.
+
+```text
+제목: 새로운 팔로워가 생겼습니다.
+
+notification-recipient님,
+notification-follower님이 회원님을 팔로우하기 시작했습니다.
+```
+
+SMTP Server가 메시지를 받아들였다는 사실과 최종 메일함에 전달됐다는 사실은 다르다. 스팸함을 포함해 실제 수신 여부를 확인한다.
+
+#### 처리 상태와 재실행 확인
+
+발송 후 데이터베이스를 확인한다.
+
+```sql
+SELECT
+    follow_id,
+    notification_sent_at
+FROM user_follow
+WHERE follower_user_id = 1
+  AND following_user_id = 2;
+```
+
+`notification_sent_at`에 시간이 기록되면 다음 실행에서는 해당 관계가 조회되지 않는다.
+
+새 Job으로 한 번 더 실행한다.
+
+```shell
+kubectl create job notification-repeat-test \
+  --from=cronjob/notification-batch \
+  -n sns
+```
+
+이미 처리한 관계에 대해 추가 이메일이 오지 않는지 확인한다. 이는 정상적으로 Commit된 데이터의 반복 발송을 막는 동작을 검증하는 것이며, 장애 상황의 중복 전송까지 보장하는 테스트는 아니다.
+
+#### 예약 실행 활성화
+
+수동 Job이 모두 종료된 뒤 CronJob의 `suspend` 값을 `false`로 변경한다.
+
+```shell
+kubectl patch cronjob notification-batch \
+  -n sns \
+  --type=merge \
+  -p '{"spec":{"suspend":false}}'
+```
+
+배포 파일의 `suspend`도 `false`로 수정한다. 파일을 그대로 두면 다음 `kubectl apply`에서 예약 실행이 다시 중지될 수 있다.
+
+```shell
+kubectl get cronjob notification-batch -n sns
+kubectl get jobs -n sns -w
+```
+
+1분 주기에서는 알림이 팔로우 직후 바로 도착하지 않는다. 다음 스케줄까지의 대기 시간에 Pod 시작 시간, Batch 처리 시간, 메일 전달 시간이 더해진다.
+
+#### 실패 원인 확인
+
+##### Pod가 시작하지 못하는 경우
+
+```shell
+kubectl describe pod <POD_NAME> -n sns
+```
+
+| 상태 또는 메시지 | 확인할 내용 |
+|---|---|
+| `CreateContainerConfigError` | 참조 ConfigMap과 Secret 존재 여부 |
+| `ImagePullBackOff` | ECR 이미지 주소, 태그, Pull 권한 |
+| `Pending` | Node 자원과 스케줄링 조건 |
+| Placeholder 해석 오류 | 환경 변수 키와 설정 이름 |
+| `OOMKilled` | 실제 메모리 사용량과 Memory Limit |
+
+##### Batch Table이 없거나 Job이 실행되지 않는 경우
+
+`BATCH_JOB_INSTANCE` 같은 Table이 없다면 Metadata Schema를 준비해야 한다.
+
+애플리케이션이 시작했지만 Batch 실행 로그가 없다면 다음을 확인한다.
+
+- `spring.batch.job.enabled`가 `true`인가
+- `spring.batch.job.name`이 `notificationJob`과 일치하는가
+- 자동 설정을 사용할 때 `@EnableBatchProcessing`을 제거했는가
+- 새 시작 코드가 포함된 이미지가 실제로 배포됐는가
+
+##### SMTP 인증과 발송 거절
+
+주요 오류는 다음과 같다.
+
+| 오류 | 원인 |
+|---|---|
+| Authentication failed | SMTP 자격 증명 또는 Region 불일치 |
+| Email address is not verified | 발신자 또는 Sandbox 수신자 미인증 |
+| Access denied | SMTP 사용자에게 발송 권한 없음 |
+| Maximum sending rate exceeded | 초당 발송 한도 초과 |
+| Daily message quota exceeded | 일일 발송 한도 초과 |
+
+SES가 반환하는 인증 및 제한 오류는 자격 증명, 인증 주소, 할당량을 각각 확인해 해결한다. [SES SMTP 오류](https://docs.aws.amazon.com/ses/latest/dg/troubleshoot-smtp.html)
+
+##### SMTP 연결 Timeout
+
+EKS Pod에서 SMTP Endpoint의 TCP 587 포트로 나갈 수 있어야 한다. Private Subnet에서 실행한다면 NAT 등 외부 접근 경로 또는 지원되는 VPC Endpoint 구성을 확인한다.
+
+Security Group의 Egress, NetworkPolicy, DNS 설정도 함께 확인한다. RDS에 연결된다고 해서 외부 SMTP Endpoint에도 연결할 수 있는 것은 아니다.
+
+##### Job이 계속 Running인 경우
+
+Batch 로그가 끝났는데 Pod가 계속 실행 중이면 종료되지 않은 Thread나 실행 코드 문제를 확인한다. `Forbid`에서는 이 Job이 남아 있는 동안 다음 예약 실행이 건너뛰어진다.
+
+반대로 Batch가 실패했는데 Pod가 `Completed`라면 프로세스 종료 코드가 실패를 반영하는지 확인한다.
+
+#### 재시도가 만드는 메일 중복
+
+현재 Writer는 SMTP 전송 후 데이터베이스를 갱신한다.
+
+```mermaid
+flowchart TD
+    A["메일 전송 성공"] --> B["DB 처리 시각 갱신"]
+    B --> C{"Commit 성공"}
+    C -->|"성공"| D["다음 실행에서 제외"]
+    C -->|"실패 또는 프로세스 종료"| E["미발송 상태로 남음"]
+    E --> F["재시도에서 같은 메일 전송 가능"]
+```
+
+메일 전송은 데이터베이스 Rollback으로 취소할 수 없다. Chunk 후반부 실패로 앞서 성공한 상태 업데이트가 Rollback되는 경우에도 중복이 발생할 수 있다.
+
+따라서 재시도 횟수를 늘리는 일은 가용성과 중복 전송을 함께 고려해야 한다. 운영에서는 처리 상태 선점, 발송 이력, 제한적인 재시도, Provider의 중복 방지 기능 등을 검토한다. `Forbid`와 `notification_sent_at`만으로 정확히 한 번 발송을 보장할 수는 없다.
+
+### 정리
+
+Amazon SES SMTP 설정을 ConfigMap과 Secret으로 분리하고 Notification Batch를 CronJob으로 실행했다. MySQL 접속 정보는 기존 객체를 재사용하고, 새 Pod에 네 가지 설정 객체를 환경 변수로 전달했다.
+
+실습에서는 메일 수신자 인증, 미발송 팔로우 관계 생성, Batch 실행, 실제 메일 수신, `notification_sent_at` 갱신을 순서대로 확인하는 것이 중요하다. 이어서 다시 실행했을 때 같은 관계가 처리 대상에서 제외되는지도 확인한다.
+
+`parallelism: 1`은 한 Job의 Pod 수를 제한하고, `concurrencyPolicy: Forbid`는 같은 CronJob의 예약 실행이 겹치는 것을 막는다. `restartPolicy: Never`여도 Job의 재시도 설정에 따라 새 Pod가 생성될 수 있으며, SMTP 전송 후 장애가 발생하면 이메일 중복 가능성은 남는다.
+
+사용자 관리, Feed, 이미지, 팔로우 알림까지 기본 기능이 연결됐다. 이후에는 성능 테스트와 Monitoring을 통해 서비스 간 호출량, Batch 처리 지연, 메일 발송 실패를 측정하고 개선할 수 있다.
