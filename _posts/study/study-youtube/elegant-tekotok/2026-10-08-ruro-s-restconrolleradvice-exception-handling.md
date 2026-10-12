@@ -2097,8 +2097,8 @@ flowchart TD
 
     K --> N{Local ExceptionHandler?}
 
-    N -->|Yes| O[Controller @ExceptionHandler]
-    N -->|No| P[@ControllerAdvice 검색]
+    N -->|Yes| O["Controller @ExceptionHandler"]
+    N -->|No| P["@ControllerAdvice 검색"]
 
     P --> Q[가장 적절한 Handler 선택]
 
@@ -2111,7 +2111,7 @@ flowchart TD
 
     M --> V{Resolver들이 처리했는가?}
     V -->|No| W[Servlet Error Dispatch]
-    W --> X[/error]
+    W --> X["/error"]
     X --> Y[BasicErrorController]
 ```
 
