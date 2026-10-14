@@ -138,6 +138,8 @@ menu:
             url: /amazon-aws-introduction-building-web-services/
           - title: 처음 배우는 쿠버네티스 개발 전략
             url: /kubernetes-development-strategy-for-beginners/
+          - title: 처음 배우는 카프카(개발부터 운영까지)
+            url: /kafka-development-strategy-for-beginners/
 #      - title:    페이먼츠
 #        url:    /payments/
         #          - title:  실무 적용 SQL 성능 튜닝

@@ -721,3 +721,574 @@ Metrics Server는 현재 자원 조회와 자동 확장에 사용하고, Prometh
 이번 환경은 영구 저장을 비활성화한 실습용 구성이다. Pod 교체 시 지표 이력과 UI에서 저장한 Dashboard가 사라질 수 있으며, 운영에서는 저장소와 보존 정책을 별도로 설계해야 한다.
 
 이제 성능 테스트를 실행하면서 요청량 증가가 자원 사용량에 어떤 영향을 주는지 확인할 수 있다. 자원 그래프와 함께 응답 시간, 오류율, Database와 서비스 간 호출 지표까지 연결하면 병목을 더 정확하게 찾을 수 있다.
+
+## 02. OpenLens와 Kubecost를 이용한 서비스 관리
+
+### OpenLens와 Kubecost로 클러스터 상태와 비용 살펴보기
+
+앞에서는 Prometheus와 Grafana로 컨테이너의 CPU와 메모리 사용량을 확인했다. 이번에는 Kubernetes 객체를 탐색하고 운영 설정을 바꾸는 작업, 그리고 자원 사용량을 비용 관점에서 분석하는 작업을 살펴본다.
+
+OpenLens는 클러스터를 관리하는 GUI 도구이고, Kubecost는 Kubernetes 자원에 비용을 배분하고 낭비되는 자원을 찾는 분석 도구다. 둘을 함께 사용하면 어떤 Workload가 실행되고 있는지 확인하는 데서 나아가, 그 Workload에 할당한 자원이 적절한지도 검토할 수 있다.
+
+| 도구 | 주로 확인하는 내용 |
+|---|---|
+| `kubectl` | Kubernetes 객체 조회와 변경, 자동화 |
+| OpenLens | 객체 탐색, 상태 확인, GUI를 통한 운영 작업 |
+| Prometheus·Grafana | 시간에 따른 지표 변화 |
+| Kubecost | 자원별 비용 배분과 자원 조정 권고 |
+
+#### OpenLens의 역할과 현재 지원 상태
+
+OpenLens는 Lens의 공개 소스 부분을 기반으로 만든 Kubernetes 관리 도구다. 로컬의 `kubeconfig`를 이용해 Kubernetes API Server에 연결하고, Pod와 Deployment 같은 객체를 화면에 표시한다.
+
+다만 OpenLens 바이너리 배포 저장소는 더 이상 업데이트를 제공하지 않는다고 안내하고 있다. 기존 환경의 기능을 살펴볼 수는 있지만, 새 Kubernetes 버전과의 호환성이나 보안 업데이트가 계속 제공되는 도구로 가정해서는 안 된다. [OpenLens 배포 저장소](https://github.com/MuhammedKalkan/OpenLens)
+
+```mermaid
+flowchart LR
+    A["로컬 kubeconfig"] --> B["OpenLens"]
+    A --> C["kubectl"]
+    B --> D["Kubernetes API Server"]
+    C --> D
+    D --> E["Pod와 Deployment"]
+    D --> F["Service와 ConfigMap"]
+    D --> G["CronJob과 Secret"]
+```
+
+GUI에서 수행하는 작업도 결국 Kubernetes API 요청이다. OpenLens를 설치한다고 기존 계정에 없는 권한이 추가되는 것은 아니다.
+
+#### CLI와 GUI를 함께 사용하는 이유
+
+클러스터 상태를 처음 파악할 때는 GUI가 편리하다. Namespace별 Pod를 살펴보고, 문제가 있는 객체를 선택해 Event와 설정을 연속해서 확인할 수 있다.
+
+반면 CLI는 반복 작업과 자동화에 유리하다. 같은 명령으로 여러 환경을 비교하거나, CI/CD에서 Manifest를 적용하고 실행 결과를 기록할 수 있다.
+
+예를 들어 Pod가 시작되지 않는 상황에서는 다음 두 방법이 같은 정보를 확인하는 경로가 된다.
+
+| OpenLens 작업 | 대응하는 명령 |
+|---|---|
+| Pod 목록 열기 | `kubectl get pods` |
+| Pod 상세와 Event 확인 | `kubectl describe pod` |
+| Pod 로그 확인 | `kubectl logs` |
+| Deployment Replica 변경 | `kubectl scale deployment` |
+| 객체 YAML 편집 | `kubectl edit` |
+
+로그나 Terminal 메뉴의 제공 여부는 OpenLens 버전과 설치된 Extension에 따라 다를 수 있다. 화면에 기능이 없다면 해당 `kubectl` 명령으로 확인하면 된다.
+
+#### OpenLens 설치와 EKS 연결
+
+OpenLens의 Release 페이지에서 운영체제와 CPU Architecture에 맞는 설치 파일을 선택한다. 배포 시점과 지원 상태도 함께 확인한다.
+
+EKS 연결은 먼저 Terminal에서 정상적으로 동작하는지 확인한다.
+
+```shell
+aws eks update-kubeconfig \
+  --name <CLUSTER_NAME> \
+  --region <REGION>
+
+kubectl config get-contexts
+kubectl config current-context
+kubectl get nodes
+```
+
+OpenLens에서 **Catalog → Clusters**를 열면 로컬 `kubeconfig`에 등록된 Context를 선택할 수 있다. 목록에 없다면 사용 중인 설정 파일을 직접 등록한다.
+
+기본 `kubeconfig` 위치는 다음과 같다.
+
+```text
+Windows: %USERPROFILE%\.kube\config
+Linux 또는 macOS: ~/.kube/config
+```
+
+EKS의 `kubeconfig`는 AWS CLI를 실행해 인증 Token을 얻는 구성을 사용할 수 있다. 따라서 OpenLens 프로세스에서도 `aws` 명령과 필요한 AWS Profile을 사용할 수 있어야 한다.
+
+AWS SSO를 사용한다면 로그인 상태도 확인한다.
+
+```shell
+aws sso login --profile <AWS_PROFILE>
+```
+
+Terminal에서는 접속되는데 GUI에서 실패한다면 AWS CLI 경로, Profile, SSO 만료, API Server 접근 경로를 확인한다. Private Endpoint만 사용하는 클러스터라면 로컬 PC에서 해당 네트워크에 접근할 수 있어야 한다.
+
+#### SNS Workload 확인
+
+클러스터를 선택한 뒤 Namespace를 `sns`로 좁혀 확인한다.
+
+| 영역 | 확인할 항목 |
+|---|---|
+| Pods | Ready 상태, Restart Count, 실행 Node |
+| Deployments | 원하는 Replica와 실제 가용 Replica |
+| Services | Selector와 Port |
+| ConfigMaps | 애플리케이션 설정 |
+| CronJobs | Schedule, Suspend, 최근 실행 |
+| Jobs | 성공·실패 상태 |
+| PVCs | Binding과 사용 중인 Volume |
+
+Pod가 `Running`이어도 Ready 상태가 아닐 수 있다. 상태를 볼 때는 실행 여부뿐 아니라 Readiness, Restart Count, Event를 함께 확인한다.
+
+CLI로도 같은 상태를 비교해 본다.
+
+```shell
+kubectl get deployment,pod,service,cronjob,job,pvc -n sns
+```
+
+#### Deployment Scale과 재시작
+
+GUI에서는 Deployment의 Replica 수를 바꾸거나 새 Pod로 교체하는 작업을 수행할 수 있다.
+
+CLI로는 다음과 같은 작업이다.
+
+```shell
+kubectl scale deployment/feed-server \
+  --replicas=3 \
+  -n sns
+```
+
+```shell
+kubectl rollout restart deployment/feed-server -n sns
+```
+
+`rollout restart`는 기존 컨테이너 프로세스를 제자리에서 재시작하는 동작이 아니다. Deployment의 Pod Template을 변경해 새 Pod로 교체한다.
+
+HPA가 Replica 수를 관리하고 있다면 수동 Scale 결과가 다시 바뀔 수 있다. 이 경우 Deployment만 수정하지 말고 HPA의 최소·최대 Replica와 현재 계산 결과를 확인한다.
+
+#### Secret 조회와 변경 시 주의점
+
+OpenLens는 Secret의 Base64 값을 해석해 표시하거나 편집하는 기능을 제공할 수 있다. 편리하지만 그 화면에는 실제 비밀번호와 Token이 나타날 수 있다.
+
+필요한 권한부터 확인한다.
+
+```shell
+kubectl auth can-i get secrets -n sns
+kubectl auth can-i update secrets -n sns
+```
+
+환경 변수로 주입한 Secret은 실행 중인 프로세스에 자동으로 다시 전달되지 않는다. Secret을 변경했다면 필요한 Workload를 새 Pod로 교체하거나 다음 실행에서 새 Pod가 생성되도록 해야 한다.
+
+Notification Batch는 새로운 Job의 Pod가 생성될 때 최신 Secret을 읽는다. 이미 실행 중인 Batch에는 이전 값이 남는다.
+
+#### CronJob 주기를 5분으로 변경하기
+
+Notification Batch는 테스트를 위해 1분마다 실행하도록 구성했다. 이를 5분마다 실행하도록 변경해 본다.
+
+```text
+변경 전: * * * * *
+변경 후: */5 * * * *
+```
+
+`*/5 * * * *`는 매시 0분, 5분, 10분처럼 달력 기준 5분 간격을 의미한다. 이전 Job이 끝난 시점부터 5분을 기다리는 설정은 아니다.
+
+OpenLens에서 `notification-batch` CronJob을 선택하고 Edit 화면에서 `spec.schedule`을 변경한다. CLI에서는 다음 명령을 사용할 수 있다.
+
+```shell
+kubectl edit cronjob notification-batch -n sns
+```
+
+반영된 값을 확인한다.
+
+```shell
+kubectl get cronjob notification-batch \
+  -n sns \
+  -o jsonpath="{.spec.schedule}"
+```
+
+정상 결과는 다음과 같다.
+
+```text
+*/5 * * * *
+```
+
+기존 Job의 동작은 바뀌지 않는다. 변경한 Schedule은 이후 예약 실행에 적용된다.
+
+CronJob을 Suspend하는 기능도 이미 실행 중인 Job을 종료하는 기능과는 다르다. 새 예약 실행을 중지하는 설정이다.
+
+#### 클러스터 설정과 배포 파일이 달라지는 문제
+
+GUI나 `kubectl edit`로 변경한 내용은 클러스터에 반영되지만 로컬 Manifest는 수정되지 않는다.
+
+```mermaid
+flowchart TD
+    A["원본 Manifest<br/>1분 Schedule"] --> B["클러스터에 적용"]
+    B --> C["GUI에서 5분으로 변경"]
+    C --> D["클러스터는 5분 Schedule"]
+    A --> E["이후 동일 Manifest 재적용"]
+    E --> F["Schedule이 1분으로 되돌아갈 수 있음"]
+```
+
+이처럼 선언한 설정과 실제 상태가 다른 상황을 Configuration Drift라고 한다.
+
+Schedule 변경을 계속 유지하려면 `notification-cronjob.yaml`의 `spec.schedule`도 같은 값으로 수정한다. Helm으로 관리한다면 Values를, GitOps로 관리한다면 원본 Git 설정을 변경한다.
+
+적용 전 차이를 확인한다.
+
+```shell
+kubectl diff -f notification-cronjob.yaml
+```
+
+```shell
+kubectl apply -f notification-cronjob.yaml
+```
+
+현재 상태만 확인하고 싶다면 다음 명령을 사용한다.
+
+```shell
+kubectl get cronjob notification-batch -n sns -o yaml
+```
+
+조회 결과에는 `status`, `resourceVersion` 같은 서버 관리 필드도 포함된다. 전체 출력을 그대로 새 배포 파일로 사용하는 것보다 기존 Manifest에 필요한 변경만 반영하는 편이 좋다.
+
+| 변경 목적 | 처리 방법 |
+|---|---|
+| 장애 대응을 위한 임시 변경 | 변경 전 값을 기록하고 종료 후 복원 |
+| 계속 유지할 운영 정책 | Manifest 또는 Helm Values에 반영 |
+| HPA가 관리하는 Replica 변경 | HPA 설정과 함께 검토 |
+| GitOps 환경의 변경 | 원본 저장소와 동기화 정책 확인 |
+
+자동 동기화가 활성화된 GitOps 환경에서는 수동 변경이 다음 배포를 기다리지 않고 곧바로 복원될 수도 있다.
+
+#### Kubecost가 분석하는 내용
+
+자원 그래프는 사용량을 보여주지만, 어떤 서비스 때문에 비용이 발생하는지까지 바로 설명하지는 않는다.
+
+Kubecost는 Kubernetes 자원과 가격 정보를 연결해 비용을 배분하고 자원 조정 후보를 제시한다.
+
+- Namespace와 Workload별 비용
+- Node 및 Storage 비용
+- 사용되지 않는 자원 비용
+- 컨테이너 `requests` 조정 후보
+- Node 구성 변경에 따른 절감 가능성
+
+표시된 비용이 항상 AWS 청구서와 같지는 않다. 가격 데이터와 할인 조건, 비용 배분 방식, 관찰 기간에 따라 차이가 생긴다. 실제 청구 기준의 분석이 필요하면 AWS Billing 데이터 연동을 별도로 구성한다. [EKS의 Kubecost 비용 분석](https://docs.aws.amazon.com/eks/latest/userguide/cost-monitoring-kubecost-bundles.html)
+
+#### Kubecost 버전에 따른 설치 차이
+
+Kubecost는 버전별 구조가 크게 달라졌다.
+
+| 구분 | 1.x·2.x 계열 | 3.x 계열 |
+|---|---|---|
+| ECR Helm Chart 경로 | `kubecost/cost-analyzer` | `kubecost/kubecost` |
+| 지표 수집 구조 | Prometheus 기반 | FinOps Agent 기반 |
+| 조회·저장 구조 | 이전 비용 분석 구조 | ClickHouse 기반 Aggregator |
+| 대표 UI Deployment | `kubecost-cost-analyzer` | `kubecost-frontend` |
+| 저장소 설정 | 이전 Chart의 Persistence 키 | Local Store와 Aggregator 설정 |
+
+3.x에서는 기본 구조의 Prometheus 의존성이 제거됐다. 앞에서 설치한 Prometheus·Grafana는 자원 모니터링에 계속 사용하고, Kubecost는 별도 비용 분석 경로를 사용한다. [Kubecost 설치 구조 변경](https://docs.aws.amazon.com/eks/latest/userguide/cost-monitoring-kubecost.html)
+
+아래 예제는 Chart `3.3.0`으로 버전을 고정한다. 이전 버전의 `persistentVolume.enabled`나 `prometheus.server.persistentVolume.enabled`를 그대로 복사해서 사용하지 않는다.
+
+#### 설치 전 자원 확인
+
+Kubecost 자체도 CPU와 메모리를 사용한다.
+
+```shell
+kubectl get nodes
+kubectl top nodes
+kubectl get pods -n monitoring
+```
+
+```shell
+helm show values \
+  oci://public.ecr.aws/kubecost/kubecost \
+  --version 3.3.0
+```
+
+특히 Aggregator의 기본 Memory Request가 큰 편이므로 작은 Node에서는 `Pending`이 발생할 수 있다. 클러스터 전체에 여유가 있어도 한 Pod가 들어갈 단일 Node의 여유가 부족하면 배치되지 않는다.
+
+Node 개수만 늘리기 전에 다음을 확인한다.
+
+```shell
+kubectl describe node <NODE_NAME>
+```
+
+실습 환경이 작다는 이유로 메모리 설정을 크게 낮추면 실행 중 OOM이 발생할 수 있다. 기본 요청량과 Node의 Allocatable을 비교한 뒤 설치한다.
+
+#### 임시 저장을 사용하는 Kubecost Values
+
+이번에는 비용 분석 화면을 확인하는 것이 목적이므로 별도의 PVC를 만들지 않는 구성으로 진행한다.
+
+`kubecost-values.yaml`을 작성한다.
+
+```yaml
+global:
+  clusterId: sns-eks-dev
+
+frontend:
+  enabled: true
+  service:
+    type: ClusterIP
+    port: 9090
+    targetPort: 9090
+
+localStore:
+  enabled: true
+  persistentVolume:
+    enabled: false
+
+aggregator:
+  enabled: true
+  useHostPath: false
+  useEmptyDir: true
+
+cloudCost:
+  enabled: false
+
+clusterController:
+  enabled: false
+
+mcp:
+  enabled: false
+```
+
+각 설정의 역할은 다음과 같다.
+
+| 설정 | 의미 |
+|---|---|
+| `global.clusterId` | 비용 데이터에서 사용할 클러스터 식별자 |
+| `frontend` | 비용 분석 UI 제공 |
+| `localStore` | 단일 클러스터의 수집 데이터 저장 |
+| `localStore.persistentVolume.enabled: false` | Local Store의 PVC 사용 중지 |
+| `aggregator.useEmptyDir: true` | 분석 데이터와 설정에 임시 Volume 사용 |
+| `cloudCost.enabled: false` | 별도 클라우드 청구 데이터 처리 제외 |
+| `clusterController.enabled: false` | 자원 변경 자동화 Controller 제외 |
+| `mcp.enabled: false` | 이번 실습에서 사용하지 않는 연동 기능 제외 |
+
+이 설정은 분석 결과를 확인하기 위한 단일 클러스터 실습용이다. Pod가 교체되면 데이터나 UI 설정이 사라지거나 다시 계산되어야 할 수 있다. 영구 저장을 끈다고 Node의 디스크와 컴퓨팅 사용까지 없어지는 것은 아니다. [Kubecost 3.3.0 Values](https://github.com/kubecost/kubecost/blob/v3.3.0/kubecost/values.yaml)
+
+#### 설치 Manifest 확인과 적용
+
+Helm Template을 확인하면 실제 생성될 객체를 설치 전에 살펴볼 수 있다.
+
+```shell
+helm template kubecost \
+  oci://public.ecr.aws/kubecost/kubecost \
+  --version 3.3.0 \
+  --namespace monitoring \
+  --values kubecost-values.yaml
+```
+
+이번 구성에서 예상하지 않은 PVC나 LoadBalancer가 생성되지 않는지 확인한다.
+
+설치한다.
+
+```shell
+helm upgrade --install kubecost \
+  oci://public.ecr.aws/kubecost/kubecost \
+  --version 3.3.0 \
+  --namespace monitoring \
+  --values kubecost-values.yaml \
+  --wait \
+  --timeout 15m
+```
+
+설치 결과를 확인한다.
+
+```shell
+helm list -n monitoring
+
+kubectl get deployment,statefulset,pod,service,pvc \
+  -n monitoring \
+  -l app.kubernetes.io/instance=kubecost
+```
+
+기존 Prometheus, Grafana와 구분해 볼 수 있도록 Release Label을 사용했다.
+
+#### Kubecost UI 접속
+
+Frontend를 로컬 9000 포트에 연결한다.
+
+```shell
+kubectl port-forward \
+  deployment/kubecost-frontend \
+  9000:9090 \
+  -n monitoring
+```
+
+브라우저에서 [Kubecost](http://localhost:9000)에 접속한다.
+
+로컬 9000은 브라우저에서 사용하는 포트이고, 9090은 Kubecost Frontend의 포트다. 이 방식은 클러스터에 외부 LoadBalancer를 생성하지 않는다.
+
+UI가 열려도 비용 데이터가 바로 채워지는 것은 아니다. 수집과 계산에 시간이 필요하며, 처음 표시되는 데이터는 관찰 기간이 짧다는 점을 고려해야 한다. [Kubecost Dashboard 접속](https://docs.aws.amazon.com/eks/latest/userguide/cost-monitoring-kubecost-dashboard.html)
+
+#### Namespace별 비용 확인
+
+먼저 Namespace 기준으로 비용을 구분해 본다.
+
+- `sns`: 백엔드 애플리케이션
+- `monitoring`: Prometheus, Grafana, Kubecost
+- `kube-system`: Kubernetes 시스템 구성 요소
+
+모니터링 시스템 자체도 비용을 사용한다. `sns`만 보고 전체 클러스터 비용으로 판단하면 공유 시스템과 유휴 비용을 놓칠 수 있다.
+
+관찰 기간과 표시 방식도 맞춰야 한다.
+
+| 표시 방식 | 해석 |
+|---|---|
+| 선택 기간의 누적 비용 | 해당 기간에 배분된 비용 |
+| 일 단위 비용 | 하루 기준으로 표시한 값 |
+| 월 환산 비용 | 현재 조건이 유지된다고 가정한 월 단위 값 |
+| 절감 예상액 | 제안된 변경을 적용했을 때의 추정값 |
+
+설치 직후의 월 환산 값을 한 달 동안 실제로 발생한 청구 금액으로 읽어서는 안 된다.
+
+#### Node 구성 변경 제안 해석
+
+비용 최적화 화면에서는 더 작은 Node를 여러 개 사용하는 구성을 제안할 수 있다. 예를 들어 `t3.medium` 3개 대신 `t3.small` 4개를 제시하더라도, 이를 그대로 적용할 정답으로 보지는 않는다.
+
+확인할 항목은 다음과 같다.
+
+- 각 Pod가 작은 Node 한 대에 들어갈 수 있는가
+- 시스템 Pod를 제외한 Allocatable이 충분한가
+- Node별 Pod 수와 IP 수 제한에 걸리지 않는가
+- DaemonSet이 늘어나면서 추가 자원을 사용하는가
+- Node 장애 시 남은 Node로 서비스를 유지할 수 있는가
+- Rolling Update의 추가 Pod를 배치할 공간이 있는가
+- 이미지 처리와 Batch 실행이 겹치는 시간에도 버틸 수 있는가
+
+특히 T3 계열은 CPU Credit 특성을 가진다. 짧은 유휴 구간만 보고 지속적인 부하에서도 같은 성능과 비용이 유지된다고 가정하면 안 된다.
+
+이번처럼 사용자가 거의 없는 환경의 추천은 현재 유휴 상태를 크게 반영한다. 정상 트래픽, Peak 시간과 배포 상황을 관찰한 뒤 판단한다.
+
+#### 컨테이너 Requests 조정
+
+Kubecost는 사용량에 비해 크게 잡힌 `requests`를 조정 후보로 제시할 수 있다.
+
+기존 애플리케이션이 다음 값을 사용한다고 가정한다.
+
+```text
+CPU Request: 250m
+Memory Request: 512Mi
+```
+
+실제 사용량이 낮다면 더 작은 값을 제안할 수 있다. 여기서 추천 대상이 `requests`인지 `limits`인지 구분해야 한다.
+
+| 설정 | 역할 |
+|---|---|
+| CPU Request | 스케줄링과 CPU 경합 시 배분 기준 |
+| CPU Limit | CPU 사용 상한과 Throttling에 영향 |
+| Memory Request | 메모리 스케줄링 기준 |
+| Memory Limit | 컨테이너 메모리 사용 상한 |
+
+CPU Request를 낮춘다고 즉시 CPU가 해당 값으로 제한되는 것은 아니다. 하지만 CPU 경합이 발생하면 배분받는 비중이 줄어들어 응답이나 시작 시간이 느려질 수 있다.
+
+Memory Request도 예약 기준이다. 낮게 설정하면 메모리를 많이 사용하는 Pod들이 같은 Node에 배치되어 메모리 압박이 커질 수 있다.
+
+#### 낮은 CPU Request와 Probe 실패
+
+Spring Boot 애플리케이션은 시작할 때 클래스 로딩과 Bean 초기화 등으로 CPU를 사용한다. CPU가 부족한 상태에서 시작 시간이 길어지면 Probe와 상호작용할 수 있다.
+
+```mermaid
+flowchart TD
+    A["CPU Request 축소"] --> B["CPU 경합 시 배분 감소"]
+    B --> C["애플리케이션 시작 지연"]
+    C --> D["Liveness Probe가 먼저 실패"]
+    D --> E["컨테이너 재시작"]
+    E --> C
+```
+
+CPU Request가 낮다는 이유만으로 컨테이너가 재시작되는 것은 아니다. 시작 지연 중 Liveness Probe가 실패하거나 다른 종료 원인이 발생해야 한다.
+
+설정을 바꾼 뒤에는 다음을 확인한다.
+
+```shell
+kubectl get pods -n sns
+kubectl describe pod <POD_NAME> -n sns
+kubectl logs <POD_NAME> -n sns --previous
+```
+
+시작 시간이 긴 애플리케이션은 `startupProbe`로 시작 구간을 보호하는 방법도 검토한다.
+
+HPA가 CPU 사용량을 Request 대비 비율로 계산한다면 Request 변경은 Replica 계산에도 영향을 준다. Request를 낮출 때는 HPA의 목표와 실제 Scale 동작까지 함께 확인한다.
+
+#### 자원 축소가 실제 절감으로 이어지는 조건
+
+Request를 줄이면 Kubecost의 Workload 비용 배분이나 효율 지표가 개선될 수 있다. 하지만 Node 수와 인스턴스가 그대로라면 EC2 청구 비용은 그대로일 수 있다.
+
+```mermaid
+flowchart LR
+    A["Pod Request 축소"] --> B["Node 배치 여유 증가"]
+    B --> C["더 적거나 작은 Node로 운영 가능한지 검증"]
+    C --> D["Node 구성 변경"]
+    D --> E["실제 인프라 비용 감소 가능"]
+```
+
+비용 배분 결과가 좋아진 것과 실제 지출이 줄어든 것은 구분해야 한다. Node를 줄일 때도 가용성, 여유 용량과 Peak 부하를 유지할 수 있어야 한다.
+
+#### 권고 적용 후 검증
+
+자원 조정은 한 번에 여러 서비스를 바꾸기보다 한 Workload씩 진행한다.
+
+1. 관찰 기간과 Peak 사용량을 확인한다.
+2. 변경할 Request를 Manifest 또는 Values에 반영한다.
+3. 배포 후 시작 시간과 Ready 전환 시간을 확인한다.
+4. 대표 API와 부하 테스트를 실행한다.
+5. 응답 지연, 오류, 재시작과 자원 사용량을 비교한다.
+6. 문제가 없을 때 다음 Workload로 확대한다.
+
+Node 수가 고정된 개발 환경에서도 자원 과할당을 찾는 데 도움을 받을 수 있다. 다만 운영 비용을 예측하려면 실제 트래픽 패턴을 포함한 데이터가 필요하다.
+
+#### 문제 상황 확인
+
+##### OpenLens에서 클러스터에 접속하지 못하는 경우
+
+```shell
+kubectl config current-context
+kubectl get nodes
+aws sts get-caller-identity
+```
+
+Terminal도 실패한다면 인증이나 네트워크 문제를 먼저 해결한다. Terminal만 성공한다면 GUI 프로세스가 사용하는 AWS CLI 경로, Profile과 설정 파일을 확인한다.
+
+##### 수정한 값이 다시 돌아오는 경우
+
+HPA, GitOps 또는 원본 Manifest 재적용을 확인한다.
+
+```shell
+kubectl get hpa -n sns
+kubectl get cronjob notification-batch -n sns -o yaml
+```
+
+GUI에서 변경한 값이 원본 설정에도 반영되어 있는지 비교한다.
+
+##### Kubecost Pod가 Pending인 경우
+
+```shell
+kubectl describe pod <KUBECOST_POD_NAME> -n monitoring
+kubectl get events -n monitoring --sort-by=.lastTimestamp
+```
+
+| 원인 | 확인 내용 |
+|---|---|
+| Insufficient memory | 단일 Node에 해당 Pod의 Memory Request를 배치할 수 있는지 |
+| Insufficient cpu | 예약된 CPU Request 합계 |
+| PVC 미연결 | Chart 버전과 적용한 저장소 키 |
+| Node 조건 불일치 | Taint, Affinity, Node Selector |
+
+##### UI는 열리지만 비용이 없는 경우
+
+```shell
+kubectl get pods -n monitoring \
+  -l app.kubernetes.io/instance=kubecost
+```
+
+해당 Agent와 Aggregator Pod를 선택해 로그를 확인한다.
+
+```shell
+kubectl logs <KUBECOST_POD_NAME> -n monitoring --tail=200
+```
+
+수집 시간 부족, 조회 기간, 클러스터 ID, Agent 수집 오류, Aggregator 처리 상태를 순서대로 확인한다.
+
+##### 데이터가 초기화된 경우
+
+이번 구성은 임시 Volume을 사용한다. Pod가 교체되면 데이터가 사라지거나 재계산이 필요할 수 있다.
+
+장기적인 비용 비교를 하려면 지원되는 영구 저장소와 보존 정책을 구성해야 한다. 비용 분석에 충분한 이력이 필요한 환경에서 임시 저장을 계속 사용하면 권고 판단에 필요한 데이터도 잃게 된다.
+
+### 정리
+
+OpenLens로 Kubernetes 객체를 탐색하고, Kubecost로 자원 배분을 비용 관점에서 살펴봤다.
+
+GUI에서 설정을 바꾸면 클러스터에는 바로 반영되지만 원본 Manifest는 그대로다. 유지할 변경은 배포 파일이나 Helm Values에도 반영해야 다음 배포에서 의도치 않게 되돌아가는 일을 막을 수 있다.
+
+Kubecost의 권고는 조정 후보를 찾는 데 유용하다. 다만 유휴 상태의 짧은 데이터만으로 Node나 Request를 줄이지 않고, 시작 시간과 Peak 부하, 장애 시 여유 용량까지 확인해야 한다. Request 축소가 실제 절감으로 이어지려면 Node 구성도 줄일 수 있어야 한다.
+
+현재 상태를 확인하고 변경한 설정과 결과를 기록하는 흐름이 갖춰졌다. 이후 성능 테스트에서는 Grafana의 사용량과 Kubecost의 비용 분석을 함께 보면서, 성능을 유지할 수 있는 자원 구성을 찾아간다.
