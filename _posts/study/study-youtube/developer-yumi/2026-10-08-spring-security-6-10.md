@@ -2,7 +2,7 @@
 layout: post
 bigtitle: '스프링 시큐리티 6'
 subtitle: 스프링 시큐리티 6 - 10. 세션 설정 (소멸, 중복 로그인, 고정 보호)
-date: '2026-10-07 00:00:03 +0900'
+date: '2026-10-08 00:00:03 +0900'
 categories:
     - developer-yumi
 comments: true

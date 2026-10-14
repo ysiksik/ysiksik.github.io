@@ -104,6 +104,8 @@ menu:
             url:      /kubernetes-trending/
           - title: 멀티OS 사용을 위한 가상화 환경 구축 가이드 (Docker + Kubernetes)
             url:      /build-virtualized-environment/
+          - title: 스프링 배치
+            url: /spring-placement/
       - title: 패스트 캠퍼스
         url: /fast-campus/
         submenu:
