@@ -1292,3 +1292,763 @@ GUI에서 설정을 바꾸면 클러스터에는 바로 반영되지만 원본 M
 Kubecost의 권고는 조정 후보를 찾는 데 유용하다. 다만 유휴 상태의 짧은 데이터만으로 Node나 Request를 줄이지 않고, 시작 시간과 Peak 부하, 장애 시 여유 용량까지 확인해야 한다. Request 축소가 실제 절감으로 이어지려면 Node 구성도 줄일 수 있어야 한다.
 
 현재 상태를 확인하고 변경한 설정과 결과를 기록하는 흐름이 갖춰졌다. 이후 성능 테스트에서는 Grafana의 사용량과 Kubecost의 비용 분석을 함께 보면서, 성능을 유지할 수 있는 자원 구성을 찾아간다.
+
+## 03. k6를 이용한 애플리케이션 성능 테스트와 Pod 스케일링
+
+### k6로 Feed API 부하 테스트와 병목 분석하기
+
+API가 정상적으로 응답한다고 해서 여러 요청을 동시에 처리할 수 있다는 뜻은 아니다. 데이터가 한 건일 때는 빠르게 동작하던 조회 기능도 데이터가 늘어나면 응답 시간이 길어질 수 있다. Pod를 늘렸는데 기대만큼 성능이 좋아지지 않는 경우도 있다.
+
+이번에는 k6로 Feed 조회 API에 부하를 주고, Grafana의 자원 사용량과 함께 결과를 살펴본다. 테스트의 목적은 가장 높은 RPS를 기록하는 것보다 **어떤 조건에서 응답이 느려지고, 어디에서 대기하는지 찾는 것**에 있다.
+
+#### 테스트 대상의 요청 경로
+
+Feed 목록 API는 데이터베이스에서 게시물을 조회한 뒤 User Server를 호출해 작성자 이름을 결합한다.
+
+```mermaid
+flowchart LR
+    A["k6"] --> B["Telepresence"]
+    B --> C["feed-service"]
+    C --> D["Feed Server"]
+    D --> E["Feed Database"]
+    D --> F["user-service"]
+    F --> G["User Server"]
+    G --> H["User Database"]
+    I["Prometheus"] -->|"자원 지표 수집"| D
+    I -->|"자원 지표 수집"| G
+    I --> J["Grafana"]
+```
+
+Feed API를 한 번 호출해도 내부에서는 SQL과 HTTP 요청이 여러 번 발생할 수 있다. 따라서 Feed Server의 CPU만 확인해서는 전체 비용을 알기 어렵다.
+
+이번 조회 응답에는 이미지 파일 자체가 아니라 `imageId`만 포함된다. 클라이언트가 이미지 URL을 별도로 요청하지 않는 한 Image Server는 조회 부하에 직접 참여하지 않는다.
+
+#### k6와 VU 이해하기
+
+k6는 JavaScript로 작성한 시나리오를 반복 실행하는 부하 테스트 도구다. 스크립트에서 HTTP 요청, 응답 검증, 실행 시간과 부하 조건을 정의할 수 있다.
+
+기본적으로 살펴볼 설정은 다음과 같다.
+
+| 설정 | 의미 |
+|---|---|
+| `vus` | 동시에 실행할 Virtual User 수 |
+| `duration` | 새로운 Iteration을 반복 실행하는 기간 |
+| `gracefulStop` | 실행 종료 시 진행 중인 Iteration을 기다리는 유예 시간 |
+| Request Timeout | 개별 HTTP 요청의 최대 대기 시간 |
+| Thresholds | 테스트 통과·실패 기준 |
+
+VU는 실제 서비스의 동시 접속자 수와 동일하지 않다.
+
+한 VU가 대기 없이 조회 요청을 반복하면 실제 사용자가 게시물을 읽고 다음 행동을 하는 것보다 훨씬 자주 API를 호출한다. 1,000 VU 테스트가 실패했다고 해서 실제 사용자 1,000명이 접속하면 반드시 장애가 난다고 해석할 수는 없다.
+
+#### VU와 RPS는 다른 값이다
+
+이번 테스트에서는 한 VU가 응답을 받은 뒤 다음 요청을 보낸다.
+
+```mermaid
+flowchart LR
+    A["요청 전송"] --> B["응답 대기"]
+    B --> C["응답 확인"]
+    C --> A
+```
+
+같은 VU 수라도 응답이 느려지면 초당 보낼 수 있는 요청 수가 줄어든다. 이를 Closed Model이라고 한다.
+
+Iteration마다 요청이 한 번이고 별도 대기 시간이 거의 없다면 대략 다음 관계가 성립한다.
+
+```text
+RPS ≈ VU 수 / 평균 Iteration 시간
+```
+
+따라서 VU를 늘리는 것은 RPS를 지정하는 동작이 아니다. 서버가 느려지면 VU 대부분이 응답을 기다리면서 처리량이 오히려 감소할 수 있다.
+
+#### 테스트 전 조건 기록
+
+성능을 비교하려면 바뀐 조건을 기록해야 한다.
+
+| 항목 | 기록할 내용 |
+|---|---|
+| 애플리케이션 | 이미지 태그 또는 Commit |
+| Replica | Feed Server, User Server 개수 |
+| 자원 설정 | CPU·Memory requests와 limits |
+| 데이터 | Feed 수, 사용자 수 |
+| 조회 범위 | 전체 조회인지, 페이지 크기가 얼마인지 |
+| 사용자 조회 | Feed마다 호출하는지, 중복 제거·Cache가 있는지 |
+| 데이터베이스 | 사양과 Connection Pool 설정 |
+| 부하 경로 | 로컬 → Telepresence → Service |
+| 실행 조건 | VU, Duration, Timeout |
+
+현재 상태를 확인한다.
+
+```shell
+kubectl get deployment -n sns
+kubectl get hpa -n sns
+kubectl get pods -n sns -o wide
+kubectl top pods -n sns --containers
+```
+
+HPA가 활성화되어 있으면 테스트 중 Replica가 바뀔 수 있다. 고정 Replica 비교를 하려면 자동 확장 여부를 통제하거나 Replica 변화도 함께 기록해야 한다.
+
+#### k6 설치
+
+Windows에서는 다음 명령으로 설치할 수 있다.
+
+```powershell
+winget install k6 --source winget
+```
+
+설치 후 확인한다.
+
+```shell
+k6 version
+```
+
+macOS에서는 Homebrew를 사용할 수 있다.
+
+```shell
+brew install k6
+```
+
+운영체제별 설치 방식은 다르지만 이후 테스트 스크립트는 동일하게 사용할 수 있다. [k6 설치 방법](https://grafana.com/docs/k6/latest/set-up/install-k6/)
+
+샘플 파일을 생성한다.
+
+```shell
+k6 new
+```
+
+생성된 `script.js`를 아래 내용으로 변경한다.
+
+#### Feed 부하 테스트 스크립트
+
+```javascript
+import http from 'k6/http';
+import { check } from 'k6';
+import { Counter } from 'k6/metrics';
+
+const baseUrl = (
+  __ENV.BASE_URL ||
+  'http://feed-service.sns.svc.cluster.local:8080'
+).replace(/\/$/, '');
+
+const feedPath =
+  __ENV.FEED_PATH || '/api/feeds?page=0&size=20';
+
+const successfulRequests = new Counter('successful_requests');
+
+http.setResponseCallback(http.expectedStatuses(200));
+
+export const options = {
+  vus: Number(__ENV.VUS || 10),
+  duration: __ENV.DURATION || '30s',
+  gracefulStop: '30s',
+  discardResponseBodies: true,
+  summaryTrendStats: [
+    'avg',
+    'min',
+    'med',
+    'max',
+    'p(90)',
+    'p(95)',
+    'p(99)',
+  ],
+  thresholds: {
+    http_req_failed: ['rate<0.01'],
+    http_req_duration: ['p(95)<1000'],
+    checks: ['rate==1'],
+  },
+};
+
+export default function () {
+  const response = http.get(`${baseUrl}${feedPath}`, {
+    headers: {
+      Accept: 'application/json',
+    },
+    tags: {
+      name: 'GET feed list',
+    },
+    timeout: __ENV.REQUEST_TIMEOUT || '60s',
+  });
+
+  const success = check(response, {
+    'status is 200': (result) => result.status === 200,
+  });
+
+  if (success) {
+    successfulRequests.add(1);
+  }
+}
+```
+
+`BASE_URL`, `FEED_PATH`, `VUS`, `DURATION`을 환경 변수로 받아 파일을 수정하지 않고 조건을 바꿀 수 있게 했다.
+
+이번 스크립트에는 `sleep()`이 없다. 각 VU가 응답 직후 다음 요청을 보내는 포화 부하에 가까운 테스트다. 사용자 행동을 재현하려면 조회 후 읽는 시간 등을 반영한 별도 시나리오가 필요하다.
+
+`discardResponseBodies`는 응답 본문을 테스트 프로세스에 보관하지 않도록 한다. 네트워크 전송과 서버의 JSON 생성 작업까지 생략되는 것은 아니다. 본문이 올바른지는 부하 테스트 전에 기능 테스트로 확인한다.
+
+##### 성공 기준
+
+예제는 다음 기준을 사용한다.
+
+- HTTP 실패율 1% 미만
+- p95 응답 시간 1초 미만
+- 모든 응답 상태 코드가 200
+
+이는 실습용 기준이다. 실제 서비스에서는 사용자 경험과 SLO에 맞춰 설정한다.
+
+`check()`만 작성하면 검증 실패가 곧바로 테스트 실패 종료를 의미하지는 않는다. Threshold를 함께 지정해야 기준을 넘었을 때 종료 코드로 실패를 판별할 수 있다. [k6 Thresholds](https://grafana.com/docs/k6/latest/using-k6/thresholds/)
+
+#### Telepresence 연결과 사전 호출
+
+로컬에서 Kubernetes Service DNS를 사용하므로 먼저 연결한다.
+
+```shell
+telepresence connect \
+  --namespace sns \
+  --mapped-namespaces sns
+```
+
+API를 한 번 호출해 응답 구조와 데이터가 정상인지 확인한다.
+
+```shell
+curl -i \
+  "http://feed-service.sns.svc.cluster.local:8080/api/feeds?page=0&size=20"
+```
+
+이 경로는 외부 Ingress, TLS 종료, WAF를 포함하지 않는다. 테스트 결과는 Telepresence를 거친 내부 Service 호출 결과로 해석한다.
+
+#### 10 VU로 기준값 측정
+
+```shell
+k6 run \
+  -e VUS=10 \
+  -e DURATION=30s \
+  script.js
+```
+
+처음에는 낮은 부하로 실행해 연결과 실패율을 확인한다. 실행 시각을 기록하고 Grafana에서도 같은 시간 범위를 선택한다.
+
+30초는 빠른 탐색에 적합하지만 최대 처리량이나 장시간 안정성을 판단하기에는 짧다. 비교 실험에서는 Warm-up 후 측정 시간을 늘리고 같은 조건으로 반복한다.
+
+#### 결과에서 읽어야 할 지표
+
+| 지표 | 해석 |
+|---|---|
+| `http_reqs` | 발생한 HTTP 요청 수와 초당 요청 수 |
+| `successful_requests` | 스크립트에서 200 응답으로 확인한 요청 수 |
+| `http_req_failed` | 예상 응답 기준에 따른 HTTP 실패 비율 |
+| `http_req_duration` | 요청 송신·응답 대기·수신 시간의 합 |
+| `http_req_waiting` | 응답 첫 byte를 기다린 시간 |
+| `http_req_blocked` | 연결 슬롯 등을 기다린 시간 |
+| `http_req_connecting` | TCP 연결 시간 |
+| `iteration_duration` | 검증 등 스크립트 처리까지 포함한 Iteration 시간 |
+| `iterations` | 완료된 Iteration 수 |
+
+`http_req_duration`에는 최초 DNS 조회와 연결 수립 시간 등이 모두 포함되는 것은 아니다. 연결 병목이 의심되면 관련 지표와 `iteration_duration`도 함께 확인한다. [k6 기본 지표](https://grafana.com/docs/k6/latest/using-k6/metrics/reference/)
+
+`http_reqs`에는 실패한 요청도 포함될 수 있다. 빠른 오류 응답이 많아서 RPS가 높아진 결과를 처리 성능 향상으로 판단해서는 안 된다.
+
+##### 평균과 Percentile
+
+평균만 보면 일부 사용자가 오래 기다리는 상황을 놓칠 수 있다.
+
+| 값 | 의미 |
+|---|---|
+| `avg` | 평균 |
+| `med` | 중앙값 |
+| `p(95)` | 요청의 약 95%가 이 시간 이내에 응답 |
+| `p(99)` | 요청의 약 99%가 이 시간 이내에 응답 |
+| `max` | 가장 오래 걸린 요청 |
+
+응답 시간이 평균 200ms여도 p99가 수 초라면 일부 요청에 큰 지연이 발생하고 있는 것이다.
+
+#### 100 VU로 부하 증가
+
+10 VU에서 안정적으로 동작했다면 100 VU로 늘린다.
+
+```shell
+k6 run \
+  -e VUS=100 \
+  -e DURATION=30s \
+  script.js
+```
+
+예를 들어 다음과 같은 결과를 얻었다고 가정한다.
+
+| 조건 | 관측 처리량 |
+|---|---:|
+| 10 VU | 약 155 RPS |
+| 100 VU | 약 514 RPS |
+
+이 경우 10 VU에서는 서버에 더 많은 요청을 처리할 여유가 있었을 가능성이 있다. 하지만 514 RPS가 최대 성능이라는 결론은 아직 이르다.
+
+Feed Server가 2개라고 해서 한 Pod가 각각 257 RPS를 처리했다고 확정할 수도 없다. HTTP 연결 재사용과 Service 라우팅에 따라 요청이 불균등하게 분배될 수 있고, 두 Pod는 같은 User Server와 데이터베이스를 공유한다.
+
+Pod별 요청 수와 지연을 따로 관찰해야 한다.
+
+#### 1,000 VU에서 포화 상태 확인
+
+높은 동시성에서는 처리량보다 지연과 실패율이 먼저 나빠질 수 있다.
+
+```shell
+k6 run \
+  -e VUS=1000 \
+  -e DURATION=30s \
+  script.js
+```
+
+예를 들어 실패율이 약 4.36%로 증가하고 처리량도 줄었다면, 현재 조건에서 요청을 안정적으로 처리하지 못한다는 신호다.
+
+다만 Timeout의 원인은 서버 하나로 좁혀지지 않는다.
+
+- Feed Server의 요청 대기
+- User Server의 Thread 또는 Connection Pool 대기
+- 데이터베이스 Connection 대기
+- CPU Throttling이나 GC
+- 로컬 부하 발생기의 CPU·네트워크 부족
+- Telepresence 터널 병목
+
+서버 지표와 부하 발생기 상태를 함께 봐야 원인을 구분할 수 있다.
+
+#### 30초가 지나도 실행되는 이유
+
+`duration: 30s`는 30초 뒤 모든 요청을 즉시 취소한다는 뜻이 아니다. 진행 중인 Iteration은 `gracefulStop` 동안 마무리할 수 있다.
+
+이번 설정은 다음과 같다.
+
+```text
+부하 실행: 30초
+종료 유예: 최대 30초
+개별 요청 Timeout: 60초
+```
+
+Scenario의 종료 유예가 먼저 끝나면 진행 중인 요청이 중단될 수 있다. 유예 시간은 최대 대기 구간이며 모든 테스트가 끝까지 기다리는 것은 아니다. [k6 Graceful Stop](https://grafana.com/docs/k6/latest/using-k6/scenarios/concepts/graceful-stop/)
+
+`Ctrl+C`로 중단한 결과도 확인할 수 있지만, 완료한 테스트와는 구분해 기록한다. 중단된 Iteration과 완료된 요청만으로 계산한 Percentile을 그대로 비교하면 해석이 달라질 수 있다.
+
+#### Grafana에서 함께 확인할 내용
+
+테스트 시간 범위를 선택하고 Feed Server와 User Server를 나란히 본다.
+
+```promql
+sum by (pod, container) (
+  rate(
+    container_cpu_usage_seconds_total{
+      namespace="sns",
+      container!="",
+      container!="POD"
+    }[5m]
+  )
+)
+```
+
+```promql
+sum by (pod, container) (
+  container_memory_working_set_bytes{
+    namespace="sns",
+    container!="",
+    container!="POD"
+  }
+)
+```
+
+Feed Server뿐 아니라 User Server의 CPU도 함께 증가한다면 Feed 조회에 따른 내부 호출이 영향을 주고 있을 가능성이 있다. 이 그래프만으로 병목 위치를 확정할 수는 없으므로 호출 수와 지연도 추가로 확인한다.
+
+30초 테스트를 5분 평균 CPU 그래프로 보면 변화가 완만하게 표시된다. 짧은 테스트에서는 측정 구간과 Scrape 주기를 맞추거나 테스트를 충분히 길게 실행한다.
+
+또한 CPU가 낮다고 여유로운 것은 아니다. 대부분의 Thread가 HTTP나 데이터베이스 응답을 기다리는 상태라면 CPU 사용량은 낮아도 API는 매우 느릴 수 있다.
+
+#### 테스트 데이터가 한 건이면 놓치는 문제
+
+Feed가 한 건이면 사용자 조회도 한 번만 발생할 수 있다. 이 결과만으로 실제 데이터가 늘어난 상황을 예측하기는 어렵다.
+
+다음 조건이 달라지기 때문이다.
+
+- SQL이 읽는 행 수
+- JSON 응답 크기
+- 작성자 ID의 종류
+- User Server 호출 횟수
+- 객체 생성과 메모리 사용량
+
+특히 **전체 데이터 수와 요청당 반환 데이터 수를 구분해야 한다.**
+
+앞에서 페이지네이션을 적용한 API는 Feed가 700건이어도 `size=20`이면 한 번에 최대 20건을 반환한다. 같은 작성자를 요청 안에서 중복 제거했다면 User Server 호출 수도 고유 작성자 수로 제한된다.
+
+| 조회 구현 | Feed 700건에서의 요청당 반환 | 사용자 조회 횟수 |
+|---|---:|---:|
+| 무제한 전체 조회, 건별 호출 | 최대 700건 | 최대 700회 |
+| 페이지 크기 20, 건별 호출 | 최대 20건 | 최대 20회 |
+| 페이지 크기 20, 작성자 중복 제거 | 최대 20건 | 해당 페이지의 고유 작성자 수 |
+
+대량 데이터를 넣었다고 항상 원격 호출이 700번으로 늘어나는 것은 아니다. 실제 배포된 구현을 기준으로 비교해야 한다.
+
+#### 대량 테스트 데이터 준비
+
+이미지까지 포함한 데이터를 생성하려면 일반적으로 다음 순서가 필요하다.
+
+```mermaid
+flowchart TD
+    A["테스트 사용자 생성"] --> B["Image Server에 이미지 업로드"]
+    B --> C["imageId 수신"]
+    C --> D["사용자 ID와 imageId로 Feed 생성"]
+    D --> E["목표 건수까지 반복"]
+```
+
+이미지 파일 수백 개가 포함된 데이터 생성 Repository는 다운로드 용량이 수 GB에 이를 수 있다. 생성 시간에는 업로드, JPEG 변환과 썸네일 생성도 포함된다.
+
+제공된 Java 생성기를 사용한다면 해당 도구의 옵션에 맞춰 실행한다.
+
+```shell
+java -jar <TEST_DATA_GENERATOR_JAR> <COUNT>
+```
+
+일부 생성기는 Telepresence용 주소를 선택하는 자체 환경 변수를 제공할 수 있다. 이는 Telepresence의 공통 기능이 아니라 생성기에서 정의한 옵션이다. 개수 생략 시 전체 이미지를 처리하는지도 확인하고 실행한다.
+
+#### API로 데이터를 만드는 k6 스크립트
+
+별도 생성기 없이도 기존 API로 데이터를 만들 수 있다. 다음 `seed.js`는 실제 로컬 이미지 한 개를 반복 업로드해 서로 다른 이미지 ID와 Feed를 생성한다.
+
+```javascript
+import http from 'k6/http';
+import { fail } from 'k6';
+
+const userBaseUrl =
+  'http://user-service.sns.svc.cluster.local:8080';
+
+const imageBaseUrl =
+  'http://image-service.sns.svc.cluster.local:8080';
+
+const feedBaseUrl =
+  'http://feed-service.sns.svc.cluster.local:8080';
+
+const imagePath = __ENV.IMAGE_PATH;
+
+if (!imagePath) {
+  throw new Error('IMAGE_PATH is required');
+}
+
+const imageBytes = open(imagePath, 'b');
+const feedCount = Number(__ENV.FEED_COUNT || 700);
+const userCount = Number(__ENV.USER_COUNT || 20);
+
+if (
+  !Number.isInteger(feedCount) ||
+  feedCount < 1 ||
+  !Number.isInteger(userCount) ||
+  userCount < 1
+) {
+  throw new Error('Counts must be positive integers');
+}
+
+const jsonParams = {
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  timeout: '60s',
+};
+
+export const options = {
+  scenarios: {
+    seed: {
+      executor: 'shared-iterations',
+      vus: 1,
+      iterations: 1,
+      maxDuration: '60m',
+    },
+  },
+};
+
+function readCreated(response, operation) {
+  if (response.status !== 201) {
+    fail(`${operation} failed: status=${response.status}`);
+  }
+
+  return response.json();
+}
+
+export default function () {
+  const runId = Date.now().toString();
+  const userIds = [];
+
+  for (let index = 0; index < userCount; index += 1) {
+    const username = `load-${runId}-${index}`;
+
+    const user = readCreated(
+      http.post(
+        `${userBaseUrl}/api/users`,
+        JSON.stringify({
+          username,
+          email: `${username}@example.com`,
+          password: 'LoadTestOnlyPassword123!',
+        }),
+        jsonParams
+      ),
+      'create user'
+    );
+
+    userIds.push(user.userId);
+  }
+
+  for (let index = 0; index < feedCount; index += 1) {
+    const image = readCreated(
+      http.post(
+        `${imageBaseUrl}/api/images/upload`,
+        {
+          image: http.file(
+            imageBytes,
+            'seed-image',
+            'application/octet-stream'
+          ),
+        },
+        { timeout: '60s' }
+      ),
+      'upload image'
+    );
+
+    readCreated(
+      http.post(
+        `${feedBaseUrl}/api/feeds`,
+        JSON.stringify({
+          imageId: image.imageId,
+          uploaderId: userIds[index % userIds.length],
+          content: `[LOAD-${runId}] Feed ${index}`,
+        }),
+        jsonParams
+      ),
+      'create feed'
+    );
+  }
+
+  console.log(`Created ${feedCount} feeds`);
+}
+```
+
+실행할 때 실제 존재하는 이미지 경로를 전달한다.
+
+```shell
+k6 run \
+  -e IMAGE_PATH="<LOCAL_IMAGE_PATH>" \
+  -e FEED_COUNT=700 \
+  -e USER_COUNT=20 \
+  seed.js
+```
+
+Multipart의 `Content-Type`은 k6가 Boundary와 함께 생성하므로 직접 지정하지 않는다. 이 코드는 이미지 Format과 크기가 Image Server의 검증을 통과한다는 전제다.
+
+이 생성기는 조회 부하 측정과 분리해서 실행한다. 이미지 변환으로 발생한 CPU 부하가 가라앉고 Pod가 안정된 뒤 조회 테스트를 시작한다. 오류로 중단된 경우 이미 생성된 데이터는 남으며, 다시 실행하면 추가 데이터가 생성된다.
+
+#### 생성 결과 확인
+
+실제 데이터 수를 확인한다.
+
+```sql
+SELECT COUNT(*) AS feed_count
+FROM social_feed;
+```
+
+작성자 수와 분포도 확인한다.
+
+```sql
+SELECT
+    uploader_id,
+    COUNT(*) AS feed_count
+FROM social_feed
+GROUP BY uploader_id
+ORDER BY feed_count DESC;
+```
+
+모든 Feed의 작성자가 한 명인 경우와 작성자가 모두 다른 경우는 User Server의 호출량과 Cache 효과가 다르다. 데이터 건수만 같다고 같은 부하 조건은 아니다.
+
+이번 생성기는 팔로우 관계를 만들지 않으므로 알림 Batch 대상은 추가하지 않는다.
+
+#### 대량 데이터로 재측정
+
+기존과 같은 Query와 VU로 다시 실행한다.
+
+```shell
+k6 run \
+  -e VUS=100 \
+  -e DURATION=30s \
+  script.js
+```
+
+페이지네이션이 적용되어 있다면 먼저 같은 `size=20` 조건으로 비교한다. 이후 페이지 크기를 바꾸는 실험은 별도 결과로 기록한다.
+
+무제한 전체 조회 구현을 분석하는 경우에만 그 구현의 Endpoint를 사용한다.
+
+```shell
+k6 run \
+  -e VUS=100 \
+  -e FEED_PATH="/api/feeds" \
+  script.js
+```
+
+단순히 Query Parameter를 제거했다고 서버가 무제한 조회로 바뀌지는 않는다. 서버가 기본 페이지 크기를 적용할 수도 있다.
+
+무제한 전체 조회와 건별 사용자 호출이 결합된 구조에서는 다음과 같은 심한 저하가 나타날 수 있다.
+
+| 항목 | 결과 예시 |
+|---|---:|
+| 최소 응답 시간 | 약 16초 |
+| 평균 응답 시간 | 약 30초 |
+| 최대 응답 시간 | 약 44초 |
+| 처리량 | 약 2 RPS |
+
+이 수치는 현재 환경에서 보장되는 측정값이 아니라, 비효율적인 전체 조회 구조의 결과를 해석하기 위한 예다. 실제 결과는 배포 코드, 조회 범위, 데이터 분포와 자원에 따라 달라진다.
+
+#### Feed Server와 User Server Scale Out
+
+우선 Pod 수를 늘려 병렬 처리 여유가 부족한지 확인해 본다.
+
+```shell
+kubectl scale deployment/feed-server \
+  --replicas=4 \
+  -n sns
+
+kubectl scale deployment/user-server \
+  --replicas=2 \
+  -n sns
+```
+
+새 Pod가 준비됐는지 확인한다.
+
+```shell
+kubectl rollout status deployment/feed-server -n sns
+kubectl rollout status deployment/user-server -n sns
+kubectl get pods -n sns -o wide
+```
+
+같은 조건으로 재측정한다.
+
+```shell
+k6 run \
+  -e VUS=100 \
+  -e DURATION=30s \
+  script.js
+```
+
+Pod가 늘어도 Node 자원은 그대로다. CPU 경합이 커지거나 데이터베이스의 전체 Connection 수가 늘 수 있다.
+
+```text
+예상 최대 DB Connection 수
+≈ 각 애플리케이션 Pod 수 × 각 Pool의 maximumPoolSize 합계
+```
+
+특히 Feed Server가 데이터베이스 Transaction을 연 상태로 User Server의 응답까지 기다린다면 Connection을 오래 점유하는지도 확인해야 한다.
+
+#### Scale Out이 기대만큼 효과가 없는 이유
+
+요청 하나가 수백 번의 순차 HTTP 호출을 수행한다면 Feed Pod를 늘려도 요청당 작업량은 줄지 않는다.
+
+```text
+Feed 목록 응답 시간
+≈ Feed 조회 시간
+  + 순차 User Server 호출 시간의 합
+  + 응답 생성 시간
+  + 각 구간의 대기 시간
+```
+
+API가 2 RPS로 실행되고, 요청마다 사용자 조회를 700번 수행한다면 대략 초당 1,400회의 내부 호출이 발생할 수 있다. 외부 RPS는 낮아도 의존 서비스에는 큰 부하가 걸릴 수 있다는 뜻이다.
+
+```mermaid
+flowchart TD
+    A["Feed 목록 요청 증가"] --> B["User Server 호출 증가"]
+    B --> C["User Server와 DB 대기"]
+    C --> D["Feed 응답 지연"]
+    D --> E["Feed 처리 Thread 점유"]
+    E --> F["새 요청 대기 증가"]
+```
+
+다음과 같은 경우 Scale Out 효과가 제한된다.
+
+| 병목 | Pod 증설만으로 해결하기 어려운 이유 |
+|---|---|
+| 순차 원격 호출 | 요청당 호출 횟수가 유지됨 |
+| 공유 데이터베이스 | DB 처리 능력은 그대로임 |
+| Node CPU 부족 | Pod가 같은 CPU를 경쟁함 |
+| 큰 JSON 응답 | 생성·전송량이 유지됨 |
+| 잠금 경합 | 동시 요청 증가가 경합을 키울 수 있음 |
+| 부하 발생기 또는 터널 | 서버 밖의 경로가 한계일 수 있음 |
+
+긴 응답 시간만 보고 수직 확장이 정답이라고 판단해서도 안 된다. CPU 연산이 원인이면 도움이 되지만, 네트워크 대기나 N+1 호출이라면 호출 구조를 바꾸는 편이 직접적이다.
+
+#### 낮은 동시성으로 다시 확인
+
+100 VU에서 요청이 오래 쌓인다면 10 VU로 낮춰 본다.
+
+```shell
+k6 run \
+  -e VUS=10 \
+  -e DURATION=30s \
+  script.js
+```
+
+낮은 동시성에서도 한 요청이 수 초 이상 걸리면 요청 자체의 작업량을 살펴볼 필요가 있다. 낮은 동시성에서는 빠르고 높은 동시성에서 급격히 느려진다면 Thread, Connection Pool, DB와 CPU 같은 공유 자원의 포화 가능성을 조사한다.
+
+동시성을 낮췄더니 평균 지연이 줄었다고 전체 처리 능력이 개선된 것은 아니다. VU가 달라진 결과는 별도 조건으로 비교한다.
+
+#### 병목 확인 순서
+
+다음 순서로 조사하면 추측 범위를 좁힐 수 있다.
+
+1. 한 번의 응답에 실제 Feed가 몇 개 들어가는지 확인한다.
+2. 요청당 User Server 호출 수를 측정한다.
+3. Feed 조회 SQL과 사용자 조회 SQL의 실행 시간을 확인한다.
+4. HTTP·DB Connection Pool 대기 상태를 확인한다.
+5. CPU Throttling, GC, Pod 재시작을 확인한다.
+6. 로컬 k6와 Telepresence의 한계도 확인한다.
+
+User Server와 Feed Server의 CPU가 함께 증가하는 현상은 연관성을 보여준다. 어느 서비스가 병목인지는 HTTP 지연과 Trace, Pool 대기 등의 증거가 더 필요하다.
+
+#### 개선 우선순위
+
+이 구조에서는 자원을 늘리기 전에 요청당 작업을 줄이는 것이 중요하다.
+
+```mermaid
+flowchart LR
+    A["조회 범위 제한"] --> B["작성자 ID 중복 제거"]
+    B --> C["사용자 Batch 조회"]
+    C --> D["Cache 검토"]
+    D --> E["필요한 자원 확장"]
+```
+
+- 페이지네이션으로 반환할 Feed 수를 제한한다.
+- 같은 작성자를 한 요청 안에서 반복 조회하지 않는다.
+- 사용자 ID 목록을 한 번에 조회하는 Batch API를 제공한다.
+- 변경 빈도와 허용 지연을 고려해 사용자 정보를 Cache한다.
+- 요청량이 커지면 Timeline 전용 조회 모델을 검토한다.
+
+각 개선은 같은 데이터와 VU 조건에서 다시 측정한다. RPS뿐 아니라 p95, 실패율, 내부 호출 수, 자원 사용량이 함께 좋아졌는지 확인한다.
+
+#### 목표 RPS로 검증하는 테스트
+
+고정 VU 테스트는 서버가 느려지면 요청 발생률도 줄어든다. “초당 100건이 들어오는 상황을 버틸 수 있는가”를 확인하려면 Arrival Rate 방식이 더 적합하다.
+
+예를 들어 별도 스크립트에서 다음 Scenario를 사용할 수 있다.
+
+```javascript
+export const options = {
+  scenarios: {
+    feedRequests: {
+      executor: 'constant-arrival-rate',
+      rate: 100,
+      timeUnit: '1s',
+      duration: '2m',
+      preAllocatedVUs: 100,
+      maxVUs: 500,
+    },
+  },
+};
+```
+
+이는 초당 100개의 Iteration을 시작하려는 설정이다. Iteration에 HTTP 요청이 한 번이면 대략 100 RPS를 목표로 한다. 필요한 VU가 부족하면 `dropped_iterations`가 발생하므로 목표 부하가 실제로 전달됐는지도 확인해야 한다. [k6 Constant Arrival Rate](https://grafana.com/docs/k6/latest/using-k6/scenarios/executors/constant-arrival-rate/)
+
+이 설정은 앞의 고정 VU 실험과 목적이 다르므로 결과를 같은 조건으로 섞지 않는다.
+
+### 정리
+
+k6로 동시 요청을 늘리고 데이터 규모를 바꾸면서 Feed API의 성능을 확인하는 절차를 구성했다. 적은 데이터에서 나온 높은 RPS는 실제 데이터에서도 같은 성능이 나온다는 보장이 아니다.
+
+결과를 볼 때는 VU와 실제 사용자 수, 요청 수와 성공 처리량, 평균 지연과 Percentile을 구분해야 한다. 전체 Feed 수뿐 아니라 요청당 반환 건수와 User Server 호출 횟수도 기록해야 한다.
+
+Pod 증설은 병렬 처리 여유를 늘릴 수 있지만 요청 하나의 불필요한 SQL과 원격 호출을 없애주지는 않는다. 느린 지점을 지표로 확인하고 호출 구조를 개선한 뒤, 같은 조건에서 다시 측정해야 성능 향상과 비용 변화를 판단할 수 있다.
