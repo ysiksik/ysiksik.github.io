@@ -19,7 +19,14 @@ layout: page
 <div class="markdown-body">
   {{ content }}
 </div>
-{% assign posts = site.categories[page.slug] | default:site.tags[page.slug] | default:site.posts %}
+{% if page.posts_category %}
+  {% assign posts = site.categories[page.posts_category] %}
+{% else %}
+  {% assign posts = site.categories[page.slug] | default:site.tags[page.slug] | default:site.posts %}
+{% endif %}
+{% if page.posts_bigtitle %}
+  {% assign posts = posts | where: "bigtitle", page.posts_bigtitle %}
+{% endif %}
 
 {% assign date_formats  = site.data.strings.date_formats               %}
 {% assign list_group_by = date_formats.list_group_by | default:"%Y"    %}

@@ -122,6 +122,21 @@ menu:
             url:    /elegant-tekotok/
           - title:    개발자 유미
             url:    /developer-yumi/
+            submenu:
+              - title: '레디스: Redis'
+                url: /developer-yumi-redis/
+              - title: 스프링 부트 CKEditor
+                url: /developer-yumi-spring-boot-ckeditor/
+              - title: 스프링 부트 데이터베이스
+                url: /developer-yumi-spring-boot-database/
+              - title: 스프링 클라우드 MSA
+                url: /developer-yumi-spring-cloud-msa/
+              - title: 스프링 WebFlux 데이터베이스
+                url: /developer-yumi-spring-webflux-database/
+              - title: 스프링 시큐리티 6
+                url: /developer-yumi-spring-security-6/
+              - title: Resilience4J
+                url: /developer-yumi-resilience4j/
       - title: 스터디 랩
         url: /study-lab/
       - title: 스파르타
