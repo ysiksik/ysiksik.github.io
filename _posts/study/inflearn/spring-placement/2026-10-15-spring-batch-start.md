@@ -4371,3 +4371,3799 @@ Spring Boot 기반 환경에서는 별도의 실행 코드를 직접 작성하�
 ### 한 줄 요약
 
 > Spring Batch는 `Job → Step → Tasklet` 구조로 배치 작업을 정의하며, `JobBuilder`와 `StepBuilder`를 이용해 실행 흐름을 구성하고 Tasklet의 `execute()` 메서드에서 실제 비즈니스 로직을 수행한다. 여러 Step은 `start()`와 `next()`를 통해 순차적으로 연결할 수 있고, Spring Boot의 자동 설정을 이용하면 애플리케이션 시작 시 Job을 실행할 수 있다.
+
+## DB 스키마 생성 및 이해 (1)
+
+## Spring Batch DB 스키마 생성과 메타데이터 관리
+
+Spring Batch에서는 Job을 정의하고 실행하면 내부적으로 다양한 정보가 생성된다.
+
+예를 들어 다음과 같은 배치 작업을 생각해보자.
+
+```text
+helloJob
+    │
+    ├── helloStep1
+    │      │
+    │      └── Hello Spring Batch 출력
+    │
+    └── helloStep2
+           │
+           └── Step 2 executed 출력
+```
+
+Job이 실행되면 첫 번째 Step이 실행되고, 첫 번째 Step이 정상적으로 완료되면 두 번째 Step이 실행된다.
+
+여기서 중요한 점은 Spring Batch가 단순히 비즈니스 로직만 실행하는 것이 아니라는 것이다.
+
+Spring Batch는 Job과 Step이 실행되는 동안 **실행 상태, 시작 시간, 종료 시간, 실패 여부, 재시작에 필요한 정보 등을 관리한다.**
+
+예를 들어 다음과 같은 정보를 생각해볼 수 있다.
+
+```text
+Job 이름: helloJob
+
+Job 시작 시간: 2026-10-16 02:00:00
+
+Job 종료 시간: 2026-10-16 02:00:05
+
+Job 실행 상태: COMPLETED
+
+Step 1 실행 상태: COMPLETED
+
+Step 2 실행 상태: COMPLETED
+```
+
+이러한 정보는 단순히 로그에 출력하는 것만으로는 충분하지 않을 수 있다.
+
+애플리케이션이 종료된 이후에도 실행 이력을 확인해야 할 수 있고, 실패한 작업을 다시 실행할 때 이전 실행 상태를 참조해야 할 수도 있기 때문이다.
+
+이처럼 Spring Batch가 실행과 운영을 위해 관리하는 정보를 **배치 메타데이터(Batch Metadata)** 라고 한다.
+
+Spring Batch는 이러한 메타데이터를 저장하고 조회하기 위한 데이터베이스 스키마를 제공한다.
+
+이번에는 Spring Batch의 메타데이터가 무엇인지, 왜 필요한지, 실제로 어떻게 테이블을 생성하는지 살펴보자.
+
+---
+
+## Spring Batch 메타데이터란?
+
+메타데이터(Metadata)는 일반적으로 데이터를 설명하는 데이터를 의미한다.
+
+Spring Batch에서는 Job과 Step의 실행 및 관리에 필요한 정보가 메타데이터에 해당한다.
+
+예를 들어 정산 배치를 생각해보자.
+
+정산 배치에서는 결제 내역을 조회하고 정산 금액을 계산한 뒤 결과를 데이터베이스에 저장한다.
+
+이때 실제 정산 금액이나 정산 대상 결제 내역은 비즈니스 데이터다.
+
+반면 다음 정보들은 배치 메타데이터다.
+
+```text
+정산 Job이 언제 실행되었는가?
+
+어떤 파라미터로 실행되었는가?
+
+현재 실행 중인가?
+
+정상적으로 완료되었는가?
+
+어떤 Step에서 실패했는가?
+
+실패한 작업을 재시작할 수 있는가?
+```
+
+즉 Spring Batch에서는 비즈니스 데이터와 배치 실행 메타데이터를 구분한다.
+
+| 구분     | 비즈니스 데이터            | 배치 메타데이터                    |
+| ------ | ------------------- | --------------------------- |
+| 목적     | 실제 업무 정보 저장         | 배치 실행 및 운영 정보 관리            |
+| 대표 데이터 | 결제 내역, 정산 금액, 쿠폰 정보 | Job 이름, 실행 상태, 시작·종료 시간     |
+| 관리 주체  | 애플리케이션 비즈니스 로직      | Spring Batch의 JobRepository |
+| 활용     | 서비스 기능 제공           | 실행 이력 조회, 실패 분석, 재시작        |
+| 대표 테이블 | PAYMENT, SETTLEMENT | BATCH_JOB_EXECUTION 등       |
+
+Spring Batch는 이러한 메타데이터를 관리하기 위해 `JobRepository`라는 핵심 인터페이스를 제공한다.
+
+---
+
+## JobRepository는 어떤 역할을 할까?
+
+Spring Batch에서 `JobRepository`는 Job과 Step의 실행 메타데이터를 저장하고 조회하는 역할을 담당한다.
+
+예를 들어 Job을 실행하면 다음과 같은 객체들이 생성되거나 사용된다.
+
+```text
+JobInstance
+
+JobExecution
+
+StepExecution
+
+ExecutionContext
+```
+
+각 객체는 서로 다른 목적을 가진다.
+
+`JobInstance`는 Job 이름과 식별용 JobParameters를 기준으로 구분되는 논리적인 실행 단위다.
+
+`JobExecution`은 특정 JobInstance에 대한 개별 실행 시도를 나타낸다.
+
+`StepExecution`은 Step의 개별 실행 정보를 나타낸다.
+
+`ExecutionContext`는 재시작이나 실행 과정에서 필요한 상태 정보를 저장하는 데 사용된다.
+
+이러한 객체의 정보는 JobRepository를 통해 데이터베이스에 저장할 수 있다.
+
+```mermaid
+flowchart TD
+    A["Spring Batch Job 실행"]
+    B["JobInstance"]
+    C["JobExecution"]
+    D["StepExecution"]
+    E["ExecutionContext"]
+    F["JobRepository"]
+    G["Batch Metadata Database"]
+
+    A --> B
+    A --> C
+    C --> D
+    C --> E
+
+    B --> F
+    C --> F
+    D --> F
+    E --> F
+
+    F --> G
+```
+
+이 구조가 중요한 이유는 배치 실행 정보의 생명주기와 관련이 있다.
+
+애플리케이션 메모리에만 실행 정보를 저장한다면 JVM이 종료되었을 때 정보가 사라질 수 있다.
+
+반면 실행 메타데이터를 영속적인 데이터베이스에 저장하면 애플리케이션이 재시작된 이후에도 이전 실행 정보를 확인할 수 있다.
+
+특히 실패한 배치를 재시작해야 하는 시스템에서는 이러한 실행 상태 관리가 중요하다.
+
+---
+
+## Spring Batch는 왜 별도의 메타데이터 테이블을 사용할까?
+
+일반적인 Spring Boot 애플리케이션에서도 데이터베이스 테이블을 생성해 실행 이력을 저장할 수 있다.
+
+예를 들어 다음과 같은 테이블을 직접 만들 수도 있다.
+
+```sql
+CREATE TABLE BATCH_HISTORY (
+    ID BIGINT PRIMARY KEY,
+    JOB_NAME VARCHAR(100),
+    STATUS VARCHAR(20),
+    START_TIME DATETIME,
+    END_TIME DATETIME
+);
+```
+
+하지만 실제 배치 시스템에서 필요한 정보는 단순한 실행 이력보다 복잡하다.
+
+Job이 여러 Step으로 구성되어 있다면 각 Step의 실행 상태도 관리해야 한다.
+
+또한 하나의 Job이 실패한 뒤 재시작될 수 있으므로 최초 실행과 재시작을 구분해야 한다.
+
+재시작 시 이전에 어디까지 처리했는지 알아야 하는 경우도 있다.
+
+이러한 기능을 프로젝트마다 직접 구현하면 상당한 양의 코드가 필요하다.
+
+Spring Batch는 이를 위해 미리 정의된 메타데이터 스키마를 제공한다.
+
+개발자는 해당 스키마를 생성하고 Spring Batch가 제공하는 JobRepository를 사용하면 된다.
+
+여기서 중요한 것은 **테이블을 직접 설계하지 않아도 된다는 점뿐 아니라, Spring Batch 내부의 실행 모델과 데이터베이스 구조가 연결되어 있다는 것**이다.
+
+---
+
+## Spring Batch 메타데이터 테이블 구조
+
+Spring Batch는 Job과 Step의 실행 정보를 관리하기 위한 메타데이터 테이블을 제공한다.
+
+Spring Batch 5.2의 기본 JDBC 스키마를 기준으로 주요 메타데이터 테이블은 6개다.
+
+| 테이블                            | 역할                                 |
+| ------------------------------ | ---------------------------------- |
+| `BATCH_JOB_INSTANCE`           | JobInstance 정보 저장                  |
+| `BATCH_JOB_EXECUTION`          | Job의 개별 실행 정보 저장                   |
+| `BATCH_JOB_EXECUTION_PARAMS`   | JobParameters 정보 저장                |
+| `BATCH_JOB_EXECUTION_CONTEXT`  | JobExecution의 ExecutionContext 저장  |
+| `BATCH_STEP_EXECUTION`         | Step의 개별 실행 정보 저장                  |
+| `BATCH_STEP_EXECUTION_CONTEXT` | StepExecution의 ExecutionContext 저장 |
+
+이 테이블들은 크게 Job 관련 테이블과 Step 관련 테이블로 구분할 수 있다.
+
+### Job 관련 테이블
+
+Job과 관련된 테이블은 다음 네 개다.
+
+```text
+BATCH_JOB_INSTANCE
+
+BATCH_JOB_EXECUTION
+
+BATCH_JOB_EXECUTION_PARAMS
+
+BATCH_JOB_EXECUTION_CONTEXT
+```
+
+`BATCH_JOB_INSTANCE`는 Job의 논리적인 인스턴스 정보를 저장한다.
+
+`BATCH_JOB_EXECUTION`은 Job의 개별 실행 정보를 저장한다.
+
+`BATCH_JOB_EXECUTION_PARAMS`는 해당 실행에 전달된 JobParameters를 저장한다.
+
+`BATCH_JOB_EXECUTION_CONTEXT`는 Job 실행에 필요한 상태 정보를 저장한다.
+
+### Step 관련 테이블
+
+Step과 관련된 테이블은 다음 두 개다.
+
+```text
+BATCH_STEP_EXECUTION
+
+BATCH_STEP_EXECUTION_CONTEXT
+```
+
+`BATCH_STEP_EXECUTION`은 Step의 실행 결과와 처리 건수 등을 관리한다.
+
+`BATCH_STEP_EXECUTION_CONTEXT`는 특정 Step 실행에 필요한 상태 정보를 저장한다.
+
+이러한 테이블들은 서로 독립적으로 존재하는 것이 아니라 관계를 가지고 있다.
+
+```mermaid
+erDiagram
+    BATCH_JOB_INSTANCE ||--o{ BATCH_JOB_EXECUTION : has
+    BATCH_JOB_EXECUTION ||--o{ BATCH_JOB_EXECUTION_PARAMS : has
+    BATCH_JOB_EXECUTION ||--o| BATCH_JOB_EXECUTION_CONTEXT : has
+    BATCH_JOB_EXECUTION ||--o{ BATCH_STEP_EXECUTION : has
+    BATCH_STEP_EXECUTION ||--o| BATCH_STEP_EXECUTION_CONTEXT : has
+```
+
+예를 들어 하나의 JobExecution에는 여러 StepExecution이 연결될 수 있다.
+
+그리고 각 StepExecution은 자신의 실행 상태와 ExecutionContext를 가질 수 있다.
+
+이러한 구조를 이해하면 이후 Job과 Step의 실행 정보를 조회할 때 테이블을 어떻게 연결해야 하는지도 쉽게 파악할 수 있다.
+
+---
+
+## MySQL에서는 왜 9개의 테이블이 생성될까?
+
+Spring Batch의 주요 메타데이터 테이블은 6개라고 했다.
+
+그런데 MySQL에서 Spring Batch 스키마를 생성하면 9개의 테이블이 만들어지는 것을 확인할 수 있다.
+
+왜 그럴까?
+
+Spring Batch가 실행 메타데이터의 ID를 생성하기 위해 추가적인 테이블을 사용하기 때문이다.
+
+Spring Batch 5.2.4의 MySQL 스키마에는 다음 세 개의 테이블이 추가된다.
+
+```text
+BATCH_JOB_SEQ
+
+BATCH_JOB_EXECUTION_SEQ
+
+BATCH_STEP_EXECUTION_SEQ
+```
+
+따라서 전체 구조는 다음과 같다.
+
+```text
+Spring Batch Metadata
+        │
+        ├── 실행 메타데이터 테이블: 6개
+        │
+        │   ├── BATCH_JOB_INSTANCE
+        │   ├── BATCH_JOB_EXECUTION
+        │   ├── BATCH_JOB_EXECUTION_PARAMS
+        │   ├── BATCH_JOB_EXECUTION_CONTEXT
+        │   ├── BATCH_STEP_EXECUTION
+        │   └── BATCH_STEP_EXECUTION_CONTEXT
+        │
+        └── ID 생성용 테이블: 3개
+            │
+            ├── BATCH_JOB_SEQ
+            ├── BATCH_JOB_EXECUTION_SEQ
+            └── BATCH_STEP_EXECUTION_SEQ
+```
+
+여기서 세 개의 `_SEQ` 테이블은 Job과 Step의 실행 정보를 직접 저장하는 테이블이 아니다.
+
+메타데이터 레코드에 부여할 식별자를 생성하기 위한 목적으로 사용된다.
+
+데이터베이스마다 시퀀스를 처리하는 방법은 다르다.
+
+예를 들어 PostgreSQL이나 Oracle은 시퀀스 객체를 사용할 수 있다.
+
+반면 Spring Batch 5.2.4의 MySQL 스키마에서는 테이블을 이용해 ID 생성 기능을 구현한다.
+
+따라서 **6개의 메타데이터 테이블과 3개의 ID 생성용 테이블을 구분해서 이해하는 것이 중요하다.**
+
+Spring Batch 5.2.4의 실제 MySQL 스키마에서도 이러한 구성을 확인할 수 있다.
+
+---
+
+## Spring Batch 스키마 파일은 어디에 있을까?
+
+Spring Batch는 주요 데이터베이스에서 사용할 수 있는 스키마 생성 SQL을 제공한다.
+
+이러한 파일들은 `spring-batch-core` 모듈에 포함되어 있다.
+
+Spring Batch 5.2 기준으로 다음 경로에서 확인할 수 있다.
+
+```text
+org/springframework/batch/core/
+```
+
+해당 경로에는 데이터베이스 종류에 따른 스키마 파일이 존재한다.
+
+예를 들어 다음과 같다.
+
+```text
+schema-mysql.sql
+
+schema-h2.sql
+
+schema-postgresql.sql
+
+schema-oracle.sql
+```
+
+이 중 MySQL을 사용한다면 다음 파일을 이용하면 된다.
+
+```text
+org/springframework/batch/core/schema-mysql.sql
+```
+
+H2를 사용한다면 다음 파일을 사용한다.
+
+```text
+org/springframework/batch/core/schema-h2.sql
+```
+
+이러한 SQL 파일은 데이터베이스 종류에 맞게 테이블과 제약조건, ID 생성 구조 등을 정의한다.
+
+중요한 점은 **프로젝트에서 사용하는 Spring Batch 버전에 맞는 스키마 파일을 사용해야 한다는 것**이다.
+
+Spring Batch는 버전이 변경되면서 메타데이터 테이블의 컬럼과 구조가 변경된 이력이 있다.
+
+따라서 Spring Batch 4에서 사용하던 SQL 스크립트를 Spring Batch 5 프로젝트에 그대로 적용하는 것은 적절하지 않을 수 있다.
+
+이번에는 Spring Batch 5.2.4에 포함된 스키마 파일을 사용한다.
+
+---
+
+## Spring Batch 스키마를 생성하는 두 가지 방법
+
+Spring Batch 메타데이터 테이블을 생성하는 방법은 크게 두 가지로 나눌 수 있다.
+
+**수동 생성과 자동 생성**이다.
+
+수동 생성은 개발자가 스키마 SQL을 직접 실행하는 방법이다.
+
+자동 생성은 Spring Boot가 설정에 따라 적절한 스키마 SQL을 실행하도록 하는 방법이다.
+
+```mermaid
+flowchart TD
+    A["Spring Batch 스키마 생성"]
+    B["수동 생성"]
+    C["자동 생성"]
+
+    A --> B
+    A --> C
+
+    B --> D["schema-mysql.sql 확인"]
+    D --> E["DB에서 SQL 직접 실행"]
+
+    C --> F["initialize-schema 설정"]
+    F --> G["Spring Boot 시작"]
+    G --> H["스키마 초기화"]
+```
+
+두 방법 모두 최종적으로는 Spring Batch가 제공하는 메타데이터 구조를 생성한다는 점에서 목적이 같다.
+
+하지만 언제, 누가, 어떤 방식으로 SQL을 실행하는지가 다르다.
+
+---
+
+## MySQL 개발 환경 준비
+
+먼저 MySQL을 이용해 메타데이터 테이블을 생성해보자.
+
+앞에서 구성한 Docker Compose 환경을 그대로 사용한다.
+
+설정은 다음과 같다.
+
+```yaml
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: spring-batch-mysql
+
+    restart: unless-stopped
+
+    environment:
+      MYSQL_ROOT_PASSWORD: localrootpass
+      MYSQL_DATABASE: batch_db
+      MYSQL_USER: batch_user
+      MYSQL_PASSWORD: localpass
+      TZ: Asia/Seoul
+
+    ports:
+      - "3307:3306"
+
+    volumes:
+      - batch-mysql-data:/var/lib/mysql
+
+volumes:
+  batch-mysql-data:
+```
+
+이 설정은 로컬 개발 환경에서 사용할 MySQL 컨테이너를 생성한다.
+
+MySQL 컨테이너 내부에서는 3306 포트를 사용한다.
+
+호스트에서는 3307 포트를 통해 접속할 수 있도록 설정했다.
+
+이제 다음 명령어를 실행한다.
+
+```bash
+docker compose up -d
+```
+
+컨테이너가 정상적으로 실행되었는지 확인한다.
+
+```bash
+docker compose ps
+```
+
+다음과 같이 실행 상태를 확인할 수 있다.
+
+```text
+NAME                 IMAGE       STATUS
+spring-batch-mysql   mysql:8.4   Up
+```
+
+이제 MySQL에 접속해보자.
+
+```bash
+docker exec -it spring-batch-mysql \
+  mysql -u batch_user -p batch_db
+```
+
+비밀번호 입력 메시지가 나타나면 Docker Compose에서 설정한 비밀번호를 입력한다.
+
+MySQL에 접속한 뒤 다음 SQL을 실행한다.
+
+```sql
+SHOW TABLES;
+```
+
+새롭게 생성한 데이터베이스라면 아직 Spring Batch 메타데이터 테이블이 존재하지 않을 것이다.
+
+이 상태에서 스키마를 생성해보자.
+
+---
+
+## Spring Batch 스키마 수동 생성
+
+수동 생성은 Spring Batch가 제공하는 SQL 파일을 직접 실행하는 방식이다.
+
+중요한 것은 SQL 파일을 임의로 작성하는 것이 아니라 **현재 프로젝트에서 사용하는 Spring Batch 버전의 공식 스키마 파일을 사용하는 것**이다.
+
+### spring-batch-core JAR 확인
+
+Maven 프로젝트에서는 의존성을 내려받으면 로컬 Maven 저장소에 JAR 파일이 저장된다.
+
+Spring Batch 5.2.4를 사용한다면 일반적으로 다음 경로에서 확인할 수 있다.
+
+```text
+~/.m2/repository/org/springframework/batch/
+    spring-batch-core/5.2.4/
+```
+
+해당 디렉터리에는 다음 파일이 존재한다.
+
+```text
+spring-batch-core-5.2.4.jar
+```
+
+JAR 파일은 Java 클래스와 리소스를 포함하는 압축 파일이다.
+
+따라서 내부에 어떤 파일이 포함되어 있는지 확인할 수 있다.
+
+터미널에서 다음 명령어를 실행해보자.
+
+```bash
+jar tf \
+  ~/.m2/repository/org/springframework/batch/spring-batch-core/5.2.4/spring-batch-core-5.2.4.jar \
+  | grep schema
+```
+
+`jar tf`는 JAR 파일 내부의 파일 목록을 출력한다.
+
+`grep schema`는 출력 결과 중 `schema`라는 문자열이 포함된 항목을 검색한다.
+
+정상적으로 실행되면 Spring Batch가 제공하는 여러 스키마 파일을 확인할 수 있다.
+
+### schema-mysql.sql 추출하기
+
+이번에는 MySQL 스키마 파일을 추출해보자.
+
+다음 명령어를 실행한다.
+
+```bash
+unzip -p \
+  ~/.m2/repository/org/springframework/batch/spring-batch-core/5.2.4/spring-batch-core-5.2.4.jar \
+  org/springframework/batch/core/schema-mysql.sql \
+  > schema-mysql.sql
+```
+
+이 명령어는 JAR 내부에 포함된 `schema-mysql.sql` 파일의 내용을 현재 디렉터리의 파일로 저장한다.
+
+이렇게 하면 별도의 SQL 스크립트를 직접 작성하지 않아도 된다.
+
+추출한 파일은 다음 명령어로 확인할 수 있다.
+
+```bash
+cat schema-mysql.sql
+```
+
+실제 파일에는 Spring Batch 메타데이터 테이블과 ID 생성용 테이블을 생성하는 SQL이 포함되어 있다.
+
+Spring Batch 5.2.4의 전체 원본 SQL은 공식 저장소에서도 확인할 수 있다.
+
+[Spring Batch 5.2.4 schema-mysql.sql](https://github.com/spring-projects/spring-batch/blob/v5.2.4/spring-batch-core/src/main/resources/org/springframework/batch/core/schema-mysql.sql)
+
+### MySQL에 스키마 적용하기
+
+이제 추출한 SQL 파일을 MySQL 컨테이너로 복사한다.
+
+```bash
+docker cp schema-mysql.sql \
+  spring-batch-mysql:/tmp/schema-mysql.sql
+```
+
+이 명령어는 로컬의 SQL 파일을 컨테이너 내부로 복사한다.
+
+다음으로 MySQL에 접속한다.
+
+```bash
+docker exec -it spring-batch-mysql \
+  mysql -u batch_user -p batch_db
+```
+
+MySQL에 접속했다면 다음 명령을 실행한다.
+
+```sql
+SOURCE /tmp/schema-mysql.sql;
+```
+
+`SOURCE`는 MySQL 클라이언트에서 SQL 파일을 읽어 실행하는 명령이다.
+
+따라서 파일 내부에 포함된 `CREATE TABLE`, `INSERT` 등의 SQL이 실행된다.
+
+이 과정에서 메타데이터 테이블 6개와 ID 생성용 테이블 3개가 생성된다.
+
+### 생성 결과 확인
+
+다음 SQL을 실행해보자.
+
+```sql
+SHOW TABLES;
+```
+
+Spring Batch 5.2.4의 MySQL 스키마가 정상적으로 적용되었다면 다음과 같은 테이블을 확인할 수 있다.
+
+```text
+BATCH_JOB_INSTANCE
+
+BATCH_JOB_EXECUTION
+
+BATCH_JOB_EXECUTION_PARAMS
+
+BATCH_JOB_EXECUTION_CONTEXT
+
+BATCH_STEP_EXECUTION
+
+BATCH_STEP_EXECUTION_CONTEXT
+
+BATCH_JOB_SEQ
+
+BATCH_JOB_EXECUTION_SEQ
+
+BATCH_STEP_EXECUTION_SEQ
+```
+
+총 9개의 테이블이다.
+
+데이터베이스에서 표시되는 대소문자는 운영체제와 MySQL 설정에 따라 달라질 수 있다.
+
+이렇게 하면 Spring Batch 메타데이터 스키마를 수동으로 생성한 것이다.
+
+---
+
+## 스키마 자동 생성
+
+이번에는 Spring Boot가 자동으로 메타데이터 테이블을 생성하도록 설정해보자.
+
+Spring Boot는 Spring Batch용 스키마 초기화 기능을 제공한다.
+
+설정에 따라 데이터베이스 종류를 확인하고 해당 데이터베이스에 적합한 스키마 SQL을 실행할 수 있다.
+
+이때 사용하는 설정은 다음과 같다.
+
+```yaml
+spring:
+  batch:
+    jdbc:
+      initialize-schema: always
+```
+
+핵심 속성은 다음이다.
+
+```text
+spring.batch.jdbc.initialize-schema
+```
+
+이 설정은 Spring Batch의 메타데이터 스키마를 자동으로 초기화할지 결정한다.
+
+사용할 수 있는 값은 세 가지다.
+
+| 설정값        | 의미                            |
+| ---------- | ----------------------------- |
+| `always`   | 데이터베이스 종류와 관계없이 초기화 SQL 실행 시도 |
+| `embedded` | 내장 데이터베이스에서만 자동 초기화           |
+| `never`    | 스키마 자동 초기화 비활성화               |
+
+Spring Boot 3.4에서도 동일한 속성을 사용한다.
+
+Spring Boot는 내장 데이터베이스에 대해서 기본적으로 스키마 초기화를 지원하며, 외부 데이터베이스는 별도의 설정으로 초기화를 활성화할 수 있다.
+
+이제 각 설정이 어떤 차이를 가지는지 살펴보자.
+
+---
+
+## ALWAYS: 스키마 자동 생성
+
+먼저 다음 설정을 살펴보자.
+
+```yaml
+spring:
+  batch:
+    jdbc:
+      initialize-schema: always
+```
+
+`always`를 사용하면 Spring Boot가 시작될 때 Spring Batch 메타데이터 스키마 초기화를 시도한다.
+
+여기서 중요한 것은 내장 데이터베이스뿐 아니라 MySQL 같은 외부 데이터베이스에서도 초기화를 시도한다는 점이다.
+
+예를 들어 다음 설정을 사용한다고 생각해보자.
+
+```yaml
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3307/batch_db
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    username: batch_user
+    password: localpass
+
+  batch:
+    jdbc:
+      initialize-schema: always
+```
+
+Spring Boot는 MySQL DataSource를 구성하고 Spring Batch 스키마 초기화 기능을 수행할 수 있다.
+
+이때 사용하는 SQL은 MySQL에 맞는 Spring Batch 스키마 파일이다.
+
+```text
+schema-mysql.sql
+```
+
+따라서 개발자가 해당 SQL을 직접 실행하지 않아도 스키마를 생성할 수 있다.
+
+### 자동 생성 흐름
+
+```mermaid
+flowchart TD
+    A["Spring Boot 실행"]
+    B["DataSource 설정 확인"]
+    C["MySQL 연결"]
+    D["initialize-schema=always 확인"]
+    E["schema-mysql.sql 선택"]
+    F["스키마 SQL 실행"]
+    G["메타데이터 테이블 생성"]
+    H["JobRepository 사용"]
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+    F --> G
+    G --> H
+```
+
+다만 이 흐름은 Spring Boot의 일반적인 자동 설정이 활성화되어 있다는 전제다.
+
+`@EnableBatchProcessing` 등을 통해 배치 인프라를 직접 구성하는 경우에는 자동 설정이 달라질 수 있다.
+
+### ALWAYS를 사용할 때 주의할 점
+
+`always`는 데이터베이스에 테이블이 없을 때 한 번만 실행한다는 의미가 아니다.
+
+**애플리케이션 시작 시 스키마 초기화를 시도하도록 하는 설정**이다.
+
+따라서 이미 메타데이터 테이블이 생성되어 있다면 SQL 실행 과정에서 `Table already exists`와 같은 오류가 발생할 수 있다.
+
+오류를 어떻게 처리할지는 초기화 구성에 따라 달라질 수 있지만, 운영 환경에서 매번 스키마 생성을 시도하도록 만드는 것은 적절하지 않다.
+
+따라서 MySQL 환경에서는 개발 및 초기 구성 과정에서 필요할 때만 사용하고, 스키마가 준비된 이후에는 `never`로 변경하거나 별도의 마이그레이션 도구를 사용하는 편이 좋다.
+
+---
+
+## EMBEDDED: 내장 데이터베이스에서만 자동 생성
+
+다음 설정을 살펴보자.
+
+```yaml
+spring:
+  batch:
+    jdbc:
+      initialize-schema: embedded
+```
+
+`embedded`는 내장 데이터베이스를 사용하는 경우에만 스키마를 자동으로 초기화하는 설정이다.
+
+Spring Boot 3.4의 기본 설정도 `embedded`다.
+
+대표적인 내장 데이터베이스로는 H2, HSQLDB, Derby 등이 있다.
+
+이번에는 H2를 사용해보자.
+
+```yaml
+spring:
+  datasource:
+    url: jdbc:h2:mem:batchdb;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+  batch:
+    jdbc:
+      initialize-schema: embedded
+```
+
+이렇게 설정하면 H2 데이터베이스를 사용하는 환경에서 Spring Batch 메타데이터 스키마가 자동으로 생성될 수 있다.
+
+별도의 SQL 파일을 직접 실행할 필요가 없다.
+
+### H2에서는 왜 자동 생성이 편리할까?
+
+H2를 메모리 모드로 실행하면 일반적으로 JVM이 종료될 때 데이터베이스 내용도 사라진다.
+
+따라서 애플리케이션을 다시 시작하면 이전에 생성했던 테이블이 존재하지 않는다.
+
+이러한 환경에서는 Spring Batch 메타데이터 테이블을 매번 자동으로 생성하도록 구성하는 것이 편리하다.
+
+예를 들어 다음과 같은 흐름이다.
+
+```text
+애플리케이션 시작
+        │
+        ▼
+H2 메모리 DB 생성
+        │
+        ▼
+Spring Batch 스키마 생성
+        │
+        ▼
+Job 실행
+        │
+        ▼
+애플리케이션 종료
+        │
+        ▼
+메모리 DB 종료
+```
+
+이러한 특성 때문에 H2는 개발 환경이나 간단한 테스트에서 사용하기 편리하다.
+
+다만 메모리 데이터베이스는 애플리케이션이 종료되면 실행 기록도 사라지므로, 여러 실행에 걸친 재시작 테스트에는 영속적인 저장소를 사용하는 것이 적절하다.
+
+---
+
+## NEVER: 스키마 자동 생성 비활성화
+
+마지막으로 다음 설정을 살펴보자.
+
+```yaml
+spring:
+  batch:
+    jdbc:
+      initialize-schema: never
+```
+
+`never`는 Spring Boot가 Spring Batch 메타데이터 스키마를 자동으로 생성하지 않도록 한다.
+
+이 설정을 사용하면 애플리케이션이 시작되어도 자동 초기화 SQL을 실행하지 않는다.
+
+따라서 JDBC 기반 JobRepository를 사용한다면 필요한 메타데이터 테이블을 별도로 준비해야 한다.
+
+예를 들어 MySQL에 이미 Spring Batch 스키마를 수동으로 생성한 경우에는 다음과 같이 설정할 수 있다.
+
+```yaml
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3307/batch_db
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    username: batch_user
+    password: localpass
+
+  batch:
+    jdbc:
+      initialize-schema: never
+```
+
+이제 Spring Boot가 시작되어도 스키마 초기화 SQL을 실행하지 않는다.
+
+이미 생성된 메타데이터 테이블을 사용해 Job 실행 정보를 관리한다.
+
+이러한 방식은 운영 환경에서 유용하다.
+
+운영 데이터베이스의 스키마는 애플리케이션이 시작될 때마다 임의로 변경하기보다 별도의 배포 절차나 마이그레이션 도구를 통해 관리하는 편이 안전하기 때문이다.
+
+---
+
+## ALWAYS, EMBEDDED, NEVER 비교
+
+세 가지 설정을 다시 비교해보자.
+
+| 구분           | ALWAYS       | EMBEDDED       | NEVER         |
+| ------------ | ------------ | -------------- | ------------- |
+| 내장 DB 자동 초기화 | 시도           | 시도             | 하지 않음         |
+| MySQL 자동 초기화 | 시도           | 하지 않음          | 하지 않음         |
+| SQL 직접 실행    | 일반적으로 불필요    | 내장 DB에서는 불필요   | 별도로 필요        |
+| 주요 활용        | 초기 개발 환경     | H2 개발·테스트      | 운영 환경         |
+| 기존 스키마 존재 시  | 중복 생성 시도에 주의 | 내장 DB 재사용 시 주의 | 기존 스키마 그대로 사용 |
+
+이 설정은 **Spring Batch 메타데이터 스키마를 자동으로 생성할지 여부**를 제어한다.
+
+Spring Batch의 Job 실행 여부를 제어하는 설정과는 다르다.
+
+예를 들어 다음 설정은 Job의 자동 실행 여부를 제어한다.
+
+```yaml
+spring:
+  batch:
+    job:
+      enabled: false
+```
+
+반면 다음 설정은 메타데이터 스키마 초기화 여부를 제어한다.
+
+```yaml
+spring:
+  batch:
+    jdbc:
+      initialize-schema: never
+```
+
+두 설정은 서로 다른 목적을 가진다.
+
+```text
+spring.batch.job.enabled
+
+→ 애플리케이션 시작 시 Job 자동 실행 여부
+```
+
+```text
+spring.batch.jdbc.initialize-schema
+
+→ Spring Batch 메타데이터 스키마 초기화 여부
+```
+
+따라서 초기화 문제를 해결할 때 이 두 설정을 혼동하지 않아야 한다.
+
+---
+
+## Spring Profile을 이용해 데이터베이스 환경 구분하기
+
+앞에서 작성한 Spring Boot 프로젝트에서는 H2와 MySQL을 모두 사용할 수 있도록 Spring Profile을 구성했다.
+
+이번에도 같은 구조를 사용하자.
+
+```text
+src/main/resources
+    │
+    ├── application.yml
+    │
+    ├── application-local.yml
+    │
+    └── application-mysql.yml
+```
+
+### application.yml
+
+공통 설정은 다음과 같다.
+
+```yaml
+spring:
+  application:
+    name: spring-batch-demo
+
+  profiles:
+    default: local
+
+  batch:
+    job:
+      enabled: true
+```
+
+별도의 Profile을 지정하지 않으면 `local`을 사용한다.
+
+### application-local.yml
+
+H2 환경은 다음과 같이 설정한다.
+
+```yaml
+spring:
+  datasource:
+    url: jdbc:h2:mem:batchdb;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+  batch:
+    jdbc:
+      initialize-schema: embedded
+```
+
+H2는 내장 데이터베이스이므로 `embedded`를 사용한다.
+
+### application-mysql.yml
+
+MySQL 환경은 다음과 같이 설정한다.
+
+```yaml
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3307/batch_db
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    username: ${BATCH_DB_USERNAME:batch_user}
+    password: ${BATCH_DB_PASSWORD:localpass}
+
+  batch:
+    jdbc:
+      initialize-schema: never
+```
+
+이 설정은 메타데이터 스키마가 이미 생성된 MySQL 데이터베이스를 사용하는 경우에 적합하다.
+
+자동 생성 기능을 확인하려면 **아직 메타데이터 테이블이 없는 별도의 개발용 데이터베이스**에서 `initialize-schema: always`로 변경하여 테스트할 수 있다.
+
+이미 스키마가 존재하는 데이터베이스에서 자동 생성 기능을 확인하기 위해 무조건 테이블을 삭제하는 것은 권장하지 않는다.
+
+---
+
+## 실제로 자동 스키마 생성을 확인해보자
+
+이번에는 스키마 자동 생성 동작을 확인하는 과정을 정리해보자.
+
+먼저 메타데이터 테이블이 없는 새로운 MySQL 데이터베이스를 준비한다.
+
+그리고 다음 설정을 사용한다.
+
+```yaml
+spring:
+  batch:
+    jdbc:
+      initialize-schema: always
+```
+
+이 상태에서 Spring Boot 애플리케이션을 실행한다.
+
+```bash
+./mvnw spring-boot:run \
+  -Dspring-boot.run.profiles=mysql
+```
+
+Spring Boot는 MySQL 연결 정보를 확인하고 Spring Batch 스키마 초기화를 수행한다.
+
+정상적으로 초기화되었다면 MySQL에서 다음 SQL을 실행할 수 있다.
+
+```sql
+SHOW TABLES;
+```
+
+결과는 다음과 같은 구조다.
+
+```text
+BATCH_JOB_INSTANCE
+BATCH_JOB_EXECUTION
+BATCH_JOB_EXECUTION_PARAMS
+BATCH_JOB_EXECUTION_CONTEXT
+BATCH_STEP_EXECUTION
+BATCH_STEP_EXECUTION_CONTEXT
+BATCH_JOB_SEQ
+BATCH_JOB_EXECUTION_SEQ
+BATCH_STEP_EXECUTION_SEQ
+```
+
+이것이 Spring Batch의 자동 스키마 초기화 기능이다.
+
+수동 방식에서는 SQL을 직접 실행했다.
+
+자동 방식에서는 Spring Boot가 해당 SQL을 실행했다.
+
+하지만 최종적으로 생성되는 스키마의 목적은 동일하다.
+
+---
+
+## 메타데이터 테이블이 없으면 어떻게 될까?
+
+이번에는 반대 상황을 살펴보자.
+
+MySQL에 Spring Batch 메타데이터 테이블이 존재하지 않는다고 가정하자.
+
+그리고 다음 설정을 사용한다.
+
+```yaml
+spring:
+  batch:
+    jdbc:
+      initialize-schema: never
+```
+
+자동 생성이 비활성화되어 있으므로 Spring Boot는 메타데이터 테이블을 생성하지 않는다.
+
+이 상태에서 `helloJob`을 실행하면 어떻게 될까?
+
+Job 실행 과정에서 `JobRepository`는 실행 정보를 데이터베이스에 저장하거나 조회하려고 한다.
+
+예를 들어 기존 JobInstance를 확인하기 위해 다음과 같은 테이블을 사용한다.
+
+```text
+BATCH_JOB_INSTANCE
+```
+
+하지만 해당 테이블이 존재하지 않는다.
+
+따라서 데이터베이스에서 오류가 발생할 수 있다.
+
+MySQL 환경에서는 다음과 유사한 메시지가 나타날 수 있다.
+
+```text
+Table 'batch_db.BATCH_JOB_INSTANCE' doesn't exist
+```
+
+Spring Batch는 실행 메타데이터를 관리하려고 했지만 필요한 테이블이 없으므로 정상적인 Job 실행을 진행할 수 없는 것이다.
+
+전체 흐름은 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["Spring Boot 실행"]
+    B["initialize-schema=never"]
+    C["스키마 자동 생성하지 않음"]
+    D["helloJob 실행 요청"]
+    E["JobRepository"]
+    F["BATCH_JOB_INSTANCE 조회"]
+    G{"테이블 존재?"}
+    H["정상 실행"]
+    I["SQL 오류 발생"]
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+    F --> G
+
+    G -->|Yes| H
+    G -->|No| I
+```
+
+이러한 상황은 실제 운영 환경에서도 발생할 수 있다.
+
+예를 들어 새로운 배치 애플리케이션을 배포했지만 메타데이터 스키마를 생성하지 않았다면 Job 실행 과정에서 오류가 발생할 수 있다.
+
+따라서 **Spring Batch 애플리케이션을 배포할 때는 JobRepository가 사용하는 메타데이터 스키마가 준비되어 있는지 확인해야 한다.**
+
+---
+
+## H2에서는 왜 동일한 오류가 발생하지 않을까?
+
+이번에는 H2를 사용한다고 생각해보자.
+
+다음과 같이 설정한다.
+
+```yaml
+spring:
+  datasource:
+    url: jdbc:h2:mem:batchdb;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+  batch:
+    jdbc:
+      initialize-schema: embedded
+```
+
+이 상태에서 애플리케이션을 실행하면 Spring Boot는 H2가 내장 데이터베이스라는 사실을 확인하고 Spring Batch 메타데이터 스키마를 초기화할 수 있다.
+
+따라서 JobRepository가 필요한 테이블을 사용할 수 있게 된다.
+
+```text
+Spring Boot 시작
+        │
+        ▼
+H2 메모리 DB 생성
+        │
+        ▼
+Spring Batch 스키마 자동 생성
+        │
+        ▼
+JobRepository 초기화
+        │
+        ▼
+helloJob 실행
+        │
+        ▼
+정상 완료
+```
+
+반면 H2에서도 다음처럼 설정한다면
+
+```yaml
+spring:
+  batch:
+    jdbc:
+      initialize-schema: never
+```
+
+메타데이터 테이블이 자동으로 생성되지 않는다.
+
+그리고 별도로 스키마를 생성하지 않았다면 Job 실행 시 테이블이 존재하지 않는 오류가 발생할 수 있다.
+
+즉 H2라서 특별히 메타데이터 테이블이 필요 없는 것은 아니다.
+
+**H2에서는 기본적으로 자동 스키마 초기화가 적용될 수 있기 때문에 개발자가 직접 테이블을 생성하지 않아도 되는 것**이다.
+
+---
+
+## 메타데이터 테이블에 실제로 어떤 값이 저장될까?
+
+지금까지는 스키마를 생성하는 방법을 살펴봤다.
+
+그렇다면 실제로 Job을 실행하면 어떤 데이터가 저장될까?
+
+앞에서 만든 `helloJob`을 다시 생각해보자.
+
+```text
+helloJob
+    │
+    ├── helloStep1
+    │
+    └── helloStep2
+```
+
+이 Job을 실행하면 JobInstance와 JobExecution, StepExecution 등에 해당하는 실행 메타데이터가 생성된다.
+
+영속적인 MySQL 데이터베이스를 사용한다면 실행 종료 후에도 이러한 정보를 확인할 수 있다.
+
+### JobInstance 조회
+
+먼저 다음 SQL을 실행해보자.
+
+```sql
+SELECT
+    JOB_INSTANCE_ID,
+    JOB_NAME,
+    JOB_KEY,
+    VERSION
+FROM BATCH_JOB_INSTANCE;
+```
+
+이 테이블에는 Job 이름과 Job을 식별하기 위한 정보가 저장된다.
+
+여기서 `JOB_KEY`는 식별용 JobParameters를 바탕으로 생성되는 값이다.
+
+따라서 같은 Job 이름이더라도 식별용 JobParameters가 다르면 서로 다른 JobInstance로 관리될 수 있다.
+
+### JobExecution 조회
+
+다음 SQL을 실행해보자.
+
+```sql
+SELECT
+    JOB_EXECUTION_ID,
+    JOB_INSTANCE_ID,
+    CREATE_TIME,
+    START_TIME,
+    END_TIME,
+    STATUS,
+    EXIT_CODE,
+    EXIT_MESSAGE
+FROM BATCH_JOB_EXECUTION
+ORDER BY JOB_EXECUTION_ID DESC;
+```
+
+이 테이블에서는 Job의 실제 실행 정보를 확인할 수 있다.
+
+대표적으로 다음과 같은 값이 저장된다.
+
+| 컬럼                 | 의미               |
+| ------------------ | ---------------- |
+| `JOB_EXECUTION_ID` | JobExecution 식별자 |
+| `JOB_INSTANCE_ID`  | 연결된 JobInstance  |
+| `CREATE_TIME`      | 실행 정보 생성 시점      |
+| `START_TIME`       | 실행 시작 시점         |
+| `END_TIME`         | 실행 종료 시점         |
+| `STATUS`           | 실행 상태            |
+| `EXIT_CODE`        | 종료 코드            |
+| `EXIT_MESSAGE`     | 종료 메시지           |
+
+Job이 정상적으로 완료되면 `STATUS`에 `COMPLETED`가 저장될 수 있다.
+
+실행 중 오류가 발생했다면 `FAILED` 같은 상태와 오류 관련 정보가 기록될 수 있다.
+
+### StepExecution 조회
+
+이번에는 Step 실행 정보를 조회해보자.
+
+```sql
+SELECT
+    STEP_EXECUTION_ID,
+    JOB_EXECUTION_ID,
+    STEP_NAME,
+    STATUS,
+    COMMIT_COUNT,
+    ROLLBACK_COUNT,
+    READ_COUNT,
+    WRITE_COUNT
+FROM BATCH_STEP_EXECUTION
+ORDER BY STEP_EXECUTION_ID;
+```
+
+여기서는 `helloStep1`과 `helloStep2`의 실행 정보를 확인할 수 있다.
+
+각 Step에 대해 실행 상태와 트랜잭션 관련 건수 등이 기록된다.
+
+이번 예제는 Tasklet 기반으로 문자열을 출력하므로 Reader와 Writer를 이용한 데이터 처리는 수행하지 않았다.
+
+따라서 `READ_COUNT`, `WRITE_COUNT`가 0으로 기록되더라도 정상적인 결과다.
+
+반면 Chunk 기반 Step을 사용한다면 실제 읽고 쓴 데이터 건수를 확인할 수 있다.
+
+---
+
+## Job과 Step 실행 정보를 함께 조회하기
+
+실무에서는 Job과 Step 실행 정보를 함께 조회해야 하는 경우가 많다.
+
+예를 들어 특정 정산 Job이 실패했다면 어떤 Step에서 문제가 발생했는지 확인해야 한다.
+
+이때 다음과 같이 테이블을 연결할 수 있다.
+
+```sql
+SELECT
+    ji.JOB_NAME,
+    je.JOB_EXECUTION_ID,
+    je.STATUS AS JOB_STATUS,
+    je.START_TIME,
+    je.END_TIME,
+    se.STEP_NAME,
+    se.STATUS AS STEP_STATUS,
+    se.COMMIT_COUNT,
+    se.ROLLBACK_COUNT
+FROM BATCH_JOB_INSTANCE ji
+JOIN BATCH_JOB_EXECUTION je
+    ON ji.JOB_INSTANCE_ID = je.JOB_INSTANCE_ID
+JOIN BATCH_STEP_EXECUTION se
+    ON je.JOB_EXECUTION_ID = se.JOB_EXECUTION_ID
+WHERE ji.JOB_NAME = 'helloJob'
+ORDER BY
+    je.JOB_EXECUTION_ID DESC,
+    se.STEP_EXECUTION_ID;
+```
+
+이 쿼리는 다음 정보를 연결한다.
+
+```text
+JobInstance
+     │
+     ▼
+JobExecution
+     │
+     ▼
+StepExecution
+```
+
+따라서 하나의 Job 실행에 속한 Step들의 상태를 함께 확인할 수 있다.
+
+실무에서는 여기에 실패한 Step의 종료 메시지나 처리 건수 등을 추가해 운영용 모니터링 화면을 구성할 수도 있다.
+
+다만 Spring Batch의 메타데이터 테이블을 직접 수정하는 것은 주의해야 한다.
+
+JobRepository가 실행 상태와 버전 정보를 관리하기 때문에 임의로 값을 변경하면 실제 실행 상태와 데이터베이스 정보 사이의 불일치가 발생할 수 있다.
+
+따라서 운영에서는 메타데이터를 조회 목적으로 활용하고, 실행 상태 변경은 Spring Batch가 제공하는 API와 정상적인 운영 절차를 사용하는 것이 좋다.
+
+---
+
+## 메타데이터 스키마를 운영 환경에서 관리할 때 주의할 점
+
+개발 환경에서는 다음 설정을 사용하는 것이 편리하다.
+
+```yaml
+spring:
+  batch:
+    jdbc:
+      initialize-schema: always
+```
+
+하지만 운영 환경에서는 다른 접근이 필요하다.
+
+운영 중인 데이터베이스에는 이전 Job의 실행 이력과 재시작에 필요한 정보가 저장되어 있을 수 있다.
+
+따라서 애플리케이션을 배포할 때마다 자동으로 스키마 생성 SQL을 실행하는 것은 적절하지 않을 수 있다.
+
+이런 경우에는 다음처럼 설정한다.
+
+```yaml
+spring:
+  batch:
+    jdbc:
+      initialize-schema: never
+```
+
+그리고 Spring Batch 메타데이터 스키마는 별도의 배포 절차에서 관리한다.
+
+예를 들어 Flyway나 Liquibase 같은 데이터베이스 마이그레이션 도구를 사용할 수 있다.
+
+```text
+애플리케이션 배포
+       │
+       ▼
+DB 마이그레이션 확인
+       │
+       ▼
+필요한 스키마 변경 적용
+       │
+       ▼
+Spring Batch 애플리케이션 시작
+       │
+       ▼
+JobRepository 초기화
+       │
+       ▼
+Job 실행
+```
+
+이렇게 하면 스키마 변경을 애플리케이션의 실행 과정과 분리할 수 있다.
+
+또한 Spring Batch 버전을 업그레이드할 때는 기존 메타데이터 테이블과 새 버전에서 요구하는 스키마가 호환되는지 확인해야 한다.
+
+Spring Batch 버전이 달라지면 테이블 컬럼이나 제약조건이 변경될 수 있으므로, 단순히 새로운 스키마 SQL을 기존 데이터베이스에 다시 실행하는 것으로 해결해서는 안 된다.
+
+Spring Batch에서 제공하는 마이그레이션 스크립트와 공식 업그레이드 가이드를 확인하는 것이 중요하다.
+
+---
+
+## 정리
+
+Spring Batch는 Job과 Step의 실행 및 관리를 위해 메타데이터를 사용한다.
+
+메타데이터에는 Job의 실행 상태, 시작 시간, 종료 시간, 실행 파라미터, Step의 처리 정보, 재시작에 필요한 상태 등이 포함된다.
+
+이러한 정보는 `JobRepository`를 통해 관리된다.
+
+Spring Batch는 이를 위한 메타데이터 스키마를 제공하며, JDBC 기반 JobRepository를 사용하는 경우 필요한 테이블이 준비되어 있어야 한다.
+
+Spring Batch 5.2.4의 MySQL 스키마에서는 주요 메타데이터 테이블 6개와 ID 생성용 테이블 3개를 사용한다.
+
+```text
+메타데이터 테이블: 6개
+
+ID 생성용 테이블: 3개
+
+총 9개
+```
+
+스키마를 생성하는 방법은 크게 수동 생성과 자동 생성으로 구분할 수 있다.
+
+수동 생성은 Spring Batch에서 제공하는 SQL 스크립트를 직접 실행하는 방식이다.
+
+자동 생성은 Spring Boot의 스키마 초기화 설정을 사용하는 방식이다.
+
+설정값의 차이는 다음과 같다.
+
+| 설정값        | 핵심 의미                  |
+| ---------- | ---------------------- |
+| `always`   | 내장·외부 DB 모두 스키마 초기화 시도 |
+| `embedded` | 내장 DB에서만 자동 초기화        |
+| `never`    | 스키마 자동 초기화 비활성화        |
+
+개발 환경에서는 H2와 `embedded` 설정을 조합하면 편리하게 테스트할 수 있다.
+
+반면 운영 환경에서는 MySQL 같은 영속적인 데이터베이스를 사용하고, 메타데이터 스키마를 별도의 마이그레이션 절차로 관리하는 것이 적절하다.
+
+특히 Spring Batch 메타데이터는 단순한 로그성 데이터가 아니다.
+
+**배치 실행 상태를 관리하고 실패한 작업을 재시작하는 데 필요한 중요한 운영 데이터**이기 때문이다.
+
+따라서 스키마를 생성하는 방법뿐 아니라 실행 메타데이터가 어떤 의미를 가지고 있으며 어떤 목적으로 저장되는지 함께 이해하는 것이 중요하다.
+
+### 한 줄 요약
+
+> Spring Batch는 Job과 Step의 실행 상태 및 재시작 정보를 관리하기 위해 메타데이터 스키마를 사용하며, `spring.batch.jdbc.initialize-schema`의 `always`, `embedded`, `never` 설정으로 자동 초기화 여부를 제어할 수 있다. 개발 환경에서는 자동 생성을 활용할 수 있지만 운영 환경에서는 스키마를 별도로 관리하는 것이 안정적인 배치 운영에 유리하다.
+
+
+## DB 스키마 생성 및 이해 (2)
+
+## Spring Batch 메타데이터 테이블 구조와 실행 정보 분석
+
+Spring Batch에서는 Job과 Step을 실행할 때 단순히 비즈니스 로직만 수행하는 것이 아니라, 실행 과정에서 발생하는 다양한 정보를 관리한다.
+
+예를 들어 다음과 같은 Job을 실행한다고 생각해보자.
+
+```text
+helloJob
+    │
+    ├── helloStep1
+    │      └── Hello Spring Batch 출력
+    │
+    └── helloStep2
+           └── Step 2 executed 출력
+```
+
+Job이 실행되면 Spring Batch는 내부적으로 Job과 Step의 실행 상태를 관리하기 위한 객체들을 생성한다.
+
+대표적으로 다음과 같은 객체들이 있다.
+
+* `JobInstance`
+* `JobExecution`
+* `JobParameters`
+* `StepExecution`
+* `ExecutionContext`
+
+이 객체들은 서로 다른 역할을 담당하며, JDBC 기반 `JobRepository`를 사용하는 경우 실행 메타데이터가 데이터베이스에 저장된다.
+
+예를 들어 `JobExecution`에는 Job의 시작 시간, 종료 시간, 실행 상태 등이 저장된다. `StepExecution`에는 각 Step의 실행 정보뿐 아니라 읽기, 쓰기, 커밋, 롤백 등의 처리 건수도 저장된다.
+
+이러한 정보는 배치 실행이 종료된 이후에도 중요한 의미를 가진다.
+
+정산 배치가 실패했다면 어느 단계에서 실패했는지 확인해야 한다. 또한 재시작이 필요한 경우에는 이전 실행 정보를 이용해 어디부터 작업을 다시 처리할 것인지 판단해야 한다.
+
+이처럼 **Spring Batch의 메타데이터 테이블은 단순한 실행 로그 저장소가 아니라 Job의 실행 상태와 재시작을 관리하기 위한 핵심 구성 요소**다.
+
+이번에는 Spring Batch가 제공하는 6개의 주요 메타데이터 테이블을 각각 살펴보고, 테이블 간 관계와 주요 컬럼의 의미를 알아보자.
+
+또한 실제 배치를 실행한 뒤 데이터베이스에 어떤 값이 저장되는지도 확인해보자.
+
+> **버전 기준:** Spring Boot 3.4.13 / Spring Batch 5.2.4 / Java 17 / MySQL 8.4
+>
+> Spring Batch 4.x와 5.x는 일부 메타데이터 컬럼 구조가 다르다. 특히 `BATCH_JOB_EXECUTION_PARAMS`의 구조가 크게 변경되었으므로, 실제 SQL과 컬럼 설명은 Spring Batch 5.2.4를 기준으로 한다.
+
+---
+
+## Spring Batch 메타데이터의 전체 구조
+
+Spring Batch의 메타데이터 테이블은 크게 Job 관련 테이블과 Step 관련 테이블로 구분할 수 있다.
+
+### Job 관련 테이블
+
+| 테이블                           | 역할                          |
+| ----------------------------- | --------------------------- |
+| `BATCH_JOB_INSTANCE`          | JobInstance의 식별 정보 관리       |
+| `BATCH_JOB_EXECUTION`         | Job의 개별 실행 정보 관리            |
+| `BATCH_JOB_EXECUTION_PARAMS`  | Job 실행 시 전달된 파라미터 저장        |
+| `BATCH_JOB_EXECUTION_CONTEXT` | Job 실행 중 필요한 상태 및 공유 데이터 저장 |
+
+### Step 관련 테이블
+
+| 테이블                            | 역할                       |
+| ------------------------------ | ------------------------ |
+| `BATCH_STEP_EXECUTION`         | Step의 개별 실행 정보와 처리 건수 관리 |
+| `BATCH_STEP_EXECUTION_CONTEXT` | Step 실행 중 필요한 상태 정보 저장   |
+
+이러한 테이블들은 서로 관계를 가지고 있다.
+
+```mermaid
+erDiagram
+    BATCH_JOB_INSTANCE ||--o{ BATCH_JOB_EXECUTION : "has"
+    BATCH_JOB_EXECUTION ||--o{ BATCH_JOB_EXECUTION_PARAMS : "has"
+    BATCH_JOB_EXECUTION ||--o| BATCH_JOB_EXECUTION_CONTEXT : "has"
+    BATCH_JOB_EXECUTION ||--o{ BATCH_STEP_EXECUTION : "has"
+    BATCH_STEP_EXECUTION ||--o| BATCH_STEP_EXECUTION_CONTEXT : "has"
+```
+
+가장 상위에는 `BATCH_JOB_INSTANCE`가 존재한다.
+
+하나의 JobInstance에는 여러 JobExecution이 연결될 수 있다.
+
+그리고 하나의 JobExecution에는 실행에 사용된 JobParameters와 JobExecutionContext가 연결된다.
+
+또한 하나의 JobExecution은 여러 StepExecution을 가질 수 있으며, 각 StepExecution은 자신의 ExecutionContext를 관리한다.
+
+여기서 가장 중요한 관계는 다음과 같다.
+
+```text
+JobInstance
+     │
+     │ 1:N
+     ▼
+JobExecution
+     │
+     │ 1:N
+     ▼
+StepExecution
+```
+
+이 관계를 이해하면 Spring Batch의 메타데이터 구조를 훨씬 쉽게 파악할 수 있다.
+
+---
+
+## JobInstance와 JobExecution은 무엇이 다를까?
+
+테이블을 살펴보기 전에 먼저 두 객체의 차이를 이해할 필요가 있다.
+
+`JobInstance`와 `JobExecution`은 이름이 비슷하지만 의미는 다르다.
+
+**JobInstance는 논리적인 Job 실행 대상을 나타내고, JobExecution은 해당 JobInstance에 대한 실제 실행 시도를 나타낸다.**
+
+예를 들어 매일 정산하는 Job이 있다고 생각해보자.
+
+```text
+Job 이름: settlementJob
+```
+
+이 Job을 다음과 같은 파라미터로 실행한다.
+
+```text
+businessDate=2026-10-15
+```
+
+Spring Batch는 Job 이름과 식별용 JobParameters를 이용해 JobInstance를 구분한다.
+
+이때 생성된 JobInstance가 실패했다고 생각해보자.
+
+```text
+settlementJob
+businessDate=2026-10-15
+        │
+        ▼
+JobInstance 1
+        │
+        ▼
+JobExecution 1
+        │
+        ▼
+FAILED
+```
+
+이후 동일한 JobParameters로 실패한 작업을 재시작할 수 있다.
+
+```text
+settlementJob
+businessDate=2026-10-15
+        │
+        ▼
+JobInstance 1
+        │
+        ├── JobExecution 1
+        │       └── FAILED
+        │
+        └── JobExecution 2
+                └── COMPLETED
+```
+
+여기서 중요한 점은 JobInstance가 새로 생성되지 않았다는 것이다.
+
+동일한 Job 이름과 식별용 JobParameters를 사용했기 때문에 동일한 JobInstance에 속한다.
+
+반면 실행 시도는 새롭게 발생했으므로 JobExecution이 추가된다.
+
+이번에는 정산 기준일을 변경해보자.
+
+```text
+businessDate=2026-10-16
+```
+
+이 경우 식별용 JobParameters가 달라졌으므로 새로운 JobInstance가 생성된다.
+
+```text
+settlementJob
+    │
+    ├── JobInstance 1
+    │      businessDate=2026-10-15
+    │
+    └── JobInstance 2
+           businessDate=2026-10-16
+```
+
+따라서 다음 관계를 기억하면 된다.
+
+| 구분       | JobInstance                | JobExecution |
+| -------- | -------------------------- | ------------ |
+| 의미       | 논리적인 Job 실행 단위             | 실제 실행 시도     |
+| 식별 기준    | Job 이름 + 식별용 JobParameters | 개별 실행 ID     |
+| 실패 후 재시작 | 동일한 인스턴스 사용 가능             | 새로운 실행 기록 생성 |
+| 파라미터 변경  | 식별용 파라미터가 달라지면 새 인스턴스      | 새로운 실행 기록 생성 |
+
+이 차이는 이후 `BATCH_JOB_INSTANCE`와 `BATCH_JOB_EXECUTION` 테이블을 이해하는 데 중요한 기반이 된다.
+
+---
+
+## BATCH_JOB_INSTANCE
+
+`BATCH_JOB_INSTANCE`는 JobInstance의 정보를 저장하는 테이블이다.
+
+Spring Batch 메타데이터 구조에서 가장 상위에 위치한다.
+
+Spring Batch 5.2.4의 MySQL 스키마는 다음과 같다.
+
+```sql
+CREATE TABLE BATCH_JOB_INSTANCE (
+    JOB_INSTANCE_ID BIGINT NOT NULL PRIMARY KEY,
+    VERSION BIGINT,
+    JOB_NAME VARCHAR(100) NOT NULL,
+    JOB_KEY VARCHAR(32) NOT NULL,
+
+    CONSTRAINT JOB_INST_UN
+        UNIQUE (JOB_NAME, JOB_KEY)
+) ENGINE=InnoDB;
+```
+
+각 컬럼의 의미를 살펴보자.
+
+| 컬럼                | 의미                               |
+| ----------------- | -------------------------------- |
+| `JOB_INSTANCE_ID` | JobInstance를 고유하게 식별하는 기본 키      |
+| `VERSION`         | 낙관적 락을 위한 버전 정보                  |
+| `JOB_NAME`        | Job을 정의할 때 지정한 이름                |
+| `JOB_KEY`         | 식별용 JobParameters를 기반으로 생성한 식별 키 |
+
+### JOB_INSTANCE_ID
+
+`JOB_INSTANCE_ID`는 JobInstance를 고유하게 식별하는 기본 키다.
+
+예를 들어 다음과 같은 데이터가 저장될 수 있다.
+
+| JOB_INSTANCE_ID | JOB_NAME      | JOB_KEY |
+| --------------- | ------------- | ------- |
+| 1               | settlementJob | 해시값 A   |
+| 2               | settlementJob | 해시값 B   |
+
+두 JobInstance는 Job 이름은 같지만 식별용 JobParameters가 다르므로 서로 다른 인스턴스다.
+
+### JOB_NAME
+
+`JOB_NAME`은 Job을 생성할 때 지정한 이름이다.
+
+예를 들어 다음과 같다.
+
+```java
+@Bean
+public Job settlementJob(
+        JobRepository jobRepository,
+        Step settlementStep
+) {
+    return new JobBuilder("settlementJob", jobRepository)
+            .start(settlementStep)
+            .build();
+}
+```
+
+여기서 지정한 이름이 저장된다.
+
+```java
+new JobBuilder("settlementJob", jobRepository)
+```
+
+따라서 `JOB_NAME`에는 다음 값이 들어간다.
+
+```text
+settlementJob
+```
+
+### JOB_KEY
+
+`JOB_KEY`는 JobInstance를 식별하기 위한 값이다.
+
+Spring Batch는 **식별용 JobParameters를 기반으로 JobKey를 생성**한다.
+
+예를 들어 다음과 같은 파라미터를 사용한다고 생각해보자.
+
+```text
+businessDate=2026-10-15
+```
+
+이 값이 식별용 파라미터라면 JobKey 생성에 반영된다.
+
+반면 다음과 같이 변경하면
+
+```text
+businessDate=2026-10-16
+```
+
+다른 JobKey가 생성된다.
+
+여기서 한 가지 정확하게 구분할 부분이 있다.
+
+JobInstance의 논리적인 식별 기준은 다음과 같다.
+
+```text
+Job 이름 + 식별용 JobParameters
+```
+
+데이터베이스에서는 이를 다음 두 컬럼의 조합으로 관리한다.
+
+```sql
+UNIQUE (JOB_NAME, JOB_KEY)
+```
+
+따라서 동일한 `JOB_NAME`과 `JOB_KEY`를 가진 레코드는 중복 생성할 수 없다.
+
+**JobKey 하나만으로 모든 Job을 식별하는 것이 아니라 Job 이름과 JobKey의 조합으로 JobInstance를 구분한다.**
+
+---
+
+## VERSION은 왜 필요할까?
+
+Spring Batch의 여러 메타데이터 테이블에는 `VERSION` 컬럼이 존재한다.
+
+이 컬럼은 단순히 데이터가 몇 번 변경되었는지를 기록하기 위한 용도만 있는 것은 아니다.
+
+Spring Batch는 메타데이터를 갱신할 때 **낙관적 락(Optimistic Locking)** 을 활용한다.
+
+예를 들어 어떤 레코드의 현재 버전이 다음과 같다고 생각해보자.
+
+```text
+VERSION = 3
+```
+
+두 실행 주체가 동시에 같은 데이터를 조회했다.
+
+```text
+Thread A → VERSION 3 조회
+
+Thread B → VERSION 3 조회
+```
+
+Thread A가 먼저 데이터를 수정한다.
+
+개념적으로 다음과 같은 SQL을 실행할 수 있다.
+
+```sql
+UPDATE BATCH_JOB_EXECUTION
+SET
+    STATUS = 'COMPLETED',
+    VERSION = VERSION + 1
+WHERE JOB_EXECUTION_ID = 1
+  AND VERSION = 3;
+```
+
+업데이트가 성공하면 버전은 4가 된다.
+
+그런데 Thread B도 이전 버전인 3을 기준으로 업데이트하려고 한다면 어떻게 될까?
+
+```sql
+UPDATE BATCH_JOB_EXECUTION
+SET
+    STATUS = 'FAILED',
+    VERSION = VERSION + 1
+WHERE JOB_EXECUTION_ID = 1
+  AND VERSION = 3;
+```
+
+현재 버전은 이미 4이므로 업데이트 대상이 존재하지 않는다.
+
+Spring Batch는 이러한 충돌을 감지해 `OptimisticLockingFailureException` 등의 예외를 발생시킬 수 있다.
+
+이는 동시에 실행되는 여러 배치 작업이 같은 메타데이터를 잘못 갱신하는 문제를 방지하기 위한 방식이다. ([Home][1])
+
+다만 `VERSION` 컬럼이 존재한다고 모든 메타데이터 레코드가 실행 중 계속 갱신되는 것은 아니다.
+
+실제로 버전이 증가하는 시점과 횟수는 해당 레코드가 어떤 방식으로 갱신되는지에 따라 달라진다.
+
+---
+
+## BATCH_JOB_EXECUTION
+
+`BATCH_JOB_EXECUTION`은 JobExecution의 정보를 저장하는 테이블이다.
+
+JobInstance가 논리적인 실행 단위였다면 JobExecution은 실제로 Job을 실행한 기록이다.
+
+Spring Batch 5.2.4의 테이블 구조는 다음과 같다.
+
+```sql
+CREATE TABLE BATCH_JOB_EXECUTION (
+    JOB_EXECUTION_ID BIGINT NOT NULL PRIMARY KEY,
+    VERSION BIGINT,
+    JOB_INSTANCE_ID BIGINT NOT NULL,
+    CREATE_TIME DATETIME(6) NOT NULL,
+    START_TIME DATETIME(6) DEFAULT NULL,
+    END_TIME DATETIME(6) DEFAULT NULL,
+    STATUS VARCHAR(10),
+    EXIT_CODE VARCHAR(2500),
+    EXIT_MESSAGE VARCHAR(2500),
+    LAST_UPDATED DATETIME(6),
+
+    CONSTRAINT JOB_INST_EXEC_FK
+        FOREIGN KEY (JOB_INSTANCE_ID)
+        REFERENCES BATCH_JOB_INSTANCE(JOB_INSTANCE_ID)
+) ENGINE=InnoDB;
+```
+
+각 컬럼의 의미는 다음과 같다.
+
+| 컬럼                 | 의미                  |
+| ------------------ | ------------------- |
+| `JOB_EXECUTION_ID` | JobExecution의 기본 키  |
+| `VERSION`          | 낙관적 락을 위한 버전        |
+| `JOB_INSTANCE_ID`  | 연결된 JobInstance의 ID |
+| `CREATE_TIME`      | 실행 메타데이터가 생성된 시점    |
+| `START_TIME`       | Job 실행 시작 시점        |
+| `END_TIME`         | Job 실행 종료 시점        |
+| `STATUS`           | 현재 또는 최종 실행 상태      |
+| `EXIT_CODE`        | Job 실행 종료 코드        |
+| `EXIT_MESSAGE`     | 종료와 관련된 상세 메시지      |
+| `LAST_UPDATED`     | 마지막 메타데이터 갱신 시점     |
+
+### JOB_EXECUTION_ID
+
+`JOB_EXECUTION_ID`는 개별 실행을 식별하는 기본 키다.
+
+예를 들어 Job이 실패한 뒤 재시작되었다면 다음과 같은 데이터가 생성될 수 있다.
+
+| JOB_EXECUTION_ID | JOB_INSTANCE_ID | STATUS    |
+| ---------------- | --------------- | --------- |
+| 1                | 1               | FAILED    |
+| 2                | 1               | COMPLETED |
+
+두 레코드는 동일한 `JOB_INSTANCE_ID`를 가지고 있다.
+
+하지만 `JOB_EXECUTION_ID`는 다르다.
+
+실행 시도가 서로 다르기 때문이다.
+
+이것이 JobInstance와 JobExecution의 일대다 관계다.
+
+### CREATE_TIME, START_TIME, END_TIME
+
+Spring Batch는 실행 시점을 구분해서 관리한다.
+
+`CREATE_TIME`은 JobExecution이 생성된 시점이다.
+
+`START_TIME`은 실제 Job 실행이 시작된 시점이다.
+
+`END_TIME`은 실행이 종료된 시점이다.
+
+예를 들어 다음과 같은 값이 저장될 수 있다.
+
+| CREATE_TIME | START_TIME | END_TIME |
+| ----------- | ---------- | -------- |
+| 02:00:00    | 02:00:01   | 02:00:08 |
+
+이 경우 JobExecution이 생성된 뒤 실제 실행이 시작되었고, 약 7초 동안 작업이 수행된 것으로 해석할 수 있다.
+
+단, `END_TIME`이 `NULL`이라고 해서 반드시 실패했다고 판단해서는 안 된다.
+
+실제로 아직 실행 중일 수도 있고, JVM이 비정상적으로 종료되어 최종 상태가 저장되지 못했을 수도 있다.
+
+따라서 실행 상태를 확인할 때는 `STATUS`, `START_TIME`, `END_TIME`, `LAST_UPDATED` 등을 함께 살펴보는 것이 좋다.
+
+---
+
+## STATUS와 EXIT_CODE의 차이
+
+`BATCH_JOB_EXECUTION`에는 실행 상태와 관련된 두 컬럼이 있다.
+
+```text
+STATUS
+
+EXIT_CODE
+```
+
+이 둘은 비슷해 보이지만 서로 다른 정보를 표현한다.
+
+### STATUS
+
+`STATUS`는 `BatchStatus`에 해당하는 실행 상태를 저장한다.
+
+대표적인 값은 다음과 같다.
+
+| 상태          | 의미                            |
+| ----------- | ----------------------------- |
+| `STARTING`  | 실행 시작을 준비하는 상태                |
+| `STARTED`   | 실행 중                          |
+| `COMPLETED` | 정상적으로 완료                      |
+| `FAILED`    | 실행 실패                         |
+| `STOPPING`  | 중지 진행 중                       |
+| `STOPPED`   | 중지됨                           |
+| `ABANDONED` | 더 이상 정상적인 재시작 대상으로 취급하지 않는 상태 |
+
+예를 들어 정상적으로 종료되면 다음과 같은 값이 저장될 수 있다.
+
+```text
+STATUS = COMPLETED
+```
+
+반면 실행 도중 예외가 발생하면 다음과 같은 상태로 종료될 수 있다.
+
+```text
+STATUS = FAILED
+```
+
+### EXIT_CODE
+
+`EXIT_CODE`는 `ExitStatus`에 해당하는 종료 코드를 저장한다.
+
+일반적으로 다음과 같은 값을 사용할 수 있다.
+
+```text
+COMPLETED
+
+FAILED
+
+STOPPED
+```
+
+또한 개발자가 직접 종료 코드를 정의할 수도 있다.
+
+예를 들어 다음과 같다.
+
+```java
+return new ExitStatus("NO_DATA");
+```
+
+이처럼 `EXIT_CODE`는 Job이나 Step이 어떤 결과로 종료되었는지를 표현하는 데 사용한다.
+
+따라서 다음 두 개념을 구분할 필요가 있다.
+
+| 구분    | STATUS            | EXIT_CODE                  |
+| ----- | ----------------- | -------------------------- |
+| 대응 객체 | BatchStatus       | ExitStatus                 |
+| 의미    | 실행 상태             | 종료 결과 코드                   |
+| 커스텀 값 | 정해진 상태 값 사용       | 사용자 정의 가능                  |
+| 대표 값  | COMPLETED, FAILED | COMPLETED, FAILED, NO_DATA |
+
+일반적으로 정상적으로 완료된 Job은 `STATUS`와 `EXIT_CODE`가 모두 `COMPLETED`로 기록될 수 있다.
+
+하지만 항상 동일한 값이어야 하는 것은 아니다.
+
+특히 종료 코드를 이용해 다음 Step을 결정하는 Flow를 구성할 때는 이 차이가 중요하다.
+
+---
+
+## EXIT_MESSAGE와 LAST_UPDATED
+
+`EXIT_MESSAGE`는 실행 종료와 관련된 상세 메시지를 저장한다.
+
+예를 들어 정산 배치가 실패했다면 다음과 같은 메시지가 저장될 수 있다.
+
+```text
+java.lang.IllegalStateException:
+Settlement amount mismatch
+```
+
+실패 원인이나 예외 메시지를 확인할 때 활용할 수 있다.
+
+다만 `EXIT_MESSAGE`가 반드시 전체 예외 스택 트레이스를 보존하는 것은 아니다.
+
+저장 가능한 길이와 Spring Batch의 설정에 따라 일부 내용이 잘릴 수 있다.
+
+또한 상세한 원인 분석을 위해서는 애플리케이션 로그나 별도의 모니터링 시스템을 함께 확인하는 것이 좋다.
+
+`LAST_UPDATED`는 해당 JobExecution 정보가 마지막으로 갱신된 시점을 기록한다.
+
+따라서 실행 중인 Job의 상태를 파악할 때 참고할 수 있다.
+
+---
+
+## BATCH_JOB_EXECUTION_PARAMS
+
+`BATCH_JOB_EXECUTION_PARAMS`는 Job 실행 시 전달한 JobParameters를 저장한다.
+
+예를 들어 다음과 같은 파라미터로 Job을 실행한다고 생각해보자.
+
+```text
+businessDate=2026-10-15
+
+region=KR
+
+run.id=1
+```
+
+Spring Batch는 이러한 값을 `JobParameters` 객체로 관리한다.
+
+그리고 JDBC 기반 JobRepository에서는 해당 파라미터 정보를 `BATCH_JOB_EXECUTION_PARAMS` 테이블에 저장한다.
+
+### Spring Batch 5에서 변경된 테이블 구조
+
+Spring Batch 4.x에서는 대표적으로 다음 컬럼을 사용했다.
+
+```text
+TYPE_CD
+
+KEY_NAME
+
+STRING_VAL
+
+DATE_VAL
+
+LONG_VAL
+
+DOUBLE_VAL
+
+IDENTIFYING
+```
+
+문자열, 날짜, 정수, 실수 등을 저장하기 위한 컬럼이 각각 존재했다.
+
+하지만 Spring Batch 5부터 JobParameters의 타입 처리 방식이 변경되면서 테이블 구조도 단순화되었다.
+
+Spring Batch 5.2.4에서는 다음과 같은 구조를 사용한다.
+
+```sql
+CREATE TABLE BATCH_JOB_EXECUTION_PARAMS (
+    JOB_EXECUTION_ID BIGINT NOT NULL,
+    PARAMETER_NAME VARCHAR(100) NOT NULL,
+    PARAMETER_TYPE VARCHAR(100) NOT NULL,
+    PARAMETER_VALUE VARCHAR(2500),
+    IDENTIFYING CHAR(1) NOT NULL,
+
+    CONSTRAINT JOB_EXEC_PARAMS_FK
+        FOREIGN KEY (JOB_EXECUTION_ID)
+        REFERENCES BATCH_JOB_EXECUTION(JOB_EXECUTION_ID)
+) ENGINE=InnoDB;
+```
+
+컬럼의 의미를 살펴보자.
+
+| 컬럼                 | 의미                             |
+| ------------------ | ------------------------------ |
+| `JOB_EXECUTION_ID` | 파라미터가 속한 JobExecution의 ID      |
+| `PARAMETER_NAME`   | 파라미터 이름                        |
+| `PARAMETER_TYPE`   | 파라미터 값의 타입                     |
+| `PARAMETER_VALUE`  | 파라미터 값                         |
+| `IDENTIFYING`      | JobInstance 식별에 사용하는 파라미터인지 여부 |
+
+예를 들어 다음과 같은 데이터가 저장될 수 있다.
+
+| JOB_EXECUTION_ID | PARAMETER_NAME | PARAMETER_TYPE   | PARAMETER_VALUE | IDENTIFYING |
+| ---------------- | -------------- | ---------------- | --------------- | ----------- |
+| 1                | businessDate   | java.lang.String | 2026-10-15      | Y           |
+| 1                | region         | java.lang.String | KR              | Y           |
+| 1                | requestId      | java.lang.String | request-001     | N           |
+
+이처럼 하나의 JobExecution에는 여러 JobParameters가 연결될 수 있다.
+
+**Spring Batch 5에서는 파라미터 타입별 컬럼을 분리하지 않고 타입 정보와 값을 함께 저장하는 구조를 사용한다.** ([Home][2])
+
+---
+
+## IDENTIFYING은 무엇을 의미할까?
+
+`IDENTIFYING`은 JobParameters 중에서 JobInstance를 식별하는 데 사용할 파라미터인지 나타낸다.
+
+이 컬럼은 JobInstance와 JobExecution의 차이를 이해할 때 특히 중요하다.
+
+예를 들어 다음과 같은 파라미터가 있다고 생각해보자.
+
+```text
+businessDate=2026-10-15
+
+requestId=request-001
+```
+
+여기서 `businessDate`는 정산 기준일이다.
+
+반면 `requestId`는 작업을 요청한 시스템에서 전달하는 추적용 ID다.
+
+정산 기준일은 작업을 구분하는 데 중요하지만 요청 ID는 매번 달라질 수 있다.
+
+이 경우 다음과 같이 설정할 수 있다.
+
+```java
+JobParameters parameters =
+        new JobParametersBuilder()
+                .addString(
+                        "businessDate",
+                        "2026-10-15",
+                        true
+                )
+                .addString(
+                        "requestId",
+                        "request-001",
+                        false
+                )
+                .toJobParameters();
+```
+
+여기서 세 번째 인자가 식별 여부다.
+
+```java
+.addString("businessDate", "2026-10-15", true)
+```
+
+는 JobInstance를 식별하는 파라미터다.
+
+반면 다음 코드는
+
+```java
+.addString("requestId", "request-001", false)
+```
+
+JobInstance 식별에 사용하지 않는 파라미터다.
+
+따라서 동일한 `businessDate`에 대해 `requestId`만 변경한다면 논리적으로 같은 JobInstance를 나타낸다.
+
+```text
+첫 번째 실행
+
+businessDate=2026-10-15  → Identifying
+requestId=request-001   → Non-identifying
+
+
+두 번째 실행
+
+businessDate=2026-10-15  → Identifying
+requestId=request-002   → Non-identifying
+```
+
+두 실행은 식별용 파라미터가 같기 때문에 같은 JobInstance에 속한다.
+
+이미 성공적으로 완료된 JobInstance라면 `requestId`를 변경해도 새로운 작업으로 실행되지 않을 수 있다.
+
+반면 `businessDate`를 변경한다면 새로운 JobInstance가 생성된다.
+
+이것이 `IDENTIFYING` 컬럼의 핵심적인 역할이다.
+
+---
+
+## BATCH_JOB_EXECUTION_CONTEXT
+
+`BATCH_JOB_EXECUTION_CONTEXT`는 JobExecution의 ExecutionContext를 저장한다.
+
+ExecutionContext는 실행 과정에서 필요한 상태 정보를 Key-Value 형태로 관리하는 객체다.
+
+예를 들어 다음과 같은 값을 저장할 수 있다.
+
+```text
+businessDate = 2026-10-15
+
+targetCount = 15000
+
+settlementStatus = READY
+```
+
+이러한 정보는 Job 실행 과정에서 필요한 상태를 유지하거나 Step 사이에 데이터를 전달하는 데 사용할 수 있다.
+
+Spring Batch 5.2.4의 MySQL 테이블 구조는 다음과 같다.
+
+```sql
+CREATE TABLE BATCH_JOB_EXECUTION_CONTEXT (
+    JOB_EXECUTION_ID BIGINT NOT NULL PRIMARY KEY,
+    SHORT_CONTEXT VARCHAR(2500) NOT NULL,
+    SERIALIZED_CONTEXT TEXT,
+
+    CONSTRAINT JOB_EXEC_CTX_FK
+        FOREIGN KEY (JOB_EXECUTION_ID)
+        REFERENCES BATCH_JOB_EXECUTION(JOB_EXECUTION_ID)
+) ENGINE=InnoDB;
+```
+
+각 컬럼의 의미는 다음과 같다.
+
+| 컬럼                   | 의미                         |
+| -------------------- | -------------------------- |
+| `JOB_EXECUTION_ID`   | 연결된 JobExecution의 ID       |
+| `SHORT_CONTEXT`      | 직렬화된 컨텍스트의 문자열 표현          |
+| `SERIALIZED_CONTEXT` | 전체 직렬화 데이터가 필요한 경우 저장되는 영역 |
+
+여기서 중요한 점은 `JOB_EXECUTION_ID`가 기본 키라는 것이다.
+
+따라서 하나의 JobExecution에 대해 하나의 JobExecutionContext 레코드가 대응한다.
+
+---
+
+## JobExecutionContext는 Step 사이에서 공유할 수 있다
+
+JobExecution에 속한 ExecutionContext는 같은 Job 실행에 속한 여러 Step에서 접근할 수 있다.
+
+예를 들어 정산 Job에 두 개의 Step이 있다고 생각해보자.
+
+```text
+settlementJob
+    │
+    ├── prepareStep
+    │      └── 정산 대상 기간 계산
+    │
+    └── settlementStep
+           └── 정산 대상 기간 조회
+```
+
+첫 번째 Step에서 계산한 값을 두 번째 Step에서 사용해야 할 수 있다.
+
+이런 경우 JobExecutionContext를 활용할 수 있다.
+
+### JobExecutionContext에 값 저장하기
+
+다음은 Tasklet에서 JobExecutionContext에 값을 저장하는 코드다.
+
+```java
+.tasklet((contribution, chunkContext) -> {
+
+    JobExecution jobExecution =
+            contribution
+                    .getStepExecution()
+                    .getJobExecution();
+
+    ExecutionContext context =
+            jobExecution.getExecutionContext();
+
+    context.putString(
+            "businessDate",
+            "2026-10-15"
+    );
+
+    return RepeatStatus.FINISHED;
+
+}, transactionManager)
+```
+
+여기서는 다음과 같은 값을 저장했다.
+
+```text
+Key   = businessDate
+
+Value = 2026-10-15
+```
+
+### 다른 Step에서 값 조회하기
+
+두 번째 Step에서는 동일한 JobExecutionContext에 접근할 수 있다.
+
+```java
+.tasklet((contribution, chunkContext) -> {
+
+    JobExecution jobExecution =
+            contribution
+                    .getStepExecution()
+                    .getJobExecution();
+
+    ExecutionContext context =
+            jobExecution.getExecutionContext();
+
+    String businessDate =
+            context.getString("businessDate");
+
+    System.out.println(businessDate);
+
+    return RepeatStatus.FINISHED;
+
+}, transactionManager)
+```
+
+출력 결과는 다음과 같다.
+
+```text
+2026-10-15
+```
+
+두 Step이 같은 JobExecution에 속하므로 JobExecutionContext를 통해 데이터를 공유할 수 있는 것이다.
+
+이때 JobExecutionContext는 일반적인 Java 객체 참조를 이용한 공유뿐 아니라, 적절한 시점에 데이터베이스에 저장되어 재시작 과정에서 복원될 수도 있다.
+
+Spring Batch는 일반적으로 JobExecutionContext를 Step 실행 경계에서 저장하고, StepExecutionContext는 커밋 시점에 저장한다. ([Home][3])
+
+---
+
+## ExecutionContext는 반드시 JSON으로 저장될까?
+
+ExecutionContext는 내부적으로 Key-Value 형태의 데이터를 관리한다.
+
+하지만 데이터베이스에 저장할 때는 직렬화(Serialization) 과정을 거친다.
+
+여기서 주의할 부분이 있다.
+
+**ExecutionContext가 항상 JSON으로 저장되는 것은 아니다.**
+
+Spring Batch 5에서는 기본 ExecutionContext 직렬화 방식이 변경되었다.
+
+Spring Batch 5.2의 기본 구현인 `DefaultExecutionContextSerializer`는 Base64 형태의 직렬화 데이터를 사용한다.
+
+따라서 `SHORT_CONTEXT` 컬럼을 조회했을 때 JSON 형태가 아니라 Base64 문자열이 나타날 수 있다.
+
+JSON 형태로 저장하려면 별도의 직렬화 구현체를 설정해야 한다. ([GitHub][4])
+
+또한 ExecutionContext에는 단순한 값만 저장하는 것이 좋다.
+
+예를 들어 다음과 같은 데이터는 관리하기 쉽다.
+
+```java
+context.putString("businessDate", "2026-10-15");
+
+context.putLong("lastProcessedId", 15000L);
+```
+
+반면 대량의 엔티티나 복잡한 객체 그래프를 통째로 저장하는 것은 권장하지 않는다.
+
+ExecutionContext는 대용량 데이터를 보관하는 저장소가 아니라 **실행 상태와 재시작에 필요한 정보를 저장하는 공간**이기 때문이다.
+
+---
+
+## BATCH_STEP_EXECUTION
+
+`BATCH_STEP_EXECUTION`은 StepExecution의 정보를 저장하는 테이블이다.
+
+JobExecution이 Job의 개별 실행 정보를 관리한다면 StepExecution은 각각의 Step 실행 정보를 관리한다.
+
+예를 들어 다음과 같은 Job을 실행한다고 생각해보자.
+
+```text
+helloJob
+    │
+    ├── helloStep1
+    │
+    └── helloStep2
+```
+
+두 Step이 실제로 실행되었다면 각각에 대한 StepExecution 정보가 생성된다.
+
+개념적으로 다음과 같은 데이터가 저장될 수 있다.
+
+| STEP_EXECUTION_ID | JOB_EXECUTION_ID | STEP_NAME  | STATUS    |
+| ----------------- | ---------------- | ---------- | --------- |
+| 1                 | 1                | helloStep1 | COMPLETED |
+| 2                 | 1                | helloStep2 | COMPLETED |
+
+두 StepExecution은 같은 JobExecution에 속한다.
+
+따라서 `JOB_EXECUTION_ID`가 동일하다.
+
+하지만 서로 다른 Step 실행 기록이므로 `STEP_EXECUTION_ID`는 다르다.
+
+### 테이블 구조
+
+Spring Batch 5.2.4의 MySQL 스키마는 다음과 같다.
+
+```sql
+CREATE TABLE BATCH_STEP_EXECUTION (
+    STEP_EXECUTION_ID BIGINT NOT NULL PRIMARY KEY,
+    VERSION BIGINT NOT NULL,
+    STEP_NAME VARCHAR(100) NOT NULL,
+    JOB_EXECUTION_ID BIGINT NOT NULL,
+    CREATE_TIME DATETIME(6) NOT NULL,
+    START_TIME DATETIME(6) DEFAULT NULL,
+    END_TIME DATETIME(6) DEFAULT NULL,
+    STATUS VARCHAR(10),
+    COMMIT_COUNT BIGINT,
+    READ_COUNT BIGINT,
+    FILTER_COUNT BIGINT,
+    WRITE_COUNT BIGINT,
+    READ_SKIP_COUNT BIGINT,
+    WRITE_SKIP_COUNT BIGINT,
+    PROCESS_SKIP_COUNT BIGINT,
+    ROLLBACK_COUNT BIGINT,
+    EXIT_CODE VARCHAR(2500),
+    EXIT_MESSAGE VARCHAR(2500),
+    LAST_UPDATED DATETIME(6),
+
+    CONSTRAINT JOB_EXEC_STEP_FK
+        FOREIGN KEY (JOB_EXECUTION_ID)
+        REFERENCES BATCH_JOB_EXECUTION(JOB_EXECUTION_ID)
+) ENGINE=InnoDB;
+```
+
+JobExecution 테이블과 비슷한 컬럼들이 존재한다.
+
+하지만 StepExecution에는 한 가지 중요한 차이가 있다.
+
+**Step에서 처리한 데이터의 수와 트랜잭션 처리 횟수까지 관리한다는 점**이다.
+
+---
+
+## BATCH_STEP_EXECUTION 주요 컬럼
+
+컬럼은 크게 실행 정보와 처리 통계 정보로 구분할 수 있다.
+
+### 실행 정보
+
+| 컬럼                  | 의미                   |
+| ------------------- | -------------------- |
+| `STEP_EXECUTION_ID` | StepExecution의 기본 키  |
+| `VERSION`           | 낙관적 락을 위한 버전         |
+| `STEP_NAME`         | Step 이름              |
+| `JOB_EXECUTION_ID`  | 연결된 JobExecution의 ID |
+| `CREATE_TIME`       | StepExecution 생성 시점  |
+| `START_TIME`        | Step 실행 시작 시점        |
+| `END_TIME`          | Step 실행 종료 시점        |
+| `STATUS`            | Step 실행 상태           |
+| `EXIT_CODE`         | Step 종료 코드           |
+| `EXIT_MESSAGE`      | Step 종료 관련 상세 메시지    |
+| `LAST_UPDATED`      | 마지막 메타데이터 갱신 시점      |
+
+이러한 컬럼들은 JobExecution의 실행 정보와 유사하다.
+
+### 처리 통계 정보
+
+| 컬럼                   | 의미                       |
+| -------------------- | ------------------------ |
+| `COMMIT_COUNT`       | 해당 Step 실행에서 발생한 커밋 횟수   |
+| `READ_COUNT`         | 읽은 Item 수                |
+| `FILTER_COUNT`       | Processor에서 필터링한 Item 수  |
+| `WRITE_COUNT`        | Writer를 통해 쓰기 처리한 Item 수 |
+| `READ_SKIP_COUNT`    | 읽기 과정에서 Skip한 Item 수     |
+| `PROCESS_SKIP_COUNT` | 가공 과정에서 Skip한 Item 수     |
+| `WRITE_SKIP_COUNT`   | 쓰기 과정에서 Skip한 Item 수     |
+| `ROLLBACK_COUNT`     | 롤백이 발생한 횟수               |
+
+이러한 값들은 Chunk 기반 배치를 운영할 때 특히 유용하다.
+
+이제 주요 컬럼을 조금 더 자세히 살펴보자.
+
+---
+
+## COMMIT_COUNT
+
+`COMMIT_COUNT`는 해당 Step 실행에서 발생한 커밋 횟수를 기록한다.
+
+예를 들어 1,000건의 데이터를 100건씩 처리한다고 생각해보자.
+
+```java
+.<Order, Settlement>chunk(100, transactionManager)
+```
+
+정상적으로 모든 데이터를 처리했다면 개념적으로 다음과 같은 흐름이 발생한다.
+
+```text
+1 ~ 100건
+    │
+    ▼
+Commit 1
+
+
+101 ~ 200건
+    │
+    ▼
+Commit 2
+
+
+201 ~ 300건
+    │
+    ▼
+Commit 3
+
+
+...
+
+901 ~ 1,000건
+    │
+    ▼
+Commit 10
+```
+
+따라서 `COMMIT_COUNT`는 10이 될 수 있다.
+
+여기서 중요한 것은 `COMMIT_COUNT`가 **트랜잭션당 처리한 데이터 수를 의미하는 것이 아니라 해당 Step 실행에서 커밋한 횟수**라는 점이다.
+
+또한 실제 커밋 횟수는 Chunk의 종료 처리, Retry, Skip, Reader 동작 등에 따라 단순히 전체 데이터 수를 Chunk 크기로 나눈 값과 달라질 수 있다.
+
+따라서 단순한 계산값보다는 실제 메타데이터를 확인하는 것이 정확하다.
+
+---
+
+## READ_COUNT
+
+`READ_COUNT`는 Reader를 통해 읽은 Item 수를 기록한다.
+
+예를 들어 다음과 같은 데이터를 읽는다고 생각해보자.
+
+```text
+Order 1
+
+Order 2
+
+Order 3
+
+Order 4
+
+Order 5
+```
+
+Reader가 다섯 개의 Item을 정상적으로 읽었다면 다음과 같은 값이 기록될 수 있다.
+
+```text
+READ_COUNT = 5
+```
+
+이 값은 데이터베이스에서 실행한 SQL의 수를 의미하지 않는다.
+
+**Reader가 반환한 Item의 수**를 의미한다.
+
+예를 들어 Paging Reader가 한 번의 쿼리로 100건을 조회했더라도 읽은 Item의 수는 100건으로 계산될 수 있다.
+
+---
+
+## FILTER_COUNT
+
+`FILTER_COUNT`는 Processor에서 필터링한 Item 수를 기록한다.
+
+Spring Batch에서 ItemProcessor가 `null`을 반환하면 해당 Item은 필터링된다.
+
+예를 들어 다음과 같은 Processor가 있다고 생각해보자.
+
+```java
+public class OrderProcessor
+        implements ItemProcessor<Order, Order> {
+
+    @Override
+    public Order process(Order order) {
+
+        if (order.isCancelled()) {
+            return null;
+        }
+
+        return order;
+    }
+}
+```
+
+취소된 주문은 Writer로 전달되지 않는다.
+
+예를 들어 100건의 주문을 읽었는데 그중 10건이 취소된 주문이었다면 다음과 같은 결과가 나올 수 있다.
+
+```text
+READ_COUNT = 100
+
+FILTER_COUNT = 10
+
+WRITE_COUNT = 90
+```
+
+이렇게 필터링된 Item은 별도의 예외가 발생한 것이 아니다.
+
+따라서 Skip과는 의미가 다르다.
+
+---
+
+## WRITE_COUNT
+
+`WRITE_COUNT`는 Writer를 통해 쓰기 처리한 Item 수를 기록한다.
+
+예를 들어 Reader가 100건을 읽었다고 생각해보자.
+
+```text
+READ_COUNT = 100
+```
+
+그중 10건이 필터링되었다.
+
+```text
+FILTER_COUNT = 10
+```
+
+나머지 90건이 Writer로 전달되어 정상적으로 처리되었다면 다음과 같은 값이 기록될 수 있다.
+
+```text
+WRITE_COUNT = 90
+```
+
+다만 `WRITE_COUNT`가 90이라는 사실만으로 실제 외부 시스템에 정확히 90건이 영구적으로 반영되었다고 단정해서는 안 된다.
+
+데이터베이스 트랜잭션, 외부 API, 파일 출력 등 Writer가 사용하는 저장 방식에 따라 실제 반영 여부를 별도로 확인해야 할 수 있기 때문이다.
+
+Spring Batch의 `WRITE_COUNT`는 Spring Batch가 관리하는 Item 처리 결과를 이해하기 위한 실행 통계다.
+
+---
+
+## READ_SKIP_COUNT, PROCESS_SKIP_COUNT, WRITE_SKIP_COUNT
+
+Spring Batch에서는 특정 오류가 발생했을 때 해당 Item을 건너뛰고 작업을 계속 진행하도록 설정할 수 있다.
+
+이를 Skip이라고 한다.
+
+Skip은 오류가 발생한 단계에 따라 구분된다.
+
+### READ_SKIP_COUNT
+
+Reader가 데이터를 읽는 과정에서 특정 예외가 발생했고 해당 예외를 Skip하도록 설정했다면 `READ_SKIP_COUNT`가 증가할 수 있다.
+
+예를 들어 CSV 파일에서 잘못된 형식의 데이터를 읽는 경우다.
+
+```text
+Row 1 → 정상
+
+Row 2 → 정상
+
+Row 3 → 형식 오류 → Skip
+
+Row 4 → 정상
+```
+
+이 경우 읽기 과정의 Skip 건수가 기록될 수 있다.
+
+### PROCESS_SKIP_COUNT
+
+Processor에서 데이터를 가공하는 과정에 예외가 발생한 경우다.
+
+예를 들어 정산 금액을 계산하는 과정에서 잘못된 데이터가 발견되었다고 생각해보자.
+
+```text
+Order 1 → 정상 계산
+
+Order 2 → 정상 계산
+
+Order 3 → 계산 오류 → Skip
+
+Order 4 → 정상 계산
+```
+
+이 경우 `PROCESS_SKIP_COUNT`가 증가할 수 있다.
+
+### WRITE_SKIP_COUNT
+
+Writer에서 데이터를 저장하는 과정에 예외가 발생한 경우다.
+
+예를 들어 특정 데이터에 제약조건 위반이 발생했고 해당 예외를 Skip하도록 설정했다면 쓰기 과정의 Skip 건수가 기록될 수 있다.
+
+세 컬럼을 정리하면 다음과 같다.
+
+| 컬럼                   | 오류 발생 단계      |
+| -------------------- | ------------- |
+| `READ_SKIP_COUNT`    | ItemReader    |
+| `PROCESS_SKIP_COUNT` | ItemProcessor |
+| `WRITE_SKIP_COUNT`   | ItemWriter    |
+
+다만 Skip은 모든 예외에 자동으로 적용되지 않는다.
+
+개발자가 Skip 가능한 예외와 허용 범위 등을 설정해야 한다.
+
+---
+
+## ROLLBACK_COUNT
+
+`ROLLBACK_COUNT`는 Step 실행 중 트랜잭션 롤백이 발생한 횟수를 기록한다.
+
+예를 들어 Chunk 기반 Step에서 데이터를 처리하다 예외가 발생했다고 생각해보자.
+
+```text
+트랜잭션 시작
+       │
+       ▼
+데이터 읽기
+       │
+       ▼
+데이터 가공
+       │
+       ▼
+데이터 저장
+       │
+       ▼
+예외 발생
+       │
+       ▼
+Rollback
+```
+
+이 경우 롤백 횟수가 증가할 수 있다.
+
+여기서 한 가지 주의해야 할 부분이 있다.
+
+`ROLLBACK_COUNT`가 증가했다고 해서 반드시 해당 Step이 최종적으로 실패한 것은 아니다.
+
+Spring Batch에서 Retry나 Skip을 처리하는 과정에서도 롤백이 발생할 수 있기 때문이다.
+
+예를 들어 다음과 같은 흐름을 생각해보자.
+
+```text
+첫 번째 처리
+    │
+    ▼
+일시적인 오류
+    │
+    ▼
+Rollback
+    │
+    ▼
+Retry
+    │
+    ▼
+정상 처리
+    │
+    ▼
+Commit
+```
+
+최종적으로 Step은 성공할 수 있다.
+
+하지만 중간에 롤백이 발생했으므로 `ROLLBACK_COUNT`가 1 이상일 수 있다.
+
+따라서 `ROLLBACK_COUNT`는 실패 여부를 나타내는 값이 아니라 **실행 중 발생한 트랜잭션 롤백 횟수**로 이해해야 한다. ([Home][1])
+
+---
+
+## BATCH_STEP_EXECUTION_CONTEXT
+
+마지막 테이블은 `BATCH_STEP_EXECUTION_CONTEXT`다.
+
+이 테이블은 StepExecution의 ExecutionContext를 저장한다.
+
+구조는 JobExecutionContext와 유사하다.
+
+```sql
+CREATE TABLE BATCH_STEP_EXECUTION_CONTEXT (
+    STEP_EXECUTION_ID BIGINT NOT NULL PRIMARY KEY,
+    SHORT_CONTEXT VARCHAR(2500) NOT NULL,
+    SERIALIZED_CONTEXT TEXT,
+
+    CONSTRAINT STEP_EXEC_CTX_FK
+        FOREIGN KEY (STEP_EXECUTION_ID)
+        REFERENCES BATCH_STEP_EXECUTION(STEP_EXECUTION_ID)
+) ENGINE=InnoDB;
+```
+
+각 컬럼의 의미는 다음과 같다.
+
+| 컬럼                   | 의미                         |
+| -------------------- | -------------------------- |
+| `STEP_EXECUTION_ID`  | 연결된 StepExecution의 ID      |
+| `SHORT_CONTEXT`      | 직렬화된 컨텍스트의 문자열 표현          |
+| `SERIALIZED_CONTEXT` | 전체 직렬화 데이터가 필요한 경우 저장되는 영역 |
+
+JobExecutionContext와 가장 큰 차이는 관리 범위다.
+
+JobExecutionContext는 JobExecution에 속한다.
+
+StepExecutionContext는 StepExecution에 속한다.
+
+따라서 각각의 Step이 자신의 ExecutionContext를 가진다.
+
+---
+
+## JobExecutionContext와 StepExecutionContext의 차이
+
+두 ExecutionContext는 모두 Key-Value 형태로 데이터를 저장할 수 있다.
+
+하지만 데이터를 공유할 수 있는 범위가 다르다.
+
+| 구분            | JobExecutionContext | StepExecutionContext |
+| ------------- | ------------------- | -------------------- |
+| 소속            | JobExecution        | StepExecution        |
+| 관리 범위         | Job 실행 단위           | Step 실행 단위           |
+| Step 간 데이터 공유 | 가능                  | 자동 공유되지 않음           |
+| 주요 목적         | Step 간 공유 상태        | 개별 Step의 처리 상태       |
+| 대표 데이터        | 정산 기준일, 공통 처리 정보    | 마지막 처리 ID, Reader 위치 |
+| 일반적인 저장 시점    | Step 실행 경계          | 커밋 시점                |
+
+예를 들어 다음과 같은 상황을 생각해보자.
+
+```text
+settlementJob
+    │
+    ├── prepareStep
+    │      │
+    │      ├── JobExecutionContext
+    │      │      businessDate=2026-10-15
+    │      │
+    │      └── StepExecutionContext
+    │             lastProcessedId=100
+    │
+    └── settlementStep
+           │
+           ├── JobExecutionContext
+           │      businessDate=2026-10-15
+           │
+           └── StepExecutionContext
+                  별도의 상태 정보
+```
+
+`businessDate`는 JobExecutionContext에 저장되었으므로 두 Step에서 접근할 수 있다.
+
+반면 `lastProcessedId`는 `prepareStep`의 StepExecutionContext에 저장되었다.
+
+따라서 `settlementStep`이 자신의 StepExecutionContext를 조회한다고 해서 이 값이 자동으로 전달되는 것은 아니다.
+
+이러한 차이는 실제 배치 개발에서 중요하다.
+
+---
+
+## StepExecutionContext에 처리 위치 저장하기
+
+StepExecutionContext는 재시작 기능과 밀접하게 연결되어 있다.
+
+예를 들어 100만 건의 데이터를 처리하는 배치를 생각해보자.
+
+배치가 50만 건까지 처리한 뒤 서버 장애로 중단되었다.
+
+```text
+1건
+ │
+ ▼
+100,000건
+ │
+ ▼
+200,000건
+ │
+ ▼
+300,000건
+ │
+ ▼
+400,000건
+ │
+ ▼
+500,000건
+ │
+ ▼
+서버 장애
+```
+
+이때 처리 위치를 저장하지 않았다면 어디부터 다시 시작해야 하는지 알기 어렵다.
+
+StepExecutionContext에는 다음과 같은 상태 정보를 저장할 수 있다.
+
+```text
+lastProcessedId = 500000
+```
+
+예를 들어 다음과 같이 사용할 수 있다.
+
+```java
+StepExecution stepExecution =
+        contribution.getStepExecution();
+
+ExecutionContext context =
+        stepExecution.getExecutionContext();
+
+context.putLong(
+        "lastProcessedId",
+        500000L
+);
+```
+
+이 값이 적절한 시점에 영속적으로 저장되었다면 재시작 과정에서 복원하여 활용할 수 있다.
+
+다만 이 코드를 작성했다고 해서 Spring Batch가 자동으로 해당 ID부터 비즈니스 데이터를 다시 조회하는 것은 아니다.
+
+실제로 어느 위치부터 데이터를 처리할지는 Reader와 비즈니스 로직이 결정해야 한다.
+
+예를 들어 다음과 같은 SQL을 사용할 수 있다.
+
+```sql
+SELECT *
+FROM PAYMENT
+WHERE PAYMENT_ID > :lastProcessedId
+ORDER BY PAYMENT_ID
+LIMIT 1000;
+```
+
+여기서 `lastProcessedId`에는 저장된 처리 위치를 전달한다.
+
+이런 방식으로 재시작 가능한 Reader를 구현할 수 있다.
+
+하지만 처리 위치를 저장하는 시점과 데이터베이스 커밋 시점이 일치하지 않으면 중복 처리나 데이터 누락이 발생할 수 있다.
+
+따라서 실제 운영에서는 Spring Batch가 제공하는 재시작 가능한 Reader를 우선적으로 검토하는 것이 좋다.
+
+---
+
+## StepExecutionContext의 값을 다른 Step으로 전달하려면?
+
+StepExecutionContext는 Step마다 별도로 관리된다.
+
+따라서 Step 1에서 다음 값을 저장했다고 생각해보자.
+
+```java
+stepExecution
+        .getExecutionContext()
+        .putString(
+                "resultFileName",
+                "settlement.csv"
+        );
+```
+
+Step 2에서 자신의 StepExecutionContext를 조회한다고 해서 이 값을 바로 가져올 수 있는 것은 아니다.
+
+그렇다면 Step 1에서 생성한 값을 Step 2에 전달하려면 어떻게 해야 할까?
+
+가장 일반적인 방법 중 하나는 필요한 값을 JobExecutionContext로 옮기는 것이다.
+
+Spring Batch는 이를 위한 `ExecutionContextPromotionListener`를 제공한다.
+
+이 Listener는 StepExecutionContext에 저장된 특정 값을 JobExecutionContext로 전달할 수 있다. ([Home][5])
+
+예를 들어 다음과 같이 구성할 수 있다.
+
+```java
+@Bean
+public ExecutionContextPromotionListener promotionListener() {
+
+    ExecutionContextPromotionListener listener =
+            new ExecutionContextPromotionListener();
+
+    listener.setKeys(
+            new String[]{"resultFileName"}
+    );
+
+    return listener;
+}
+```
+
+그리고 해당 Listener를 Step에 등록하면 지정한 키를 JobExecutionContext로 승격시킬 수 있다.
+
+이렇게 하면 다음과 같은 흐름을 구현할 수 있다.
+
+```text
+Step 1
+    │
+    ▼
+StepExecutionContext
+    │
+    │ resultFileName 저장
+    ▼
+ExecutionContextPromotionListener
+    │
+    ▼
+JobExecutionContext
+    │
+    ▼
+Step 2
+    │
+    ▼
+resultFileName 조회
+```
+
+이처럼 ExecutionContext는 단순히 값을 저장하는 기능뿐 아니라 Step 사이의 데이터 전달과 재시작을 위한 상태 관리에도 활용할 수 있다.
+
+---
+
+## 실제 Job을 실행하고 메타데이터 확인하기
+
+지금까지 살펴본 개념을 실제 코드로 연결해보자.
+
+앞에서 만든 `helloJob`을 이용할 수도 있지만, 이번에는 ExecutionContext에 값을 직접 저장하고 확인할 수 있도록 별도의 예제를 구성한다.
+
+단, 기존 `helloJob`과 함께 등록한다면 자동 실행 대상을 명시해야 하므로 이번 예제에서는 `metadataJob`을 실행 대상으로 지정한다.
+
+### MetadataJobConfiguration
+
+다음과 같은 설정 클래스를 작성한다.
+
+```java
+package com.example.batch;
+
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.Step;
+import org.springframework.batch.core.StepExecution;
+import org.springframework.batch.core.job.builder.JobBuilder;
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.step.builder.StepBuilder;
+import org.springframework.batch.item.ExecutionContext;
+import org.springframework.batch.repeat.RepeatStatus;
+
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.transaction.PlatformTransactionManager;
+
+@Configuration
+public class MetadataJobConfiguration {
+
+    @Bean
+    public Job metadataJob(
+            JobRepository jobRepository,
+            @Qualifier("prepareStep") Step prepareStep,
+            @Qualifier("checkStep") Step checkStep
+    ) {
+        return new JobBuilder("metadataJob", jobRepository)
+                .start(prepareStep)
+                .next(checkStep)
+                .build();
+    }
+
+    @Bean
+    public Step prepareStep(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+        return new StepBuilder("prepareStep", jobRepository)
+                .tasklet((contribution, chunkContext) -> {
+
+                    StepExecution stepExecution =
+                            contribution.getStepExecution();
+
+                    JobExecution jobExecution =
+                            stepExecution.getJobExecution();
+
+                    ExecutionContext jobContext =
+                            jobExecution.getExecutionContext();
+
+                    ExecutionContext stepContext =
+                            stepExecution.getExecutionContext();
+
+                    String businessDate =
+                            jobExecution
+                                    .getJobParameters()
+                                    .getString("businessDate");
+
+                    jobContext.putString(
+                            "businessDate",
+                            businessDate
+                    );
+
+                    stepContext.putString(
+                            "processedStatus",
+                            "PREPARED"
+                    );
+
+                    System.out.println(
+                            "prepareStep 실행"
+                    );
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+
+    @Bean
+    public Step checkStep(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+        return new StepBuilder("checkStep", jobRepository)
+                .tasklet((contribution, chunkContext) -> {
+
+                    StepExecution stepExecution =
+                            contribution.getStepExecution();
+
+                    JobExecution jobExecution =
+                            stepExecution.getJobExecution();
+
+                    ExecutionContext jobContext =
+                            jobExecution.getExecutionContext();
+
+                    ExecutionContext stepContext =
+                            stepExecution.getExecutionContext();
+
+                    String businessDate =
+                            jobContext.getString("businessDate");
+
+                    boolean hasProcessedStatus =
+                            stepContext.containsKey("processedStatus");
+
+                    System.out.println(
+                            "businessDate = " + businessDate
+                    );
+
+                    System.out.println(
+                            "processedStatus 존재 여부 = "
+                                    + hasProcessedStatus
+                    );
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+}
+```
+
+이 예제에서 중요한 부분은 `prepareStep`이다.
+
+먼저 JobExecutionContext에 정산 기준일을 저장한다.
+
+```java
+jobContext.putString(
+        "businessDate",
+        businessDate
+);
+```
+
+그리고 StepExecutionContext에는 해당 Step만 사용할 상태를 저장한다.
+
+```java
+stepContext.putString(
+        "processedStatus",
+        "PREPARED"
+);
+```
+
+두 번째 Step에서는 JobExecutionContext의 값을 조회한다.
+
+```java
+String businessDate =
+        jobContext.getString("businessDate");
+```
+
+반면 자신의 StepExecutionContext에서 `processedStatus`를 조회하면 해당 키가 존재하지 않는다.
+
+```java
+boolean hasProcessedStatus =
+        stepContext.containsKey("processedStatus");
+```
+
+두 Step의 ExecutionContext는 서로 다른 객체이기 때문이다.
+
+이 코드를 통해 JobExecutionContext와 StepExecutionContext의 차이를 확인할 수 있다.
+
+---
+
+## MySQL 환경 설정
+
+이번에는 실행 메타데이터를 실제로 확인해야 하므로 MySQL을 사용한다.
+
+`application-mysql.yml`을 다음과 같이 설정한다.
+
+```yaml
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3307/batch_db
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    username: ${BATCH_DB_USERNAME:batch_user}
+    password: ${BATCH_DB_PASSWORD:localpass}
+
+  batch:
+    jdbc:
+      initialize-schema: never
+
+    job:
+      enabled: true
+      name: metadataJob
+```
+
+여기서 다음 설정은 배치 메타데이터 스키마를 자동으로 생성하지 않도록 한다.
+
+```yaml
+spring:
+  batch:
+    jdbc:
+      initialize-schema: never
+```
+
+따라서 이전에 Spring Batch 5.2.4의 MySQL 스키마가 생성되어 있어야 한다.
+
+이번에는 실행 결과를 확인하는 것이 목적이므로 기존 메타데이터 테이블을 유지한다.
+
+그리고 다음 설정을 통해 자동 실행할 Job을 지정한다.
+
+```yaml
+spring:
+  batch:
+    job:
+      name: metadataJob
+```
+
+---
+
+## metadataJob 실행하기
+
+먼저 Maven으로 프로젝트를 빌드한다.
+
+```bash
+./mvnw clean package
+```
+
+정상적으로 빌드가 완료되었다면 Jar 파일이 생성된다.
+
+이제 다음과 같이 실행한다.
+
+```bash
+java -jar target/spring-batch-demo-0.0.1-SNAPSHOT.jar \
+  --spring.profiles.active=mysql \
+  businessDate=2026-10-15
+```
+
+여기서 다음 값은 Spring Boot의 Profile 설정이다.
+
+```text
+--spring.profiles.active=mysql
+```
+
+반면 다음 값은 Spring Batch의 JobParameters로 전달된다.
+
+```text
+businessDate=2026-10-15
+```
+
+실행이 정상적으로 완료되었다면 다음과 같은 결과를 확인할 수 있다.
+
+```text
+prepareStep 실행
+
+businessDate = 2026-10-15
+
+processedStatus 존재 여부 = false
+```
+
+첫 번째 Step에서 JobExecutionContext에 저장한 `businessDate`는 두 번째 Step에서도 조회할 수 있다.
+
+하지만 첫 번째 Step의 StepExecutionContext에 저장한 `processedStatus`는 두 번째 Step의 StepExecutionContext에 존재하지 않는다.
+
+이것이 두 ExecutionContext의 차이다.
+
+---
+
+## BATCH_JOB_INSTANCE 확인
+
+이제 MySQL에서 다음 SQL을 실행해보자.
+
+```sql
+SELECT
+    JOB_INSTANCE_ID,
+    VERSION,
+    JOB_NAME,
+    JOB_KEY
+FROM BATCH_JOB_INSTANCE
+WHERE JOB_NAME = 'metadataJob';
+```
+
+정상적으로 실행되었다면 `metadataJob`에 해당하는 JobInstance가 생성되어 있을 것이다.
+
+예를 들어 다음과 같은 형태다.
+
+| JOB_INSTANCE_ID | VERSION | JOB_NAME    | JOB_KEY |
+| --------------- | ------- | ----------- | ------- |
+| 1               | 0       | metadataJob | 생성된 해시값 |
+
+실제 ID와 JobKey는 실행 환경에 따라 달라진다.
+
+여기서 Job 이름은 다음과 같다.
+
+```text
+metadataJob
+```
+
+그리고 JobKey는 식별용 JobParameters를 기반으로 생성된다.
+
+이번에는 다음 파라미터를 사용했다.
+
+```text
+businessDate=2026-10-15
+```
+
+따라서 해당 파라미터가 JobInstance를 식별하는 데 사용된다.
+
+---
+
+## BATCH_JOB_EXECUTION 확인
+
+이번에는 JobExecution을 조회해보자.
+
+```sql
+SELECT
+    JOB_EXECUTION_ID,
+    JOB_INSTANCE_ID,
+    CREATE_TIME,
+    START_TIME,
+    END_TIME,
+    STATUS,
+    EXIT_CODE,
+    EXIT_MESSAGE
+FROM BATCH_JOB_EXECUTION
+ORDER BY JOB_EXECUTION_ID DESC;
+```
+
+Job이 정상적으로 완료되었다면 다음과 같은 정보를 확인할 수 있다.
+
+```text
+STATUS = COMPLETED
+
+EXIT_CODE = COMPLETED
+```
+
+또한 Job의 생성 시점과 시작·종료 시점도 확인할 수 있다.
+
+이 테이블을 이용하면 배치가 정상적으로 완료되었는지, 실패했는지, 어느 시점에 실행되었는지를 파악할 수 있다.
+
+---
+
+## BATCH_JOB_EXECUTION_PARAMS 확인
+
+이번에는 JobParameters가 저장되었는지 확인해보자.
+
+```sql
+SELECT
+    JOB_EXECUTION_ID,
+    PARAMETER_NAME,
+    PARAMETER_TYPE,
+    PARAMETER_VALUE,
+    IDENTIFYING
+FROM BATCH_JOB_EXECUTION_PARAMS
+ORDER BY JOB_EXECUTION_ID DESC;
+```
+
+이번에는 다음 파라미터를 전달했다.
+
+```text
+businessDate=2026-10-15
+```
+
+따라서 다음과 같은 데이터가 저장될 수 있다.
+
+| PARAMETER_NAME | PARAMETER_TYPE   | PARAMETER_VALUE | IDENTIFYING |
+| -------------- | ---------------- | --------------- | ----------- |
+| businessDate   | java.lang.String | 2026-10-15      | Y           |
+
+여기서 `IDENTIFYING`이 `Y`인 이유는 기본적인 JobParameters 변환 과정에서 해당 값을 식별용 파라미터로 사용하기 때문이다.
+
+---
+
+## BATCH_JOB_EXECUTION_CONTEXT 확인
+
+이번에는 JobExecutionContext를 조회해보자.
+
+```sql
+SELECT
+    JOB_EXECUTION_ID,
+    SHORT_CONTEXT,
+    SERIALIZED_CONTEXT
+FROM BATCH_JOB_EXECUTION_CONTEXT;
+```
+
+첫 번째 Step에서 다음 값을 저장했다.
+
+```java
+jobContext.putString(
+        "businessDate",
+        businessDate
+);
+```
+
+따라서 JobExecutionContext에는 `businessDate`에 해당하는 정보가 포함된다.
+
+다만 기본 직렬화 방식에서는 `SHORT_CONTEXT`가 사람이 읽기 쉬운 JSON으로 출력되지 않을 수 있다.
+
+Spring Batch 5.2의 기본 직렬화 방식은 Base64 기반이므로, 실제 컬럼 값이 인코딩된 문자열 형태로 보일 수 있다.
+
+이러한 데이터는 일반적인 애플리케이션 설정값이라기보다 Spring Batch가 실행 상태를 저장하고 복원하기 위한 정보로 이해하면 된다.
+
+---
+
+## BATCH_STEP_EXECUTION 확인
+
+이번에는 StepExecution 정보를 조회해보자.
+
+```sql
+SELECT
+    STEP_EXECUTION_ID,
+    JOB_EXECUTION_ID,
+    STEP_NAME,
+    STATUS,
+    COMMIT_COUNT,
+    READ_COUNT,
+    FILTER_COUNT,
+    WRITE_COUNT,
+    ROLLBACK_COUNT
+FROM BATCH_STEP_EXECUTION
+ORDER BY STEP_EXECUTION_ID;
+```
+
+이번 Job에는 두 개의 Step이 있다.
+
+```text
+prepareStep
+
+checkStep
+```
+
+따라서 정상적으로 모두 실행되었다면 각각의 StepExecution 정보가 저장된다.
+
+예를 들어 다음과 같은 결과를 확인할 수 있다.
+
+| STEP_NAME   | STATUS    | COMMIT_COUNT | READ_COUNT | WRITE_COUNT |
+| ----------- | --------- | -----------: | ---------: | ----------: |
+| prepareStep | COMPLETED |            1 |          0 |           0 |
+| checkStep   | COMPLETED |            1 |          0 |           0 |
+
+위 값은 일반적인 단일 실행 Tasklet을 가정한 예시이며, 실제 커밋 횟수는 실행 구성에 따라 달라질 수 있다.
+
+이번에는 Tasklet 기반 Step이므로 ItemReader나 ItemWriter를 사용하지 않았다.
+
+따라서 다음 값은 0일 수 있다.
+
+```text
+READ_COUNT = 0
+
+WRITE_COUNT = 0
+```
+
+반면 Tasklet은 정상적으로 실행되었으며, 해당 실행 단위에서 트랜잭션 커밋이 발생할 수 있다.
+
+이러한 결과를 통해 StepExecution의 처리 통계 컬럼이 어떤 역할을 하는지 이해할 수 있다.
+
+---
+
+## BATCH_STEP_EXECUTION_CONTEXT 확인
+
+마지막으로 StepExecutionContext를 조회해보자.
+
+```sql
+SELECT
+    se.STEP_NAME,
+    sec.SHORT_CONTEXT,
+    sec.SERIALIZED_CONTEXT
+FROM BATCH_STEP_EXECUTION_CONTEXT sec
+JOIN BATCH_STEP_EXECUTION se
+    ON sec.STEP_EXECUTION_ID = se.STEP_EXECUTION_ID
+ORDER BY se.STEP_EXECUTION_ID;
+```
+
+이번 예제에서는 `prepareStep`의 StepExecutionContext에 다음 값을 저장했다.
+
+```java
+stepContext.putString(
+        "processedStatus",
+        "PREPARED"
+);
+```
+
+따라서 `prepareStep`에 해당하는 컨텍스트에는 이 정보가 포함된다.
+
+반면 `checkStep`은 자신의 StepExecutionContext를 가지므로 같은 키가 자동으로 존재하지 않는다.
+
+이렇게 각각의 StepExecutionContext가 독립적으로 저장되는 것을 확인할 수 있다.
+
+---
+
+## Job과 Step의 실행 이력을 함께 조회하기
+
+실제 운영 환경에서는 Job과 Step의 실행 정보를 함께 확인해야 하는 경우가 많다.
+
+예를 들어 특정 정산 Job이 실패했다고 생각해보자.
+
+운영자는 다음 정보를 확인해야 한다.
+
+```text
+어떤 Job이 실패했는가?
+
+언제 실행되었는가?
+
+어떤 Step에서 실패했는가?
+
+몇 건의 데이터를 처리했는가?
+
+몇 번 롤백되었는가?
+```
+
+이때 다음과 같은 SQL을 사용할 수 있다.
+
+```sql
+SELECT
+    ji.JOB_NAME,
+    ji.JOB_INSTANCE_ID,
+
+    je.JOB_EXECUTION_ID,
+    je.STATUS AS JOB_STATUS,
+    je.START_TIME AS JOB_START_TIME,
+    je.END_TIME AS JOB_END_TIME,
+
+    se.STEP_EXECUTION_ID,
+    se.STEP_NAME,
+    se.STATUS AS STEP_STATUS,
+
+    se.READ_COUNT,
+    se.FILTER_COUNT,
+    se.WRITE_COUNT,
+
+    se.READ_SKIP_COUNT,
+    se.PROCESS_SKIP_COUNT,
+    se.WRITE_SKIP_COUNT,
+
+    se.COMMIT_COUNT,
+    se.ROLLBACK_COUNT,
+
+    se.EXIT_CODE,
+    se.EXIT_MESSAGE
+
+FROM BATCH_JOB_INSTANCE ji
+
+JOIN BATCH_JOB_EXECUTION je
+    ON ji.JOB_INSTANCE_ID = je.JOB_INSTANCE_ID
+
+LEFT JOIN BATCH_STEP_EXECUTION se
+    ON je.JOB_EXECUTION_ID = se.JOB_EXECUTION_ID
+
+WHERE ji.JOB_NAME = 'metadataJob'
+
+ORDER BY
+    je.JOB_EXECUTION_ID DESC,
+    se.STEP_EXECUTION_ID;
+```
+
+이 쿼리는 다음 관계를 이용한다.
+
+```text
+BATCH_JOB_INSTANCE
+        │
+        ▼
+BATCH_JOB_EXECUTION
+        │
+        ▼
+BATCH_STEP_EXECUTION
+```
+
+결과적으로 하나의 Job에 대한 실행 이력과 각 Step의 처리 정보를 함께 확인할 수 있다.
+
+이러한 쿼리는 배치 모니터링이나 장애 분석을 위한 관리 기능을 구현할 때 유용하다.
+
+---
+
+## 실패한 Job을 재시작하면 테이블은 어떻게 변경될까?
+
+지금까지는 정상적으로 완료된 Job을 기준으로 살펴봤다.
+
+이번에는 실패한 Job을 재시작한다고 생각해보자.
+
+첫 번째 실행에서 Job이 실패했다.
+
+```text
+JobInstance 1
+      │
+      ▼
+JobExecution 1
+      │
+      ▼
+FAILED
+```
+
+이후 동일한 JobInstance를 재시작하면 새로운 JobExecution이 생성될 수 있다.
+
+```text
+JobInstance 1
+      │
+      ├── JobExecution 1
+      │       └── FAILED
+      │
+      └── JobExecution 2
+              └── COMPLETED
+```
+
+데이터베이스에서는 다음과 같은 관계를 확인할 수 있다.
+
+### BATCH_JOB_INSTANCE
+
+| JOB_INSTANCE_ID | JOB_NAME      | JOB_KEY |
+| --------------- | ------------- | ------- |
+| 1               | settlementJob | 해시값 A   |
+
+JobInstance는 하나다.
+
+### BATCH_JOB_EXECUTION
+
+| JOB_EXECUTION_ID | JOB_INSTANCE_ID | STATUS    |
+| ---------------- | --------------- | --------- |
+| 1                | 1               | FAILED    |
+| 2                | 1               | COMPLETED |
+
+JobExecution은 두 개다.
+
+이렇게 Spring Batch는 실패한 실행 기록을 삭제하지 않고 새로운 실행 시도를 추가로 관리한다.
+
+다만 실패한 Job을 재시작할 때 모든 Step이 처음부터 다시 실행되는 것은 아니다.
+
+기본적인 재시작 동작에서는 이미 성공적으로 완료된 Step을 건너뛰고 실패했던 Step부터 실행을 이어갈 수 있다.
+
+또한 재시작 가능한 Reader를 사용했다면 ExecutionContext를 통해 이전 처리 상태를 복원할 수 있다.
+
+따라서 재시작을 이해하려면 다음 세 가지를 함께 고려해야 한다.
+
+**JobInstance는 논리적인 실행 대상을 식별한다. JobExecution은 실행 시도를 구분한다. ExecutionContext는 필요한 실행 상태를 저장하고 복원하는 데 사용한다.**
+
+---
+
+## 메타데이터 테이블을 직접 수정해도 될까?
+
+Spring Batch의 메타데이터 테이블은 일반적인 업무 테이블과는 성격이 다르다.
+
+JobRepository가 내부적으로 해당 데이터를 관리하기 때문이다.
+
+예를 들어 Job이 실행 중일 때 다음과 같이 직접 상태를 변경한다고 생각해보자.
+
+```sql
+UPDATE BATCH_JOB_EXECUTION
+SET STATUS = 'COMPLETED'
+WHERE JOB_EXECUTION_ID = 1;
+```
+
+데이터베이스의 상태는 `COMPLETED`로 변경될 수 있다.
+
+하지만 실제 Job이 정상적으로 종료된 것은 아닐 수 있다.
+
+또한 Spring Batch가 관리하는 객체의 상태와 데이터베이스의 상태가 일치하지 않을 수 있다.
+
+이러한 불일치는 재시작이나 실행 관리 과정에서 문제를 발생시킬 수 있다.
+
+따라서 Spring Batch 메타데이터는 임의로 수정하지 않는 것이 좋다.
+
+실행 상태를 변경해야 한다면 Spring Batch가 제공하는 API나 운영 절차를 통해 처리하는 것이 적절하다.
+
+---
+
+## 운영 환경에서는 메타데이터도 관리 대상이다
+
+Spring Batch 메타데이터는 실행할 때마다 계속 누적된다.
+
+예를 들어 매일 100개의 Job을 실행한다고 생각해보자.
+
+하루에 100개의 JobExecution이 생성되고, 각 Job에 5개의 Step이 있다면 많은 StepExecution도 함께 생성된다.
+
+이러한 실행 기록이 수개월, 수년 동안 쌓이면 메타데이터 테이블의 크기가 증가할 수 있다.
+
+따라서 운영 환경에서는 다음 사항을 고려해야 한다.
+
+### 메타데이터 보관 기간
+
+모든 실행 기록을 영구적으로 저장해야 하는 것은 아닐 수 있다.
+
+예를 들어 완료된 배치의 상세 실행 기록은 일정 기간 이후 보관용 데이터베이스로 이동할 수 있다.
+
+하지만 아직 재시작이 필요한 Job의 실행 정보는 삭제하지 않아야 한다.
+
+특히 `ExecutionContext`를 삭제하면 실패한 배치가 이전 상태를 복원하지 못할 수 있다.
+
+### 모니터링과 알림
+
+메타데이터에는 Job과 Step의 실행 상태가 저장된다.
+
+따라서 다음과 같은 모니터링을 구성할 수 있다.
+
+```text
+FAILED Job 탐지
+
+장시간 실행 중인 Job 탐지
+
+Step별 처리 건수 확인
+
+Rollback 횟수 증가 확인
+
+Skip 건수 증가 확인
+```
+
+이러한 지표를 이용하면 배치 장애를 더 빠르게 발견할 수 있다.
+
+### 데이터베이스 성능
+
+많은 Job이 동시에 실행되면 동일한 메타데이터 테이블에 대한 접근도 증가한다.
+
+특히 JobRepository는 실행 정보의 정합성을 관리하기 위해 트랜잭션과 낙관적 락을 사용한다.
+
+따라서 대규모 환경에서는 메타데이터 테이블의 인덱스, 커넥션 풀 크기, 트랜잭션 처리량 등도 함께 검토해야 한다.
+
+Spring Batch 공식 문서 역시 메타데이터 보관과 삭제가 재시작 동작에 영향을 줄 수 있다는 점을 설명하고 있다. ([Home][1])
+
+---
+
+## Spring Batch 4와 5의 주요 스키마 차이
+
+마지막으로 버전 차이를 다시 정리해보자.
+
+Spring Batch 4.x에서 사용하던 메타데이터 스키마와 Spring Batch 5.2.4의 구조는 완전히 동일하지 않다.
+
+특히 JobParameters 관련 테이블에서 차이가 크다.
+
+| 항목                   | Spring Batch 4.x             | Spring Batch 5.2.4 |
+| -------------------- | ---------------------------- | ------------------ |
+| JobParameter 타입      | String, Long, Double, Date 등 | 확장된 타입 처리 지원       |
+| 파라미터 타입 컬럼           | `TYPE_CD`                    | `PARAMETER_TYPE`   |
+| 파라미터 이름 컬럼           | `KEY_NAME`                   | `PARAMETER_NAME`   |
+| 파라미터 값 컬럼            | 타입별 개별 컬럼                    | `PARAMETER_VALUE`  |
+| StepExecution 생성 시점  | 사용한 스키마 버전에 따라 구조 차이         | `CREATE_TIME` 존재   |
+| ExecutionContext 직렬화 | 과거 기본 JSON 기반 설정 사용          | 기본 Base64 기반 직렬화   |
+
+특히 다음과 같은 SQL은 Spring Batch 4.x의 구조를 기준으로 작성된 것이다.
+
+```sql
+SELECT
+    TYPE_CD,
+    KEY_NAME,
+    STRING_VAL,
+    DATE_VAL,
+    LONG_VAL,
+    DOUBLE_VAL
+FROM BATCH_JOB_EXECUTION_PARAMS;
+```
+
+Spring Batch 5.2.4에서는 이러한 컬럼이 존재하지 않는다.
+
+대신 다음과 같이 조회해야 한다.
+
+```sql
+SELECT
+    PARAMETER_NAME,
+    PARAMETER_TYPE,
+    PARAMETER_VALUE,
+    IDENTIFYING
+FROM BATCH_JOB_EXECUTION_PARAMS;
+```
+
+따라서 Spring Batch를 업그레이드할 때는 Java 코드뿐 아니라 메타데이터 스키마도 함께 확인해야 한다.
+
+기존 스키마를 사용 중이라면 현재 버전에 맞는 마이그레이션 절차가 필요할 수 있다.
+
+---
+
+## 정리
+
+Spring Batch는 Job과 Step의 실행 정보를 관리하기 위해 메타데이터 테이블을 사용한다.
+
+주요 메타데이터 테이블은 6개이며 크게 Job 관련 테이블과 Step 관련 테이블로 구분된다.
+
+### Job 관련 테이블
+
+| 테이블                           | 핵심 역할                                 |
+| ----------------------------- | ------------------------------------- |
+| `BATCH_JOB_INSTANCE`          | Job 이름과 식별용 파라미터를 기준으로 JobInstance 구분 |
+| `BATCH_JOB_EXECUTION`         | 실제 Job 실행 시도와 상태 관리                   |
+| `BATCH_JOB_EXECUTION_PARAMS`  | Job 실행 시 전달한 파라미터 저장                  |
+| `BATCH_JOB_EXECUTION_CONTEXT` | Job 실행 중 필요한 상태 및 Step 간 공유 데이터 저장    |
+
+### Step 관련 테이블
+
+| 테이블                            | 핵심 역할                   |
+| ------------------------------ | ----------------------- |
+| `BATCH_STEP_EXECUTION`         | Step 실행 상태와 처리 통계 관리    |
+| `BATCH_STEP_EXECUTION_CONTEXT` | Step별 실행 상태 및 재시작 정보 저장 |
+
+이러한 테이블들은 서로 관계를 가지고 있다.
+
+가장 기본적인 구조는 다음과 같다.
+
+```text
+JobInstance
+     │
+     │ 1:N
+     ▼
+JobExecution
+     │
+     │ 1:N
+     ▼
+StepExecution
+```
+
+하나의 JobInstance에는 여러 JobExecution이 존재할 수 있다.
+
+예를 들어 실패한 Job을 재시작한다면 동일한 JobInstance에 새로운 JobExecution이 추가된다.
+
+그리고 각각의 JobExecution에는 여러 StepExecution이 연결될 수 있다.
+
+또한 Spring Batch는 JobExecutionContext와 StepExecutionContext를 구분한다.
+
+JobExecutionContext는 같은 Job 실행에 속한 Step 사이에서 데이터를 공유하는 데 사용할 수 있다.
+
+반면 StepExecutionContext는 Step별로 독립적으로 관리되며, 마지막 처리 위치 같은 재시작 관련 정보를 저장하는 데 활용된다.
+
+특히 `BATCH_STEP_EXECUTION`의 `READ_COUNT`, `WRITE_COUNT`, `COMMIT_COUNT`, `ROLLBACK_COUNT`, `SKIP_COUNT` 관련 컬럼은 배치 운영 시 중요한 지표가 된다.
+
+이러한 정보를 활용하면 배치가 단순히 성공했는지 실패했는지를 넘어 **어떤 데이터를 얼마나 처리했고, 어느 단계에서 문제가 발생했으며, 재시작 시 어떤 상태를 복원해야 하는지** 파악할 수 있다.
+
+결국 Spring Batch의 메타데이터 스키마는 단순한 실행 이력 저장 구조가 아니다.
+
+**Job과 Step의 실행을 식별하고, 실행 상태를 관리하며, 실패한 작업을 안정적으로 재시작하기 위한 핵심적인 저장 구조**다.
+
+### 한 줄 요약
+
+> Spring Batch는 `JobInstance → JobExecution → StepExecution` 계층을 중심으로 6개의 메타데이터 테이블을 관리하며, 실행 상태·처리 건수·JobParameters·ExecutionContext 등을 저장해 배치 실행 이력 조회, 장애 분석, 재시작 및 운영 관리를 지원한다.
+
+[1]: https://www.springframework.org/spring-batch/reference/5.2/schema-appendix.html "Meta-Data Schema :: Spring Batch Reference"
+[2]: https://www.springframework.org/spring-batch/reference/5.2/schema-appendix.html?utm_source=chatgpt.com "Meta-Data Schema :: Spring Batch Reference"
+[3]: https://docs.spring.io/spring-batch/reference/5.2/domain.html?utm_source=chatgpt.com "The Domain Language of Batch :: Spring Batch Reference"
+[4]: https://github.com/spring-projects/spring-batch/wiki/Spring-Batch-5.0-Migration-Guide?utm_source=chatgpt.com "Spring Batch 5.0 Migration Guide · spring-projects/spring-batch Wiki · GitHub"
+[5]: https://docs.spring.io/spring-batch/docs/current/api/org/springframework/batch/core/listener/ExecutionContextPromotionListener.html?utm_source=chatgpt.com "ExecutionContextPromotionListener (Spring Batch 5.2.6 API)"
