@@ -405,9 +405,29 @@ u{
   &:focus-visible { outline: 2px solid var(--accent-color); outline-offset: 2px; }
 }
 
+#_drawer[opened] ~ .sidebar-panel-toggle {
+  display: none;
+}
+
 .sidebar-panel-collapsed {
   #_drawer { opacity: 0; visibility: hidden; pointer-events: none; }
-  .content { margin-left: auto; margin-right: auto; }
+  .content {
+    max-width: none;
+    margin-left: 2rem;
+    margin-right: 2rem;
+  }
+  // Return the theme's third column to the article when using the full width.
+  #_main .page > header > .note-sm,
+  #_main .page > header > .note,
+  #_main #markdown-toc {
+    position: relative;
+    top: auto;
+    right: auto;
+    bottom: auto;
+    width: auto;
+    max-height: none;
+    margin: 1rem -1rem;
+  }
   .sidebar-panel-toggle {
     left: 0;
     transform: translateY(-50%);
