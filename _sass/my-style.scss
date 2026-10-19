@@ -410,6 +410,7 @@ u{
 }
 
 .sidebar-panel-collapsed {
+  body::before { display: none; }
   #_drawer { opacity: 0; visibility: hidden; pointer-events: none; }
   .content {
     max-width: none;
