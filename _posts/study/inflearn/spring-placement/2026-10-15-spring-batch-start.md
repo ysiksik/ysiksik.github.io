@@ -20,7 +20,7 @@ comments: true
 
 ## 프로젝트 구성 및 의존성 설치
 
-## Spring Batch 시작하기: 프로젝트 생성부터 의존성 설정과 자동 구성까지
+### Spring Batch 시작하기: 프로젝트 생성부터 의존성 설정과 자동 구성까지
 
 Spring Batch를 이용해 배치 애플리케이션을 개발하려면 먼저 프로젝트 환경을 구성해야 한다.
 
@@ -64,7 +64,7 @@ flowchart TD
 
 ---
 
-## Spring Batch 개발 환경
+### Spring Batch 개발 환경
 
 먼저 사용할 개발 환경을 정리해보자.
 
@@ -93,7 +93,7 @@ Spring Boot 3.4에서는 Spring Batch 5.2 계열을 사용하며, Spring Boot 3.
 
 ---
 
-## Spring Boot 프로젝트 생성
+### Spring Boot 프로젝트 생성
 
 Spring Boot 프로젝트를 생성하는 방법은 크게 두 가지가 있다.
 
@@ -101,7 +101,7 @@ IntelliJ IDEA에서 Spring Initializr를 이용하는 방법과 Spring Initializ
 
 두 방법 모두 동일한 Spring Boot 프로젝트를 생성할 수 있다.
 
-### IntelliJ IDEA에서 프로젝트 생성
+#### IntelliJ IDEA에서 프로젝트 생성
 
 IntelliJ IDEA의 프로젝트 생성 기능을 이용하면 Spring Boot 프로젝트를 쉽게 만들 수 있다.
 
@@ -135,7 +135,7 @@ Group은 일반적으로 조직이나 프로젝트의 네임스페이스를 나�
 
 Artifact는 해당 그룹 안에서 생성되는 프로젝트의 이름이다.
 
-### Jar와 War의 차이
+#### Jar와 War의 차이
 
 Spring Boot 프로젝트를 생성할 때 패키징 방식도 선택해야 한다.
 
@@ -155,7 +155,7 @@ java -jar spring-batch-demo.jar
 
 따라서 일반적인 독립 실행형 Spring Batch 애플리케이션이라면 Jar 패키징으로 충분하다.
 
-### Spring Initializr 웹사이트 이용
+#### Spring Initializr 웹사이트 이용
 
 IntelliJ IDEA의 Spring Boot 프로젝트 생성 기능을 사용할 수 없다면 Spring Initializr를 이용하면 된다.
 
@@ -169,7 +169,7 @@ Spring Initializr는 Spring Boot 프로젝트를 생성할 수 있는 공식 서
 
 ---
 
-## 프로젝트 생성 시 Spring Batch 의존성 선택
+### 프로젝트 생성 시 Spring Batch 의존성 선택
 
 Spring Initializr에서 프로젝트를 생성할 때는 필요한 의존성을 함께 선택할 수 있다.
 
@@ -198,7 +198,7 @@ Starter가 필요한 주요 라이브러리를 전이 의존성(Transitive Depen
 
 ---
 
-## Spring Boot Starter란?
+### Spring Boot Starter란?
 
 Spring Boot Starter는 특정 기능을 사용하는 데 필요한 의존성을 묶어서 제공하는 모듈이다.
 
@@ -236,7 +236,7 @@ spring-batch-infrastructure
 
 이 두 모듈은 Spring Batch의 핵심 구성 요소다.
 
-### spring-batch-core
+#### spring-batch-core
 
 `spring-batch-core`는 Job과 Step을 실행하고 관리하는 기능을 제공한다.
 
@@ -258,7 +258,7 @@ JobLauncher
 
 Job과 Step의 실행 흐름, 실행 상태, 배치 메타데이터 등을 다루는 데 필요한 핵심 API가 포함되어 있다.
 
-### spring-batch-infrastructure
+#### spring-batch-infrastructure
 
 `spring-batch-infrastructure`는 데이터 처리에 필요한 공통 기능을 제공한다.
 
@@ -298,13 +298,13 @@ flowchart TD
 
 ---
 
-## Maven 의존성 설정
+### Maven 의존성 설정
 
 이번에는 실제 `pom.xml`을 작성해보자.
 
 Spring Batch뿐 아니라 이후 데이터베이스 연동과 테스트를 위한 의존성까지 포함한다.
 
-### pom.xml 전체 설정
+#### pom.xml 전체 설정
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -386,7 +386,7 @@ Spring Batch뿐 아니라 이후 데이터베이스 연동과 테스트를 위�
 
 이 설정에서 중요한 부분을 살펴보자.
 
-### Spring Boot Parent
+#### Spring Boot Parent
 
 ```xml
 <parent>
@@ -416,7 +416,7 @@ Spring Boot Parent는 Spring Boot 애플리케이션에서 사용할 주요 라�
 
 이러한 방식은 서로 호환되는 라이브러리 버전을 유지하는 데 도움이 된다.
 
-### Java 버전 설정
+#### Java 버전 설정
 
 ```xml
 <properties>
@@ -450,7 +450,7 @@ Java 버전을 설정했더라도 IDE와 Maven이 다른 JDK를 사용하면 컴
 
 ---
 
-## Spring Batch 의존성 확인
+### Spring Batch 의존성 확인
 
 Maven 의존성 설정을 완료했다면 실제로 어떤 라이브러리가 추가되었는지 확인해보자.
 
@@ -482,7 +482,7 @@ spring-batch-test:5.2.4
 
 ---
 
-## Spring Batch에서 데이터베이스가 필요한 이유
+### Spring Batch에서 데이터베이스가 필요한 이유
 
 Spring Batch 프로젝트를 처음 구성할 때 가장 자주 혼동하는 부분 중 하나가 데이터베이스 설정이다.
 
@@ -554,7 +554,7 @@ flowchart TD
 
 ---
 
-## H2와 MySQL 중 어떤 데이터베이스를 사용할까?
+### H2와 MySQL 중 어떤 데이터베이스를 사용할까?
 
 Spring Batch를 처음 실행해보는 단계에서는 H2가 편리하다.
 
@@ -580,7 +580,7 @@ H2는 Java 기반 데이터베이스이며 메모리 모드로 실행할 수 있
 
 ---
 
-## Spring Profile로 데이터베이스 환경 구분하기
+### Spring Profile로 데이터베이스 환경 구분하기
 
 Spring Boot에서는 Profile을 이용해 환경별 설정을 구분할 수 있다.
 
@@ -606,7 +606,7 @@ src/main/resources
 | `application-local.yml` | H2 설정    |
 | `application-mysql.yml` | MySQL 설정 |
 
-### application.yml
+#### application.yml
 
 먼저 공통 설정을 작성한다.
 
@@ -660,7 +660,7 @@ spring:
 
 ---
 
-## H2 데이터베이스 설정
+### H2 데이터베이스 설정
 
 이번에는 `application-local.yml`을 작성한다.
 
@@ -679,7 +679,7 @@ spring:
 
 하나씩 살펴보자.
 
-### spring.datasource.url
+#### spring.datasource.url
 
 ```yaml
 url: jdbc:h2:mem:batchdb;DB_CLOSE_DELAY=-1
@@ -695,7 +695,7 @@ H2를 메모리 모드로 실행하도록 설정한다.
 
 따라서 이 설정은 간단한 실행 확인이나 테스트에 적합하다.
 
-### driver-class-name
+#### driver-class-name
 
 ```yaml
 driver-class-name: org.h2.Driver
@@ -705,7 +705,7 @@ H2 JDBC Driver를 지정한다.
 
 Spring Boot는 JDBC Driver를 자동으로 감지할 수 있지만, 여기서는 어떤 드라이버를 사용하는지 명확하게 보여주기 위해 작성했다.
 
-### initialize-schema
+#### initialize-schema
 
 ```yaml
 spring:
@@ -724,7 +724,7 @@ H2처럼 매번 새롭게 생성되는 개발용 데이터베이스에서는 테
 
 ---
 
-## MySQL 데이터베이스 구성
+### MySQL 데이터베이스 구성
 
 이번에는 MySQL을 사용해보자.
 
@@ -736,7 +736,7 @@ MySQL은 직접 설치할 수도 있고 Docker를 이용해 실행할 수도 있
 
 이번에는 Docker Compose를 이용해 MySQL을 실행한다.
 
-### docker-compose.yml 전체 코드
+#### docker-compose.yml 전체 코드
 
 프로젝트 루트에 다음 파일을 생성한다.
 
@@ -779,7 +779,7 @@ volumes:
 
 이 설정은 로컬 개발 환경에서 사용할 MySQL 컨테이너를 생성한다.
 
-### image
+#### image
 
 ```yaml
 image: mysql:8.4
@@ -791,7 +791,7 @@ MySQL 8.4 이미지를 사용한다.
 
 이를 통해 개발 환경에서 사용하는 데이터베이스 버전을 일정하게 유지할 수 있다.
 
-### container_name
+#### container_name
 
 ```yaml
 container_name: spring-batch-mysql
@@ -801,7 +801,7 @@ container_name: spring-batch-mysql
 
 이후 Docker 명령어에서 해당 이름으로 컨테이너를 확인하거나 접속할 수 있다.
 
-### restart
+#### restart
 
 ```yaml
 restart: unless-stopped
@@ -811,7 +811,7 @@ Docker 데몬이나 컨테이너가 재시작되는 상황에서 자동 재시�
 
 단, 명시적으로 중지한 컨테이너에 대해서는 자동 재시작하지 않는다.
 
-### environment
+#### environment
 
 ```yaml
 environment:
@@ -836,7 +836,7 @@ MySQL 초기화에 필요한 환경변수를 지정한다.
 
 이미 생성된 데이터 볼륨이 있다면 환경변수를 변경해도 기존 사용자나 데이터베이스 설정이 자동으로 변경되는 것은 아니다.
 
-### ports
+#### ports
 
 ```yaml
 ports:
@@ -857,7 +857,7 @@ MySQL은 기본적으로 3306 포트를 사용한다.
 localhost:3307
 ```
 
-### volumes
+#### volumes
 
 ```yaml
 volumes:
@@ -872,7 +872,7 @@ Volume을 사용하면 컨테이너를 다시 생성하더라도 기존 데이�
 
 ---
 
-## Docker Compose로 MySQL 실행하기
+### Docker Compose로 MySQL 실행하기
 
 설정 파일을 작성했다면 다음 명령어를 실행한다.
 
@@ -906,7 +906,7 @@ spring-batch-mysql   mysql:8.4   Up           0.0.0.0:3307->3306/tcp
 
 실제 상태와 출력 형식은 Docker 환경에 따라 달라질 수 있다.
 
-### 로그 확인
+#### 로그 확인
 
 MySQL 초기화 과정을 확인하려면 다음 명령어를 사용한다.
 
@@ -920,7 +920,7 @@ docker compose logs -f mysql
 
 MySQL이 초기화되는 과정에서 사용자와 데이터베이스가 생성되며, 정상적으로 준비되면 접속을 받을 수 있는 상태가 된다.
 
-### MySQL 접속
+#### MySQL 접속
 
 다음 명령어로 MySQL 컨테이너 안에서 MySQL 클라이언트를 실행할 수 있다.
 
@@ -949,7 +949,7 @@ SHOW TABLES;
 
 ---
 
-## MySQL용 application.yml 설정
+### MySQL용 application.yml 설정
 
 이번에는 MySQL 접속 설정을 작성해보자.
 
@@ -987,7 +987,7 @@ password: ${BATCH_DB_PASSWORD:localpass}
 
 단, 이 기본값은 개발용 설정이며 운영 환경에서는 반드시 별도의 안전한 자격증명 관리 방식이 필요하다.
 
-### MySQL에서 스키마 자동 생성
+#### MySQL에서 스키마 자동 생성
 
 ```yaml
 spring:
@@ -1006,7 +1006,7 @@ MySQL 환경에서도 Spring Batch 메타데이터 테이블을 생성하도록 
 
 ---
 
-## Spring Batch 메타데이터 테이블 확인
+### Spring Batch 메타데이터 테이블 확인
 
 MySQL 설정을 완료했다면 Spring Boot 애플리케이션을 실행해보자.
 
@@ -1057,7 +1057,7 @@ BATCH_STEP_EXECUTION_CONTEXT
 
 ---
 
-## Spring Batch를 활성화하는 방법
+### Spring Batch를 활성화하는 방법
 
 Spring Batch 프로젝트를 구성할 때 중요한 부분이 바로 Spring Batch 활성화 방식이다.
 
@@ -1073,7 +1073,7 @@ Spring Batch에는 다음과 같은 애너테이션이 존재한다.
 
 이 부분은 반드시 Spring Batch와 Spring Boot의 역할을 구분해서 이해해야 한다.
 
-### @EnableBatchProcessing의 역할
+#### @EnableBatchProcessing의 역할
 
 일반적인 Spring Framework 환경에서 Spring Batch를 직접 구성한다면 다음과 같이 사용할 수 있다.
 
@@ -1106,7 +1106,7 @@ Spring Batch 5.2에서는 `@EnableBatchProcessing` 또는 `DefaultBatchConfigura
 
 ---
 
-## Spring Boot에서는 @EnableBatchProcessing이 필수가 아니다
+### Spring Boot에서는 @EnableBatchProcessing이 필수가 아니다
 
 Spring Boot에서는 Starter를 통한 자동 설정을 제공한다.
 
@@ -1174,7 +1174,7 @@ public class SpringBatchApplication {
 
 ---
 
-## Spring Batch 자동 설정은 어떻게 동작할까?
+### Spring Batch 자동 설정은 어떻게 동작할까?
 
 Spring Boot의 자동 설정을 이해하려면 먼저 `@SpringBootApplication`을 살펴볼 필요가 있다.
 
@@ -1200,7 +1200,7 @@ Spring Boot의 자동 설정을 이해하려면 먼저 `@SpringBootApplication`�
 
 여기서 Spring Batch와 관련된 자동 설정이 동작한다.
 
-### BatchAutoConfiguration
+#### BatchAutoConfiguration
 
 Spring Boot에는 다음과 같은 자동 설정 클래스가 있다.
 
@@ -1221,7 +1221,7 @@ Spring Boot에서 제공하는 이러한 자동 설정 덕분에 개발자는 �
 
 ---
 
-## Spring Batch 초기화 과정
+### Spring Batch 초기화 과정
 
 Spring Boot 애플리케이션이 시작된다고 생각해보자.
 
@@ -1270,7 +1270,7 @@ flowchart TD
 
 ---
 
-## JobRepository 초기화
+### JobRepository 초기화
 
 `JobRepository`는 Spring Batch의 중요한 구성 요소 중 하나다.
 
@@ -1300,7 +1300,7 @@ Spring Boot는 설정된 DataSource와 Spring Batch 인프라 구성을 이용�
 
 ---
 
-## JobLauncher의 역할
+### JobLauncher의 역할
 
 `JobLauncher`는 Job 실행을 요청하는 역할을 담당한다.
 
@@ -1343,7 +1343,7 @@ Job 실행 결과는 `JobExecution`으로 반환된다.
 
 ---
 
-## JobLauncherApplicationRunner란?
+### JobLauncherApplicationRunner란?
 
 Spring Boot에서는 애플리케이션 시작 시 Job을 자동으로 실행하는 기능을 제공한다.
 
@@ -1361,7 +1361,7 @@ JobLauncherApplicationRunner
 
 Spring Boot의 `BatchAutoConfiguration`은 관련 조건을 만족할 때 이 Runner를 Bean으로 등록한다.
 
-### 실행 흐름
+#### 실행 흐름
 
 전체 과정을 단순화하면 다음과 같다.
 
@@ -1389,7 +1389,7 @@ sequenceDiagram
 
 ---
 
-## Job을 자동 실행하지 않으려면?
+### Job을 자동 실행하지 않으려면?
 
 Spring Boot는 기본적으로 등록된 Job을 시작 시 실행할 수 있도록 구성한다.
 
@@ -1441,7 +1441,7 @@ Job 시작 시 자동 실행
 
 ---
 
-## 여러 Job이 등록되어 있다면?
+### 여러 Job이 등록되어 있다면?
 
 하나의 Spring Batch 애플리케이션에서 여러 Job을 정의할 수 있다.
 
@@ -1483,7 +1483,7 @@ spring:
 
 ---
 
-## Spring Batch 초기화 설정의 버전별 차이
+### Spring Batch 초기화 설정의 버전별 차이
 
 Spring Batch의 설정 구조는 버전이 올라가면서 달라졌다.
 
@@ -1543,7 +1543,7 @@ new StepBuilder("exampleStep", jobRepository)
 
 ---
 
-## Spring Batch 주요 Bean 확인하기
+### Spring Batch 주요 Bean 확인하기
 
 Spring Batch가 정상적으로 초기화되었다면 주요 구성 요소들이 Spring Bean으로 등록된다.
 
@@ -1588,7 +1588,7 @@ Spring은 생성자에 선언된 타입에 해당하는 Bean을 찾아 주입한
 
 따라서 별도로 객체를 생성하지 않아도 Spring Batch의 주요 구성 요소를 사용할 수 있다.
 
-### 왜 직접 new 하지 않을까?
+#### 왜 직접 new 하지 않을까?
 
 다음처럼 단순히 객체를 생성하는 것이 가능할 것처럼 생각할 수 있다.
 
@@ -1606,7 +1606,7 @@ Spring Boot는 이러한 구성을 자동 설정으로 지원한다.
 
 ---
 
-## 프로젝트 구조 정리
+### 프로젝트 구조 정리
 
 지금까지 구성한 프로젝트의 전체 구조를 정리하면 다음과 같다.
 
@@ -1659,11 +1659,11 @@ spring-batch-demo
 
 ---
 
-## 프로젝트 실행 및 확인
+### 프로젝트 실행 및 확인
 
 이제 실제로 애플리케이션을 실행해보자.
 
-### H2 환경 실행
+#### H2 환경 실행
 
 별도의 Profile을 지정하지 않았다면 `local` Profile이 적용된다.
 
@@ -1681,7 +1681,7 @@ spring-batch-demo
 
 이것은 반드시 오류를 의미하는 것은 아니다.
 
-### MySQL 환경 실행
+#### MySQL 환경 실행
 
 MySQL을 사용하려면 먼저 Docker Compose로 데이터베이스를 실행한다.
 
@@ -1700,7 +1700,7 @@ MySQL에 정상적으로 연결되었다면 Spring Batch 스키마가 초기화�
 
 이후 MySQL에 접속해 메타데이터 테이블이 생성되었는지 확인할 수 있다.
 
-### Maven 빌드
+#### Maven 빌드
 
 다음 명령어로 프로젝트를 빌드할 수 있다.
 
@@ -1731,13 +1731,13 @@ java -jar target/spring-batch-demo-0.0.1-SNAPSHOT.jar \
 
 ---
 
-## 자주 발생하는 초기화 오류
+### 자주 발생하는 초기화 오류
 
 Spring Batch 프로젝트를 처음 구성할 때는 몇 가지 오류가 발생할 수 있다.
 
 대표적인 상황을 살펴보자.
 
-### 데이터베이스에 연결할 수 없는 경우
+#### 데이터베이스에 연결할 수 없는 경우
 
 다음과 같은 상황이다.
 
@@ -1779,7 +1779,7 @@ Password
 
 특히 Docker Compose에서 호스트 포트를 3307로 설정했으므로 Spring Boot 역시 3307 포트로 접속해야 한다.
 
-### 배치 메타데이터 테이블이 없는 경우
+#### 배치 메타데이터 테이블이 없는 경우
 
 다음과 같은 오류가 발생할 수도 있다.
 
@@ -1804,7 +1804,7 @@ spring:
 
 또한 메타데이터 테이블과 관련된 설정을 확인할 때는 실제 Spring Batch가 사용 중인 DataSource가 올바른 데이터베이스를 가리키고 있는지도 확인하는 것이 좋다.
 
-### Job이 자동으로 실행되는 경우
+#### Job이 자동으로 실행되는 경우
 
 애플리케이션을 실행했는데 등록된 Job이 예상하지 못한 시점에 실행될 수 있다.
 
@@ -1828,7 +1828,7 @@ spring:
 
 Spring Batch 자체를 비활성화하지 않고 Job의 자동 실행만 제어할 수 있다.
 
-### @EnableBatchProcessing을 추가한 뒤 동작이 달라진 경우
+#### @EnableBatchProcessing을 추가한 뒤 동작이 달라진 경우
 
 Spring Boot 기반 애플리케이션에서 다음 애너테이션을 추가했다고 생각해보자.
 
@@ -1846,13 +1846,13 @@ Spring Boot의 기본 자동 설정만으로 충분하다면 해당 애너테이
 
 ---
 
-## 실무에서 프로젝트를 구성할 때 고려할 점
+### 실무에서 프로젝트를 구성할 때 고려할 점
 
 지금까지는 Spring Batch를 실행하기 위한 기본 환경을 구성했다.
 
 하지만 실제 서비스를 운영한다면 몇 가지 사항을 추가로 고려해야 한다.
 
-### 배치 실행 메타데이터는 영속적으로 관리하는 것이 좋다
+#### 배치 실행 메타데이터는 영속적으로 관리하는 것이 좋다
 
 Spring Batch의 장점 중 하나는 실패한 작업을 재시작할 수 있다는 것이다.
 
@@ -1862,7 +1862,7 @@ H2를 메모리 모드로 사용하는 경우 JVM이 종료되면 데이터가 �
 
 따라서 재시작 기능을 실제로 활용해야 하는 운영 환경에서는 MySQL처럼 영속적인 데이터베이스를 사용해 JobRepository의 실행 정보를 관리하는 것이 적절하다.
 
-### 배치 메타데이터와 업무 데이터를 분리할 수 있다
+#### 배치 메타데이터와 업무 데이터를 분리할 수 있다
 
 작은 프로젝트에서는 동일한 데이터베이스에 비즈니스 테이블과 배치 메타데이터 테이블을 함께 저장할 수 있다.
 
@@ -1890,7 +1890,7 @@ Spring Batch
 
 따라서 프로젝트의 규모와 운영 요구사항에 따라 결정하는 것이 좋다.
 
-### Job 자동 실행 정책을 명확하게 정한다
+#### Job 자동 실행 정책을 명확하게 정한다
 
 Spring Boot 기반 배치 애플리케이션에서는 Job이 시작 시 자동 실행될 수 있다.
 
@@ -1900,7 +1900,7 @@ Spring Boot 기반 배치 애플리케이션에서는 Job이 시작 시 자동 �
 
 이런 경우에는 Job 자동 실행을 비활성화하고 Quartz나 별도의 스케줄러를 통해 실행 시점을 제어하는 구조를 고려할 수 있다.
 
-### 설정 파일에 민감한 정보를 직접 저장하지 않는다
+#### 설정 파일에 민감한 정보를 직접 저장하지 않는다
 
 개발 환경에서는 간단한 계정과 비밀번호를 설정 파일에 작성할 수 있다.
 
@@ -1910,7 +1910,7 @@ Spring Boot 기반 배치 애플리케이션에서는 Job이 시작 시 자동 �
 
 ---
 
-## Spring Batch 초기화 구조 정리
+### Spring Batch 초기화 구조 정리
 
 지금까지의 내용을 하나의 흐름으로 연결해보자.
 
@@ -1969,7 +1969,7 @@ Spring Batch는 Job과 Step의 실행 및 상태 관리를 담당한다.
 
 ---
 
-## 정리
+### 정리
 
 Spring Batch 프로젝트는 일반적인 Spring Boot 애플리케이션과 비슷한 방식으로 생성할 수 있다.
 
@@ -2007,13 +2007,13 @@ Spring Boot는 필요한 조건을 만족하면 `BatchAutoConfiguration`을 통�
 
 이후에는 실제 `Job`과 `Step`을 정의하고, 각각의 Step 안에서 어떤 비즈니스 로직을 실행할 것인지 구현할 수 있다.
 
-### 한 줄 요약
+#### 한 줄 요약
 
 > Spring Batch 프로젝트는 `spring-boot-starter-batch` 의존성과 데이터베이스 설정을 통해 실행 환경을 구성할 수 있으며, Spring Boot의 `BatchAutoConfiguration`이 JobRepository와 JobLauncher 등의 주요 구성 요소를 자동으로 준비하므로 일반적인 Spring Boot 애플리케이션에서는 `@EnableBatchProcessing`을 직접 선언할 필요 없이 배치 작업 개발에 집중할 수 있다.
 
 ## Hello Spring Batch 시작하기
 
-## Spring Batch 시작하기: Job, Step, Tasklet을 이용한 첫 번째 배치 실행
+### Spring Batch 시작하기: Job, Step, Tasklet을 이용한 첫 번째 배치 실행
 
 Spring Batch 프로젝트를 생성하고 필요한 의존성을 설정했다면 이제 실제 배치 작업을 만들어볼 차례다.
 
@@ -2065,7 +2065,7 @@ flowchart TD
 
 ---
 
-## Job, Step, Tasklet이란?
+### Job, Step, Tasklet이란?
 
 Spring Batch에서 가장 기본이 되는 구성 요소는 `Job`, `Step`, `Tasklet`이다.
 
@@ -2079,7 +2079,7 @@ Spring Batch에서 가장 기본이 되는 구성 요소는 `Job`, `Step`, `Task
 
 이 관계를 먼저 이해하는 것이 중요하다.
 
-### Job: 배치 작업 전체
+#### Job: 배치 작업 전체
 
 Job은 하나의 배치 작업 전체를 의미한다.
 
@@ -2116,7 +2116,7 @@ Spring Batch에서는 `Job` 인터페이스를 제공하며, 일반적으로 `Jo
 
 이번에는 가장 기본적인 순차 실행 방식의 Job을 사용한다.
 
-### Step: Job을 구성하는 실행 단계
+#### Step: Job을 구성하는 실행 단계
 
 Step은 Job 안에서 실행되는 개별 작업 단위다.
 
@@ -2144,7 +2144,7 @@ Spring Batch에서는 Step이 실행되면 `StepExecution`이라는 실행 메�
 
 **Step은 Spring Batch가 실행 상태와 트랜잭션 등을 관리하는 독립적인 처리 단위**이기 때문이다.
 
-### Tasklet: Step에서 실행하는 작업 로직
+#### Tasklet: Step에서 실행하는 작업 로직
 
 Tasklet은 Step 안에서 실제로 수행할 작업 내용을 구현하는 인터페이스다.
 
@@ -2186,7 +2186,7 @@ flowchart TD
 
 ---
 
-## Spring Batch 프로젝트 환경
+### Spring Batch 프로젝트 환경
 
 앞에서 구성한 Spring Boot 프로젝트를 그대로 사용한다.
 
@@ -2215,7 +2215,7 @@ MySQL을 사용해도 동일한 예제를 실행할 수 있다.
 
 ---
 
-## Maven 의존성 설정
+### Maven 의존성 설정
 
 Spring Batch를 사용하기 위해 필요한 기본 의존성은 다음과 같다.
 
@@ -2242,7 +2242,7 @@ Spring Batch를 사용하기 위해 필요한 기본 의존성은 다음과 같�
 
 ---
 
-## Lombok이란?
+### Lombok이란?
 
 Lombok은 Java에서 반복적으로 작성하는 코드를 줄여주는 라이브러리다.
 
@@ -2292,7 +2292,7 @@ Spring Batch에서는 Job을 구성하는 설정 클래스에서 여러 Bean을 
 
 이때 Lombok의 `@RequiredArgsConstructor`를 활용하면 생성자 코드를 줄일 수 있다.
 
-### Lombok 의존성 추가
+#### Lombok 의존성 추가
 
 `pom.xml`에 다음 의존성을 추가한다.
 
@@ -2306,7 +2306,7 @@ Spring Batch에서는 Job을 구성하는 설정 클래스에서 여러 Bean을 
 
 Spring Boot Parent에서 관리하는 Lombok 버전을 사용한다면 별도로 버전을 명시할 필요가 없다.
 
-### IntelliJ IDEA에서 Annotation Processing 설정
+#### IntelliJ IDEA에서 Annotation Processing 설정
 
 Lombok은 컴파일 과정에서 애너테이션을 처리하여 필요한 코드를 생성한다.
 
@@ -2339,7 +2339,7 @@ IDE와 빌드 도구의 버전에 따라 Lombok 설정이 자동으로 처리될
 
 ---
 
-## pom.xml 전체 설정
+### pom.xml 전체 설정
 
 이번 예제에서 사용하는 Maven 설정은 다음과 같다.
 
@@ -2434,7 +2434,7 @@ Lombok은 컴파일 과정에서 코드를 생성하기 위해 사용하는 라�
 
 ---
 
-## Spring Batch 기본 설정
+### Spring Batch 기본 설정
 
 이번에는 H2 데이터베이스를 사용하도록 설정한다.
 
@@ -2472,7 +2472,7 @@ Spring Boot의 Batch 자동 설정이 활성화되어 있어야 하며, 실행 �
 
 이번 예제에서는 `helloJob` 하나만 등록하므로 애플리케이션 시작 시 자동 실행되는 구조를 사용한다.
 
-### application-local.yml
+#### application-local.yml
 
 H2 데이터베이스 설정은 다음과 같다.
 
@@ -2497,7 +2497,7 @@ H2를 메모리 데이터베이스로 사용하기 때문에 애플리케이션�
 
 ---
 
-## Spring Boot 시작 클래스
+### Spring Boot 시작 클래스
 
 Spring Boot 애플리케이션을 실행할 메인 클래스를 작성한다.
 
@@ -2526,7 +2526,7 @@ public class SpringBatchApplication {
 
 앞에서 추가한 `spring-boot-starter-batch` 의존성이 존재하면 Spring Boot는 자동 설정 조건을 확인하여 필요한 Batch 인프라를 구성한다.
 
-### @EnableBatchProcessing은 필요할까?
+#### @EnableBatchProcessing은 필요할까?
 
 Spring Batch 4 기반의 기존 구성에서는 다음과 같은 설정을 많이 사용했다.
 
@@ -2547,7 +2547,7 @@ Spring Boot의 `BatchAutoConfiguration`이 배치 인프라 구성을 지원하�
 
 ---
 
-## HelloJobConfiguration 생성하기
+### HelloJobConfiguration 생성하기
 
 이제 실제 배치 Job을 정의할 차례다.
 
@@ -2583,7 +2583,7 @@ Spring Batch에서는 `JobBuilder`, `StepBuilder`를 이용해 Job과 Step을 �
 
 ---
 
-## HelloJobConfiguration 전체 코드
+### HelloJobConfiguration 전체 코드
 
 먼저 실행 가능한 전체 코드를 살펴보자.
 
@@ -2663,7 +2663,7 @@ public class HelloJobConfiguration {
 
 ---
 
-## @Configuration의 역할
+### @Configuration의 역할
 
 클래스 상단을 보면 다음 애너테이션이 선언되어 있다.
 
@@ -2723,7 +2723,7 @@ Spring ApplicationContext
 
 ---
 
-## @RequiredArgsConstructor와 생성자 주입
+### @RequiredArgsConstructor와 생성자 주입
 
 다음 애너테이션을 살펴보자.
 
@@ -2759,7 +2759,7 @@ Spring은 이 생성자를 이용해 필요한 Bean을 주입한다.
 
 여기서 주입받는 두 객체의 역할을 알아보자.
 
-### JobRepository
+#### JobRepository
 
 `JobRepository`는 Job과 Step의 실행 메타데이터를 관리한다.
 
@@ -2767,7 +2767,7 @@ Spring은 이 생성자를 이용해 필요한 Bean을 주입한다.
 
 `JobBuilder`와 `StepBuilder`에서는 이러한 실행 메타데이터를 관리하기 위해 `JobRepository`를 전달받는다.
 
-### PlatformTransactionManager
+#### PlatformTransactionManager
 
 `PlatformTransactionManager`는 Spring의 트랜잭션 관리 인터페이스다.
 
@@ -2787,7 +2787,7 @@ Tasklet 기반 Step은 작업 실행을 트랜잭션 경계 안에서 수행하�
 
 ---
 
-## Lombok 없이도 구현할 수 있다
+### Lombok 없이도 구현할 수 있다
 
 앞에서는 `@RequiredArgsConstructor`를 이용해 생성자 주입을 처리했다.
 
@@ -2825,7 +2825,7 @@ Spring은 `@Bean` 메서드의 매개변수에 해당하는 Bean을 찾아 전�
 
 ---
 
-## JobBuilder를 이용한 Job 생성
+### JobBuilder를 이용한 Job 생성
 
 이제 가장 중요한 Job 생성 부분을 살펴보자.
 
@@ -2844,7 +2844,7 @@ public Job helloJob(
 
 코드가 짧지만 각 메서드에는 명확한 의미가 있다.
 
-### new JobBuilder()
+#### new JobBuilder()
 
 ```java
 new JobBuilder("helloJob", jobRepository)
@@ -2872,7 +2872,7 @@ Spring Batch는 Job 이름과 JobParameters 등을 이용해 Job의 실행을 �
 
 따라서 운영 환경에서는 Job 이름을 명확하게 정의하는 것이 중요하다.
 
-### start()
+#### start()
 
 다음은 `start()`다.
 
@@ -2893,7 +2893,7 @@ helloJob 실행
 helloStep1 실행
 ```
 
-### next()
+#### next()
 
 다음은 `next()`다.
 
@@ -2921,7 +2921,7 @@ helloStep2
 
 즉 `next()`는 단순히 메서드를 연속해서 호출하는 문법이 아니라 **Job의 실행 흐름을 정의하는 API**다.
 
-### build()
+#### build()
 
 마지막으로 다음 메서드를 호출한다.
 
@@ -2953,7 +2953,7 @@ flowchart TD
 
 ---
 
-## @Qualifier를 사용하는 이유
+### @Qualifier를 사용하는 이유
 
 Job을 생성하는 메서드를 다시 살펴보자.
 
@@ -3001,7 +3001,7 @@ helloStep2
 
 ---
 
-## StepBuilder를 이용한 Step 생성
+### StepBuilder를 이용한 Step 생성
 
 이번에는 Step 생성 코드를 살펴보자.
 
@@ -3053,7 +3053,7 @@ Step은 작업을 실행하는 단위이며, 실제 로직은 Tasklet에 구현�
 
 ---
 
-## Tasklet 인터페이스
+### Tasklet 인터페이스
 
 Spring Batch의 `Tasklet` 인터페이스는 다음과 같은 메서드를 제공한다.
 
@@ -3073,7 +3073,7 @@ Step이 실행되면 등록된 Tasklet의 `execute()` 메서드가 호출된다.
 
 이 메서드 안에 실제 수행할 작업을 구현한다.
 
-### StepContribution
+#### StepContribution
 
 첫 번째 매개변수는 다음과 같다.
 
@@ -3087,7 +3087,7 @@ StepContribution contribution
 
 이번 예제처럼 문자열만 출력하는 경우에는 직접 사용할 필요가 없다.
 
-### ChunkContext
+#### ChunkContext
 
 두 번째 매개변수는 다음과 같다.
 
@@ -3114,7 +3114,7 @@ Map<String, Object> jobParameters =
 
 ---
 
-## Tasklet을 람다 표현식으로 구현하기
+### Tasklet을 람다 표현식으로 구현하기
 
 앞에서 Tasklet은 인터페이스라고 했다.
 
@@ -3160,7 +3160,7 @@ public class HelloTasklet implements Tasklet {
 
 ---
 
-## RepeatStatus란?
+### RepeatStatus란?
 
 Tasklet 구현에서 중요한 부분은 다음 코드다.
 
@@ -3188,7 +3188,7 @@ RepeatStatus.CONTINUABLE
 
 각각의 의미를 살펴보자.
 
-### RepeatStatus.FINISHED
+#### RepeatStatus.FINISHED
 
 ```java
 return RepeatStatus.FINISHED;
@@ -3211,7 +3211,7 @@ RepeatStatus.FINISHED
 Step 종료
 ```
 
-### RepeatStatus.CONTINUABLE
+#### RepeatStatus.CONTINUABLE
 
 ```java
 return RepeatStatus.CONTINUABLE;
@@ -3279,7 +3279,7 @@ Tasklet 실행: 3
 
 재시작이 필요한 작업이라면 `ExecutionContext` 등을 이용해 처리 상태를 관리하는 방법을 고려해야 한다.
 
-### null을 반환하면 어떻게 될까?
+#### null을 반환하면 어떻게 될까?
 
 Tasklet은 `null`을 반환하는 경우에도 반복을 종료할 수 있다.
 
@@ -3299,7 +3299,7 @@ return RepeatStatus.FINISHED;
 
 ---
 
-## Tasklet과 트랜잭션의 관계
+### Tasklet과 트랜잭션의 관계
 
 Tasklet을 설정하는 코드를 다시 보자.
 
@@ -3356,7 +3356,7 @@ RepeatStatus.FINISHED
 
 ---
 
-## 두 번째 Step 구성하기
+### 두 번째 Step 구성하기
 
 첫 번째 Step과 동일한 방법으로 두 번째 Step도 생성할 수 있다.
 
@@ -3409,7 +3409,7 @@ Step 2 executed 출력
 
 ---
 
-## Job에서 두 Step을 순차적으로 실행하기
+### Job에서 두 Step을 순차적으로 실행하기
 
 이제 다시 Job 설정을 살펴보자.
 
@@ -3478,7 +3478,7 @@ Job은 전체 실행 흐름을 관리한다.
 
 ---
 
-## Job 객체 생성과 실제 실행은 다르다
+### Job 객체 생성과 실제 실행은 다르다
 
 앞에서 Job을 설정할 때 다음 코드를 작성했다.
 
@@ -3551,7 +3551,7 @@ Spring Batch에서 설정과 실행을 구분하는 것은 중요하다.
 
 ---
 
-## Hello Spring Batch 실행하기
+### Hello Spring Batch 실행하기
 
 이제 실제로 애플리케이션을 실행해보자.
 
@@ -3574,7 +3574,7 @@ spring:
 
 따라서 Spring Boot가 시작되면서 `helloJob`이 자동으로 실행될 수 있다.
 
-### 실행 결과
+#### 실행 결과
 
 정상적으로 실행되면 다음과 같은 흐름의 로그를 확인할 수 있다.
 
@@ -3604,7 +3604,7 @@ completed with status: [COMPLETED]
 
 ---
 
-## SimpleJob이란?
+### SimpleJob이란?
 
 실행 로그에서 다음 내용을 확인할 수 있다.
 
@@ -3650,7 +3650,7 @@ AbstractJob
 
 ---
 
-## JobParameters란?
+### JobParameters란?
 
 실행 로그를 보면 다음과 같은 부분이 있다.
 
@@ -3682,7 +3682,7 @@ JobParameters는 Job을 실행할 때 함께 전달하는 파라미터다.
 {}
 ```
 
-### JobParameters가 중요한 이유
+#### JobParameters가 중요한 이유
 
 JobParameters는 단순히 작업에 필요한 데이터를 전달하기 위한 용도로만 사용되는 것이 아니다.
 
@@ -3708,7 +3708,7 @@ helloJob
 
 ---
 
-## 동일한 Job을 다시 실행하면 어떻게 될까?
+### 동일한 Job을 다시 실행하면 어떻게 될까?
 
 이번 예제는 H2 메모리 데이터베이스를 사용한다.
 
@@ -3774,7 +3774,7 @@ java -jar spring-batch-demo.jar --run.id=1
 
 ---
 
-## Job이 성공하면 어떤 상태가 될까?
+### Job이 성공하면 어떤 상태가 될까?
 
 Spring Batch는 Job과 Step의 실행 상태를 관리한다.
 
@@ -3820,7 +3820,7 @@ COMPLETED
 
 ---
 
-## JobExecution과 StepExecution
+### JobExecution과 StepExecution
 
 Spring Batch는 Job과 Step을 실행할 때 각각 실행 기록을 생성한다.
 
@@ -3848,7 +3848,7 @@ StepExecution에는 각 Step의 실행 상태와 처리 건수 등의 정보가 
 
 따라서 배치가 실패했을 때 어떤 Step에서 문제가 발생했는지 확인하는 데 도움이 된다.
 
-### 데이터베이스에서 실행 결과 확인하기
+#### 데이터베이스에서 실행 결과 확인하기
 
 Spring Batch 메타데이터 테이블이 생성되어 있다면 다음 SQL을 실행할 수 있다.
 
@@ -3890,13 +3890,13 @@ Tasklet이 실행되었지만 Chunk 기반의 항목 읽기와 쓰기를 수행�
 
 ---
 
-## Tasklet 방식과 Chunk 방식의 차이
+### Tasklet 방식과 Chunk 방식의 차이
 
 Spring Batch의 Step은 크게 두 가지 처리 방식으로 구분해서 이해할 수 있다.
 
 Tasklet 기반 처리와 Chunk 기반 처리다.
 
-### Tasklet 기반 처리
+#### Tasklet 기반 처리
 
 Tasklet 기반 처리는 특정 작업을 수행하는 방식이다.
 
@@ -3924,7 +3924,7 @@ Tasklet
 
 따라서 Tasklet으로 간단하게 구현할 수 있다.
 
-### Chunk 기반 처리
+#### Chunk 기반 처리
 
 Chunk 기반 처리는 대량의 데이터를 일정한 단위로 나누어 처리하는 방식이다.
 
@@ -3992,7 +3992,7 @@ Tasklet: 정산 완료 처리
 
 ---
 
-## Tasklet은 언제 별도 클래스로 분리해야 할까?
+### Tasklet은 언제 별도 클래스로 분리해야 할까?
 
 이번 예제에서는 간단한 문자열 출력만 수행했기 때문에 람다 표현식을 사용했다.
 
@@ -4073,7 +4073,7 @@ public Step settlementCompleteStep(
 
 ---
 
-## Spring Batch에서 Bean 이름과 Job 이름은 같을까?
+### Spring Batch에서 Bean 이름과 Job 이름은 같을까?
 
 이번 예제에서는 다음과 같이 작성했다.
 
@@ -4142,13 +4142,13 @@ Spring Bean 이름과 Step 이름은 서로 다른 개념이지만, 일반적으
 
 ---
 
-## 실무에서 주의해야 할 부분
+### 실무에서 주의해야 할 부분
 
 첫 번째 배치 Job을 만들어보면 구조 자체는 단순하다.
 
 하지만 실제 운영 환경에서는 몇 가지 사항을 고려해야 한다.
 
-### Tasklet의 재실행 가능성
+#### Tasklet의 재실행 가능성
 
 Tasklet은 특정 작업을 한 번 실행하고 종료하도록 구현할 수 있다.
 
@@ -4168,7 +4168,7 @@ paymentService.requestSettlement();
 
 따라서 외부 시스템과 연동하는 Tasklet에서는 재실행 시 중복 처리 문제가 발생하지 않도록 설계해야 한다.
 
-### Tasklet 내부에 모든 비즈니스 로직을 작성하지 않기
+#### Tasklet 내부에 모든 비즈니스 로직을 작성하지 않기
 
 Tasklet은 Spring Batch의 실행 진입점 역할을 담당하도록 만들고, 실제 비즈니스 로직은 별도의 Service로 분리하는 것이 좋다.
 
@@ -4189,7 +4189,7 @@ Repository
 
 또한 동일한 로직을 다른 API나 관리 기능에서도 재사용하기 편리하다.
 
-### 로그를 남길 때 System.out 대신 로거 사용하기
+#### 로그를 남길 때 System.out 대신 로거 사용하기
 
 이번 예제에서는 실행 흐름을 쉽게 확인하기 위해 다음 코드를 사용했다.
 
@@ -4223,7 +4223,7 @@ log.info("Hello Spring Batch");
 
 ---
 
-## 전체 실행 흐름 다시 살펴보기
+### 전체 실행 흐름 다시 살펴보기
 
 이번에 작성한 코드를 Spring Batch의 실제 실행 흐름과 연결해보자.
 
@@ -4300,7 +4300,7 @@ sequenceDiagram
 
 ---
 
-## 정리
+### 정리
 
 Spring Batch에서 하나의 배치 작업을 만들기 위해 가장 먼저 이해해야 할 개념은 `Job`, `Step`, `Tasklet`이다.
 
@@ -4368,13 +4368,13 @@ Spring Boot 기반 환경에서는 별도의 실행 코드를 직접 작성하�
 
 **Job은 전체 작업을 관리하고, Step은 실행 단위를 구분하며, Tasklet은 실제 비즈니스 로직을 수행한다는 관계를 이해하는 것이 가장 중요하다.**
 
-### 한 줄 요약
+#### 한 줄 요약
 
 > Spring Batch는 `Job → Step → Tasklet` 구조로 배치 작업을 정의하며, `JobBuilder`와 `StepBuilder`를 이용해 실행 흐름을 구성하고 Tasklet의 `execute()` 메서드에서 실제 비즈니스 로직을 수행한다. 여러 Step은 `start()`와 `next()`를 통해 순차적으로 연결할 수 있고, Spring Boot의 자동 설정을 이용하면 애플리케이션 시작 시 Job을 실행할 수 있다.
 
 ## DB 스키마 생성 및 이해 (1)
 
-## Spring Batch DB 스키마 생성과 메타데이터 관리
+### Spring Batch DB 스키마 생성과 메타데이터 관리
 
 Spring Batch에서는 Job을 정의하고 실행하면 내부적으로 다양한 정보가 생성된다.
 
@@ -4426,7 +4426,7 @@ Spring Batch는 이러한 메타데이터를 저장하고 조회하기 위한 �
 
 ---
 
-## Spring Batch 메타데이터란?
+### Spring Batch 메타데이터란?
 
 메타데이터(Metadata)는 일반적으로 데이터를 설명하는 데이터를 의미한다.
 
@@ -4468,7 +4468,7 @@ Spring Batch는 이러한 메타데이터를 관리하기 위해 `JobRepository`
 
 ---
 
-## JobRepository는 어떤 역할을 할까?
+### JobRepository는 어떤 역할을 할까?
 
 Spring Batch에서 `JobRepository`는 Job과 Step의 실행 메타데이터를 저장하고 조회하는 역할을 담당한다.
 
@@ -4529,7 +4529,7 @@ flowchart TD
 
 ---
 
-## Spring Batch는 왜 별도의 메타데이터 테이블을 사용할까?
+### Spring Batch는 왜 별도의 메타데이터 테이블을 사용할까?
 
 일반적인 Spring Boot 애플리케이션에서도 데이터베이스 테이블을 생성해 실행 이력을 저장할 수 있다.
 
@@ -4563,7 +4563,7 @@ Spring Batch는 이를 위해 미리 정의된 메타데이터 스키마를 제�
 
 ---
 
-## Spring Batch 메타데이터 테이블 구조
+### Spring Batch 메타데이터 테이블 구조
 
 Spring Batch는 Job과 Step의 실행 정보를 관리하기 위한 메타데이터 테이블을 제공한다.
 
@@ -4580,7 +4580,7 @@ Spring Batch 5.2의 기본 JDBC 스키마를 기준으로 주요 메타데이터
 
 이 테이블들은 크게 Job 관련 테이블과 Step 관련 테이블로 구분할 수 있다.
 
-### Job 관련 테이블
+#### Job 관련 테이블
 
 Job과 관련된 테이블은 다음 네 개다.
 
@@ -4602,7 +4602,7 @@ BATCH_JOB_EXECUTION_CONTEXT
 
 `BATCH_JOB_EXECUTION_CONTEXT`는 Job 실행에 필요한 상태 정보를 저장한다.
 
-### Step 관련 테이블
+#### Step 관련 테이블
 
 Step과 관련된 테이블은 다음 두 개다.
 
@@ -4635,7 +4635,7 @@ erDiagram
 
 ---
 
-## MySQL에서는 왜 9개의 테이블이 생성될까?
+### MySQL에서는 왜 9개의 테이블이 생성될까?
 
 Spring Batch의 주요 메타데이터 테이블은 6개라고 했다.
 
@@ -4692,7 +4692,7 @@ Spring Batch 5.2.4의 실제 MySQL 스키마에서도 이러한 구성을 확인
 
 ---
 
-## Spring Batch 스키마 파일은 어디에 있을까?
+### Spring Batch 스키마 파일은 어디에 있을까?
 
 Spring Batch는 주요 데이터베이스에서 사용할 수 있는 스키마 생성 SQL을 제공한다.
 
@@ -4742,7 +4742,7 @@ Spring Batch는 버전이 변경되면서 메타데이터 테이블의 컬럼과
 
 ---
 
-## Spring Batch 스키마를 생성하는 두 가지 방법
+### Spring Batch 스키마를 생성하는 두 가지 방법
 
 Spring Batch 메타데이터 테이블을 생성하는 방법은 크게 두 가지로 나눌 수 있다.
 
@@ -4775,7 +4775,7 @@ flowchart TD
 
 ---
 
-## MySQL 개발 환경 준비
+### MySQL 개발 환경 준비
 
 먼저 MySQL을 이용해 메타데이터 테이블을 생성해보자.
 
@@ -4854,13 +4854,13 @@ SHOW TABLES;
 
 ---
 
-## Spring Batch 스키마 수동 생성
+### Spring Batch 스키마 수동 생성
 
 수동 생성은 Spring Batch가 제공하는 SQL 파일을 직접 실행하는 방식이다.
 
 중요한 것은 SQL 파일을 임의로 작성하는 것이 아니라 **현재 프로젝트에서 사용하는 Spring Batch 버전의 공식 스키마 파일을 사용하는 것**이다.
 
-### spring-batch-core JAR 확인
+#### spring-batch-core JAR 확인
 
 Maven 프로젝트에서는 의존성을 내려받으면 로컬 Maven 저장소에 JAR 파일이 저장된다.
 
@@ -4895,7 +4895,7 @@ jar tf \
 
 정상적으로 실행되면 Spring Batch가 제공하는 여러 스키마 파일을 확인할 수 있다.
 
-### schema-mysql.sql 추출하기
+#### schema-mysql.sql 추출하기
 
 이번에는 MySQL 스키마 파일을 추출해보자.
 
@@ -4924,7 +4924,7 @@ Spring Batch 5.2.4의 전체 원본 SQL은 공식 저장소에서도 확인할 �
 
 [Spring Batch 5.2.4 schema-mysql.sql](https://github.com/spring-projects/spring-batch/blob/v5.2.4/spring-batch-core/src/main/resources/org/springframework/batch/core/schema-mysql.sql)
 
-### MySQL에 스키마 적용하기
+#### MySQL에 스키마 적용하기
 
 이제 추출한 SQL 파일을 MySQL 컨테이너로 복사한다.
 
@@ -4954,7 +4954,7 @@ SOURCE /tmp/schema-mysql.sql;
 
 이 과정에서 메타데이터 테이블 6개와 ID 생성용 테이블 3개가 생성된다.
 
-### 생성 결과 확인
+#### 생성 결과 확인
 
 다음 SQL을 실행해보자.
 
@@ -4992,7 +4992,7 @@ BATCH_STEP_EXECUTION_SEQ
 
 ---
 
-## 스키마 자동 생성
+### 스키마 자동 생성
 
 이번에는 Spring Boot가 자동으로 메타데이터 테이블을 생성하도록 설정해보자.
 
@@ -5033,7 +5033,7 @@ Spring Boot는 내장 데이터베이스에 대해서 기본적으로 스키마 
 
 ---
 
-## ALWAYS: 스키마 자동 생성
+### ALWAYS: 스키마 자동 생성
 
 먼저 다음 설정을 살펴보자.
 
@@ -5073,7 +5073,7 @@ schema-mysql.sql
 
 따라서 개발자가 해당 SQL을 직접 실행하지 않아도 스키마를 생성할 수 있다.
 
-### 자동 생성 흐름
+#### 자동 생성 흐름
 
 ```mermaid
 flowchart TD
@@ -5099,7 +5099,7 @@ flowchart TD
 
 `@EnableBatchProcessing` 등을 통해 배치 인프라를 직접 구성하는 경우에는 자동 설정이 달라질 수 있다.
 
-### ALWAYS를 사용할 때 주의할 점
+#### ALWAYS를 사용할 때 주의할 점
 
 `always`는 데이터베이스에 테이블이 없을 때 한 번만 실행한다는 의미가 아니다.
 
@@ -5113,7 +5113,7 @@ flowchart TD
 
 ---
 
-## EMBEDDED: 내장 데이터베이스에서만 자동 생성
+### EMBEDDED: 내장 데이터베이스에서만 자동 생성
 
 다음 설정을 살펴보자.
 
@@ -5149,7 +5149,7 @@ spring:
 
 별도의 SQL 파일을 직접 실행할 필요가 없다.
 
-### H2에서는 왜 자동 생성이 편리할까?
+#### H2에서는 왜 자동 생성이 편리할까?
 
 H2를 메모리 모드로 실행하면 일반적으로 JVM이 종료될 때 데이터베이스 내용도 사라진다.
 
@@ -5184,7 +5184,7 @@ Job 실행
 
 ---
 
-## NEVER: 스키마 자동 생성 비활성화
+### NEVER: 스키마 자동 생성 비활성화
 
 마지막으로 다음 설정을 살펴보자.
 
@@ -5226,7 +5226,7 @@ spring:
 
 ---
 
-## ALWAYS, EMBEDDED, NEVER 비교
+### ALWAYS, EMBEDDED, NEVER 비교
 
 세 가지 설정을 다시 비교해보자.
 
@@ -5278,7 +5278,7 @@ spring.batch.jdbc.initialize-schema
 
 ---
 
-## Spring Profile을 이용해 데이터베이스 환경 구분하기
+### Spring Profile을 이용해 데이터베이스 환경 구분하기
 
 앞에서 작성한 Spring Boot 프로젝트에서는 H2와 MySQL을 모두 사용할 수 있도록 Spring Profile을 구성했다.
 
@@ -5294,7 +5294,7 @@ src/main/resources
     └── application-mysql.yml
 ```
 
-### application.yml
+#### application.yml
 
 공통 설정은 다음과 같다.
 
@@ -5313,7 +5313,7 @@ spring:
 
 별도의 Profile을 지정하지 않으면 `local`을 사용한다.
 
-### application-local.yml
+#### application-local.yml
 
 H2 환경은 다음과 같이 설정한다.
 
@@ -5332,7 +5332,7 @@ spring:
 
 H2는 내장 데이터베이스이므로 `embedded`를 사용한다.
 
-### application-mysql.yml
+#### application-mysql.yml
 
 MySQL 환경은 다음과 같이 설정한다.
 
@@ -5357,7 +5357,7 @@ spring:
 
 ---
 
-## 실제로 자동 스키마 생성을 확인해보자
+### 실제로 자동 스키마 생성을 확인해보자
 
 이번에는 스키마 자동 생성 동작을 확인하는 과정을 정리해보자.
 
@@ -5411,7 +5411,7 @@ BATCH_STEP_EXECUTION_SEQ
 
 ---
 
-## 메타데이터 테이블이 없으면 어떻게 될까?
+### 메타데이터 테이블이 없으면 어떻게 될까?
 
 이번에는 반대 상황을 살펴보자.
 
@@ -5483,7 +5483,7 @@ flowchart TD
 
 ---
 
-## H2에서는 왜 동일한 오류가 발생하지 않을까?
+### H2에서는 왜 동일한 오류가 발생하지 않을까?
 
 이번에는 H2를 사용한다고 생각해보자.
 
@@ -5544,7 +5544,7 @@ spring:
 
 ---
 
-## 메타데이터 테이블에 실제로 어떤 값이 저장될까?
+### 메타데이터 테이블에 실제로 어떤 값이 저장될까?
 
 지금까지는 스키마를 생성하는 방법을 살펴봤다.
 
@@ -5564,7 +5564,7 @@ helloJob
 
 영속적인 MySQL 데이터베이스를 사용한다면 실행 종료 후에도 이러한 정보를 확인할 수 있다.
 
-### JobInstance 조회
+#### JobInstance 조회
 
 먼저 다음 SQL을 실행해보자.
 
@@ -5583,7 +5583,7 @@ FROM BATCH_JOB_INSTANCE;
 
 따라서 같은 Job 이름이더라도 식별용 JobParameters가 다르면 서로 다른 JobInstance로 관리될 수 있다.
 
-### JobExecution 조회
+#### JobExecution 조회
 
 다음 SQL을 실행해보자.
 
@@ -5620,7 +5620,7 @@ Job이 정상적으로 완료되면 `STATUS`에 `COMPLETED`가 저장될 수 있
 
 실행 중 오류가 발생했다면 `FAILED` 같은 상태와 오류 관련 정보가 기록될 수 있다.
 
-### StepExecution 조회
+#### StepExecution 조회
 
 이번에는 Step 실행 정보를 조회해보자.
 
@@ -5650,7 +5650,7 @@ ORDER BY STEP_EXECUTION_ID;
 
 ---
 
-## Job과 Step 실행 정보를 함께 조회하기
+### Job과 Step 실행 정보를 함께 조회하기
 
 실무에서는 Job과 Step 실행 정보를 함께 조회해야 하는 경우가 많다.
 
@@ -5704,7 +5704,7 @@ JobRepository가 실행 상태와 버전 정보를 관리하기 때문에 임의
 
 ---
 
-## 메타데이터 스키마를 운영 환경에서 관리할 때 주의할 점
+### 메타데이터 스키마를 운영 환경에서 관리할 때 주의할 점
 
 개발 환경에서는 다음 설정을 사용하는 것이 편리하다.
 
@@ -5763,7 +5763,7 @@ Spring Batch에서 제공하는 마이그레이션 스크립트와 공식 업그
 
 ---
 
-## 정리
+### 정리
 
 Spring Batch는 Job과 Step의 실행 및 관리를 위해 메타데이터를 사용한다.
 
@@ -5807,14 +5807,14 @@ ID 생성용 테이블: 3개
 
 따라서 스키마를 생성하는 방법뿐 아니라 실행 메타데이터가 어떤 의미를 가지고 있으며 어떤 목적으로 저장되는지 함께 이해하는 것이 중요하다.
 
-### 한 줄 요약
+#### 한 줄 요약
 
 > Spring Batch는 Job과 Step의 실행 상태 및 재시작 정보를 관리하기 위해 메타데이터 스키마를 사용하며, `spring.batch.jdbc.initialize-schema`의 `always`, `embedded`, `never` 설정으로 자동 초기화 여부를 제어할 수 있다. 개발 환경에서는 자동 생성을 활용할 수 있지만 운영 환경에서는 스키마를 별도로 관리하는 것이 안정적인 배치 운영에 유리하다.
 
 
 ## DB 스키마 생성 및 이해 (2)
 
-## Spring Batch 메타데이터 테이블 구조와 실행 정보 분석
+### Spring Batch 메타데이터 테이블 구조와 실행 정보 분석
 
 Spring Batch에서는 Job과 Step을 실행할 때 단순히 비즈니스 로직만 수행하는 것이 아니라, 실행 과정에서 발생하는 다양한 정보를 관리한다.
 
@@ -5860,11 +5860,11 @@ Job이 실행되면 Spring Batch는 내부적으로 Job과 Step의 실행 상태
 
 ---
 
-## Spring Batch 메타데이터의 전체 구조
+### Spring Batch 메타데이터의 전체 구조
 
 Spring Batch의 메타데이터 테이블은 크게 Job 관련 테이블과 Step 관련 테이블로 구분할 수 있다.
 
-### Job 관련 테이블
+#### Job 관련 테이블
 
 | 테이블                           | 역할                          |
 | ----------------------------- | --------------------------- |
@@ -5873,7 +5873,7 @@ Spring Batch의 메타데이터 테이블은 크게 Job 관련 테이블과 Step
 | `BATCH_JOB_EXECUTION_PARAMS`  | Job 실행 시 전달된 파라미터 저장        |
 | `BATCH_JOB_EXECUTION_CONTEXT` | Job 실행 중 필요한 상태 및 공유 데이터 저장 |
 
-### Step 관련 테이블
+#### Step 관련 테이블
 
 | 테이블                            | 역할                       |
 | ------------------------------ | ------------------------ |
@@ -5917,7 +5917,7 @@ StepExecution
 
 ---
 
-## JobInstance와 JobExecution은 무엇이 다를까?
+### JobInstance와 JobExecution은 무엇이 다를까?
 
 테이블을 살펴보기 전에 먼저 두 객체의 차이를 이해할 필요가 있다.
 
@@ -6008,7 +6008,7 @@ settlementJob
 
 ---
 
-## BATCH_JOB_INSTANCE
+### BATCH_JOB_INSTANCE
 
 `BATCH_JOB_INSTANCE`는 JobInstance의 정보를 저장하는 테이블이다.
 
@@ -6037,7 +6037,7 @@ CREATE TABLE BATCH_JOB_INSTANCE (
 | `JOB_NAME`        | Job을 정의할 때 지정한 이름                |
 | `JOB_KEY`         | 식별용 JobParameters를 기반으로 생성한 식별 키 |
 
-### JOB_INSTANCE_ID
+#### JOB_INSTANCE_ID
 
 `JOB_INSTANCE_ID`는 JobInstance를 고유하게 식별하는 기본 키다.
 
@@ -6050,7 +6050,7 @@ CREATE TABLE BATCH_JOB_INSTANCE (
 
 두 JobInstance는 Job 이름은 같지만 식별용 JobParameters가 다르므로 서로 다른 인스턴스다.
 
-### JOB_NAME
+#### JOB_NAME
 
 `JOB_NAME`은 Job을 생성할 때 지정한 이름이다.
 
@@ -6080,7 +6080,7 @@ new JobBuilder("settlementJob", jobRepository)
 settlementJob
 ```
 
-### JOB_KEY
+#### JOB_KEY
 
 `JOB_KEY`는 JobInstance를 식별하기 위한 값이다.
 
@@ -6122,7 +6122,7 @@ UNIQUE (JOB_NAME, JOB_KEY)
 
 ---
 
-## VERSION은 왜 필요할까?
+### VERSION은 왜 필요할까?
 
 Spring Batch의 여러 메타데이터 테이블에는 `VERSION` 컬럼이 존재한다.
 
@@ -6182,7 +6182,7 @@ Spring Batch는 이러한 충돌을 감지해 `OptimisticLockingFailureException
 
 ---
 
-## BATCH_JOB_EXECUTION
+### BATCH_JOB_EXECUTION
 
 `BATCH_JOB_EXECUTION`은 JobExecution의 정보를 저장하는 테이블이다.
 
@@ -6224,7 +6224,7 @@ CREATE TABLE BATCH_JOB_EXECUTION (
 | `EXIT_MESSAGE`     | 종료와 관련된 상세 메시지      |
 | `LAST_UPDATED`     | 마지막 메타데이터 갱신 시점     |
 
-### JOB_EXECUTION_ID
+#### JOB_EXECUTION_ID
 
 `JOB_EXECUTION_ID`는 개별 실행을 식별하는 기본 키다.
 
@@ -6243,7 +6243,7 @@ CREATE TABLE BATCH_JOB_EXECUTION (
 
 이것이 JobInstance와 JobExecution의 일대다 관계다.
 
-### CREATE_TIME, START_TIME, END_TIME
+#### CREATE_TIME, START_TIME, END_TIME
 
 Spring Batch는 실행 시점을 구분해서 관리한다.
 
@@ -6269,7 +6269,7 @@ Spring Batch는 실행 시점을 구분해서 관리한다.
 
 ---
 
-## STATUS와 EXIT_CODE의 차이
+### STATUS와 EXIT_CODE의 차이
 
 `BATCH_JOB_EXECUTION`에는 실행 상태와 관련된 두 컬럼이 있다.
 
@@ -6281,7 +6281,7 @@ EXIT_CODE
 
 이 둘은 비슷해 보이지만 서로 다른 정보를 표현한다.
 
-### STATUS
+#### STATUS
 
 `STATUS`는 `BatchStatus`에 해당하는 실행 상태를 저장한다.
 
@@ -6309,7 +6309,7 @@ STATUS = COMPLETED
 STATUS = FAILED
 ```
 
-### EXIT_CODE
+#### EXIT_CODE
 
 `EXIT_CODE`는 `ExitStatus`에 해당하는 종료 코드를 저장한다.
 
@@ -6350,7 +6350,7 @@ return new ExitStatus("NO_DATA");
 
 ---
 
-## EXIT_MESSAGE와 LAST_UPDATED
+### EXIT_MESSAGE와 LAST_UPDATED
 
 `EXIT_MESSAGE`는 실행 종료와 관련된 상세 메시지를 저장한다.
 
@@ -6375,7 +6375,7 @@ Settlement amount mismatch
 
 ---
 
-## BATCH_JOB_EXECUTION_PARAMS
+### BATCH_JOB_EXECUTION_PARAMS
 
 `BATCH_JOB_EXECUTION_PARAMS`는 Job 실행 시 전달한 JobParameters를 저장한다.
 
@@ -6393,7 +6393,7 @@ Spring Batch는 이러한 값을 `JobParameters` 객체로 관리한다.
 
 그리고 JDBC 기반 JobRepository에서는 해당 파라미터 정보를 `BATCH_JOB_EXECUTION_PARAMS` 테이블에 저장한다.
 
-### Spring Batch 5에서 변경된 테이블 구조
+#### Spring Batch 5에서 변경된 테이블 구조
 
 Spring Batch 4.x에서는 대표적으로 다음 컬럼을 사용했다.
 
@@ -6457,7 +6457,7 @@ CREATE TABLE BATCH_JOB_EXECUTION_PARAMS (
 
 ---
 
-## IDENTIFYING은 무엇을 의미할까?
+### IDENTIFYING은 무엇을 의미할까?
 
 `IDENTIFYING`은 JobParameters 중에서 JobInstance를 식별하는 데 사용할 파라미터인지 나타낸다.
 
@@ -6536,7 +6536,7 @@ requestId=request-002   → Non-identifying
 
 ---
 
-## BATCH_JOB_EXECUTION_CONTEXT
+### BATCH_JOB_EXECUTION_CONTEXT
 
 `BATCH_JOB_EXECUTION_CONTEXT`는 JobExecution의 ExecutionContext를 저장한다.
 
@@ -6582,7 +6582,7 @@ CREATE TABLE BATCH_JOB_EXECUTION_CONTEXT (
 
 ---
 
-## JobExecutionContext는 Step 사이에서 공유할 수 있다
+### JobExecutionContext는 Step 사이에서 공유할 수 있다
 
 JobExecution에 속한 ExecutionContext는 같은 Job 실행에 속한 여러 Step에서 접근할 수 있다.
 
@@ -6602,7 +6602,7 @@ settlementJob
 
 이런 경우 JobExecutionContext를 활용할 수 있다.
 
-### JobExecutionContext에 값 저장하기
+#### JobExecutionContext에 값 저장하기
 
 다음은 Tasklet에서 JobExecutionContext에 값을 저장하는 코드다.
 
@@ -6635,7 +6635,7 @@ Key   = businessDate
 Value = 2026-10-15
 ```
 
-### 다른 Step에서 값 조회하기
+#### 다른 Step에서 값 조회하기
 
 두 번째 Step에서는 동일한 JobExecutionContext에 접근할 수 있다.
 
@@ -6674,7 +6674,7 @@ Spring Batch는 일반적으로 JobExecutionContext를 Step 실행 경계에서 
 
 ---
 
-## ExecutionContext는 반드시 JSON으로 저장될까?
+### ExecutionContext는 반드시 JSON으로 저장될까?
 
 ExecutionContext는 내부적으로 Key-Value 형태의 데이터를 관리한다.
 
@@ -6708,7 +6708,7 @@ ExecutionContext는 대용량 데이터를 보관하는 저장소가 아니라 *
 
 ---
 
-## BATCH_STEP_EXECUTION
+### BATCH_STEP_EXECUTION
 
 `BATCH_STEP_EXECUTION`은 StepExecution의 정보를 저장하는 테이블이다.
 
@@ -6739,7 +6739,7 @@ helloJob
 
 하지만 서로 다른 Step 실행 기록이므로 `STEP_EXECUTION_ID`는 다르다.
 
-### 테이블 구조
+#### 테이블 구조
 
 Spring Batch 5.2.4의 MySQL 스키마는 다음과 같다.
 
@@ -6779,11 +6779,11 @@ JobExecution 테이블과 비슷한 컬럼들이 존재한다.
 
 ---
 
-## BATCH_STEP_EXECUTION 주요 컬럼
+### BATCH_STEP_EXECUTION 주요 컬럼
 
 컬럼은 크게 실행 정보와 처리 통계 정보로 구분할 수 있다.
 
-### 실행 정보
+#### 실행 정보
 
 | 컬럼                  | 의미                   |
 | ------------------- | -------------------- |
@@ -6801,7 +6801,7 @@ JobExecution 테이블과 비슷한 컬럼들이 존재한다.
 
 이러한 컬럼들은 JobExecution의 실행 정보와 유사하다.
 
-### 처리 통계 정보
+#### 처리 통계 정보
 
 | 컬럼                   | 의미                       |
 | -------------------- | ------------------------ |
@@ -6820,7 +6820,7 @@ JobExecution 테이블과 비슷한 컬럼들이 존재한다.
 
 ---
 
-## COMMIT_COUNT
+### COMMIT_COUNT
 
 `COMMIT_COUNT`는 해당 Step 실행에서 발생한 커밋 횟수를 기록한다.
 
@@ -6869,7 +6869,7 @@ Commit 10
 
 ---
 
-## READ_COUNT
+### READ_COUNT
 
 `READ_COUNT`는 Reader를 통해 읽은 Item 수를 기록한다.
 
@@ -6901,7 +6901,7 @@ READ_COUNT = 5
 
 ---
 
-## FILTER_COUNT
+### FILTER_COUNT
 
 `FILTER_COUNT`는 Processor에서 필터링한 Item 수를 기록한다.
 
@@ -6943,7 +6943,7 @@ WRITE_COUNT = 90
 
 ---
 
-## WRITE_COUNT
+### WRITE_COUNT
 
 `WRITE_COUNT`는 Writer를 통해 쓰기 처리한 Item 수를 기록한다.
 
@@ -6973,7 +6973,7 @@ Spring Batch의 `WRITE_COUNT`는 Spring Batch가 관리하는 Item 처리 결과
 
 ---
 
-## READ_SKIP_COUNT, PROCESS_SKIP_COUNT, WRITE_SKIP_COUNT
+### READ_SKIP_COUNT, PROCESS_SKIP_COUNT, WRITE_SKIP_COUNT
 
 Spring Batch에서는 특정 오류가 발생했을 때 해당 Item을 건너뛰고 작업을 계속 진행하도록 설정할 수 있다.
 
@@ -6981,7 +6981,7 @@ Spring Batch에서는 특정 오류가 발생했을 때 해당 Item을 건너뛰
 
 Skip은 오류가 발생한 단계에 따라 구분된다.
 
-### READ_SKIP_COUNT
+#### READ_SKIP_COUNT
 
 Reader가 데이터를 읽는 과정에서 특정 예외가 발생했고 해당 예외를 Skip하도록 설정했다면 `READ_SKIP_COUNT`가 증가할 수 있다.
 
@@ -6999,7 +6999,7 @@ Row 4 → 정상
 
 이 경우 읽기 과정의 Skip 건수가 기록될 수 있다.
 
-### PROCESS_SKIP_COUNT
+#### PROCESS_SKIP_COUNT
 
 Processor에서 데이터를 가공하는 과정에 예외가 발생한 경우다.
 
@@ -7017,7 +7017,7 @@ Order 4 → 정상 계산
 
 이 경우 `PROCESS_SKIP_COUNT`가 증가할 수 있다.
 
-### WRITE_SKIP_COUNT
+#### WRITE_SKIP_COUNT
 
 Writer에서 데이터를 저장하는 과정에 예외가 발생한 경우다.
 
@@ -7037,7 +7037,7 @@ Writer에서 데이터를 저장하는 과정에 예외가 발생한 경우다.
 
 ---
 
-## ROLLBACK_COUNT
+### ROLLBACK_COUNT
 
 `ROLLBACK_COUNT`는 Step 실행 중 트랜잭션 롤백이 발생한 횟수를 기록한다.
 
@@ -7099,7 +7099,7 @@ Commit
 
 ---
 
-## BATCH_STEP_EXECUTION_CONTEXT
+### BATCH_STEP_EXECUTION_CONTEXT
 
 마지막 테이블은 `BATCH_STEP_EXECUTION_CONTEXT`다.
 
@@ -7137,7 +7137,7 @@ StepExecutionContext는 StepExecution에 속한다.
 
 ---
 
-## JobExecutionContext와 StepExecutionContext의 차이
+### JobExecutionContext와 StepExecutionContext의 차이
 
 두 ExecutionContext는 모두 Key-Value 형태로 데이터를 저장할 수 있다.
 
@@ -7184,7 +7184,7 @@ settlementJob
 
 ---
 
-## StepExecutionContext에 처리 위치 저장하기
+### StepExecutionContext에 처리 위치 저장하기
 
 StepExecutionContext는 재시작 기능과 밀접하게 연결되어 있다.
 
@@ -7263,7 +7263,7 @@ LIMIT 1000;
 
 ---
 
-## StepExecutionContext의 값을 다른 Step으로 전달하려면?
+### StepExecutionContext의 값을 다른 Step으로 전달하려면?
 
 StepExecutionContext는 Step마다 별도로 관리된다.
 
@@ -7333,7 +7333,7 @@ resultFileName 조회
 
 ---
 
-## 실제 Job을 실행하고 메타데이터 확인하기
+### 실제 Job을 실행하고 메타데이터 확인하기
 
 지금까지 살펴본 개념을 실제 코드로 연결해보자.
 
@@ -7341,7 +7341,7 @@ resultFileName 조회
 
 단, 기존 `helloJob`과 함께 등록한다면 자동 실행 대상을 명시해야 하므로 이번 예제에서는 `metadataJob`을 실행 대상으로 지정한다.
 
-### MetadataJobConfiguration
+#### MetadataJobConfiguration
 
 다음과 같은 설정 클래스를 작성한다.
 
@@ -7506,7 +7506,7 @@ boolean hasProcessedStatus =
 
 ---
 
-## MySQL 환경 설정
+### MySQL 환경 설정
 
 이번에는 실행 메타데이터를 실제로 확인해야 하므로 MySQL을 사용한다.
 
@@ -7553,7 +7553,7 @@ spring:
 
 ---
 
-## metadataJob 실행하기
+### metadataJob 실행하기
 
 먼저 Maven으로 프로젝트를 빌드한다.
 
@@ -7601,7 +7601,7 @@ processedStatus 존재 여부 = false
 
 ---
 
-## BATCH_JOB_INSTANCE 확인
+### BATCH_JOB_INSTANCE 확인
 
 이제 MySQL에서 다음 SQL을 실행해보자.
 
@@ -7643,7 +7643,7 @@ businessDate=2026-10-15
 
 ---
 
-## BATCH_JOB_EXECUTION 확인
+### BATCH_JOB_EXECUTION 확인
 
 이번에는 JobExecution을 조회해보자.
 
@@ -7675,7 +7675,7 @@ EXIT_CODE = COMPLETED
 
 ---
 
-## BATCH_JOB_EXECUTION_PARAMS 확인
+### BATCH_JOB_EXECUTION_PARAMS 확인
 
 이번에는 JobParameters가 저장되었는지 확인해보자.
 
@@ -7706,7 +7706,7 @@ businessDate=2026-10-15
 
 ---
 
-## BATCH_JOB_EXECUTION_CONTEXT 확인
+### BATCH_JOB_EXECUTION_CONTEXT 확인
 
 이번에는 JobExecutionContext를 조회해보자.
 
@@ -7737,7 +7737,7 @@ Spring Batch 5.2의 기본 직렬화 방식은 Base64 기반이므로, 실제 �
 
 ---
 
-## BATCH_STEP_EXECUTION 확인
+### BATCH_STEP_EXECUTION 확인
 
 이번에는 StepExecution 정보를 조회해보자.
 
@@ -7791,7 +7791,7 @@ WRITE_COUNT = 0
 
 ---
 
-## BATCH_STEP_EXECUTION_CONTEXT 확인
+### BATCH_STEP_EXECUTION_CONTEXT 확인
 
 마지막으로 StepExecutionContext를 조회해보자.
 
@@ -7823,7 +7823,7 @@ stepContext.putString(
 
 ---
 
-## Job과 Step의 실행 이력을 함께 조회하기
+### Job과 Step의 실행 이력을 함께 조회하기
 
 실제 운영 환경에서는 Job과 Step의 실행 정보를 함께 확인해야 하는 경우가 많다.
 
@@ -7906,7 +7906,7 @@ BATCH_STEP_EXECUTION
 
 ---
 
-## 실패한 Job을 재시작하면 테이블은 어떻게 변경될까?
+### 실패한 Job을 재시작하면 테이블은 어떻게 변경될까?
 
 지금까지는 정상적으로 완료된 Job을 기준으로 살펴봤다.
 
@@ -7938,7 +7938,7 @@ JobInstance 1
 
 데이터베이스에서는 다음과 같은 관계를 확인할 수 있다.
 
-### BATCH_JOB_INSTANCE
+#### BATCH_JOB_INSTANCE
 
 | JOB_INSTANCE_ID | JOB_NAME      | JOB_KEY |
 | --------------- | ------------- | ------- |
@@ -7946,7 +7946,7 @@ JobInstance 1
 
 JobInstance는 하나다.
 
-### BATCH_JOB_EXECUTION
+#### BATCH_JOB_EXECUTION
 
 | JOB_EXECUTION_ID | JOB_INSTANCE_ID | STATUS    |
 | ---------------- | --------------- | --------- |
@@ -7969,7 +7969,7 @@ JobExecution은 두 개다.
 
 ---
 
-## 메타데이터 테이블을 직접 수정해도 될까?
+### 메타데이터 테이블을 직접 수정해도 될까?
 
 Spring Batch의 메타데이터 테이블은 일반적인 업무 테이블과는 성격이 다르다.
 
@@ -7997,7 +7997,7 @@ WHERE JOB_EXECUTION_ID = 1;
 
 ---
 
-## 운영 환경에서는 메타데이터도 관리 대상이다
+### 운영 환경에서는 메타데이터도 관리 대상이다
 
 Spring Batch 메타데이터는 실행할 때마다 계속 누적된다.
 
@@ -8009,7 +8009,7 @@ Spring Batch 메타데이터는 실행할 때마다 계속 누적된다.
 
 따라서 운영 환경에서는 다음 사항을 고려해야 한다.
 
-### 메타데이터 보관 기간
+#### 메타데이터 보관 기간
 
 모든 실행 기록을 영구적으로 저장해야 하는 것은 아닐 수 있다.
 
@@ -8019,7 +8019,7 @@ Spring Batch 메타데이터는 실행할 때마다 계속 누적된다.
 
 특히 `ExecutionContext`를 삭제하면 실패한 배치가 이전 상태를 복원하지 못할 수 있다.
 
-### 모니터링과 알림
+#### 모니터링과 알림
 
 메타데이터에는 Job과 Step의 실행 상태가 저장된다.
 
@@ -8039,7 +8039,7 @@ Skip 건수 증가 확인
 
 이러한 지표를 이용하면 배치 장애를 더 빠르게 발견할 수 있다.
 
-### 데이터베이스 성능
+#### 데이터베이스 성능
 
 많은 Job이 동시에 실행되면 동일한 메타데이터 테이블에 대한 접근도 증가한다.
 
@@ -8051,7 +8051,7 @@ Spring Batch 공식 문서 역시 메타데이터 보관과 삭제가 재시작 
 
 ---
 
-## Spring Batch 4와 5의 주요 스키마 차이
+### Spring Batch 4와 5의 주요 스키마 차이
 
 마지막으로 버전 차이를 다시 정리해보자.
 
@@ -8100,13 +8100,13 @@ FROM BATCH_JOB_EXECUTION_PARAMS;
 
 ---
 
-## 정리
+### 정리
 
 Spring Batch는 Job과 Step의 실행 정보를 관리하기 위해 메타데이터 테이블을 사용한다.
 
 주요 메타데이터 테이블은 6개이며 크게 Job 관련 테이블과 Step 관련 테이블로 구분된다.
 
-### Job 관련 테이블
+#### Job 관련 테이블
 
 | 테이블                           | 핵심 역할                                 |
 | ----------------------------- | ------------------------------------- |
@@ -8115,7 +8115,7 @@ Spring Batch는 Job과 Step의 실행 정보를 관리하기 위해 메타데이
 | `BATCH_JOB_EXECUTION_PARAMS`  | Job 실행 시 전달한 파라미터 저장                  |
 | `BATCH_JOB_EXECUTION_CONTEXT` | Job 실행 중 필요한 상태 및 Step 간 공유 데이터 저장    |
 
-### Step 관련 테이블
+#### Step 관련 테이블
 
 | 테이블                            | 핵심 역할                   |
 | ------------------------------ | ----------------------- |
@@ -8158,7 +8158,7 @@ JobExecutionContext는 같은 Job 실행에 속한 Step 사이에서 데이터�
 
 **Job과 Step의 실행을 식별하고, 실행 상태를 관리하며, 실패한 작업을 안정적으로 재시작하기 위한 핵심적인 저장 구조**다.
 
-### 한 줄 요약
+#### 한 줄 요약
 
 > Spring Batch는 `JobInstance → JobExecution → StepExecution` 계층을 중심으로 6개의 메타데이터 테이블을 관리하며, 실행 상태·처리 건수·JobParameters·ExecutionContext 등을 저장해 배치 실행 이력 조회, 장애 분석, 재시작 및 운영 관리를 지원한다.
 
