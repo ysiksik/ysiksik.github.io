@@ -985,3 +985,1173 @@ Redis를 사용한다는 사실만으로 이러한 문제가 해결되지는 않
 이후 Timeline Server가 이벤트를 소비해 Redis에 조회용 데이터를 구성하면, 타임라인 요청에서 Feed Server와 User Server를 반복 호출하는 경로를 줄일 수 있다.
 
 핵심은 Kafka 도입 자체가 아니라 **반복되는 조회 작업을 변경 시점의 처리로 옮기는 것**이다. 이를 안정적으로 운영하려면 초기 데이터 적재, 발행 유실 복구, 중복 처리, 이벤트 순서, 조회 모델의 반영 지연까지 함께 설계해야 한다.
+
+## 02. 타임라인 API 만들기 
+
+### Kafka와 Redis로 Timeline Server 구현하기
+
+앞에서는 Feed Server와 User Server에서 발생하는 변경 사항을 Kafka로 발행하도록 구성했다. 이제 이 이벤트를 받아 타임라인 조회에 사용할 데이터를 만드는 서버를 구현한다.
+
+Timeline Server의 역할은 두 가지다. Kafka 이벤트를 소비해 Redis의 조회 모델을 갱신하고, API 요청이 들어오면 Redis에서 데이터를 읽어 응답한다.
+
+기존 Feed Server가 조회 요청마다 사용자 정보를 가져와 조합했다면, Timeline Server는 이미 사용자 이름이 포함된 피드를 읽는다. 반복적인 서버 간 호출을 조회 경로에서 제거하는 것이 이번 구현의 핵심이다.
+
+#### 구현 목표와 전체 구조
+
+이번에 연결할 흐름은 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["Feed Server"] -->|"피드 생성 이벤트"| B["Kafka: feed.created"]
+    C["User Server"] -->|"팔로우 변경 이벤트"| D["Kafka: user.follower"]
+
+    B --> E["Feed Listener"]
+    D --> F["Follow Listener"]
+
+    E --> G["FeedStore"]
+    F --> H["FollowStore"]
+
+    G --> I["Redis"]
+    H --> I
+
+    J["타임라인 조회 요청"] --> K["Timeline API"]
+    K --> L["Timeline Service"]
+    L --> G
+    L --> H
+    I --> L
+    L --> K
+```
+
+Timeline Server는 별도의 관계형 데이터베이스를 조회하지 않는다. 피드 원본은 Feed Server가 관리하고, 사용자와 팔로우 관계의 원본은 User Server가 관리한다.
+
+Redis에는 타임라인 조회에 맞게 가공한 데이터를 저장한다.
+
+| 데이터 | 원본 관리 주체 | Timeline Server의 저장 목적 |
+|---|---|---|
+| 피드 | Feed Server | 사용자 이름을 포함한 피드 조회 |
+| 팔로우 관계 | User Server | 타임라인에 포함할 사용자 결정 |
+| 좋아요 | 기존 Timeline 기능 | 좋아요 상태와 개수 조회 |
+
+여기서 Redis를 단순히 “없어져도 되는 캐시”로만 생각하면 안 된다. 피드와 팔로우 정보는 원본으로부터 재구성할 수 있지만, 좋아요를 Redis에만 저장한다면 좋아요 데이터의 내구성과 복구 정책은 별도로 필요하다.
+
+#### 먼저 확인할 ObjectMapper 설정
+
+Kafka 메시지에는 게시물 작성 시각과 이벤트 발생 시각처럼 Java 날짜·시간 타입이 포함된다.
+
+다음과 같이 기본 `ObjectMapper`를 직접 생성하면 프로젝트에서 사용하는 날짜·시간 모듈과 설정이 적용되지 않을 수 있다.
+
+```java
+private final ObjectMapper objectMapper = new ObjectMapper();
+```
+
+Spring Boot 3.x와 Jackson 2 기반 프로젝트에서는 Spring이 관리하는 `ObjectMapper`를 생성자 주입받아 사용한다.
+
+```java
+public FeedListener(
+        ObjectMapper objectMapper,
+        FeedStore feedStore
+) {
+    this.objectMapper = objectMapper;
+    this.feedStore = feedStore;
+}
+```
+
+이 원칙은 이벤트를 보내는 Feed Server와 User Server에도 동일하게 적용한다. Producer와 Consumer가 날짜·시간 형식을 서로 다르게 해석하지 않도록 직렬화 계약을 맞춰야 한다.
+
+#### 프로젝트 의존성
+
+Timeline Server에는 다음 의존성이 필요하다.
+
+```groovy
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-data-redis'
+    implementation 'org.springframework.kafka:spring-kafka'
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+}
+```
+
+- `spring-boot-starter-web`: 타임라인 조회 API를 제공한다.
+- `spring-boot-starter-data-redis`: Redis 연결과 자료구조 접근을 담당한다.
+- `spring-kafka`: Kafka 메시지를 소비한다.
+- `spring-boot-starter-actuator`: Kubernetes Probe에서 사용할 상태 확인 경로를 제공한다.
+
+JPA와 JDBC를 사용하지 않으므로 데이터베이스 연결 설정은 필요하지 않다. 기존 컨테이너 빌드용 Jib 설정은 유지하고, Timeline Server의 이미지 저장소와 태그를 지정한다.
+
+#### Redis 접속 정보 설정
+
+Redis가 `infra` Namespace의 `redis-master` Service로 제공된다고 가정한다.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-config
+  namespace: sns
+data:
+  REDIS_HOST: "redis-master.infra.svc.cluster.local"
+  REDIS_PORT: "6379"
+```
+
+`metadata.namespace`는 이 설정을 사용하는 Timeline Server와 같은 `sns`로 지정한다.
+
+접속 대상은 다른 Namespace에 있으므로 Service 주소에 `infra`를 포함한다. Namespace가 다르다는 이유만으로 통신이 차단되지는 않는다. NetworkPolicy를 적용했다면 Kafka와 Redis로 향하는 통신이 허용되어 있는지도 확인해야 한다.
+
+```bash
+kubectl apply -f redis-configmap.yaml
+kubectl get configmap redis-config -n sns
+```
+
+이 예제는 인증을 설정하지 않은 실습용 Redis를 전제로 한다. 실제 Redis에 비밀번호나 ACL을 설정했다면 Secret을 통해 인증 정보를 전달해야 한다. 인증이 없다는 구성을 운영 환경까지 그대로 가져가서는 안 된다.
+
+#### Spring 설정
+
+다음 설정은 Spring Boot 3.x 기반의 예제다. Kafka 인증에는 앞에서 만든 `kafka-config`와 `kafka-secret`을 사용한다.
+
+```yaml
+spring:
+  application:
+    name: timeline-server
+
+  data:
+    redis:
+      host: "${REDIS_HOST}"
+      port: "${REDIS_PORT}"
+      connect-timeout: 2s
+      timeout: 2s
+
+  kafka:
+    bootstrap-servers: "${KAFKA_HOST}:${KAFKA_PORT}"
+
+    properties:
+      "[security.protocol]": "${KAFKA_SECURITY_PROTOCOL}"
+      "[sasl.mechanism]": "${KAFKA_SASL_MECHANISM}"
+      "[sasl.jaas.config]": >-
+        org.apache.kafka.common.security.plain.PlainLoginModule required
+        username="${KAFKA_USER}"
+        password="${KAFKA_PASSWORD}";
+
+    consumer:
+      group-id: timeline-server
+      enable-auto-commit: false
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      max-poll-records: 100
+
+    listener:
+      ack-mode: record
+      concurrency: 1
+      missing-topics-fatal: true
+
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+
+server:
+  port: 8080
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+```
+
+Kafka Consumer 설정에서 특히 중요한 부분은 Offset 처리다.
+
+| 설정 | 의미 |
+|---|---|
+| `group-id` | 같은 작업을 분담하는 Consumer Group |
+| `enable-auto-commit: false` | Kafka 클라이언트의 주기적인 자동 커밋 비활성화 |
+| `ack-mode: record` | 개별 Listener 처리가 성공한 뒤 컨테이너가 Offset 커밋 |
+| `auto-offset-reset: earliest` | 유효한 커밋 Offset이 없을 때 남아 있는 가장 이른 메시지부터 소비 |
+| `max-poll-records` | 한 번의 poll에서 가져오는 최대 레코드 수 |
+
+`earliest`는 서버를 재시작할 때마다 모든 메시지를 다시 읽는 설정이 아니다. 이미 Consumer Group의 Offset이 저장되어 있다면 해당 위치에서 이어서 읽는다.
+
+또한 메시지가 Kafka 보존 기간을 지나 삭제되었다면 `earliest`로도 복구할 수 없다.
+
+#### Redis 자료구조 설계
+
+##### 피드는 Sorted Set으로 정렬한다
+
+타임라인은 일반적으로 최신 게시물이 먼저 나와야 한다. Redis Sorted Set은 각 Member에 Score를 부여하므로 이러한 정렬에 적합하다.
+
+- Member: 피드 ID
+- Score: 작성 시각의 Epoch Milliseconds
+- 조회 방향: Score 내림차순
+
+Sorted Set은 같은 Member를 다시 추가하면 별도 항목을 늘리는 대신 해당 Member의 Score를 갱신한다. 이를 피드 ID와 결합하면 재처리 시 중복 인덱스를 줄일 수 있다. [Redis Sorted Set](https://redis.io/docs/latest/develop/data-types/sorted-sets/)
+
+주의할 점은 **Sorted Set의 중복 기준이 JSON 내부의 피드 ID가 아니라 Member 전체**라는 사실이다.
+
+피드 JSON을 Member로 저장하면 사용자 이름이나 필드 순서가 달라졌을 때 다른 문자열로 인식될 수 있다. 같은 피드인데 두 항목이 생기는 것이다.
+
+이번에는 본문과 정렬 인덱스를 분리한다.
+
+| Key | 자료구조 | 저장 내용 |
+|---|---|---|
+| `timeline:feeds:data` | Hash | 피드 ID별 JSON 본문 |
+| `timeline:feeds:all` | Sorted Set | 전체 피드 ID와 작성 시각 |
+| `timeline:feeds:user:1` | Sorted Set | 사용자 1이 작성한 피드 ID와 작성 시각 |
+| `timeline:following:1` | Set | 사용자 1이 팔로우하는 사용자 ID |
+
+이 구성에서는 피드 본문을 한 곳에 저장하고, 전체 조회와 사용자별 조회를 위한 인덱스만 따로 유지한다.
+
+##### 팔로우 관계는 Set으로 저장한다
+
+팔로우 관계에서는 순서보다 포함 여부가 중요하다.
+
+사용자 1이 사용자 2와 3을 팔로우한다면 다음과 같은 형태가 된다.
+
+```text
+Key: timeline:following:1
+Members: 2, 3
+```
+
+이 키는 사용자 1의 **팔로워 목록이 아니라 팔로잉 목록**이다.
+
+이름을 모호하게 `followers`로 지정하면 관계 방향을 뒤집어 구현하기 쉽다. 저장 키와 메서드 이름 모두 `following`을 기준으로 맞춘다.
+
+#### 이벤트 계약 정의
+
+Consumer는 Producer가 보낸 JSON 구조와 같은 필드를 사용해야 한다.
+
+Feed Server에서 발행하는 피드 이벤트는 다음 타입으로 받는다.
+
+```java
+package com.sns.timeline.event;
+
+import java.time.Instant;
+
+public record FeedCreatedEvent(
+        String eventId,
+        int schemaVersion,
+        Instant occurredAt,
+        Long feedId,
+        String imageId,
+        Long uploaderId,
+        String uploaderUsername,
+        Instant uploadedAt,
+        String content
+) {
+}
+```
+
+팔로우 변경 이벤트도 앞에서 정의한 방향을 그대로 유지한다.
+
+```java
+package com.sns.timeline.event;
+
+import java.time.Instant;
+
+public record FollowChangedEvent(
+        String eventId,
+        int schemaVersion,
+        Instant occurredAt,
+        Long followerUserId,
+        Long followingUserId,
+        boolean following
+) {
+}
+```
+
+`followerUserId`는 팔로우하는 사람, `followingUserId`는 팔로우 대상이다.
+
+Redis와 API에서는 이벤트 메타데이터를 제외한 조회 모델을 사용한다.
+
+```java
+package com.sns.timeline.feed;
+
+import com.sns.timeline.event.FeedCreatedEvent;
+
+import java.time.Instant;
+
+public record FeedView(
+        Long feedId,
+        String imageId,
+        Long uploaderId,
+        String uploaderUsername,
+        Instant uploadedAt,
+        String content
+) {
+    public static FeedView from(FeedCreatedEvent event) {
+        if (event.feedId() == null || event.feedId() <= 0
+                || event.uploaderId() == null || event.uploaderId() <= 0
+                || event.uploadedAt() == null
+                || event.uploaderUsername() == null
+                || event.content() == null) {
+            throw new IllegalArgumentException("Invalid feed event");
+        }
+
+        return new FeedView(
+                event.feedId(),
+                event.imageId(),
+                event.uploaderId(),
+                event.uploaderUsername(),
+                event.uploadedAt(),
+                event.content()
+        );
+    }
+}
+```
+
+이벤트 ID와 스키마 버전은 메시지 처리에 필요한 정보다. 이를 그대로 사용자 응답에 노출할 필요는 없다.
+
+#### FeedStore 구현
+
+`FeedStore`는 Redis에 피드를 저장하고, 정렬 인덱스를 이용해 조회한다. 관계형 데이터베이스를 사용하는 서비스의 Repository와 비슷한 경계에 해당한다.
+
+```java
+package com.sns.timeline.feed;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.sns.timeline.event.FeedCreatedEvent;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.stereotype.Repository;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
+
+@Repository
+public class FeedStore {
+
+    private static final String DATA_KEY = "timeline:feeds:data";
+    private static final String ALL_KEY = "timeline:feeds:all";
+    private static final String USER_PREFIX = "timeline:feeds:user:";
+
+    private static final DefaultRedisScript<Long> UPSERT =
+            new DefaultRedisScript<>("""
+                    redis.call('HSET', KEYS[1], ARGV[1], ARGV[3])
+                    redis.call('ZADD', KEYS[2], ARGV[2], ARGV[1])
+                    redis.call('ZADD', KEYS[3], ARGV[2], ARGV[1])
+                    return 1
+                    """, Long.class);
+
+    private final StringRedisTemplate redis;
+    private final ObjectMapper objectMapper;
+
+    public FeedStore(
+            StringRedisTemplate redis,
+            ObjectMapper objectMapper
+    ) {
+        this.redis = redis;
+        this.objectMapper = objectMapper;
+    }
+
+    public void save(FeedCreatedEvent event) {
+        FeedView feed = FeedView.from(event);
+
+        String payload;
+        try {
+            payload = objectMapper.writeValueAsString(feed);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException(
+                    "Feed serialization failed",
+                    exception
+            );
+        }
+
+        redis.execute(
+                UPSERT,
+                List.of(
+                        DATA_KEY,
+                        ALL_KEY,
+                        USER_PREFIX + feed.uploaderId()
+                ),
+                feed.feedId().toString(),
+                Long.toString(feed.uploadedAt().toEpochMilli()),
+                payload
+        );
+    }
+
+    public List<FeedView> listAll(long offset, int limit) {
+        return read(ALL_KEY, offset, limit);
+    }
+
+    public List<FeedView> listByUser(
+            long userId,
+            long offset,
+            int limit
+    ) {
+        return read(USER_PREFIX + userId, offset, limit);
+    }
+
+    private List<FeedView> read(
+            String indexKey,
+            long offset,
+            int limit
+    ) {
+        if (offset < 0 || offset > 1_000_000
+                || limit < 1 || limit > 100) {
+            throw new IllegalArgumentException("Invalid page range");
+        }
+
+        Set<String> ids = redis.opsForZSet().reverseRange(
+                indexKey,
+                offset,
+                offset + limit - 1
+        );
+
+        if (ids == null || ids.isEmpty()) {
+            return List.of();
+        }
+
+        List<String> payloads = redis.<String, String>opsForHash()
+                .multiGet(DATA_KEY, new ArrayList<>(ids));
+
+        List<FeedView> feeds = new ArrayList<>(payloads.size());
+
+        for (String payload : payloads) {
+            if (payload == null) {
+                throw new IllegalStateException(
+                        "Feed index and payload are inconsistent"
+                );
+            }
+
+            try {
+                feeds.add(objectMapper.readValue(
+                        payload,
+                        FeedView.class
+                ));
+            } catch (JsonProcessingException exception) {
+                throw new IllegalStateException(
+                        "Stored feed deserialization failed",
+                        exception
+                );
+            }
+        }
+
+        return feeds;
+    }
+}
+```
+
+##### 저장 동작
+
+피드 하나를 저장하면 다음 명령이 실행된다.
+
+1. Hash에 피드 본문 저장
+2. 전체 피드 Sorted Set에 피드 ID 추가
+3. 업로더별 Sorted Set에 피드 ID 추가
+
+세 명령은 짧은 Lua Script로 묶었다. 다른 요청이 명령 사이에 끼어들지 않도록 하기 위해서다. Spring Data Redis는 `RedisTemplate.execute()`를 통해 스크립트 실행을 지원한다. [Spring Data Redis 스크립팅](https://docs.spring.io/spring-data/redis/reference/redis/scripting.html)
+
+다만 Lua의 원자적 실행이 관계형 DB 트랜잭션처럼 모든 실행 오류를 롤백한다는 뜻은 아니다. 키 자료형 충돌 등의 오류를 방지하도록 키 소유권과 스키마를 관리해야 한다.
+
+이 예제는 단일 Redis 쓰기 엔드포인트를 전제로 한다. Redis Cluster에서는 여러 Key를 사용하는 스크립트에 같은 Hash Slot 조건이 있으므로 이 구성을 그대로 적용할 수 없다. Hash Tag를 무조건 통일하면 한 Slot에 부하가 집중되므로, Cluster 전환 시에는 저장 구조부터 다시 검토한다.
+
+##### 조회 동작
+
+`reverseRange()`로 최신 피드 ID를 가져온 뒤 `multiGet()`으로 본문을 묶어서 읽는다.
+
+피드마다 개별 `HGET`을 호출하면 Redis로 향하는 반복 요청이 생긴다. Redis를 사용하더라도 네트워크 왕복을 무분별하게 늘리지 않는 것이 중요하다.
+
+`reverseRange(key, 0, -1)`을 사용하면 전체 항목을 가져올 수 있지만, 운영 API의 기본 동작으로 두지는 않는다. 게시물이 증가하면 Redis 조회, JSON 변환, 응답 전송 비용이 모두 증가하기 때문이다.
+
+작성 시각이 같은 피드는 Member 문자열 순서가 정렬에 영향을 준다. 엄격한 커서 페이지네이션이 필요하면 작성 시각과 피드 ID를 함께 다루는 정책이 필요하다. 현재 예제의 Offset 페이지네이션도 중간에 새 게시물이 추가되면 중복·누락이 생길 수 있다.
+
+#### FollowStore 구현
+
+팔로우 변경 이벤트는 Set에 대상을 추가하거나 제거하는 방식으로 처리한다.
+
+```java
+package com.sns.timeline.follow;
+
+import com.sns.timeline.event.FollowChangedEvent;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.stereotype.Repository;
+
+import java.util.Set;
+import java.util.stream.Collectors;
+
+@Repository
+public class FollowStore {
+
+    private static final String PREFIX = "timeline:following:";
+
+    private final StringRedisTemplate redis;
+
+    public FollowStore(StringRedisTemplate redis) {
+        this.redis = redis;
+    }
+
+    public void apply(FollowChangedEvent event) {
+        if (event.followerUserId() == null
+                || event.followerUserId() <= 0
+                || event.followingUserId() == null
+                || event.followingUserId() <= 0) {
+            throw new IllegalArgumentException("Invalid follow event");
+        }
+
+        String key = PREFIX + event.followerUserId();
+        String target = event.followingUserId().toString();
+
+        if (event.following()) {
+            redis.opsForSet().add(key, target);
+        } else {
+            redis.opsForSet().remove(key, target);
+        }
+    }
+
+    public Set<Long> listFollowing(long userId) {
+        Set<String> members =
+                redis.opsForSet().members(PREFIX + userId);
+
+        if (members == null || members.isEmpty()) {
+            return Set.of();
+        }
+
+        return members.stream()
+                .map(Long::valueOf)
+                .collect(Collectors.toUnmodifiableSet());
+    }
+}
+```
+
+동일한 팔로우 이벤트를 연속으로 처리해도 `SADD`는 같은 대상을 중복해서 넣지 않는다. `SREM` 역시 이미 없는 대상을 다시 제거해도 관계가 추가되지는 않는다.
+
+다만 이것은 순서 문제까지 해결한다는 뜻이 아니다. `팔로우 → 언팔로우` 이후 오래된 팔로우 이벤트가 다시 도착하면 잘못된 관계가 복원될 수 있다.
+
+같은 관계는 동일한 Kafka Key로 발행하고, 상태 버전과 재처리 정책이 필요하다는 점을 구분해야 한다.
+
+`SMEMBERS`는 해당 사용자의 팔로잉 목록 전체를 반환한다. 팔로잉 수가 매우 많은 서비스에서는 이 목록을 매 요청마다 전부 읽는 방식도 개선 대상이 된다.
+
+#### Kafka Listener 구현
+
+##### 피드 이벤트 처리
+
+```java
+package com.sns.timeline.event;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.sns.timeline.feed.FeedStore;
+import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.stereotype.Component;
+
+@Component
+public class FeedListener {
+
+    private final ObjectMapper objectMapper;
+    private final FeedStore feedStore;
+
+    public FeedListener(
+            ObjectMapper objectMapper,
+            FeedStore feedStore
+    ) {
+        this.objectMapper = objectMapper;
+        this.feedStore = feedStore;
+    }
+
+    @KafkaListener(topics = "feed.created")
+    public void consume(String message)
+            throws JsonProcessingException {
+
+        FeedCreatedEvent event = objectMapper.readValue(
+                message,
+                FeedCreatedEvent.class
+        );
+
+        if (event.schemaVersion() != 1) {
+            throw new IllegalArgumentException(
+                    "Unsupported feed event schema"
+            );
+        }
+
+        feedStore.save(event);
+    }
+}
+```
+
+메시지 파싱이나 Redis 저장이 실패하면 예외를 밖으로 전달한다.
+
+예외를 로그로만 남기고 정상 반환하면 Listener Container는 처리가 끝난 것으로 판단할 수 있다. 실제 저장에 실패한 메시지의 Offset이 진행되는 상황을 피해야 한다.
+
+##### 팔로우 이벤트 처리
+
+```java
+package com.sns.timeline.event;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.sns.timeline.follow.FollowStore;
+import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.stereotype.Component;
+
+@Component
+public class FollowListener {
+
+    private final ObjectMapper objectMapper;
+    private final FollowStore followStore;
+
+    public FollowListener(
+            ObjectMapper objectMapper,
+            FollowStore followStore
+    ) {
+        this.objectMapper = objectMapper;
+        this.followStore = followStore;
+    }
+
+    @KafkaListener(topics = "user.follower")
+    public void consume(String message)
+            throws JsonProcessingException {
+
+        FollowChangedEvent event = objectMapper.readValue(
+                message,
+                FollowChangedEvent.class
+        );
+
+        if (event.schemaVersion() != 1) {
+            throw new IllegalArgumentException(
+                    "Unsupported follow event schema"
+            );
+        }
+
+        followStore.apply(event);
+    }
+}
+```
+
+두 Listener는 설정 파일의 `timeline-server` Consumer Group을 사용한다.
+
+동일한 그룹에서는 하나의 Partition을 한 Consumer가 담당한다. Topic당 Partition이 하나라면 Timeline Pod를 여러 개 띄워도 해당 Topic의 소비를 동시에 수행하는 Consumer는 하나다.
+
+반면 HTTP 조회 요청은 여러 Pod가 분산 처리할 수 있다. **조회 API의 확장과 Kafka 소비 병렬성은 별개의 문제**다.
+
+#### 재시도와 Offset 커밋
+
+실습에서는 Redis 저장 실패를 조용히 건너뛰지 않도록 재시도를 명시한다.
+
+```java
+package com.sns.timeline.config;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.util.backoff.FixedBackOff;
+
+@Configuration
+public class KafkaConsumerConfiguration {
+
+    @Bean
+    public DefaultErrorHandler kafkaErrorHandler() {
+        return new DefaultErrorHandler(
+                new FixedBackOff(
+                        1000L,
+                        FixedBackOff.UNLIMITED_ATTEMPTS
+                )
+        );
+    }
+}
+```
+
+Spring Boot의 기본 Listener Container Factory는 이 Error Handler Bean을 사용할 수 있다. 직접 Factory를 구성한 프로젝트라면 해당 Factory에도 연결해야 한다.
+
+이 예제에서 메시지 파싱 오류나 Redis 저장 오류가 재시도되면 해당 Partition의 후속 처리가 지연될 수 있다. 잘못된 메시지를 무제한으로 재시도하는 것은 운영에서 적절하지 않으므로, 운영 구성에서는 재시도 횟수와 DLT, 알림, 재처리 절차를 정한다. 오류 분류에 따른 재시도 여부도 함께 확인해야 한다. [Spring Kafka 예외 처리](https://docs.spring.io/spring-kafka/docs/3.1.x/reference/kafka/annotation-error-handling.html)
+
+정상 처리 흐름은 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["Kafka 메시지 수신"] --> B["JSON 역직렬화"]
+    B --> C["Redis 저장"]
+    C --> D["Listener 정상 종료"]
+    D --> E["Offset 커밋"]
+
+    B -->|"실패"| F["예외 전달"]
+    C -->|"실패"| F
+    F --> G["오류 정책에 따라 재시도"]
+    G --> B
+```
+
+Redis 저장 직후 프로세스가 종료되어 Offset 커밋이 이루어지지 않았다면 같은 메시지를 다시 받을 수 있다. 따라서 Redis 반영은 중복 처리를 고려해야 한다.
+
+Kafka Offset과 Redis 쓰기가 하나의 원자적 트랜잭션이 되는 것은 아니다. [Spring Kafka Listener Container](https://docs.spring.io/spring-kafka/docs/3.1.x/reference/kafka/receiving-messages/message-listener-container.html)
+
+#### 조회 API 연결
+
+전체 사용자 대상 피드 조회와 특정 사용자 피드 조회는 각각 다음 Store 메서드에 연결한다.
+
+```java
+package com.sns.timeline.api;
+
+import com.sns.timeline.feed.FeedStore;
+import com.sns.timeline.feed.FeedView;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+
+@RestController
+@RequestMapping("/api/timeline")
+public class TimelineController {
+
+    private final FeedStore feedStore;
+
+    public TimelineController(FeedStore feedStore) {
+        this.feedStore = feedStore;
+    }
+
+    @GetMapping("/feeds")
+    public List<FeedView> listFeeds(
+            @RequestParam(defaultValue = "0") long offset,
+            @RequestParam(defaultValue = "20") int limit
+    ) {
+        validateRange(offset, limit);
+        return feedStore.listAll(offset, limit);
+    }
+
+    @GetMapping("/users/{userId}/feeds")
+    public List<FeedView> listUserFeeds(
+            @PathVariable long userId,
+            @RequestParam(defaultValue = "0") long offset,
+            @RequestParam(defaultValue = "20") int limit
+    ) {
+        if (userId <= 0) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.BAD_REQUEST,
+                    "Invalid userId"
+            );
+        }
+
+        validateRange(offset, limit);
+        return feedStore.listByUser(userId, offset, limit);
+    }
+
+    private void validateRange(long offset, int limit) {
+        if (offset < 0 || offset > 1_000_000
+                || limit < 1 || limit > 100) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.BAD_REQUEST,
+                    "Invalid page range"
+            );
+        }
+    }
+}
+```
+
+이 API는 전체 사용자 대상 피드도 페이지 단위로 반환한다.
+
+개인화 타임라인에서는 기존 Service의 조합 로직을 유지하면서 새 Store에 연결한다.
+
+1. 본인의 피드 조회
+2. 팔로잉 포함 옵션이 켜졌다면 `listFollowing()`으로 대상 조회
+3. 대상 사용자들의 피드를 읽어 최신순으로 병합
+4. 추천 피드 포함 옵션에 따라 비팔로잉 사용자 피드를 제한적으로 혼합
+5. 중복 제거와 개수 제한
+6. 기존 좋아요 정보를 결합해 응답
+
+팔로잉 수만큼 사용자별 조회를 반복하면 새로운 병목이 생길 수 있다. 처음에는 조회 후보 수를 제한하고, 이후에는 Pipeline, 사전 계산된 홈 타임라인, Fan-out on Write 같은 방식을 검토한다.
+
+추천 피드 역시 모든 게시물을 읽은 뒤 무작위로 섞는 방식으로 구현하지 않는다. 후보군과 조회량을 제한해야 한다.
+
+#### Kubernetes Deployment와 Service
+
+Timeline Server에는 Kafka 설정과 Redis 설정을 함께 전달한다.
+
+다음 이미지 주소는 실제 ECR 주소로 바꾼다. 프라이빗 이미지 Pull에 필요한 권한이나 `imagePullSecrets`는 기존 클러스터 구성에 맞춰 추가한다.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: timeline-server
+  namespace: sns
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: timeline-server
+  template:
+    metadata:
+      labels:
+        app: timeline-server
+    spec:
+      terminationGracePeriodSeconds: 45
+      containers:
+        - name: timeline-server
+          image: "<ECR_REGISTRY>/timeline-server:0.0.1"
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: kafka-config
+            - secretRef:
+                name: kafka-secret
+            - configMapRef:
+                name: redis-config
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"
+          startupProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: timeline-service
+  namespace: sns
+spec:
+  type: ClusterIP
+  selector:
+    app: timeline-server
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+```
+
+주요 필드의 역할은 다음과 같다.
+
+| 필드 | 역할 |
+|---|---|
+| `replicas` | HTTP 요청을 처리할 Pod 수 |
+| `selector` | Deployment가 관리할 Pod 식별 |
+| `template` | 새 Pod에 적용할 설정 |
+| `envFrom` | ConfigMap과 Secret을 환경 변수로 주입 |
+| `requests` | 스케줄링 시 고려할 CPU·메모리 요청량 |
+| `limits` | 컨테이너 자원 사용 상한 |
+| `startupProbe` | 애플리케이션 시작 시간 확보 |
+| `readinessProbe` | Service 요청 수신 가능 여부 확인 |
+| `livenessProbe` | 애플리케이션 생존 상태 확인 |
+
+Probe가 성공한다고 Kafka 메시지 적재까지 완료된 것은 아니다. 현재 상태 확인 경로는 Consumer Lag이나 조회 모델의 완전성을 자동으로 검사하지 않는다.
+
+또한 Redis 장애를 Liveness 실패에 직접 연결하면 Redis 장애 중에 Timeline 컨테이너까지 반복 재시작될 수 있다. 외부 의존성 상태와 프로세스 생존 여부를 구분한다.
+
+#### 빌드와 배포
+
+다음 명령은 Bash 기준이다. Windows에서는 Gradle 실행 파일을 `gradlew.bat`로 바꿔 사용할 수 있다.
+
+```bash
+./gradlew clean test
+./gradlew jib --image=<ECR_REGISTRY>/timeline-server:0.0.1
+```
+
+Feed Server와 User Server의 이벤트 발행 코드에도 변경이 있다면 각 프로젝트를 별도로 빌드하고 새 태그로 배포한다.
+
+설정과 리소스를 적용한다.
+
+```bash
+kubectl apply -f kafka-configmap.yaml
+kubectl apply -f kafka-secret.yaml
+kubectl apply -f redis-configmap.yaml
+
+kubectl apply -f feed-deployment.yaml
+kubectl apply -f user-deployment.yaml
+kubectl apply -f timeline-deployment.yaml
+```
+
+위 예제처럼 Service를 같은 파일에 작성했다면 마지막 명령으로 함께 생성된다.
+
+```bash
+kubectl rollout status deployment/feed-server -n sns
+kubectl rollout status deployment/user-server -n sns
+kubectl rollout status deployment/timeline-server -n sns
+
+kubectl get pods -n sns
+kubectl get service timeline-service -n sns
+kubectl logs deployment/timeline-server -n sns --tail=100
+```
+
+Pod 실행 여부뿐 아니라 인증 오류, Redis 연결 오류, 이벤트 파싱 오류도 확인한다.
+
+#### 기존 데이터 초기 적재
+
+Timeline Server를 새로 배포해도 원본 DB의 피드가 자동으로 Redis에 복사되지는 않는다.
+
+앞에서 만든 관리용 재전송 API를 사용해 기존 피드를 다시 발행한다. 기존 예제의 `POST /internal/feeds/replay`를 사용하는 경우다.
+
+```bash
+kubectl port-forward -n sns deployment/feed-server 18080:8080
+```
+
+다른 터미널에서 호출한다.
+
+```bash
+curl -X POST http://localhost:18080/internal/feeds/replay
+```
+
+이 API는 기본적으로 비활성화한 관리 기능이므로, 관리자 접근 통제와 함께 일시적으로 활성화해야 한다. 상태를 변경하고 이벤트를 발행하는 작업이므로 `GET` 조회 API로 제공하지 않는다.
+
+초기 적재의 완료 여부는 단계별로 구분한다.
+
+- 재전송 API 완료: Kafka 발행 작업이 완료되었는가
+- Consumer 처리 완료: 해당 Offset까지 소비했는가
+- Redis 반영 완료: 예상한 피드가 실제로 저장되었는가
+
+세 상태는 같은 시점에 완료되지 않을 수 있다.
+
+Kafka CLI 환경에서는 Consumer Group 상태를 확인한다.
+
+```bash
+kafka-consumer-groups.sh \
+  --bootstrap-server kafka.infra.svc.cluster.local:9092 \
+  --command-config <KAFKA_CLIENT_CONFIG> \
+  --describe \
+  --group timeline-server
+```
+
+`<KAFKA_CLIENT_CONFIG>`는 Kafka CLI용 인증 설정 파일 경로로 바꾼다.
+
+`LAG`뿐 아니라 Redis 데이터 수도 확인한다. Redis CLI를 사용할 수 있는 Pod에서는 다음과 같이 조회할 수 있다.
+
+```bash
+kubectl exec -n infra <REDIS_POD> -- redis-cli ZCARD timeline:feeds:all
+kubectl exec -n infra <REDIS_POD> -- redis-cli HLEN timeline:feeds:data
+kubectl exec -n infra <REDIS_POD> -- redis-cli ZREVRANGE timeline:feeds:all 0 9 WITHSCORES
+```
+
+정상적인 초기 적재 후에는 Hash의 피드 수와 전체 Sorted Set의 피드 수가 일치해야 한다. 원본 데이터와의 건수 및 ID 비교도 필요하다.
+
+기존 팔로우 관계는 피드 재전송만으로 복구되지 않는다. 별도의 관계 초기 적재를 수행하거나, 제한된 실습 데이터라면 관계를 다시 생성해 이벤트를 발생시킨다.
+
+#### 기능 테스트
+
+##### 전체 사용자 대상 피드 조회
+
+```bash
+kubectl port-forward -n sns service/timeline-service 18081:8080
+```
+
+다른 터미널에서 호출한다.
+
+```bash
+curl "http://localhost:18081/api/timeline/feeds?offset=0&limit=20"
+```
+
+다음 항목을 확인한다.
+
+- 업로더 이름이 포함되는가
+- 작성 시각 기준으로 최신 피드가 먼저 나오는가
+- 동일한 피드가 중복되지 않는가
+- 요청한 개수 제한이 적용되는가
+
+##### 사용자별 조회
+
+```bash
+curl "http://localhost:18081/api/timeline/users/1/feeds?offset=0&limit=20"
+```
+
+반환된 피드의 `uploaderId`가 모두 1인지 확인한다.
+
+##### 팔로우와 언팔로우
+
+사용자 1이 사용자 2를 팔로우한 뒤 Redis를 확인한다.
+
+```bash
+kubectl exec -n infra <REDIS_POD> -- redis-cli SMEMBERS timeline:following:1
+```
+
+결과에 `2`가 포함되어야 한다. 언팔로우 이벤트가 처리된 뒤에는 제거되어야 한다.
+
+##### 재처리 테스트
+
+초기 적재를 한 번 더 실행한 뒤 `ZCARD`를 비교한다. 원본 피드 수가 변하지 않았다면 같은 피드 ID 때문에 Sorted Set 항목 수가 계속 증가해서는 안 된다.
+
+단, 이 테스트가 오래된 데이터의 덮어쓰기까지 방지했음을 의미하지는 않는다. 현재 코드는 같은 ID의 마지막 처리 내용을 저장하므로, 수정 이벤트와 초기 적재가 섞이는 환경에서는 데이터 버전 검사가 필요하다.
+
+#### k6로 기존 API와 비교하기
+
+##### 먼저 비교 조건을 맞춘다
+
+빠른 API가 적은 데이터를 반환한 것은 아닌지부터 확인해야 한다.
+
+- 동일한 피드 집합과 응답 개수
+- 사용자 이름 등 동등한 응답 필드
+- 같은 부하 발생 위치와 네트워크 경로
+- Pod 수와 CPU·메모리 설정
+- 초기 적재와 Consumer 처리 완료
+- 좋아요 결합 등 부가 처리 포함 여부
+- 워밍업 조건
+
+기존 API의 전체 조회와 신규 API의 20개 조회를 비교하면 구조 개선 효과를 정확히 판단할 수 없다.
+
+##### 비교용 스크립트
+
+다음 스크립트는 응답이 배열이거나 Spring Page 형태의 `content` 배열인 경우를 처리한다.
+
+```javascript
+import http from 'k6/http';
+import { check, sleep } from 'k6';
+
+if (!__ENV.TARGET_URL) {
+  throw new Error('TARGET_URL is required');
+}
+
+export const options = {
+  vus: Number(__ENV.VUS || 10),
+  duration: __ENV.DURATION || '15s',
+  gracefulStop: '30s',
+  thresholds: {
+    http_req_failed: ['rate<0.01'],
+    checks: ['rate>0.99'],
+  },
+};
+
+export default function () {
+  const response = http.get(__ENV.TARGET_URL, {
+    timeout: '30s',
+  });
+
+  let feeds = null;
+
+  try {
+    const body = response.json();
+    feeds = Array.isArray(body) ? body : body.content;
+  } catch (_) {
+    feeds = null;
+  }
+
+  const expectedCount = Number(__ENV.EXPECTED_COUNT || 20);
+
+  check(response, {
+    'status is 200': (r) => r.status === 200,
+    'feed count matches': () =>
+      Array.isArray(feeds) && feeds.length === expectedCount,
+  });
+
+  sleep(0.1);
+}
+```
+
+클러스터 내부 부하 발생 환경에서 실행한다. URL과 예상 데이터 수는 실제 API 계약에 맞춘다.
+
+```bash
+k6 run \
+  -e TARGET_URL="http://feed-service.sns.svc.cluster.local:8080/api/feeds?page=0&size=20" \
+  -e EXPECTED_COUNT=20 \
+  -e VUS=10 \
+  -e DURATION=15s \
+  compare.js
+```
+
+동일한 조건으로 Timeline API를 호출한다.
+
+```bash
+k6 run \
+  -e TARGET_URL="http://timeline-service.sns.svc.cluster.local:8080/api/timeline/feeds?offset=0&limit=20" \
+  -e EXPECTED_COUNT=20 \
+  -e VUS=10 \
+  -e DURATION=15s \
+  compare.js
+```
+
+건수 검사는 최소한의 검증이다. 본격적인 비교 전에는 두 응답의 피드 ID 집합과 필드 값도 대조해야 한다.
+
+##### 결과를 해석하는 방법
+
+전체 피드를 조회하는 실험의 예시로 다음과 같은 결과를 생각할 수 있다. 아래 수치는 위 페이징 예제 코드의 실행 결과나 보장 성능이 아니다.
+
+| 항목 | 기존 Feed API | Timeline API |
+|---|---:|---:|
+| VU | 10 | 10 |
+| 평균 응답 시간 | 약 8초 | 약 400ms |
+| 기존 API 중위값 | 약 8.3초 | 별도 확인 필요 |
+| 기존 API 응답 범위 | 약 7~10초 | 별도 확인 필요 |
+
+8초와 400ms의 평균 응답 시간 비율은 약 20:1이다. 하지만 평균 하나만으로 전체 사용자 경험이나 최대 처리량을 판단해서는 안 된다.
+
+다음 지표를 함께 확인한다.
+
+- `http_req_duration`: 평균, 중위값, p95, p99
+- `http_reqs`: 실제 초당 요청 처리량
+- `http_req_failed`: 실패율
+- `checks`: 응답 내용 검증 결과
+- 애플리케이션 CPU·메모리와 GC
+- Redis 지연과 네트워크 사용량
+- Kafka Consumer Lag
+
+기존 Feed Pod 두 개가 합쳐 초당 약 한 요청을 처리했다면, 이는 해당 조건에서의 전체 처리량이다. 이를 각 Pod의 고정 처리 능력이나 서버의 절대 한계로 일반화할 수는 없다.
+
+##### VU를 100으로 늘리기
+
+같은 스크립트에서 VU만 증가시켜 추가로 확인한다.
+
+```bash
+k6 run \
+  -e TARGET_URL="http://timeline-service.sns.svc.cluster.local:8080/api/timeline/feeds?offset=0&limit=20" \
+  -e EXPECTED_COUNT=20 \
+  -e VUS=100 \
+  -e DURATION=15s \
+  compare.js
+```
+
+고정 VU 테스트에서는 응답이 빨라지면 각 VU가 더 많은 요청을 반복한다. 따라서 같은 10 VU라도 두 API에 동일한 RPS가 들어가는 것은 아니다. [k6 Constant VUs](https://grafana.com/docs/k6/latest/using-k6/scenarios/executors/constant-vus/)
+
+또한 100 VU는 실제 서비스 사용자 100명과 같은 의미가 아니다. 사용자의 대기 시간과 요청 패턴이 다르기 때문이다.
+
+15초 테스트는 개선 방향을 빠르게 확인하는 용도다. 느린 API에서는 완료 요청 수가 적고 종료 대기 구간의 영향도 크다. 안정적인 판단을 위해서는 더 긴 측정과 반복 실행이 필요하다. 동일한 요청 유입률을 비교하려면 `constant-arrival-rate` 방식도 별도로 사용한다.
+
+#### 남은 병목을 판단하는 기준
+
+Timeline Server로 전환하면 조회할 때마다 User Server를 호출하는 경로는 줄어든다. 그렇다고 남은 지연이 모두 서버 사양 문제라는 뜻은 아니다.
+
+다음 항목은 여전히 구조적인 병목이 될 수 있다.
+
+- 전체 Sorted Set을 읽는 무제한 조회
+- 팔로잉 수만큼 반복하는 Redis 요청
+- 피드별 좋아요 정보를 따로 조회하는 처리
+- 큰 JSON의 반복적인 역직렬화
+- 전체 피드 인덱스에 집중되는 부하
+- Redis 메모리 부족과 Eviction
+- 대형 응답의 네트워크 전송
+
+CPU가 실제로 포화된 상태라면 Pod 확장이나 CPU 조정이 도움이 될 수 있다. 하지만 Redis가 병목이라면 Timeline Pod만 늘려도 처리량이 증가하지 않을 수 있다.
+
+이번 변경은 조회 경로를 단순화하고 각 구성 요소를 독립적으로 개선할 여지를 만든 것이다. 확장의 효과는 측정으로 확인해야 한다.
+
+#### 장애와 복구에서 주의할 점
+
+| 현상 | 확인할 원인 |
+|---|---|
+| Redis가 비어 있는데 Consumer Lag이 0 | 이미 커밋한 Offset 이후에 Redis 데이터가 유실되었는지 |
+| 피드가 일부만 보임 | 초기 적재 누락, Producer 발행 실패, Consumer 오류 |
+| 팔로우 변경이 반영되지 않음 | 관계 방향, 이벤트 발행, Group과 Topic 설정 |
+| 특정 Partition 처리가 멈춤 | 잘못된 메시지의 반복 재시도 |
+| 같은 피드가 여러 번 보임 | JSON 전체를 Sorted Set Member로 사용했는지 |
+| Pod를 늘려도 소비 속도가 같음 | Topic Partition 수 |
+| API가 정상인데 오래된 데이터가 보임 | Consumer Lag과 조회 모델 갱신 상태 |
+
+Redis를 비웠다고 Consumer가 자동으로 과거 메시지를 다시 소비하지는 않는다. 기존 Group의 Offset은 Kafka에 남아 있기 때문이다.
+
+복구하려면 원본 재전송, 별도 재구축 Group, 통제된 Offset 재설정 등의 절차가 필요하다. 특히 팔로우 관계는 중간 이력을 일부만 다시 읽으면 최종 상태를 잘못 만들 수 있으므로, 기준 시점의 스냅샷과 이후 이벤트를 연결하는 방식이 필요하다.
+
+피드 수정·삭제, 사용자 이름 변경도 현재의 생성 이벤트만으로는 반영되지 않는다. 실제 서비스로 확장할 때는 조회 모델에 영향을 주는 모든 변경을 이벤트 계약에 포함해야 한다.
+
+### 정리
+
+Timeline Server는 Kafka 이벤트를 받아 Redis에 조회 모델을 만들고, API 요청에서는 준비된 데이터를 읽도록 구성했다.
+
+피드는 작성 시각을 Score로 사용하는 Sorted Set으로 정렬하고, 본문은 피드 ID를 기준으로 Hash에 저장했다. 팔로우 관계는 사용자별 Set으로 관리했다. Consumer에서는 Redis 반영과 Offset 커밋 순서를 구분하고 재처리를 고려했다.
+
+성능 개선의 핵심은 Redis 도입 자체가 아니라, 조회 요청마다 반복하던 데이터 결합을 변경 시점의 처리로 옮긴 데 있다. 이후에는 동일한 데이터와 부하 조건으로 효과를 검증하고, 적재 지연과 복구 절차까지 운영 기준에 포함해야 한다.
