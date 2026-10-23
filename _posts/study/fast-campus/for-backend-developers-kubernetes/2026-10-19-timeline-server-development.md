@@ -2155,3 +2155,962 @@ Timeline Server는 Kafka 이벤트를 받아 Redis에 조회 모델을 만들고
 피드는 작성 시각을 Score로 사용하는 Sorted Set으로 정렬하고, 본문은 피드 ID를 기준으로 Hash에 저장했다. 팔로우 관계는 사용자별 Set으로 관리했다. Consumer에서는 Redis 반영과 Offset 커밋 순서를 구분하고 재처리를 고려했다.
 
 성능 개선의 핵심은 Redis 도입 자체가 아니라, 조회 요청마다 반복하던 데이터 결합을 변경 시점의 처리로 옮긴 데 있다. 이후에는 동일한 데이터와 부하 조건으로 효과를 검증하고, 적재 지연과 복구 절차까지 운영 기준에 포함해야 한다.
+
+## 03. 프론트엔드 배포 및 Ingress를 통한 API 공개
+
+### AWS ALB Ingress로 SNS 애플리케이션 외부에 공개하기
+
+지금까지 만든 서비스들은 Kubernetes 클러스터 내부에서 통신한다. 개발 환경에서는 Port Forward나 Telepresence를 이용해 접근할 수 있지만, 일반 사용자가 브라우저에서 애플리케이션을 사용하려면 외부 요청을 받아줄 진입점이 필요하다.
+
+이번에는 AWS Load Balancer Controller를 설치하고, Ingress를 통해 프런트엔드와 백엔드 API를 하나의 주소로 연결한다.
+
+최종적으로는 브라우저에서 화면을 열고, 회원가입과 로그인, 팔로우, 게시물 작성, 이미지 조회, 좋아요 기능까지 확인할 수 있는 구성을 만든다.
+
+#### Ingress와 ALB의 역할 구분하기
+
+Ingress는 HTTP 요청을 어떤 Service로 전달할지 정의하는 Kubernetes 객체다. Ingress YAML을 만든다고 그 자체가 요청을 수신하는 서버로 동작하지는 않는다.
+
+작성한 규칙을 실제 네트워크 구성으로 반영하는 Ingress Controller가 필요하다.
+
+AWS 환경에서는 다음 세 가지 역할을 구분해야 한다.
+
+| 구성 요소 | 역할 |
+|---|---|
+| Ingress | 호스트와 경로에 따른 라우팅 규칙 선언 |
+| AWS Load Balancer Controller | Kubernetes 객체를 감시하고 AWS 리소스 구성 |
+| ALB | 실제 외부 HTTP·HTTPS 요청 수신과 전달 |
+
+AWS Load Balancer Controller가 모든 사용자 요청을 직접 중계하는 것은 아니다. Controller는 ALB와 Target Group, Listener Rule 등의 구성을 관리하고, 실제 요청은 ALB가 처리한다.
+
+```mermaid
+flowchart TD
+    A["Ingress 생성 또는 변경"] --> B["AWS Load Balancer Controller"]
+    B -->|"AWS API 호출"| C["ALB와 Target Group 구성"]
+
+    D["브라우저"] --> E["ALB"]
+    E --> F["프런트엔드 Pod"]
+    E --> G["백엔드 Pod"]
+```
+
+이번에는 직접 설치한 AWS Load Balancer Controller와 `alb` IngressClass를 사용한다. EKS Auto Mode의 내장 로드 밸런싱 기능을 사용하는 환경은 설치와 설정 방식이 다르므로 같은 절차를 중복 적용하지 않는다.
+
+#### 전체 요청 경로
+
+외부에서는 하나의 주소를 사용하고, ALB가 요청 경로에 따라 대상을 나눈다.
+
+| 요청 경로 | 연결할 Service |
+|---|---|
+| `/` 및 별도 규칙이 없는 화면 경로 | `sns-frontend-service` |
+| `/api/timeline` | `timeline-service` |
+| `/api/feeds` | `feed-service` |
+| `/api/users` | `user-service` |
+| `/api/follows` | `user-service` |
+| `/api/images` | `image-service` |
+
+```mermaid
+flowchart LR
+    A["브라우저"] --> B["ALB"]
+
+    B -->|"화면과 정적 리소스"| C["Frontend"]
+    B -->|"/api/timeline"| D["Timeline Server"]
+    B -->|"/api/feeds"| E["Feed Server"]
+    B -->|"/api/users"| F["User Server"]
+    B -->|"/api/follows"| F
+    B -->|"/api/images"| G["Image Server"]
+```
+
+같은 Service에 여러 경로를 연결할 수 있다. User Server가 사용자와 팔로우 기능을 함께 제공하므로 두 경로가 모두 `user-service`로 연결된다.
+
+실제 적용 전에는 Controller의 요청 매핑과 Service 이름을 대조해야 한다. Ingress가 애플리케이션에 없는 API를 만들어 주지는 않는다.
+
+#### 실습 전 준비 사항
+
+다음 환경을 전제로 진행한다.
+
+- 동작 중인 EKS 클러스터
+- AWS VPC CNI를 통해 ALB에서 접근 가능한 Pod IP
+- 서로 다른 가용 영역의 ALB용 서브넷
+- AWS CLI, `kubectl`, Helm, Docker
+- JSON 생성에 사용할 `jq`
+- IAM 정책·역할과 ALB를 생성할 수 있는 작업 권한
+- `sns` Namespace의 기존 백엔드 Service
+- 프런트엔드 이미지와 ECR 저장소
+
+명령어는 Bash 기준이다.
+
+먼저 작업 대상 계정과 클러스터를 확인한다.
+
+```bash
+aws sts get-caller-identity
+kubectl config current-context
+kubectl get nodes
+kubectl get services -n sns
+```
+
+이후 사용할 값을 설정한다.
+
+```bash
+export AWS_REGION="ap-northeast-2"
+export CLUSTER_NAME="sns-cluster"
+
+export AWS_ACCOUNT_ID=$(
+  aws sts get-caller-identity \
+    --query Account \
+    --output text
+)
+
+export VPC_ID=$(
+  aws eks describe-cluster \
+    --name "$CLUSTER_NAME" \
+    --region "$AWS_REGION" \
+    --query "cluster.resourcesVpcConfig.vpcId" \
+    --output text
+)
+```
+
+`ap-northeast-2`는 서울 리전의 예시다. 실제 클러스터가 다른 리전에 있다면 해당 값으로 변경한다.
+
+#### ALB를 배치할 서브넷 확인
+
+##### Public Subnet과 Private Subnet
+
+Public Subnet 여부는 이름이 아니라 연결된 Route Table을 기준으로 판단한다.
+
+일반적인 IPv4 구성에서는 인터넷 방향 경로인 `0.0.0.0/0`이 Internet Gateway를 향하면 Public Subnet이다. NAT Gateway를 향하는 경로는 같은 의미가 아니다.
+
+VPC에 Internet Gateway가 연결되어 있다는 사실만으로 모든 서브넷이 Public Subnet이 되는 것은 아니다.
+
+또한 서브넷에 태그를 붙인다고 실제 네트워크 경로가 바뀌지는 않는다.
+
+##### 서브넷 태그
+
+로드 밸런서 용도에 따라 다음 태그를 사용한다.
+
+| 용도 | 태그 Key | Value |
+|---|---|---|
+| 외부 공개용 | `kubernetes.io/role/elb` | `1` |
+| 내부 전용 | `kubernetes.io/role/internal-elb` | `1` |
+
+외부 공개용 ALB에는 서로 다른 가용 영역의 Public Subnet을 준비한다.
+
+```bash
+aws ec2 describe-subnets \
+  --region "$AWS_REGION" \
+  --filters "Name=vpc-id,Values=$VPC_ID" \
+  --query "Subnets[].{SubnetId:SubnetId,AZ:AvailabilityZone,AvailableIPs:AvailableIpAddressCount}" \
+  --output table
+```
+
+Route Table을 확인해 선정한 Public Subnet에 태그를 추가한다.
+
+```bash
+aws ec2 create-tags \
+  --region "$AWS_REGION" \
+  --resources <PUBLIC_SUBNET_ID_A> <PUBLIC_SUBNET_ID_B> \
+  --tags Key=kubernetes.io/role/elb,Value=1
+```
+
+Subnet ID는 실제 값으로 바꾼다. Private Subnet에 외부 공개용 태그를 잘못 붙이지 않도록 주의한다.
+
+Controller의 서브넷 자동 탐색 동작은 버전에 따라 다르다. 일부 버전은 역할 태그가 없을 때 Route Table 기반 탐색을 지원하지만, 실습에서는 의도한 서브넷을 명확하게 지정하기 위해 태그를 사용한다. 일반적인 ALB 구성에는 서로 다른 가용 영역의 서브넷 두 개 이상과 충분한 여유 IP가 필요하다. [AWS Load Balancer Controller 서브넷 탐색](https://kubernetes-sigs.github.io/aws-load-balancer-controller/latest/deploy/subnet_discovery/)
+
+외부 ALB를 Public Subnet에 배치하더라도 애플리케이션 Pod까지 Public Subnet에 둘 필요는 없다. ALB에서 Private Subnet의 Pod로 접근할 수 있는 네트워크 경로를 구성할 수 있다.
+
+#### Controller에 AWS 권한 부여하기
+
+Controller는 AWS API를 호출해 ALB와 관련 리소스를 관리한다. 따라서 Kubernetes RBAC뿐 아니라 AWS IAM 권한도 필요하다.
+
+이번에는 IRSA를 사용한다.
+
+```mermaid
+flowchart LR
+    A["Controller Pod"] --> B["Kubernetes ServiceAccount"]
+    B --> C["OIDC 토큰"]
+    C --> D["AWS STS"]
+    D --> E["IAM Role 임시 자격 증명"]
+    E --> F["IAM Policy 범위의 AWS API 호출"]
+```
+
+여기서 역할을 구분하면 다음과 같다.
+
+- IAM Policy: 어떤 AWS 작업을 허용할지 정의한다.
+- IAM Role: 해당 권한을 사용할 주체를 구성한다.
+- Trust Policy: 누가 이 Role을 사용할 수 있는지 제한한다.
+- ServiceAccount: Controller Pod가 사용할 Kubernetes 신원이다.
+
+Controller에 필요한 권한을 모든 애플리케이션 Pod나 Node에 넓게 부여하지 않고 전용 ServiceAccount에 연결한다.
+
+##### 설치할 버전 확인
+
+먼저 Helm Repository를 등록한다.
+
+```bash
+helm repo add eks https://aws.github.io/eks-charts
+helm repo update eks
+
+helm search repo eks/aws-load-balancer-controller --versions
+```
+
+클러스터의 Kubernetes 버전과 호환되는 Chart를 선택한다.
+
+```bash
+export CHART_VERSION="<SELECTED_CHART_VERSION>"
+
+helm show chart eks/aws-load-balancer-controller \
+  --version "$CHART_VERSION"
+```
+
+출력의 `appVersion`을 확인해 Controller 버전을 지정한다.
+
+```bash
+export CONTROLLER_VERSION="<APP_VERSION>"
+export CONTROLLER_VERSION="v${CONTROLLER_VERSION#v}"
+```
+
+Chart 버전과 Controller 버전은 별개의 값이다. IAM 정책도 설치할 Controller 릴리스에 맞춰 가져온다.
+
+선택한 릴리스에서 Gateway API CRD 등 추가 선행 조건을 요구한다면 해당 조건도 먼저 준비한다. 이후 운영에서는 Chart 버전을 고정하고 업그레이드 시 IAM 정책과 CRD 변경을 함께 검토한다. [AWS Load Balancer Controller Helm 설치](https://docs.aws.amazon.com/eks/latest/userguide/lbc-helm.html)
+
+##### IAM Policy 생성
+
+Controller 릴리스에 포함된 IAM 정책을 내려받는다.
+
+```bash
+curl -fLo iam-policy.json \
+  "https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/${CONTROLLER_VERSION}/docs/install/iam_policy.json"
+```
+
+일반 AWS 계정용 정책을 기준으로 한 예제다. AWS GovCloud나 중국 리전은 해당 AWS Partition에 맞는 정책을 사용해야 한다.
+
+```bash
+export POLICY_ARN=$(
+  aws iam create-policy \
+    --policy-name AWSLoadBalancerControllerIAMPolicy \
+    --policy-document file://iam-policy.json \
+    --query "Policy.Arn" \
+    --output text
+)
+```
+
+같은 이름의 정책이 이미 있다면 무조건 새로 만들지 않는다. 기존 정책의 ARN과 문서 내용을 확인하고, 설치할 Controller에 필요한 권한이 포함되어 있는지 검토한다.
+
+##### OIDC Provider 확인
+
+클러스터의 OIDC Issuer를 조회한다.
+
+```bash
+export OIDC_ISSUER=$(
+  aws eks describe-cluster \
+    --name "$CLUSTER_NAME" \
+    --region "$AWS_REGION" \
+    --query "cluster.identity.oidc.issuer" \
+    --output text
+)
+
+export OIDC_PROVIDER="${OIDC_ISSUER#https://}"
+export OIDC_PROVIDER_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:oidc-provider/${OIDC_PROVIDER}"
+```
+
+IAM에 해당 Provider가 등록되어 있는지 확인한다.
+
+```bash
+aws iam get-open-id-connect-provider \
+  --open-id-connect-provider-arn "$OIDC_PROVIDER_ARN"
+```
+
+등록되지 않은 경우에만 생성한다.
+
+```bash
+aws iam create-open-id-connect-provider \
+  --url "$OIDC_ISSUER" \
+  --client-id-list sts.amazonaws.com
+```
+
+EKS가 OIDC Issuer URL을 제공하는 것과 IAM에 OIDC Provider가 등록되어 있는 것은 구분해야 한다.
+
+##### Trust Policy 작성
+
+다음 명령은 현재 계정과 클러스터의 OIDC 정보를 사용해 JSON 파일을 생성한다.
+
+```bash
+jq -n \
+  --arg account "$AWS_ACCOUNT_ID" \
+  --arg oidc "$OIDC_PROVIDER" \
+  '{
+    Version: "2012-10-17",
+    Statement: [
+      {
+        Effect: "Allow",
+        Principal: {
+          Federated: (
+            "arn:aws:iam::" + $account + ":oidc-provider/" + $oidc
+          )
+        },
+        Action: "sts:AssumeRoleWithWebIdentity",
+        Condition: {
+          StringEquals: {
+            ($oidc + ":aud"): "sts.amazonaws.com",
+            ($oidc + ":sub"):
+              "system:serviceaccount:kube-system:aws-load-balancer-controller"
+          }
+        }
+      }
+    ]
+  }' > load-balancer-role-trust-policy.json
+```
+
+조건의 의미는 다음과 같다.
+
+- `aud`: AWS STS를 대상으로 발급된 토큰인지 확인한다.
+- `sub`: 지정한 Namespace와 ServiceAccount의 토큰인지 확인한다.
+- `Principal.Federated`: 이 클러스터의 OIDC Provider를 신뢰한다.
+
+`sub`를 광범위한 와일드카드로 열면 다른 ServiceAccount도 Role을 사용할 수 있다. Controller 전용 신원으로 제한한다.
+
+##### IAM Role 생성과 정책 연결
+
+```bash
+aws iam create-role \
+  --role-name AmazonEKSLoadBalancerControllerRole \
+  --assume-role-policy-document file://load-balancer-role-trust-policy.json
+
+aws iam attach-role-policy \
+  --role-name AmazonEKSLoadBalancerControllerRole \
+  --policy-arn "$POLICY_ARN"
+
+export ROLE_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/AmazonEKSLoadBalancerControllerRole"
+```
+
+기존 Role을 재사용한다면 Trust Policy가 현재 클러스터의 OIDC Provider를 허용하는지 확인한다. 이름이 같은 클러스터를 다시 만들었더라도 OIDC 정보는 달라질 수 있다.
+
+##### ServiceAccount 생성
+
+`aws-load-balancer-controller-serviceaccount.yaml`을 작성한다.
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aws-load-balancer-controller
+  namespace: kube-system
+  annotations:
+    eks.amazonaws.com/role-arn: "arn:aws:iam::111122223333:role/AmazonEKSLoadBalancerControllerRole"
+```
+
+`111122223333`은 예시 계정 ID다. 앞에서 만든 실제 `ROLE_ARN`으로 교체한다.
+
+```bash
+kubectl apply -f aws-load-balancer-controller-serviceaccount.yaml
+```
+
+`eksctl`을 사용하면 IAM Role 생성과 ServiceAccount 연결을 더 간단하게 처리할 수도 있다. 이 방법을 선택한다면 앞의 수동 Role·ServiceAccount 생성 절차와 중복 실행하지 않는다.
+
+```bash
+eksctl create iamserviceaccount \
+  --cluster "$CLUSTER_NAME" \
+  --region "$AWS_REGION" \
+  --namespace kube-system \
+  --name aws-load-balancer-controller \
+  --role-name AmazonEKSLoadBalancerControllerRole \
+  --attach-policy-arn "$POLICY_ARN" \
+  --approve
+```
+
+두 방식 모두 결과적으로 ServiceAccount와 IAM Role의 연결을 만든다. [ServiceAccount에 IAM Role 연결](https://docs.aws.amazon.com/eks/latest/userguide/associate-service-account-role.html)
+
+#### AWS Load Balancer Controller 설치
+
+기존에 만든 ServiceAccount를 사용하도록 Helm 설정을 지정한다.
+
+```bash
+helm upgrade --install aws-load-balancer-controller \
+  eks/aws-load-balancer-controller \
+  --namespace kube-system \
+  --version "$CHART_VERSION" \
+  --set clusterName="$CLUSTER_NAME" \
+  --set region="$AWS_REGION" \
+  --set vpcId="$VPC_ID" \
+  --set serviceAccount.create=false \
+  --set serviceAccount.name=aws-load-balancer-controller \
+  --wait \
+  --timeout 5m
+```
+
+- `clusterName`: 관리할 EKS 클러스터 이름이다.
+- `region`, `vpcId`: Controller가 사용할 AWS 환경을 명시한다.
+- `serviceAccount.create=false`: Helm이 별도 ServiceAccount를 만들지 않도록 한다.
+- `serviceAccount.name`: IRSA를 연결한 ServiceAccount를 사용한다.
+
+신규 설치와 달리 Helm 업그레이드에서 CRD가 자동 갱신되지 않는 경우가 있다. 기존 설치를 업그레이드한다면 해당 Chart 버전의 CRD 변경과 적용 절차를 먼저 확인한다.
+
+설치 상태를 확인한다.
+
+```bash
+kubectl rollout status deployment/aws-load-balancer-controller \
+  -n kube-system
+
+kubectl get pods -n kube-system \
+  -l app.kubernetes.io/name=aws-load-balancer-controller
+
+kubectl get ingressclass alb
+
+kubectl logs -n kube-system \
+  deployment/aws-load-balancer-controller \
+  --tail=100
+```
+
+Pod가 Running이어도 IAM 권한이 잘못되어 있으면 ALB 생성에 실패할 수 있다. 설치 성공과 AWS 리소스 생성 성공은 별도로 확인해야 한다.
+
+#### 프런트엔드 이미지를 ECR로 복사
+
+이미 빌드된 프런트엔드 이미지가 있다면 다시 빌드할 필요 없이 ECR로 복사할 수 있다.
+
+```bash
+export SOURCE_IMAGE="<SOURCE_FRONTEND_IMAGE>:1.0.0"
+export ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+export TARGET_IMAGE="${ECR_REGISTRY}/sns-frontend:1.0.0"
+```
+
+`SOURCE_IMAGE`는 실제 제공받은 이미지 주소로 바꾼다. ECR의 `sns-frontend` 저장소가 없다면 생성한다.
+
+```bash
+aws ecr create-repository \
+  --repository-name sns-frontend \
+  --image-tag-mutability IMMUTABLE \
+  --region "$AWS_REGION"
+```
+
+이미 저장소가 있다면 생성 명령은 생략한다.
+
+```bash
+docker pull "$SOURCE_IMAGE"
+
+aws ecr get-login-password \
+  --region "$AWS_REGION" \
+  | docker login \
+      --username AWS \
+      --password-stdin "$ECR_REGISTRY"
+
+docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+docker push "$TARGET_IMAGE"
+```
+
+`docker tag`는 이미지를 새로 빌드하는 명령이 아니다. 같은 로컬 이미지에 다른 저장소 이름과 태그를 붙이는 작업이다. [ECR 이미지 Push](https://docs.aws.amazon.com/AmazonECR/latest/userguide/docker-push-ecr-image.html)
+
+자체 ECR에 이미지를 보관하면 배포 버전 관리와 접근 정책을 통일하기 쉽다. 다만 이미지를 옮겼다는 이유로 보안이 검증되거나 외부 네트워크 의존성이 모두 사라지는 것은 아니다.
+
+이미지 아키텍처와 취약점도 확인해야 한다. 특히 로컬에서 Pull한 이미지 하나를 다시 Push하면 원본의 멀티 아키텍처 구성이 그대로 보존되지 않을 수 있다.
+
+또한 로컬 Docker의 ECR 로그인과 EKS의 이미지 Pull 권한은 별개다. EC2 Node의 IAM Role이나 Fargate Pod Execution Role 등 실제 이미지 Pull 주체에 필요한 권한이 있어야 한다.
+
+#### 프런트엔드 Deployment와 Service
+
+프런트엔드는 Next.js 서버로 실행되며 컨테이너의 3000번 포트를 사용한다고 가정한다.
+
+`sns-frontend-deployment.yaml`을 작성한다.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sns-frontend
+  namespace: sns
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sns-frontend
+  template:
+    metadata:
+      labels:
+        app: sns-frontend
+    spec:
+      containers:
+        - name: sns-frontend
+          image: "111122223333.dkr.ecr.ap-northeast-2.amazonaws.com/sns-frontend:1.0.0"
+          ports:
+            - name: http
+              containerPort: 3000
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"
+          startupProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+```
+
+이미지 주소는 실제 ECR URI로 교체한다.
+
+- `selector.matchLabels`와 Pod의 `labels`를 일치시킨다.
+- `containerPort`는 컨테이너가 사용하는 포트를 설명한다. 프로세스를 해당 포트에 바인딩시키는 설정은 아니다.
+- 프런트엔드 프로세스는 Pod 외부에서 접근할 수 있도록 수신해야 한다.
+- `/` 경로가 정상 상태에서 HTTP 200을 반환한다는 전제다. 로그인 리다이렉트가 발생한다면 별도의 상태 확인 경로를 사용하는 것이 좋다.
+- `replicas: 1`은 실습용 구성이다. 가용성이 필요하면 복제 수와 Node 배치를 함께 검토한다.
+
+Service는 다음과 같이 작성한다.
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: sns-frontend-service
+  namespace: sns
+  annotations:
+    alb.ingress.kubernetes.io/healthcheck-path: "/"
+spec:
+  type: ClusterIP
+  selector:
+    app: sns-frontend
+  ports:
+    - name: http
+      protocol: TCP
+      port: 3000
+      targetPort: http
+```
+
+`port`는 Service의 포트이고, `targetPort`는 Pod로 전달할 포트다. 이 Service를 Ingress의 기본 Backend로 사용한다.
+
+```bash
+kubectl apply -f sns-frontend-deployment.yaml
+kubectl apply -f sns-frontend-service.yaml
+
+kubectl rollout status deployment/sns-frontend -n sns
+kubectl get service sns-frontend-service -n sns
+```
+
+#### 프런트엔드의 API 주소 확인
+
+브라우저에서 실행되는 코드는 다음과 같은 클러스터 내부 주소를 직접 사용할 수 없다.
+
+```text
+http://timeline-service.sns.svc.cluster.local:8080
+```
+
+이 DNS 이름은 Kubernetes 내부에서 사용하는 주소다.
+
+프런트엔드와 API를 같은 ALB 주소로 제공한다면 브라우저에서는 상대 경로를 사용할 수 있다.
+
+```javascript
+const response = await fetch(
+  '/api/timeline/feeds?offset=0&limit=20'
+);
+
+if (!response.ok) {
+  throw new Error('Timeline request failed');
+}
+
+const feeds = await response.json();
+```
+
+브라우저는 현재 페이지와 같은 주소로 요청하고, ALB가 API 경로를 구분해 전달한다. 같은 Scheme·Host·Port를 사용한다면 API 호출을 위해 별도의 Cross-Origin 구성을 만들 필요가 없다.
+
+Next.js의 서버 측 코드와 브라우저 측 코드는 실행 위치가 다르다는 점도 주의한다. 서버 측 요청에는 절대 주소가 필요할 수 있다.
+
+또한 `NEXT_PUBLIC_` 환경 변수는 일반적으로 빌드 시 클라이언트 번들에 반영된다. 이미 만들어진 이미지에 Pod 환경 변수만 추가해도 브라우저의 API 주소가 바뀐다고 가정하면 안 된다. [Next.js 환경 변수](https://nextjs.org/docs/app/guides/environment-variables)
+
+#### 백엔드 ALB 헬스 체크 설정
+
+ALB는 Target Group에 등록된 대상이 요청을 처리할 수 있는지 자체적으로 확인한다. Kubernetes Readiness Probe와는 별개의 검사다.
+
+백엔드에 `/` 경로가 없다면 기본 헬스 체크가 404를 받아 실패할 수 있다.
+
+아래 예제는 각 백엔드가 `/actuator/health/readiness`에서 인증 없이 최소한의 상태만 HTTP 200으로 반환하도록 구성되어 있다는 전제다. 해당 경로가 없는 서버는 먼저 Actuator와 Probe 설정을 추가하거나 실제 상태 확인 경로로 변경한다.
+
+```bash
+kubectl annotate service feed-service user-service \
+  timeline-service image-service \
+  -n sns \
+  alb.ingress.kubernetes.io/healthcheck-path=/actuator/health/readiness \
+  alb.ingress.kubernetes.io/success-codes=200 \
+  --overwrite
+```
+
+Service에 지정한 헬스 체크 설정을 통해 백엔드별 Target Group을 구성한다. 명령으로 적용한 값은 원본 Service YAML이나 Helm 설정에도 반영한다.
+
+헬스 체크를 통과시키려고 모든 상태 코드를 성공으로 취급하는 것은 피한다. 실제로 요청을 처리할 수 없는 대상까지 정상으로 판정할 수 있기 때문이다.
+
+#### SNS Ingress 작성
+
+`sns-ingress.yaml`을 작성한다.
+
+아래 `203.0.113.10/32`는 문서용 예시 주소다. 적용 전 실제 테스트 클라이언트의 공인 IP 대역으로 바꾼다. 처음에는 접근 범위를 제한해 HTTP 라우팅부터 확인한다.
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: sns-ingress
+  namespace: sns
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
+    alb.ingress.kubernetes.io/inbound-cidrs: "203.0.113.10/32"
+spec:
+  ingressClassName: alb
+  defaultBackend:
+    service:
+      name: sns-frontend-service
+      port:
+        number: 3000
+  rules:
+    - http:
+        paths:
+          - path: /api/timeline
+            pathType: Prefix
+            backend:
+              service:
+                name: timeline-service
+                port:
+                  number: 8080
+          - path: /api/feeds
+            pathType: Prefix
+            backend:
+              service:
+                name: feed-service
+                port:
+                  number: 8080
+          - path: /api/users
+            pathType: Prefix
+            backend:
+              service:
+                name: user-service
+                port:
+                  number: 8080
+          - path: /api/follows
+            pathType: Prefix
+            backend:
+              service:
+                name: user-service
+                port:
+                  number: 8080
+          - path: /api/images
+            pathType: Prefix
+            backend:
+              service:
+                name: image-service
+                port:
+                  number: 8080
+```
+
+##### API 버전과 Namespace
+
+`networking.k8s.io/v1`은 Ingress에 사용하는 API 버전이다.
+
+Ingress의 Backend로 지정한 Service는 이 예제에서 모두 같은 `sns` Namespace에 있어야 한다. Service DNS를 이용한 Namespace 간 호출과 Ingress의 Service 참조 범위는 구분한다.
+
+##### Annotation 위치
+
+ALB 설정은 반드시 `metadata.annotations` 아래에 작성한다.
+
+`spec` 아래에 넣거나 들여쓰기를 잘못하면 올바른 설정으로 처리되지 않는다. Annotation 값은 문자열로 작성하고, JSON 형식의 값도 YAML 문자열로 감싼다.
+
+##### `scheme: internet-facing`
+
+인터넷에서 접근 가능한 ALB를 요청하는 설정이다.
+
+이 값만으로 네트워크 구성이 모두 완성되는 것은 아니다. Public Subnet의 경로, Security Group, NACL 등도 요청을 허용해야 한다.
+
+##### `target-type: ip`
+
+ALB Target Group에 Pod IP를 대상으로 등록한다.
+
+이 구성에서는 Backend Service를 `ClusterIP`로 유지할 수 있다. ALB 트래픽이 반드시 Service의 ClusterIP를 경유하는 것은 아니며, Controller가 Service와 Endpoint 정보를 바탕으로 Pod IP를 등록한다.
+
+```mermaid
+flowchart LR
+    A["외부 요청"] --> B["ALB Listener"]
+    B --> C["경로별 Target Group"]
+    C --> D["Pod IP와 애플리케이션 포트"]
+
+    E["Service와 Endpoint 정보"] -.-> F["AWS Load Balancer Controller"]
+    F -.-> C
+```
+
+반면 `instance` 방식은 일반적으로 Node의 NodePort를 대상으로 전달한다. 사용 중인 Pod 네트워크가 ALB의 IP Target 접근을 지원하는지 확인해야 한다.
+
+##### `defaultBackend`
+
+별도 API 규칙에 매칭되지 않은 요청은 프런트엔드로 보낸다.
+
+따라서 `/`, 프런트엔드 페이지 경로, `/_next` 정적 리소스 요청 등이 프런트엔드로 전달된다.
+
+다만 기본 Backend가 모든 경로에 성공 응답을 보장하는 것은 아니다. 프런트엔드에 없는 경로라면 최종적으로 404가 발생할 수 있다.
+
+##### `pathType: Prefix`
+
+`/api/users`는 `/api/users/1` 같은 하위 경로에도 매칭된다.
+
+이는 경로 요소 기준의 Prefix다. `/api/users-extra`처럼 이름만 비슷한 경로까지 동일하게 매칭되는 것은 아니다. 또한 Prefix 라우팅은 경로를 자동으로 제거하거나 변환하지 않는다. Backend에는 원래 API 경로가 전달된다. [Kubernetes Ingress 경로 매칭](https://kubernetes.io/docs/concepts/services-networking/ingress/)
+
+Backend의 `port.number`에는 컨테이너 포트가 아니라 **Service에 정의된 포트**를 지정한다.
+
+#### Ingress 적용과 ALB 생성 확인
+
+```bash
+kubectl apply -f sns-ingress.yaml
+
+kubectl get ingress sns-ingress -n sns
+kubectl describe ingress sns-ingress -n sns
+```
+
+ALB 생성에는 시간이 걸릴 수 있다. 주소가 반영되는 과정을 확인한다.
+
+```bash
+kubectl get ingress sns-ingress -n sns --watch
+```
+
+주소를 변수로 가져올 수도 있다.
+
+```bash
+export ALB_DNS=$(
+  kubectl get ingress sns-ingress \
+    -n sns \
+    -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+)
+```
+
+이 값은 Ingress가 만든 임의의 애플리케이션 URL이 아니라 ALB의 AWS DNS 이름이다. ALB가 유지되는 동안 사용할 수 있지만, 삭제 후 재생성하면 주소가 달라질 수 있다.
+
+```bash
+curl -I "http://${ALB_DNS}/"
+
+curl -i \
+  "http://${ALB_DNS}/api/timeline/feeds?offset=0&limit=20"
+```
+
+아직 HTTP 단계이므로 화면과 비민감 조회 경로 위주로 확인한다. 실제 비밀번호나 인증 토큰을 전송하는 테스트는 HTTPS를 구성한 뒤 진행한다.
+
+#### 도메인과 HTTPS 연결
+
+##### 도메인 연결
+
+보유한 도메인이 있다면 DNS에서 ALB를 가리키도록 설정한다.
+
+Route 53을 사용하는 경우 ALB를 대상으로 하는 Alias 레코드를 구성할 수 있다. 다른 DNS 서비스에서는 제공 기능에 맞게 CNAME이나 Alias 계열 레코드를 사용한다.
+
+Ingress에 `host`를 적는 것만으로 DNS 레코드가 자동 생성되지는 않는다. ExternalDNS 같은 별도 자동화가 없다면 DNS 설정도 따로 해야 한다.
+
+##### ACM 인증서 연결
+
+ALB와 같은 리전에 도메인용 ACM 인증서를 준비하고 검증을 완료한다.
+
+```bash
+export CERTIFICATE_ARN="<ACM_CERTIFICATE_ARN>"
+```
+
+Listener와 인증서, HTTPS 리다이렉트를 추가한다.
+
+```bash
+kubectl annotate ingress sns-ingress \
+  -n sns \
+  'alb.ingress.kubernetes.io/listen-ports=[{"HTTP":80},{"HTTPS":443}]' \
+  alb.ingress.kubernetes.io/certificate-arn="$CERTIFICATE_ARN" \
+  alb.ingress.kubernetes.io/ssl-redirect=443 \
+  --overwrite
+```
+
+이 변경도 `sns-ingress.yaml`의 Annotation에 반영한다. 이후 HTTP 전용 YAML을 다시 적용해 HTTPS 설정이 사라지지 않도록 관리한다.
+
+ALB에서는 ACM 인증서를 Annotation으로 연결하는 구성이 일반적이다. 다른 Ingress Controller의 Kubernetes TLS Secret 설정과 혼동하지 않는다. [ALB Ingress Annotation](https://kubernetes-sigs.github.io/aws-load-balancer-controller/latest/guide/ingress/annotations/)
+
+최종적으로 도메인으로 확인한다.
+
+```bash
+curl -I https://sns.example.com/
+```
+
+인증서는 실제 도메인에 맞게 발급되어야 한다. 예제의 `sns.example.com`은 보유한 도메인으로 교체한다.
+
+#### 브라우저에서 전체 기능 확인
+
+HTTPS 주소로 접속한 뒤 화면과 API를 함께 확인한다.
+
+##### 초기 화면과 랜덤 피드
+
+로그인하지 않은 상태에서 공개 피드가 표시되는지 확인한다.
+
+이미지가 보이지 않는다면 피드 API 응답뿐 아니라 브라우저가 실제로 요청한 이미지 URL도 확인한다. 과거 테스트 데이터가 존재하지 않는 이미지 ID를 참조할 수도 있다.
+
+##### 회원가입과 로그인
+
+새 테스트 계정으로 가입하고 로그인 상태가 유지되는지 확인한다.
+
+화면에서 사용자 이름이 바뀌었다는 이유만으로 인증이 완성되었다고 판단하면 안 된다. Backend가 토큰이나 세션을 검증하고, 사용자가 변경할 수 있는 `userId`만 신뢰하지 않는지도 별도로 확인해야 한다.
+
+##### 팔로우와 개인 타임라인
+
+다른 사용자를 팔로우한 뒤 개인 타임라인에서 해당 사용자의 피드가 조회되는지 확인한다.
+
+```mermaid
+flowchart LR
+    A["팔로우 요청"] --> B["User Server"]
+    B --> C["Kafka 이벤트"]
+    C --> D["Timeline Server"]
+    D --> E["Redis 팔로잉 정보 갱신"]
+    E --> F["개인 타임라인 조회"]
+```
+
+팔로우 요청 성공과 타임라인 반영 사이에는 짧은 지연이 있을 수 있다. 이 구조는 비동기 이벤트로 조회 모델을 갱신하기 때문이다.
+
+##### 이미지 업로드와 게시물 작성
+
+이미지 파일과 게시물 내용을 입력한 뒤 다음 흐름을 확인한다.
+
+1. 이미지 업로드 성공
+2. 이미지 식별자 반환
+3. 해당 식별자로 피드 생성
+4. 피드 이벤트 발행과 Redis 반영
+5. 최신 게시물이 타임라인 상단에 표시
+
+이미지 업로드 성공 후 피드 생성이 실패하면 미사용 이미지가 남을 수 있다. 실제 서비스에서는 임시 업로드 상태나 미사용 파일 정리 정책도 필요하다.
+
+##### 좋아요와 해제
+
+좋아요 요청을 보낸 뒤 상태와 개수가 함께 바뀌는지 확인한다. 새로고침 이후에도 서버의 결과와 화면이 일치하는지 확인한다.
+
+| 기능 | 확인할 사항 |
+|---|---|
+| 랜덤 피드 | 공개 피드와 이미지가 표시되는가 |
+| 회원가입 | 입력 검증과 중복 계정 처리가 동작하는가 |
+| 로그인 | Backend 인증과 상태 유지가 동작하는가 |
+| 팔로우 | 관계 변경이 개인 타임라인에 반영되는가 |
+| 게시물 작성 | 이미지와 피드가 정상 연결되는가 |
+| 최신순 정렬 | 새 게시물이 상단에 나타나는가 |
+| 좋아요 | 추가·해제와 개수가 일치하는가 |
+
+#### 외부 API 도구로 확인
+
+Ingress를 연결하면 더 이상 클러스터 내부 연결 도구가 있어야만 API를 호출할 수 있는 것은 아니다.
+
+허용된 네트워크에서는 `curl`이나 Postman으로 접근할 수 있다.
+
+```bash
+curl \
+  "https://sns.example.com/api/feeds?page=0&size=20"
+
+curl \
+  "https://sns.example.com/api/timeline/feeds?offset=0&limit=20"
+```
+
+인증이 필요한 API에는 실제 인증 정보를 안전한 방식으로 전달한다. 토큰이나 비밀번호를 문서와 공유 명령어에 그대로 남기지 않는다.
+
+초기에 지정한 `inbound-cidrs`가 한 사람의 IP만 허용한다면 다른 네트워크에서는 접속할 수 없다. 공동 테스트가 필요하면 승인된 테스트 대역을 추가한다.
+
+#### 문제 발생 시 확인 순서
+
+##### Ingress 주소가 생성되지 않는 경우
+
+```bash
+kubectl describe ingress sns-ingress -n sns
+
+kubectl logs -n kube-system \
+  deployment/aws-load-balancer-controller \
+  --tail=200
+```
+
+주요 확인 대상은 다음과 같다.
+
+- `IngressClass` 이름과 Controller 설치 상태
+- IAM Policy와 Role 연결
+- OIDC Trust Policy의 `aud`, `sub`
+- 서브넷 탐색 결과와 가용 IP
+- AWS 리소스 생성 권한과 할당량
+
+`AccessDenied`가 발생한다면 어떤 AWS API가 거부되었는지 확인한다. 원인을 확인하지 않고 관리자 권한을 넓게 부여하는 방식은 피한다.
+
+##### ALB는 있지만 접속되지 않는 경우
+
+- 클라이언트 공인 IP와 `inbound-cidrs` 비교
+- ALB Security Group의 Listener 포트 확인
+- 서브넷 Route Table과 Internet Gateway 경로 확인
+- NACL 및 Backend Security Group 확인
+- Target Group의 등록 대상과 상태 확인
+
+##### 화면은 나오지만 API가 실패하는 경우
+
+브라우저 개발자 도구에서 요청 URL, 상태 코드, 응답 Content-Type을 확인한다.
+
+API 요청에 HTML이 반환된다면 경로가 API 규칙에 매칭되지 않아 프런트엔드로 전달되었을 수 있다.
+
+또한 EndpointSlice를 확인한다.
+
+```bash
+kubectl get endpointslice -n sns \
+  -l kubernetes.io/service-name=feed-service \
+  -o wide
+```
+
+Service Selector가 Pod Label과 다르거나 Pod가 Ready 상태가 아니라면 사용할 Endpoint가 없을 수 있다.
+
+| 증상 | 우선 확인할 내용 |
+|---|---|
+| 연결 시간 초과 | CIDR 제한, Route Table, Security Group |
+| 404 | 경로 매칭과 Backend의 실제 API 경로 |
+| 502 | Backend 연결 종료, 프로토콜·응답 이상 |
+| 503 | 등록 대상 부재 등 ALB가 전달할 수 없는 상태 |
+| 504 | Backend 응답 시간과 네트워크 연결 |
+| Target이 Unhealthy | 헬스 체크 경로, 포트, 상태 코드, 접근 권한 |
+
+모든 Target이 Unhealthy인 경우에도 ALB의 Fail-open 동작으로 요청이 전달될 수 있다. 따라서 응답 코드 하나만으로 Target 상태를 단정하지 말고 Target Health의 Reason도 확인한다. [ALB Target Group 헬스 체크](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/target-group-health-checks.html)
+
+#### 외부 공개 전 확인할 운영 기준
+
+Ingress를 만들었다는 것은 외부에서 API까지 접근할 수 있는 경로를 만들었다는 의미다. 화면에 버튼이 없더라도 직접 HTTP 요청을 보낼 수 있다.
+
+특히 `/api/users` 같은 Prefix는 그 하위 API도 함께 노출한다. 관리자 기능이나 내부 전용 작업을 같은 경로 아래에 둔 경우 별도 접근 통제가 필요하다.
+
+앞에서 만든 `/internal/feeds/replay` 같은 관리 기능은 공개 API 규칙에 포함하지 않고, 애플리케이션의 인증·인가로도 보호한다.
+
+추가로 확인할 항목은 다음과 같다.
+
+- HTTPS와 안전한 쿠키 설정
+- 사용자 본인 여부와 리소스 소유권 검증
+- 로그인·회원가입 요청 제한
+- 이미지 크기·형식 검증과 업로드 제한
+- 민감 정보가 포함되지 않는 오류 응답
+- 접근 로그와 장애 추적
+- ALB와 애플리케이션의 타임아웃 조정
+
+여러 Ingress를 같은 ALB에 묶는 `group.name`과 평가 순서를 지정하는 `group.order`도 사용할 수 있다. 다만 같은 그룹의 라우팅에 영향을 줄 수 있으므로, 서로 신뢰하지 않는 팀에 Ingress 수정 권한을 무분별하게 공유하지 않는다.
+
+경로 기반 구분이 어려우면 `api.example.com`, `images.example.com`처럼 호스트 기반으로 분리할 수도 있다. 이때는 DNS, 인증서, CORS, 쿠키 범위까지 함께 검토한다.
+
+#### 실습 리소스 정리
+
+ALB는 요청이 거의 없어도 비용이 발생할 수 있다. 실습이 끝났다면 계속 사용할지 판단한다.
+
+ALB가 더 필요하지 않다면 Ingress를 삭제해 Controller가 관련 AWS 리소스를 정리하도록 한다.
+
+```bash
+kubectl delete ingress sns-ingress -n sns
+```
+
+이후 ALB와 관련 리소스가 실제로 제거되었는지 확인한다. Controller를 먼저 삭제하면 정리 작업을 수행할 주체가 없어질 수 있다.
+
+삭제가 지연된다고 Finalizer를 바로 강제 제거하지 않는다. 권한 오류나 AWS 리소스 의존성을 확인하고, 남은 리소스와 비용을 점검한다.
+
+### 정리
+
+AWS Load Balancer Controller는 Ingress 규칙을 AWS ALB 구성으로 반영하고, 실제 외부 요청은 ALB가 처리한다.
+
+프런트엔드는 기본 Backend로 연결하고, 타임라인·피드·사용자·팔로우·이미지 API는 경로별로 분리했다. 이를 통해 하나의 외부 주소에서 SNS 화면과 Backend 기능을 사용할 수 있다.
+
+외부 공개의 완료 기준은 ALB 주소가 생성되는 것만이 아니다. Target 상태, HTTPS, 인증·인가, 이미지 업로드, 비동기 타임라인 반영까지 확인해야 한다. 이후에는 이 구성을 Helm으로 묶어 환경별 설정과 배포 절차를 일관되게 관리할 수 있다.
