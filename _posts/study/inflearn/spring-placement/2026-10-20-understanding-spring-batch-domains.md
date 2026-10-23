@@ -8353,3 +8353,2369 @@ StepExecution은 각 Step의 실행 상태와 처리 결과를 관리한다.
 #### 한 줄 요약
 
 > Spring Batch의 `JobExecution`은 JobInstance에 대한 개별 실행 시도를 나타내며, Job 실행 시마다 생성되어 실행 상태와 결과를 관리한다. 동일한 JobInstance라도 실패한 작업을 재시작하면 새로운 JobExecution이 생성되고, 정상적으로 완료되면 동일한 식별용 JobParameters를 이용한 추가 실행이 제한된다.
+
+## Step
+
+### Spring Batch Step 이해: 주요 구현체와 TaskletStep 생성 및 실행 원리
+
+Spring Batch에서 `Job`은 하나의 배치 작업 전체를 정의하는 최상위 도메인 객체다.
+
+Job은 여러 작업 단계를 포함할 수 있으며, 각 작업이 어떤 순서로 실행될지 정의한다.
+
+그렇다면 실제 비즈니스 로직은 어디에서 수행될까?
+
+Spring Batch에서는 Job을 구성하는 각각의 작업 단위를 `Step`이라는 도메인 객체로 관리한다.
+
+예를 들어 일별 정산 배치를 생각해보자.
+
+```text
+일별 정산 Job
+       │
+       ├── Step 1: 정산 대상 데이터 조회
+       │
+       ├── Step 2: 정산 금액 계산
+       │
+       ├── Step 3: 정산 결과 저장
+       │
+       └── Step 4: 정산 완료 처리
+```
+
+이러한 구조에서 Job은 전체 작업의 실행 순서를 관리한다.
+
+반면 Step은 실제 작업을 수행하는 데 필요한 구체적인 설정과 실행 로직을 관리한다.
+
+예를 들어 정산 데이터를 읽고 저장하는 과정에서는 데이터베이스 연결, 트랜잭션, 데이터 처리 단위, 예외 처리 등의 설정이 필요하다.
+
+Spring Batch에서는 이러한 설정을 Step 단위로 구성할 수 있다.
+
+또한 Step은 단순한 메서드 실행 단위가 아니다.
+
+실행 상태와 처리 건수 등을 관리할 수 있고, 실패한 배치를 재시작할 때 이전 Step의 실행 결과를 활용할 수 있다.
+
+이번에는 Step의 기본 개념과 주요 구현체를 살펴보고, 실제 Step 객체가 생성되는 과정부터 Job에 의해 실행되고 Tasklet의 비즈니스 로직이 호출되는 과정까지 알아보자.
+
+**개발 환경**
+
+| 구분           | 기술         |
+| ------------ | ---------- |
+| Java         | Java 17    |
+| Spring Boot  | 3.4.13     |
+| Spring Batch | 5.2.4      |
+| Build Tool   | Maven      |
+| Database     | H2         |
+| Step 구성      | Tasklet 기반 |
+
+---
+
+### Step이란?
+
+Step은 Spring Batch에서 Job을 구성하는 독립적인 실행 단계다.
+
+Job이 배치 작업 전체를 정의한다면 Step은 해당 작업을 실제로 수행하기 위한 세부 실행 단위를 나타낸다.
+
+예를 들어 다음과 같은 Job이 있다고 생각해보자.
+
+```text
+SettlementJob
+       │
+       ▼
+PrepareStep
+       │
+       ▼
+CalculateStep
+       │
+       ▼
+SaveStep
+```
+
+세 개의 Step은 각각 다른 역할을 수행한다.
+
+`PrepareStep`에서는 정산 대상 데이터를 준비한다.
+
+`CalculateStep`에서는 정산 금액을 계산한다.
+
+`SaveStep`에서는 계산된 정산 데이터를 저장한다.
+
+Spring Batch는 이러한 작업을 각각의 Step으로 구분하여 실행할 수 있도록 지원한다.
+
+#### Step의 주요 역할
+
+Step은 다음과 같은 기능을 담당한다.
+
+| 역할         | 설명                                   |
+| ---------- | ------------------------------------ |
+| 작업 단위 정의   | Job에서 실행할 개별 작업 정의                   |
+| 비즈니스 로직 실행 | Tasklet 또는 Chunk 기반 처리               |
+| 트랜잭션 관리    | 작업 단위의 트랜잭션 경계 구성                    |
+| 실행 상태 관리   | StepExecution을 통한 실행 상태 기록           |
+| 재시작 제어     | 완료된 Step의 재실행 여부 관리                  |
+| 실행 제한      | Step의 최대 시작 횟수 제한                    |
+| 이벤트 처리     | StepExecutionListener 등을 통한 실행 전후 처리 |
+
+여기서 중요한 사실은 **Step이 실행할 작업을 정의하는 객체이면서 실제 실행 과정의 상태도 관리하는 구조를 가지고 있다는 점**이다.
+
+다만 Step 객체 자체가 모든 실행 이력을 직접 저장하는 것은 아니다.
+
+Step의 개별 실행 상태는 `StepExecution`이라는 별도의 도메인 객체를 통해 관리된다.
+
+이 두 객체의 역할은 구분해야 한다.
+
+---
+
+### Job과 Step의 차이
+
+Job과 Step은 모두 배치 작업을 구성하는 객체지만 담당하는 범위가 다르다.
+
+Job은 작업 전체의 실행 흐름에 집중한다.
+
+Step은 각 작업을 어떻게 수행할지에 집중한다.
+
+예를 들어 다음과 같은 Job 설정이 있다고 생각해보자.
+
+```java
+@Bean
+public Job settlementJob(
+        JobRepository jobRepository,
+        Step prepareStep,
+        Step calculateStep,
+        Step saveStep
+) {
+    return new JobBuilder("settlementJob", jobRepository)
+            .start(prepareStep)
+            .next(calculateStep)
+            .next(saveStep)
+            .build();
+}
+```
+
+이 코드는 전체 정산 작업의 실행 순서를 정의한다.
+
+먼저 `prepareStep`을 실행하고, 정상적으로 완료되면 `calculateStep`을 실행한다.
+
+그다음 `saveStep`을 실행한다.
+
+하지만 실제 정산 데이터를 조회하거나 계산하는 로직은 이 Job 설정에 포함되어 있지 않다.
+
+실제 로직은 각 Step에 연결된 Tasklet이나 ItemReader, ItemProcessor, ItemWriter 등에서 수행된다.
+
+두 객체의 차이를 정리하면 다음과 같다.
+
+| 구분      | Job                   | Step                                 |
+| ------- | --------------------- | ------------------------------------ |
+| 개념      | 배치 작업 전체              | 배치를 구성하는 실행 단계                       |
+| 주요 역할   | 실행 흐름 관리              | 개별 작업 실행                             |
+| 관리 대상   | 여러 Step 또는 Flow       | Tasklet, Reader, Processor, Writer 등 |
+| 실행 상태   | JobExecution          | StepExecution                        |
+| 실행 설정   | Step 순서, Flow, 재시작 여부 | 트랜잭션, 처리 단위, 실행 제한 등                 |
+| 비즈니스 로직 | 일반적으로 직접 구현하지 않음      | 연결된 처리 컴포넌트에서 수행                     |
+
+따라서 다음과 같이 이해할 수 있다.
+
+**Job은 어떤 작업을 어떤 순서로 실행할지 결정하고, Step은 각 작업을 어떤 방식으로 수행할지 정의한다.**
+
+---
+
+### Step은 독립적으로 실행된다
+
+Step의 중요한 특징 중 하나는 각 Step이 독립적인 실행 단위라는 점이다.
+
+예를 들어 하나의 Job에 세 개의 Step을 구성했다고 생각해보자.
+
+```text
+Job
+ │
+ ├── Step 1
+ │
+ ├── Step 2
+ │
+ └── Step 3
+```
+
+각 Step은 자신만의 실행 설정을 가진다.
+
+또한 실제로 실행될 때는 해당 Step에 대한 `StepExecution`이 생성된다.
+
+```mermaid
+flowchart TD
+    A["JobExecution"]
+
+    B["Step 1"]
+    C["Step 2"]
+    D["Step 3"]
+
+    E["StepExecution 1"]
+    F["StepExecution 2"]
+    G["StepExecution 3"]
+
+    A --> B
+    A --> C
+    A --> D
+
+    B --> E
+    C --> F
+    D --> G
+```
+
+따라서 Step 1과 Step 2는 서로 다른 실행 상태를 가질 수 있다.
+
+예를 들어 다음과 같다.
+
+```text
+Step 1 → COMPLETED
+
+Step 2 → FAILED
+
+Step 3 → 실행되지 않음
+```
+
+Step 1은 정상적으로 완료되었다.
+
+Step 2는 실패했다.
+
+Step 3은 앞선 Step의 실패로 인해 실행되지 않았다.
+
+이처럼 각 Step의 실행 결과는 별도로 관리된다.
+
+#### Step이 독립적이라는 것은 데이터를 공유하지 못한다는 의미일까?
+
+그렇지는 않다.
+
+각 Step은 자신의 `StepExecution`과 `StepExecutionContext`를 가진다.
+
+따라서 Step 1의 StepExecutionContext에 저장된 값이 Step 2의 StepExecutionContext로 자동 전달되지는 않는다.
+
+하지만 Spring Batch는 Step 간 데이터를 공유할 수 있도록 `JobExecutionContext`를 제공한다.
+
+```text
+JobExecution
+      │
+      ├── JobExecutionContext
+      │       │
+      │       └── Step 간 공유 데이터
+      │
+      ├── Step 1
+      │       └── StepExecutionContext 1
+      │
+      └── Step 2
+              └── StepExecutionContext 2
+```
+
+따라서 Step의 독립성은 **각 Step이 별도의 실행 상태와 처리 책임을 가진다는 의미**로 이해하는 것이 정확하다.
+
+또한 Step 객체가 독립적이라고 해서 반드시 별도 스레드에서 실행되는 것도 아니다.
+
+일반적인 순차 실행 Job에서는 여러 Step이 같은 실행 스레드에서 차례대로 처리될 수 있다.
+
+병렬 실행을 위해서는 별도의 병렬 처리 구성이 필요하다.
+
+---
+
+### Step 인터페이스
+
+Spring Batch에서는 `Step`을 인터페이스로 정의한다.
+
+핵심 메서드는 다음과 같다.
+
+```java
+public interface Step {
+
+    String getName();
+
+    void execute(
+            StepExecution stepExecution
+    ) throws JobInterruptedException;
+}
+```
+
+위 코드는 핵심 메서드를 중심으로 단순화한 형태다.
+
+실제 Spring Batch 5.2의 Step 인터페이스에는 `getStartLimit()`, `isAllowStartIfComplete()` 등의 기본 메서드도 존재한다.
+
+#### getName()
+
+`getName()`은 Step의 이름을 반환한다.
+
+예를 들어 다음과 같이 Step을 생성했다고 생각해보자.
+
+```java
+new StepBuilder("calculateStep", jobRepository)
+```
+
+이 Step의 이름은 다음과 같다.
+
+```text
+calculateStep
+```
+
+Step 이름은 단순한 표시용 값이 아니다.
+
+Spring Batch는 Step 이름을 실행 메타데이터에 기록하며, 재시작 시 동일한 Step의 이전 실행 이력을 찾는 데 사용한다.
+
+따라서 Step 이름을 변경하면 기존 실행 이력과의 연결에 영향을 줄 수 있다.
+
+특히 운영 중인 배치에서는 Step 이름을 신중하게 변경해야 한다.
+
+#### execute()
+
+Step의 핵심 메서드는 다음과 같다.
+
+```java
+void execute(
+        StepExecution stepExecution
+);
+```
+
+이 메서드는 실제 Step을 실행한다.
+
+매개변수로 전달되는 `StepExecution`은 현재 실행에 대한 정보를 나타낸다.
+
+예를 들어 실행 상태, 시작 시간, 종료 시간, 처리 건수 등의 정보를 관리한다.
+
+여기서 중요한 점은 **Step 객체와 StepExecution 객체가 서로 다른 역할을 담당한다는 것**이다.
+
+Step은 작업의 정의와 실행 로직을 가지고 있다.
+
+StepExecution은 실제 실행 시도의 정보를 가지고 있다.
+
+이러한 분리 덕분에 동일한 Step 정의가 여러 JobExecution에서 사용되더라도 개별 실행 기록을 구분할 수 있다.
+
+---
+
+### Step의 클래스 구조
+
+Spring Batch는 Step 인터페이스를 직접 구현하지 않아도 사용할 수 있도록 여러 구현체를 제공한다.
+
+가장 기본이 되는 추상 클래스는 `AbstractStep`이다.
+
+그리고 AbstractStep을 상속하는 대표적인 구현체로 다음 클래스들이 있다.
+
+* `TaskletStep`
+* `PartitionStep`
+* `JobStep`
+* `FlowStep`
+
+전체 구조는 다음과 같다.
+
+```mermaid
+classDiagram
+    class Step {
+        <<interface>>
+        +getName() String
+        +getStartLimit() int
+        +isAllowStartIfComplete() boolean
+        +execute(StepExecution) void
+    }
+
+    class AbstractStep {
+        -name
+        -startLimit
+        -allowStartIfComplete
+        -jobRepository
+        -stepExecutionListeners
+        +execute(StepExecution) void
+        #doExecute(StepExecution) void
+    }
+
+    class TaskletStep {
+        -tasklet
+        #doExecute(StepExecution) void
+    }
+
+    class PartitionStep {
+        -stepExecutionSplitter
+        -partitionHandler
+        #doExecute(StepExecution) void
+    }
+
+    class JobStep {
+        -job
+        -jobLauncher
+        #doExecute(StepExecution) void
+    }
+
+    class FlowStep {
+        -flow
+        #doExecute(StepExecution) void
+    }
+
+    Step <|.. AbstractStep
+
+    AbstractStep <|-- TaskletStep
+    AbstractStep <|-- PartitionStep
+    AbstractStep <|-- JobStep
+    AbstractStep <|-- FlowStep
+```
+
+이 구조에서 중요한 부분은 `AbstractStep`이다.
+
+AbstractStep은 Step을 실행할 때 필요한 공통 기능을 제공한다.
+
+반면 하위 구현체는 실제 작업을 수행하는 방식을 결정한다.
+
+즉 다음과 같은 역할 분리가 이루어진다.
+
+```text
+AbstractStep
+      │
+      ├── 공통 실행 상태 관리
+      ├── Listener 처리
+      ├── JobRepository 연동
+      └── 실행 생명주기 관리
+
+             │
+             ▼
+
+구체적인 Step 구현체
+      │
+      └── 실제 작업 실행 방식 결정
+```
+
+이러한 구조는 앞에서 살펴본 `AbstractJob`과 `SimpleJob`의 관계와 비슷하다.
+
+상위 추상 클래스가 공통 실행 처리를 담당하고, 하위 구현체가 구체적인 실행 방법을 구현한다.
+
+---
+
+### AbstractStep의 역할
+
+`AbstractStep`은 Step 인터페이스를 구현하는 추상 클래스다.
+
+Spring Batch는 Step 실행에 공통적으로 필요한 기능을 AbstractStep에 정의해두었다.
+
+대표적인 속성은 다음과 같다.
+
+| 속성                     | 역할                     |
+| ---------------------- | ---------------------- |
+| name                   | Step 이름                |
+| startLimit             | Step 시작 가능 횟수          |
+| allowStartIfComplete   | 완료된 Step의 재시작 시 재실행 여부 |
+| stepExecutionListeners | Step 실행 전후 이벤트 처리      |
+| jobRepository          | 실행 메타데이터 저장 및 관리       |
+
+이 중 재시작과 관련된 두 가지 설정은 실무에서도 중요하다.
+
+#### startLimit
+
+`startLimit`은 동일한 JobInstance에서 특정 Step을 시작할 수 있는 최대 횟수를 제한하는 설정이다.
+
+기본값은 `Integer.MAX_VALUE`다.
+
+예를 들어 다음과 같이 설정할 수 있다.
+
+```java
+@Bean
+public Step settlementStep(
+        JobRepository jobRepository,
+        PlatformTransactionManager transactionManager
+) {
+    return new StepBuilder("settlementStep", jobRepository)
+            .tasklet(
+                    (contribution, chunkContext) ->
+                            RepeatStatus.FINISHED,
+                    transactionManager
+            )
+            .startLimit(2)
+            .build();
+}
+```
+
+여기서 다음 설정을 사용했다.
+
+```java
+.startLimit(2)
+```
+
+이 설정은 동일한 JobInstance에서 해당 Step의 시작 횟수를 최대 2회로 제한한다.
+
+예를 들어 다음과 같은 상황을 생각해보자.
+
+```text
+JobInstance 1
+      │
+      ├── Step 실행 1회
+      │       └── FAILED
+      │
+      ├── Step 실행 2회
+      │       └── FAILED
+      │
+      └── Step 실행 3회 요청
+              └── StartLimitExceededException
+```
+
+세 번째 실행을 시도하면 시작 횟수 제한으로 예외가 발생할 수 있다.
+
+이러한 설정은 특정 작업을 무한정 재시작하지 못하도록 제한해야 하는 경우 유용하다.
+
+예를 들어 외부 정산 시스템과 연동하는 Step에서 장애가 반복적으로 발생한다면 일정 횟수 이후 운영자의 확인을 요구하도록 설계할 수 있다.
+
+다만 `startLimit`은 모든 JobInstance를 합산한 전역 실행 횟수 제한이 아니다.
+
+**같은 JobInstance에서 특정 Step을 몇 번 시작했는지 관리하는 설정**이다.
+
+#### allowStartIfComplete
+
+Spring Batch는 실패한 Job을 재시작할 때 이전에 완료된 Step을 기본적으로 다시 실행하지 않는다.
+
+예를 들어 다음과 같은 Job이 있다고 생각해보자.
+
+```text
+JobExecution 1
+      │
+      ├── Step 1 → COMPLETED
+      │
+      └── Step 2 → FAILED
+```
+
+이 상태에서 동일한 JobInstance를 재시작하면 일반적으로 다음과 같이 진행된다.
+
+```text
+JobExecution 2
+      │
+      ├── Step 1 → 실행 생략
+      │
+      └── Step 2 → 재실행
+```
+
+Step 1은 이미 정상적으로 완료되었으므로 다시 실행할 필요가 없다고 판단하는 것이다.
+
+하지만 일부 Step은 재시작할 때마다 다시 실행해야 할 수도 있다.
+
+예를 들어 정산 작업을 시작하기 전에 외부 시스템의 상태를 확인하거나 임시 데이터를 정리하는 Step이 있을 수 있다.
+
+이런 경우 다음 설정을 사용할 수 있다.
+
+```java
+.allowStartIfComplete(true)
+```
+
+전체 코드는 다음과 같다.
+
+```java
+@Bean
+public Step prepareStep(
+        JobRepository jobRepository,
+        PlatformTransactionManager transactionManager
+) {
+    return new StepBuilder("prepareStep", jobRepository)
+            .tasklet(
+                    (contribution, chunkContext) -> {
+
+                        System.out.println("정산 준비 작업");
+
+                        return RepeatStatus.FINISHED;
+
+                    },
+                    transactionManager
+            )
+            .allowStartIfComplete(true)
+            .build();
+}
+```
+
+이 설정을 사용하면 동일한 JobInstance를 재시작할 때 이전에 완료된 Step이라도 다시 실행하도록 구성할 수 있다.
+
+다만 이미 `COMPLETED` 상태인 JobInstance 전체를 다시 실행할 수 있게 만드는 설정은 아니다.
+
+Job 자체의 실행이 허용되는 상황에서 Step의 재실행 여부를 결정하는 옵션이다.
+
+---
+
+### Step의 주요 구현체
+
+Spring Batch에서는 여러 형태의 작업을 수행할 수 있도록 다양한 Step 구현체를 제공한다.
+
+대표적인 구현체는 네 가지다.
+
+| 구현체           | 주요 역할                 | 대표 활용               |
+| ------------- | --------------------- | ------------------- |
+| TaskletStep   | Tasklet 실행            | 파일 정리, 정산, 데이터 처리   |
+| PartitionStep | 작업을 여러 Partition으로 분할 | 대용량 데이터 병렬 처리       |
+| JobStep       | Step 안에서 다른 Job 실행    | Job 재사용 및 작업 의존성 구성 |
+| FlowStep      | Step 안에서 Flow 실행      | 복잡한 실행 흐름 구성        |
+
+각 구현체를 살펴보자.
+
+---
+
+### TaskletStep
+
+`TaskletStep`은 Spring Batch에서 가장 기본적으로 사용되는 Step 구현체다.
+
+Tasklet이라는 작업 인터페이스를 실행하는 역할을 담당한다.
+
+Tasklet은 실제 비즈니스 로직을 구현하는 인터페이스다.
+
+대표적인 메서드는 다음과 같다.
+
+```java
+RepeatStatus execute(
+        StepContribution contribution,
+        ChunkContext chunkContext
+) throws Exception;
+```
+
+TaskletStep은 이 메서드를 호출해 실제 작업을 수행한다.
+
+예를 들어 다음과 같은 단일 작업을 수행할 수 있다.
+
+```text
+TaskletStep
+      │
+      ▼
+Tasklet
+      │
+      ▼
+오래된 임시 파일 삭제
+      │
+      ▼
+작업 종료
+```
+
+이처럼 하나의 작업을 수행하는 경우 Tasklet 기반으로 Step을 구성할 수 있다.
+
+#### TaskletStep 생성
+
+Spring Batch 5.2에서는 `StepBuilder`를 이용해 생성한다.
+
+```java
+@Bean
+public Step cleanupStep(
+        JobRepository jobRepository,
+        PlatformTransactionManager transactionManager
+) {
+    return new StepBuilder("cleanupStep", jobRepository)
+            .tasklet((contribution, chunkContext) -> {
+
+                System.out.println("임시 파일 정리");
+
+                return RepeatStatus.FINISHED;
+
+            }, transactionManager)
+            .build();
+}
+```
+
+여기서 중요한 부분은 다음이다.
+
+```java
+.tasklet(tasklet, transactionManager)
+```
+
+이 메서드는 Tasklet 기반 Step을 구성한다.
+
+최종적으로 `build()`를 호출하면 `TaskletStep`이 생성된다.
+
+즉 다음과 같은 관계다.
+
+```mermaid
+flowchart TD
+    A["StepBuilder"]
+    B["tasklet()"]
+    C["TaskletStepBuilder"]
+    D["build()"]
+    E["TaskletStep 생성"]
+    F["사용자 Tasklet 설정"]
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+```
+
+여기서 핵심은 **StepBuilder가 직접 모든 종류의 Step을 생성하는 것이 아니라, 설정한 처리 방식에 적합한 하위 Builder를 이용해 Step을 생성한다는 것**이다.
+
+---
+
+### TaskletStep은 Chunk 기반 처리에도 사용된다
+
+Spring Batch를 처음 사용할 때 혼동하기 쉬운 부분이 있다.
+
+Tasklet 방식과 Chunk 방식은 서로 다른 Step 구현체를 사용하는 것처럼 보일 수 있다.
+
+하지만 **Spring Batch 5.2에서는 Tasklet 기반 Step과 Chunk 기반 Step 모두 `TaskletStep`을 사용한다.**
+
+차이는 내부에서 실행하는 Tasklet의 종류에 있다.
+
+#### 직접 구현한 Tasklet을 사용하는 경우
+
+개발자가 Tasklet을 직접 구현할 수 있다.
+
+```java
+public class CleanupTasklet implements Tasklet {
+
+    @Override
+    public RepeatStatus execute(
+            StepContribution contribution,
+            ChunkContext chunkContext
+    ) throws Exception {
+
+        System.out.println("임시 데이터 정리");
+
+        return RepeatStatus.FINISHED;
+    }
+}
+```
+
+이 Tasklet을 Step에 등록하면 된다.
+
+```java
+new StepBuilder("cleanupStep", jobRepository)
+        .tasklet(
+                new CleanupTasklet(),
+                transactionManager
+        )
+        .build();
+```
+
+이렇게 생성한 객체는 TaskletStep이다.
+
+그리고 TaskletStep은 개발자가 직접 구현한 CleanupTasklet을 실행한다.
+
+#### Chunk 기반 처리를 사용하는 경우
+
+이번에는 대량의 데이터를 일정한 단위로 읽고 저장하는 Step을 생각해보자.
+
+```text
+데이터 읽기
+    │
+    ▼
+데이터 가공
+    │
+    ▼
+데이터 저장
+    │
+    ▼
+Commit
+```
+
+이러한 구조를 Chunk 기반 처리라고 한다.
+
+Spring Batch에서는 다음과 같이 설정한다.
+
+```java
+@Bean
+public Step chunkStep(
+        JobRepository jobRepository,
+        PlatformTransactionManager transactionManager
+) {
+    return new StepBuilder("chunkStep", jobRepository)
+            .<String, String>chunk(100, transactionManager)
+            .reader(new ListItemReader<>(
+                    List.of("A", "B", "C")
+            ))
+            .processor(String::toLowerCase)
+            .writer(chunk ->
+                    chunk.getItems().forEach(System.out::println)
+            )
+            .build();
+}
+```
+
+여기서는 다음 메서드를 사용했다.
+
+```java
+.<String, String>chunk(100, transactionManager)
+```
+
+이 설정은 데이터를 100개 단위의 Chunk로 처리하도록 구성한다.
+
+그리고 Reader, Processor, Writer를 연결한다.
+
+```java
+.reader(...)
+
+.processor(...)
+
+.writer(...)
+```
+
+이렇게 설정해도 최종적으로 생성되는 Step 구현체는 `TaskletStep`이다.
+
+그렇다면 Reader와 Writer는 어떻게 실행될까?
+
+Spring Batch는 Chunk 기반 처리를 위해 내부적으로 `ChunkOrientedTasklet`을 사용한다.
+
+---
+
+### ChunkOrientedTasklet의 역할
+
+`ChunkOrientedTasklet`은 Chunk 기반 처리를 수행하는 Tasklet 구현체다.
+
+일반적인 Tasklet과 마찬가지로 Tasklet 인터페이스를 구현한다.
+
+차이점은 내부적으로 Reader, Processor, Writer를 이용한 데이터 처리 구조를 가지고 있다는 것이다.
+
+전체 구조를 살펴보자.
+
+```mermaid
+flowchart TD
+    A["TaskletStep"]
+    B["ChunkOrientedTasklet"]
+    C["ChunkProvider"]
+    D["ItemReader"]
+    E["ChunkProcessor"]
+    F["ItemProcessor"]
+    G["ItemWriter"]
+
+    A --> B
+
+    B --> C
+    C --> D
+
+    B --> E
+    E --> F
+    E --> G
+```
+
+여기서 `ChunkProvider`는 Reader를 이용해 데이터를 읽고 Chunk를 구성한다.
+
+`ChunkProcessor`는 읽은 데이터를 가공하고 Writer에 전달한다.
+
+즉 Chunk 기반 처리는 내부적으로 다음 흐름을 수행한다.
+
+```text
+TaskletStep
+      │
+      ▼
+ChunkOrientedTasklet
+      │
+      ├── ChunkProvider
+      │       │
+      │       └── ItemReader
+      │
+      └── ChunkProcessor
+              │
+              ├── ItemProcessor
+              │
+              └── ItemWriter
+```
+
+따라서 개발자가 `chunk()` API를 사용하면 Spring Batch가 Chunk 기반 처리를 수행하기 위한 내부 Tasklet을 구성한다.
+
+이것이 직접 구현한 Tasklet과 Chunk 기반 처리가 모두 TaskletStep을 사용하는 이유다.
+
+두 방식의 차이를 정리하면 다음과 같다.
+
+| 구분         | 직접 구현한 Tasklet | Chunk 기반 처리            |
+| ---------- | -------------- | ---------------------- |
+| Step 구현체   | TaskletStep    | TaskletStep            |
+| 내부 Tasklet | 사용자 정의 Tasklet | ChunkOrientedTasklet   |
+| 핵심 API     | `tasklet()`    | `chunk()`              |
+| 처리 구조      | 사용자 정의 작업      | Read → Process → Write |
+| 반복 제어      | RepeatStatus 등 | Chunk 반복 처리            |
+| 대표 사례      | 파일 정리, 상태 변경   | 정산, 통계, 데이터 이관         |
+
+단순한 작업은 직접 구현한 Tasklet으로 처리할 수 있다.
+
+반면 대량의 데이터를 반복적으로 처리해야 한다면 Chunk 기반 구조를 활용하는 것이 적합하다.
+
+---
+
+### PartitionStep
+
+`PartitionStep`은 하나의 작업을 여러 Partition으로 분할하여 처리하도록 지원하는 Step 구현체다.
+
+예를 들어 1,000만 건의 결제 데이터를 정산해야 한다고 생각해보자.
+
+하나의 Step에서 모든 데이터를 순차적으로 처리하면 시간이 오래 걸릴 수 있다.
+
+이 경우 데이터를 여러 범위로 나누어 처리할 수 있다.
+
+```text
+전체 결제 데이터: 1,000만 건
+              │
+              ▼
+          Partition
+              │
+      ┌───────┼───────┐
+      ▼       ▼       ▼
+   Partition1 P2      P3
+      │       │       │
+      ▼       ▼       ▼
+   Worker1  Worker2 Worker3
+```
+
+각 Partition에는 서로 다른 처리 범위를 지정할 수 있다.
+
+예를 들어 다음과 같다.
+
+```text
+Partition 1
+
+paymentId: 1 ~ 3,000,000
+
+
+Partition 2
+
+paymentId: 3,000,001 ~ 6,000,000
+
+
+Partition 3
+
+paymentId: 6,000,001 ~ 10,000,000
+```
+
+이러한 범위 정보를 각 Worker Step에 전달하면 데이터를 분할해서 처리할 수 있다.
+
+PartitionStep은 내부적으로 Partition을 생성하고 실행을 위임하는 구조를 가진다.
+
+대표적인 구성 요소는 다음과 같다.
+
+| 구성 요소                 | 역할                          |
+| --------------------- | --------------------------- |
+| Partitioner           | 작업을 여러 Partition으로 분할       |
+| StepExecutionSplitter | Partition별 StepExecution 생성 |
+| PartitionHandler      | Partition 실행 위임 및 결과 수집     |
+| Worker Step           | 실제 데이터 처리                   |
+
+여기서 주의해야 할 점이 있다.
+
+**PartitionStep을 사용한다고 해서 무조건 멀티스레드로 실행되는 것은 아니다.**
+
+실제 병렬 처리 여부는 PartitionHandler 및 TaskExecutor 등의 설정에 따라 달라진다.
+
+로컬 멀티스레드 방식으로 구성할 수도 있고 원격 Worker를 이용한 분산 처리 방식으로 구성할 수도 있다.
+
+PartitionStep은 대용량 배치 처리 시간을 줄이기 위한 확장 방법으로 활용할 수 있다.
+
+다만 Partition 사이의 데이터 처리 범위가 중복되지 않도록 설계해야 한다.
+
+---
+
+### JobStep
+
+`JobStep`은 Step 안에서 다른 Job을 실행하도록 지원하는 구현체다.
+
+일반적으로 Job은 여러 Step을 포함한다.
+
+하지만 JobStep을 사용하면 다음과 같은 구조도 구성할 수 있다.
+
+```text
+ParentJob
+    │
+    ├── Step 1
+    │
+    ├── JobStep
+    │      │
+    │      ▼
+    │   ChildJob
+    │      │
+    │      ├── ChildStep 1
+    │      └── ChildStep 2
+    │
+    └── Step 3
+```
+
+즉 부모 Job이 실행되고 그 안의 JobStep이 다시 다른 Job을 실행하는 구조다.
+
+JobStep은 내부적으로 JobLauncher를 이용해 하위 Job을 실행한다.
+
+이 구조는 여러 Job 사이의 의존성을 구성하거나 기존 Job을 다른 배치 작업에서 재사용할 때 활용할 수 있다.
+
+예를 들어 정산 데이터를 생성하는 Job과 정산 결과를 검증하는 Job이 있다고 생각해보자.
+
+```text
+SettlementJob
+
+ValidationJob
+```
+
+두 Job은 독립적으로 실행할 수도 있다.
+
+하지만 특정 운영 작업에서는 정산 Job이 완료된 후 검증 Job을 실행해야 할 수 있다.
+
+이러한 경우 JobStep을 이용해 다른 Job을 하나의 실행 단계로 포함하는 구조를 고려할 수 있다.
+
+Spring Batch에서는 `StepBuilder`의 `job()` API를 이용해 JobStep을 구성할 수 있다.
+
+개념적인 설정 흐름은 다음과 같다.
+
+```java
+new StepBuilder("childJobStep", jobRepository)
+        .job(childJob)
+        .launcher(jobLauncher)
+        .build();
+```
+
+여기서 중요한 설정은 다음이다.
+
+```java
+.job(childJob)
+```
+
+Step 안에서 실행할 하위 Job을 지정한다.
+
+그리고 다음 설정을 이용해 해당 Job을 실행할 JobLauncher를 전달한다.
+
+```java
+.launcher(jobLauncher)
+```
+
+JobStep은 Job을 실행하는 Step이므로 일반적인 TaskletStep과 실행 구조가 다르다.
+
+---
+
+### FlowStep
+
+`FlowStep`은 Step 안에서 Flow를 실행하도록 지원하는 구현체다.
+
+Flow는 여러 Step이나 실행 상태의 전이 관계를 하나의 흐름으로 정의한 객체다.
+
+예를 들어 다음과 같은 실행 흐름이 있다고 생각해보자.
+
+```text
+데이터 검증
+      │
+      ▼
+검증 결과 확인
+      │
+      ├── 성공 → 데이터 저장
+      │
+      └── 실패 → 오류 처리
+```
+
+이러한 조건부 실행 흐름을 Flow로 구성할 수 있다.
+
+FlowStep은 해당 Flow를 하나의 Step 안에서 실행하도록 한다.
+
+```text
+ParentJob
+    │
+    ├── Step 1
+    │
+    ├── FlowStep
+    │      │
+    │      └── Flow
+    │            │
+    │            ├── Step A
+    │            └── Step B
+    │
+    └── Step 3
+```
+
+Spring Batch에서는 다음과 같이 FlowStep을 구성할 수 있다.
+
+```java
+new StepBuilder("flowStep", jobRepository)
+        .flow(myFlow)
+        .build();
+```
+
+여기서 다음 설정을 사용한다.
+
+```java
+.flow(myFlow)
+```
+
+Step에서 실행할 Flow를 지정한다.
+
+그리고 `build()`를 호출하면 FlowStep이 생성된다.
+
+이처럼 JobStep과 FlowStep은 각각 Step 내부에서 Job 또는 Flow를 실행하도록 지원한다.
+
+---
+
+### StepBuilder를 이용한 구현체 생성
+
+지금까지 네 가지 Step 구현체를 살펴봤다.
+
+Spring Batch에서는 `StepBuilder`를 이용해 이러한 Step을 생성할 수 있다.
+
+다만 어떤 API를 호출하는지에 따라 최종적으로 생성되는 Step 구현체가 달라진다.
+
+Spring Batch 5.2 기준으로 정리하면 다음과 같다.
+
+| StepBuilder API | Builder              | 최종 Step 구현체   |
+| --------------- | -------------------- | ------------- |
+| `tasklet()`     | TaskletStepBuilder   | TaskletStep   |
+| `chunk()`       | SimpleStepBuilder    | TaskletStep   |
+| `partitioner()` | PartitionStepBuilder | PartitionStep |
+| `job()`         | JobStepBuilder       | JobStep       |
+| `flow()`        | FlowStepBuilder      | FlowStep      |
+
+여기서 특히 주목할 부분은 `tasklet()`과 `chunk()`다.
+
+두 API는 서로 다른 Builder를 사용하지만 최종적으로 모두 TaskletStep을 생성한다.
+
+차이는 내부적으로 실행되는 Tasklet의 구현 방식에 있다.
+
+반면 PartitionStep, JobStep, FlowStep은 각각 별도의 Step 구현체를 생성한다.
+
+전체 구조는 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["StepBuilder"]
+
+    B["tasklet()"]
+    C["chunk()"]
+    D["partitioner()"]
+    E["job()"]
+    F["flow()"]
+
+    G["TaskletStepBuilder"]
+    H["SimpleStepBuilder"]
+    I["PartitionStepBuilder"]
+    J["JobStepBuilder"]
+    K["FlowStepBuilder"]
+
+    L["TaskletStep"]
+    M["PartitionStep"]
+    N["JobStep"]
+    O["FlowStep"]
+
+    A --> B
+    A --> C
+    A --> D
+    A --> E
+    A --> F
+
+    B --> G
+    C --> H
+    D --> I
+    E --> J
+    F --> K
+
+    G --> L
+    H --> L
+    I --> M
+    J --> N
+    K --> O
+```
+
+이 구조를 이해하면 StepBuilder를 통해 작성한 설정이 어떤 내부 객체를 생성하는지 파악할 수 있다.
+
+---
+
+### Spring Batch 4와 5의 Step 생성 방식 차이
+
+Spring Batch 4 기반 프로젝트에서는 다음 클래스를 많이 사용했다.
+
+```java
+StepBuilderFactory
+```
+
+예를 들어 다음과 같은 방식이다.
+
+```java
+stepBuilderFactory.get("step1")
+        .tasklet(tasklet)
+        .build();
+```
+
+하지만 Spring Batch 5에서는 StepBuilderFactory 대신 StepBuilder를 직접 사용하는 방식이 권장된다.
+
+```java
+new StepBuilder("step1", jobRepository)
+        .tasklet(tasklet, transactionManager)
+        .build();
+```
+
+두 코드의 목적은 동일하다.
+
+Step을 생성하고 Tasklet을 설정하는 것이다.
+
+하지만 Spring Batch 5에서는 JobRepository와 TransactionManager를 명시적으로 전달하는 방식을 사용한다.
+
+```java
+new StepBuilder("step1", jobRepository)
+```
+
+이 코드는 StepBuilder를 생성한다.
+
+그리고 다음 부분에서 Tasklet을 설정한다.
+
+```java
+.tasklet(tasklet, transactionManager)
+```
+
+최종적으로 `build()`를 호출하여 Step 객체를 생성한다.
+
+```java
+.build();
+```
+
+Spring Batch 5.2를 사용하는 프로젝트라면 이러한 API 구성을 기준으로 이해하면 된다.
+
+---
+
+### 실제 TaskletStep 생성하기
+
+이번에는 Step이 생성되고 실행되는 과정을 실제 코드로 확인해보자.
+
+다음과 같은 Job을 구성한다.
+
+```text
+stepDomainJob
+       │
+       ├── step1
+       │      │
+       │      └── CustomTasklet
+       │
+       └── step2
+              │
+              └── Lambda Tasklet
+```
+
+첫 번째 Step은 별도의 Tasklet 구현 클래스를 사용한다.
+
+두 번째 Step은 람다 표현식을 이용해 Tasklet을 구성한다.
+
+이를 통해 두 가지 방식 모두 TaskletStep을 생성한다는 사실을 확인할 수 있다.
+
+---
+
+### CustomTasklet 구현하기
+
+먼저 Tasklet 인터페이스를 구현하는 클래스를 작성한다.
+
+`CustomTasklet.java`
+
+```java
+package com.example.batch;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.batch.core.StepContribution;
+import org.springframework.batch.core.scope.context.ChunkContext;
+import org.springframework.batch.core.step.tasklet.Tasklet;
+import org.springframework.batch.repeat.RepeatStatus;
+
+import org.springframework.stereotype.Component;
+
+@Component
+public class CustomTasklet implements Tasklet {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(CustomTasklet.class);
+
+    @Override
+    public RepeatStatus execute(
+            StepContribution contribution,
+            ChunkContext chunkContext
+    ) throws Exception {
+
+        log.info("CustomTasklet 실행");
+
+        return RepeatStatus.FINISHED;
+    }
+}
+```
+
+이 클래스는 Tasklet 인터페이스를 구현한다.
+
+실제 작업은 `execute()` 메서드에 작성한다.
+
+```java
+@Override
+public RepeatStatus execute(
+        StepContribution contribution,
+        ChunkContext chunkContext
+) throws Exception {
+
+    log.info("CustomTasklet 실행");
+
+    return RepeatStatus.FINISHED;
+}
+```
+
+이번에는 단순히 로그를 출력한다.
+
+그리고 다음 값을 반환한다.
+
+```java
+return RepeatStatus.FINISHED;
+```
+
+이 값은 현재 Tasklet의 반복 실행을 종료하겠다는 의미다.
+
+TaskletStep은 Tasklet의 반환값에 따라 반복 실행 여부를 결정할 수 있다.
+
+참고로 `@Component`를 선언했기 때문에 CustomTasklet은 Spring Bean으로 등록된다.
+
+이후 Step 설정에서 의존성 주입을 받아 사용할 수 있다.
+
+---
+
+### StepConfiguration 전체 코드
+
+이제 Job과 두 개의 Step을 구성한다.
+
+`StepConfiguration.java`
+
+```java
+package com.example.batch;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.Step;
+
+import org.springframework.batch.core.job.builder.JobBuilder;
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.step.builder.StepBuilder;
+
+import org.springframework.batch.repeat.RepeatStatus;
+
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import org.springframework.transaction.PlatformTransactionManager;
+
+@Configuration
+public class StepConfiguration {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(StepConfiguration.class);
+
+    @Bean
+    public Job stepDomainJob(
+            JobRepository jobRepository,
+            @Qualifier("step1") Step step1,
+            @Qualifier("step2") Step step2
+    ) {
+        return new JobBuilder("stepDomainJob", jobRepository)
+                .start(step1)
+                .next(step2)
+                .build();
+    }
+
+    @Bean
+    public Step step1(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager,
+            CustomTasklet customTasklet
+    ) {
+        return new StepBuilder("step1", jobRepository)
+                .tasklet(
+                        customTasklet,
+                        transactionManager
+                )
+                .build();
+    }
+
+    @Bean
+    public Step step2(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+        return new StepBuilder("step2", jobRepository)
+                .tasklet((contribution, chunkContext) -> {
+
+                    log.info("Step 2 Tasklet 실행");
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+}
+```
+
+이 코드는 하나의 Job과 두 개의 Step을 생성한다.
+
+Job은 다음과 같다.
+
+```java
+return new JobBuilder("stepDomainJob", jobRepository)
+        .start(step1)
+        .next(step2)
+        .build();
+```
+
+첫 번째 Step은 다음과 같다.
+
+```java
+return new StepBuilder("step1", jobRepository)
+        .tasklet(
+                customTasklet,
+                transactionManager
+        )
+        .build();
+```
+
+두 번째 Step은 다음과 같다.
+
+```java
+return new StepBuilder("step2", jobRepository)
+        .tasklet((contribution, chunkContext) -> {
+
+            log.info("Step 2 Tasklet 실행");
+
+            return RepeatStatus.FINISHED;
+
+        }, transactionManager)
+        .build();
+```
+
+두 Step 모두 `tasklet()` API를 사용하므로 TaskletStep으로 생성된다.
+
+다만 첫 번째 Step은 별도의 Tasklet 클래스를 사용하고, 두 번째 Step은 람다 표현식을 사용한다.
+
+---
+
+### Spring Boot 실행 설정
+
+기존 Spring Boot 프로젝트에 다음 설정을 추가한다.
+
+`application.yml`
+
+```yaml
+spring:
+  application:
+    name: spring-batch-demo
+
+  batch:
+    job:
+      enabled: true
+      name: stepDomainJob
+
+    jdbc:
+      initialize-schema: embedded
+
+  datasource:
+    url: jdbc:h2:mem:batchdb;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+```
+
+이번에는 H2 메모리 데이터베이스를 사용한다.
+
+그리고 다음 설정을 통해 실행할 Job을 선택한다.
+
+```yaml
+spring:
+  batch:
+    job:
+      name: stepDomainJob
+```
+
+기존에 다른 Job이 함께 등록되어 있다면 실행할 Job을 명시적으로 선택하는 것이 좋다.
+
+또한 이전 예제에서 수동 실행을 위해 별도의 ApplicationRunner를 등록했다면, 해당 Runner가 함께 실행되지 않도록 Profile 등을 이용해 분리해야 한다.
+
+Spring Boot 3.4의 일반적인 Batch 자동 설정을 사용한다면 별도로 `@EnableBatchProcessing`을 선언할 필요는 없다.
+
+---
+
+### 애플리케이션 실행하기
+
+프로젝트 루트에서 다음 명령어를 실행한다.
+
+```bash
+./mvnw spring-boot:run
+```
+
+애플리케이션이 시작되면 Spring Boot가 등록된 Job을 실행한다.
+
+정상적으로 실행되면 다음과 같은 흐름을 확인할 수 있다.
+
+```text
+Job: [SimpleJob: [name=stepDomainJob]]
+launched with the following parameters: [{}]
+
+Executing step: [step1]
+
+CustomTasklet 실행
+
+Step: [step1] executed
+
+Executing step: [step2]
+
+Step 2 Tasklet 실행
+
+Step: [step2] executed
+
+Job: [SimpleJob: [name=stepDomainJob]]
+completed with status: [COMPLETED]
+```
+
+위 로그는 핵심 내용을 중심으로 정리한 예시다.
+
+실제 로그에는 시간, 스레드 이름, 로거 이름 등이 함께 출력된다.
+
+여기서 중요한 사실은 Job이 두 Step을 순서대로 실행했다는 점이다.
+
+먼저 Step 1이 실행되었다.
+
+그리고 Step 1이 가진 CustomTasklet의 `execute()` 메서드가 호출되었다.
+
+Step 1이 완료되면 Step 2가 실행되었다.
+
+Step 2에서는 람다 표현식으로 구현한 Tasklet이 실행되었다.
+
+이처럼 Spring Batch는 Job에 정의한 실행 순서에 따라 각 Step을 호출한다.
+
+---
+
+### Step 객체는 어떻게 생성될까?
+
+이번에는 Step이 생성되는 내부 과정을 살펴보자.
+
+앞에서 다음 코드를 작성했다.
+
+```java
+new StepBuilder("step1", jobRepository)
+        .tasklet(
+                customTasklet,
+                transactionManager
+        )
+        .build();
+```
+
+개발자는 StepBuilder를 사용해 비교적 간단하게 Step을 생성한다.
+
+하지만 내부에서는 여러 단계의 Builder가 함께 동작한다.
+
+#### 1. StepBuilder 생성
+
+가장 먼저 다음 코드가 실행된다.
+
+```java
+new StepBuilder("step1", jobRepository)
+```
+
+Step 이름과 JobRepository를 전달하여 Builder를 생성한다.
+
+Step 이름은 다음과 같다.
+
+```text
+step1
+```
+
+이 단계에서는 아직 최종적인 Step 객체가 생성되지 않았다.
+
+Step 생성에 필요한 기본 설정을 준비하는 과정이다.
+
+#### 2. tasklet() 호출
+
+다음으로 `tasklet()` 메서드를 호출한다.
+
+```java
+.tasklet(
+        customTasklet,
+        transactionManager
+)
+```
+
+이 메서드는 Tasklet 기반 Step을 구성하기 위한 `TaskletStepBuilder`를 반환한다.
+
+그리고 개발자가 전달한 CustomTasklet을 해당 Builder에서 관리한다.
+
+개념적으로 다음과 같다.
+
+```text
+TaskletStepBuilder
+       │
+       ├── name = step1
+       │
+       ├── jobRepository
+       │
+       ├── transactionManager
+       │
+       └── tasklet
+              │
+              └── CustomTasklet
+```
+
+여기서 중요한 부분은 전달한 Tasklet 객체가 Builder에 설정된다는 것이다.
+
+#### 3. build() 호출
+
+마지막으로 `build()`를 호출한다.
+
+```java
+.build();
+```
+
+이때 TaskletStepBuilder는 TaskletStep 객체를 생성하고 필요한 속성을 설정한다.
+
+개념적으로 다음과 같은 과정이다.
+
+```text
+TaskletStepBuilder
+       │
+       ▼
+TaskletStep 생성
+       │
+       ├── Step 이름 설정
+       │
+       ├── JobRepository 설정
+       │
+       ├── TransactionManager 설정
+       │
+       └── Tasklet 설정
+              │
+              └── CustomTasklet
+```
+
+최종적으로 TaskletStep은 개발자가 지정한 CustomTasklet을 참조하게 된다.
+
+따라서 **TaskletStep이 실제로 실행될 때 어떤 Tasklet을 호출해야 하는지 알고 있는 구조**가 된다.
+
+---
+
+### TaskletStep과 Tasklet의 객체 관계
+
+지금까지 살펴본 Step 생성 과정을 객체 관계로 표현하면 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["StepConfiguration"]
+    B["StepBuilder"]
+    C["TaskletStepBuilder"]
+    D["TaskletStep"]
+    E["CustomTasklet"]
+
+    A --> B
+    B --> C
+    C -->|"build()"| D
+    C -->|"tasklet 등록"| E
+    D -->|"Tasklet 참조"| E
+```
+
+여기서 StepConfiguration은 객체를 생성하기 위한 설정 클래스다.
+
+StepBuilder는 Step을 구성하기 위한 진입점이다.
+
+TaskletStepBuilder는 TaskletStep을 생성하는 구체적인 Builder다.
+
+TaskletStep은 실제 Step 구현체다.
+
+CustomTasklet은 개발자가 구현한 비즈니스 로직을 가지고 있다.
+
+이러한 구조를 이해하면 Step 설정 코드가 실제로 어떤 객체 관계를 만드는지 알 수 있다.
+
+---
+
+### Job에서 Step을 실행하는 과정
+
+이번에는 생성된 Step이 실제로 실행되는 과정을 살펴보자.
+
+앞에서 작성한 Job 설정은 다음과 같다.
+
+```java
+new JobBuilder("stepDomainJob", jobRepository)
+        .start(step1)
+        .next(step2)
+        .build();
+```
+
+이 코드는 SimpleJob을 구성한다.
+
+SimpleJob은 등록된 Step을 순서대로 실행한다.
+
+개념적으로 다음과 같은 구조다.
+
+```text
+SimpleJob
+     │
+     └── Steps
+           │
+           ├── TaskletStep 1
+           │
+           └── TaskletStep 2
+```
+
+여기서 주의할 점은 SimpleJob이 Tasklet 자체를 직접 관리하는 것이 아니라 Step을 관리한다는 사실이다.
+
+각 TaskletStep이 자신의 Tasklet을 참조한다.
+
+```text
+SimpleJob
+     │
+     ├── TaskletStep 1
+     │       │
+     │       └── CustomTasklet
+     │
+     └── TaskletStep 2
+             │
+             └── Lambda Tasklet
+```
+
+이제 실제 실행 흐름을 살펴보자.
+
+---
+
+### JobLauncher에서 Step까지의 실행 흐름
+
+Spring Batch에서 Job을 실행하는 대표적인 인터페이스는 `JobLauncher`다.
+
+Spring Batch 5.2에서는 `TaskExecutorJobLauncher`를 대표적인 구현체로 사용할 수 있다.
+
+TaskExecutorJobLauncher는 설정된 TaskExecutor에 따라 동기 또는 비동기로 Job을 실행할 수 있다.
+
+기본적인 동기 실행 구성에서는 호출한 스레드에서 Job이 실행된다.
+
+이때 전체 흐름은 다음과 같다.
+
+```mermaid
+sequenceDiagram
+    participant Runner as Spring Boot Runner
+    participant Launcher as JobLauncher
+    participant Job as SimpleJob
+    participant Handler as StepHandler
+    participant Step as TaskletStep
+    participant Tasklet as CustomTasklet
+
+    Runner->>Launcher: run(Job, JobParameters)
+
+    Launcher->>Job: execute(JobExecution)
+
+    Job->>Handler: Step 실행 요청
+
+    Handler->>Step: execute(StepExecution)
+
+    Step->>Tasklet: execute(contribution, chunkContext)
+
+    Tasklet-->>Step: RepeatStatus.FINISHED
+
+    Step-->>Handler: Step 실행 완료
+
+    Handler-->>Job: StepExecution
+
+    Job-->>Launcher: Job 실행 완료
+```
+
+이 흐름에서 각 구성 요소의 책임은 다음과 같다.
+
+| 구성 요소       | 역할                    |
+| ----------- | --------------------- |
+| JobLauncher | Job 실행 요청             |
+| SimpleJob   | Step 실행 순서 관리         |
+| StepHandler | Step 실행 처리 및 실행 이력 관리 |
+| TaskletStep | Tasklet 실행 관리         |
+| Tasklet     | 실제 비즈니스 로직 수행         |
+
+JobLauncher는 Job의 실행을 시작한다.
+
+SimpleJob은 등록된 Step의 실행 순서를 관리한다.
+
+StepHandler는 Step 실행을 처리한다.
+
+TaskletStep은 자신에게 등록된 Tasklet을 호출한다.
+
+그리고 실제 비즈니스 로직은 Tasklet의 `execute()` 메서드에서 수행된다.
+
+---
+
+### AbstractStep.execute()의 역할
+
+Step 실행 과정에서 중요한 클래스가 있다.
+
+바로 `AbstractStep`이다.
+
+앞에서 AbstractStep은 Step 인터페이스를 구현한 추상 클래스라고 설명했다.
+
+AbstractStep은 Step을 실행할 때 필요한 공통 처리를 담당한다.
+
+실제 Step 실행은 다음 메서드에서 시작된다.
+
+```java
+execute(StepExecution stepExecution)
+```
+
+이 메서드는 현재 Step의 실행 정보를 전달받는다.
+
+그리고 실행 상태 변경, Listener 호출, 리소스 초기화 등 공통적인 처리를 수행한다.
+
+이후 실제 비즈니스 로직을 실행하기 위한 메서드를 호출한다.
+
+```java
+doExecute(stepExecution);
+```
+
+`doExecute()`는 AbstractStep에서 추상 메서드로 정의된다.
+
+따라서 구체적인 Step 구현체가 해당 메서드를 구현해야 한다.
+
+개념적으로 다음과 같은 구조다.
+
+```java
+public abstract class AbstractStep implements Step {
+
+    @Override
+    public final void execute(
+            StepExecution stepExecution
+    ) {
+
+        // Step 실행 전 공통 처리
+        // 상태 관리
+        // Listener 호출
+
+        doExecute(stepExecution);
+
+        // Step 실행 후 공통 처리
+        // 실행 상태 저장
+    }
+
+    protected abstract void doExecute(
+            StepExecution stepExecution
+    ) throws Exception;
+}
+```
+
+위 코드는 구조를 이해하기 위한 단순화된 예제다.
+
+실제 Spring Batch에서는 예외 처리와 리소스 관리 등 추가적인 로직이 존재한다.
+
+핵심은 `execute()`와 `doExecute()`의 역할이 분리되어 있다는 점이다.
+
+**AbstractStep은 Step 실행의 공통 흐름을 관리하고, 하위 구현체는 실제 작업 수행 방법을 결정한다.**
+
+이러한 설계 방식은 템플릿 메서드 패턴으로 이해할 수 있다.
+
+---
+
+### TaskletStep.doExecute()의 역할
+
+이번 예제에서 실제 Step 구현체는 TaskletStep이다.
+
+따라서 AbstractStep이 `doExecute()`를 호출하면 TaskletStep의 구현이 실행된다.
+
+```text
+AbstractStep.execute()
+        │
+        ▼
+TaskletStep.doExecute()
+```
+
+TaskletStep은 내부적으로 Tasklet을 반복 실행할 수 있는 구조를 가지고 있다.
+
+예를 들어 다음과 같은 Tasklet이 있다고 생각해보자.
+
+```java
+@Override
+public RepeatStatus execute(
+        StepContribution contribution,
+        ChunkContext chunkContext
+) throws Exception {
+
+    System.out.println("Tasklet 실행");
+
+    return RepeatStatus.FINISHED;
+}
+```
+
+TaskletStep은 이 메서드를 실행한다.
+
+반환값이 `FINISHED`이므로 현재 Tasklet의 반복을 종료한다.
+
+반면 `CONTINUABLE`을 반환한다면 조건에 따라 Tasklet을 다시 실행할 수 있다.
+
+```text
+TaskletStep
+      │
+      ▼
+Tasklet.execute()
+      │
+      ▼
+RepeatStatus 확인
+      │
+      ├── FINISHED
+      │       └── 반복 종료
+      │
+      └── CONTINUABLE
+              └── Tasklet 재실행
+```
+
+이러한 반복 처리는 Spring Batch의 Repeat 관련 구성 요소를 통해 수행된다.
+
+따라서 TaskletStep은 단순히 Tasklet의 `execute()` 메서드를 한 번 호출하는 역할만 담당하는 것이 아니다.
+
+반복 처리와 트랜잭션 경계를 함께 관리한다.
+
+---
+
+### TaskletStep과 트랜잭션
+
+TaskletStep은 Tasklet 실행에 트랜잭션을 적용할 수 있다.
+
+Spring Batch 5.2에서는 다음과 같이 TransactionManager를 전달한다.
+
+```java
+.tasklet(
+        customTasklet,
+        transactionManager
+)
+```
+
+TaskletStep은 일반적으로 Tasklet의 한 번의 실행을 트랜잭션으로 감싼다.
+
+예를 들어 다음과 같은 구조다.
+
+```text
+TaskletStep
+      │
+      ▼
+트랜잭션 시작
+      │
+      ▼
+Tasklet.execute()
+      │
+      ▼
+비즈니스 로직 수행
+      │
+      ▼
+RepeatStatus.FINISHED
+      │
+      ▼
+트랜잭션 커밋
+```
+
+만약 Tasklet 내부에서 예외가 발생하면 해당 트랜잭션을 롤백할 수 있다.
+
+다만 트랜잭션이 보호할 수 있는 범위는 TransactionManager와 사용하는 리소스에 따라 달라진다.
+
+예를 들어 JDBC 트랜잭션을 이용해 데이터베이스를 수정하는 경우에는 롤백을 적용할 수 있다.
+
+하지만 외부 HTTP API 요청이나 이미 전송된 메시지 같은 작업은 데이터베이스 트랜잭션만으로 되돌릴 수 없다.
+
+따라서 외부 시스템과 연동하는 배치에서는 트랜잭션뿐 아니라 멱등성도 함께 고려해야 한다.
+
+---
+
+### StepExecution은 어떤 역할을 할까?
+
+Step이 실제로 실행될 때는 `StepExecution`이라는 객체가 사용된다.
+
+Step은 작업의 정의와 실행 구조를 가지고 있다.
+
+반면 StepExecution은 특정 Step의 개별 실행 정보를 관리한다.
+
+예를 들어 다음과 같은 Step이 있다고 생각해보자.
+
+```text
+Step Name: calculateStep
+```
+
+이 Step이 처음 실행되면 StepExecution이 생성된다.
+
+```text
+calculateStep
+      │
+      ▼
+StepExecution 1
+```
+
+이후 실패한 Job을 재시작하면서 같은 Step이 다시 실행되면 새로운 StepExecution이 생성될 수 있다.
+
+```text
+calculateStep
+      │
+      ├── StepExecution 1
+      │       └── FAILED
+      │
+      └── StepExecution 2
+              └── COMPLETED
+```
+
+StepExecution에는 다음과 같은 정보가 포함된다.
+
+| 정보               | 설명                       |
+| ---------------- | ------------------------ |
+| Step 이름          | 실행한 Step의 이름             |
+| JobExecution     | 현재 Step이 속한 JobExecution |
+| BatchStatus      | Step 실행 상태               |
+| ExitStatus       | Step 종료 결과               |
+| StartTime        | Step 시작 시간               |
+| EndTime          | Step 종료 시간               |
+| CommitCount      | 커밋 횟수                    |
+| RollbackCount    | 롤백 횟수                    |
+| ReadCount        | 읽은 Item 수                |
+| WriteCount       | 쓴 Item 수                 |
+| ExecutionContext | Step 실행 상태 및 재시작 정보      |
+
+Spring Batch는 이러한 정보를 JobRepository를 통해 관리한다.
+
+JDBC 기반 JobRepository를 사용하는 경우 관련 정보는 `BATCH_STEP_EXECUTION` 테이블에 저장된다.
+
+따라서 Step이 실패했을 때 어떤 단계에서 문제가 발생했는지 확인할 수 있다.
+
+---
+
+### Step과 StepExecution의 관계
+
+두 객체의 역할을 다시 비교해보자.
+
+| 구분    | Step               | StepExecution       |
+| ----- | ------------------ | ------------------- |
+| 의미    | 실행할 작업의 정의         | 개별 실행 시도            |
+| 생성 시점 | 애플리케이션 설정 과정       | Step 실행 과정          |
+| 주요 목적 | 작업 구조 및 실행 방식 정의   | 실행 상태 및 결과 관리       |
+| 대표 속성 | 이름, Tasklet, 실행 제한 | 상태, 시간, 처리 건수       |
+| 재시작 시 | 기존 Step 정의 사용      | 새로운 실행 정보 생성 가능     |
+| 저장 대상 | 일반적으로 Spring Bean  | JobRepository 메타데이터 |
+
+특히 중요한 것은 **Step Bean이 실행될 때마다 새롭게 생성되는 것은 아니라는 점**이다.
+
+일반적인 Spring 설정에서 Step은 Singleton Bean으로 생성될 수 있다.
+
+하지만 실제 실행을 나타내는 StepExecution은 실행 시도에 따라 생성된다.
+
+따라서 Step 내부에 실행마다 변경되는 상태를 Singleton 필드로 저장하는 방식은 주의해야 한다.
+
+여러 JobExecution에서 동일한 Step Bean이 사용될 수 있기 때문이다.
+
+실행별 상태가 필요하다면 StepExecutionContext나 StepScope 등을 활용하는 것이 적절하다.
+
+---
+
+### 디버깅으로 Step 생성 및 실행 과정 확인하기
+
+Spring Batch의 내부 구조를 이해할 때는 실제 호출 흐름을 디버깅으로 확인하는 것도 도움이 된다.
+
+이번 예제에서는 다음 과정을 확인하면 된다.
+
+#### Step 객체 생성 과정
+
+먼저 StepBuilder가 호출된다.
+
+```java
+new StepBuilder("step1", jobRepository)
+```
+
+이후 Tasklet을 설정한다.
+
+```java
+.tasklet(customTasklet, transactionManager)
+```
+
+그리고 `build()`를 호출한다.
+
+```java
+.build();
+```
+
+이 과정에서 확인하면 좋은 클래스는 다음과 같다.
+
+| 클래스                | 확인할 내용             |
+| ------------------ | ------------------ |
+| StepBuilder        | Step 생성의 시작점       |
+| TaskletStepBuilder | Tasklet 기반 Step 구성 |
+| TaskletStep        | 실제 Step 구현체 생성     |
+| CustomTasklet      | Step에 등록되는 Tasklet |
+
+#### Step 실행 과정
+
+Step 객체 생성이 완료된 이후에는 Job 실행 흐름을 확인한다.
+
+대표적인 호출 순서는 다음과 같다.
+
+```text
+JobLauncher
+      │
+      ▼
+AbstractJob.execute()
+      │
+      ▼
+SimpleJob.doExecute()
+      │
+      ▼
+StepHandler.handleStep()
+      │
+      ▼
+AbstractStep.execute()
+      │
+      ▼
+TaskletStep.doExecute()
+      │
+      ▼
+Tasklet.execute()
+```
+
+각 메서드에 브레이크포인트를 설정하면 Step이 실제로 어떤 과정을 거쳐 실행되는지 확인할 수 있다.
+
+특히 다음 두 부분을 구분해서 살펴보는 것이 좋다.
+
+첫 번째는 Step 객체가 생성되는 과정이다.
+
+두 번째는 이미 생성된 Step 객체가 실행되는 과정이다.
+
+두 과정은 서로 다르다.
+
+---
+
+### Step 실행 구조와 객체 생성 구조의 차이
+
+Spring Batch를 이해할 때 객체를 생성하는 흐름과 실제 작업을 실행하는 흐름을 구분하면 내부 구조를 더 명확하게 파악할 수 있다.
+
+#### 객체 생성 흐름
+
+```mermaid
+flowchart TD
+    A["Spring Configuration"]
+    B["StepBuilder"]
+    C["TaskletStepBuilder"]
+    D["TaskletStep"]
+    E["Tasklet"]
+    F["SimpleJob"]
+
+    A --> B
+    B --> C
+    C --> D
+
+    D --> E
+    A --> F
+
+    F -->|"Step 등록"| D
+```
+
+먼저 StepBuilder를 통해 TaskletStep이 생성된다.
+
+이때 TaskletStep에는 Tasklet이 설정된다.
+
+그리고 생성된 TaskletStep을 SimpleJob에 등록한다.
+
+이 과정은 애플리케이션의 Bean 구성 과정에서 이루어진다.
+
+#### 실제 실행 흐름
+
+```mermaid
+flowchart TD
+    A["JobLauncher"]
+    B["SimpleJob"]
+    C["StepHandler"]
+    D["TaskletStep"]
+    E["CustomTasklet"]
+    F["비즈니스 로직 실행"]
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+```
+
+실제 Job이 실행되면 SimpleJob은 자신에게 등록된 Step을 실행한다.
+
+StepHandler는 Step 실행을 처리한다.
+
+TaskletStep은 자신에게 설정된 Tasklet을 호출한다.
+
+마지막으로 Tasklet의 비즈니스 로직이 수행된다.
+
+이처럼 객체 생성과 실행의 책임을 분리하는 것은 Spring Batch 아키텍처의 중요한 특징이다.
+
+---
+
+### 실무에서 Step을 설계할 때 고려할 점
+
+Step은 Job의 세부 실행 단위이므로 어떻게 분리하고 구성하는지가 중요하다.
+
+실제 운영 환경에서는 Step의 개수를 무조건 늘리는 것보다 작업의 책임과 실행 경계를 명확하게 정의하는 것이 좋다.
+
+#### Step은 독립적인 실행 책임을 기준으로 구분한다
+
+예를 들어 다음과 같은 정산 배치가 있다고 생각해보자.
+
+```text
+정산 대상 조회
+      │
+      ▼
+수수료 계산
+      │
+      ▼
+세금 계산
+      │
+      ▼
+정산 금액 계산
+      │
+      ▼
+정산 결과 저장
+```
+
+모든 처리 단계를 별도의 Step으로 분리해야 하는 것은 아니다.
+
+수수료 계산, 세금 계산, 정산 금액 계산이 하나의 트랜잭션 안에서 수행되어야 하는 작업이라면 하나의 Step에서 처리하는 편이 적절할 수 있다.
+
+반면 다음과 같이 서로 다른 실행 책임을 가진 작업은 Step을 분리하는 것이 좋다.
+
+```text
+Step 1: 정산 대상 확정
+        │
+        ▼
+Step 2: 정산 데이터 생성
+        │
+        ▼
+Step 3: 정산 결과 검증
+        │
+        ▼
+Step 4: 외부 시스템 전송
+```
+
+이렇게 분리하면 실패한 Step을 파악하기 쉽다.
+
+또한 재시작 시 이미 완료된 Step을 건너뛰는 구조를 활용할 수 있다.
+
+따라서 Step을 분리할 때는 **독립적인 트랜잭션과 실행 상태 관리가 필요한지**를 기준으로 판단하는 것이 좋다.
+
+#### Step의 재시작 가능성을 고려한다
+
+Step이 실패하면 Job의 재시작 과정에서 다시 실행될 수 있다.
+
+예를 들어 다음과 같은 작업이 있다고 생각해보자.
+
+```text
+Step 1: 정산 데이터 생성
+Step 2: 외부 API 호출
+```
+
+Step 1은 정상적으로 완료되었다.
+
+하지만 Step 2에서 네트워크 타임아웃이 발생했다.
+
+이 경우 Job을 재시작하면 Step 1은 건너뛰고 Step 2가 다시 실행될 수 있다.
+
+하지만 외부 API 요청이 이미 처리되었는지 확인하지 않고 재시도하면 중복 요청이 발생할 수 있다.
+
+따라서 Step의 재시작 가능성을 설계할 때는 멱등성 있는 처리 구조도 함께 고려해야 한다.
+
+#### StepExecutionContext를 활용한다
+
+대량 데이터를 처리하는 Step에서는 재시작 시 마지막 처리 위치를 복원해야 할 수 있다.
+
+예를 들어 100만 건의 데이터를 처리하는 배치가 있다고 생각해보자.
+
+```text
+1건
+ │
+ ▼
+100,000건
+ │
+ ▼
+200,000건
+ │
+ ▼
+300,000건
+ │
+ ▼
+장애 발생
+```
+
+이 경우 어디까지 처리했는지 기록할 수 있어야 한다.
+
+Spring Batch는 이를 위해 ExecutionContext를 제공한다.
+
+```java
+ExecutionContext context =
+        contribution
+                .getStepExecution()
+                .getExecutionContext();
+
+context.putLong(
+        "lastProcessedId",
+        300000L
+);
+```
+
+이렇게 실행 상태를 저장할 수 있다.
+
+다만 값을 저장했다고 해서 Spring Batch가 자동으로 해당 ID부터 다시 처리하는 것은 아니다.
+
+재시작 시 어떤 데이터를 읽을지는 Reader 등의 구현에 따라 달라진다.
+
+따라서 처리 위치의 저장과 복원, 데이터베이스 커밋 시점 등을 함께 고려해야 한다.
+
+---
+
+### 정리
+
+Spring Batch에서 Step은 Job을 구성하는 독립적인 실행 단계다.
+
+Job이 전체 배치 작업의 실행 흐름을 관리한다면 Step은 개별 작업을 수행하기 위한 구체적인 설정과 처리 로직을 관리한다.
+
+Spring Batch는 Step을 인터페이스로 정의하며, 공통 실행 기능을 제공하는 `AbstractStep`을 중심으로 여러 구현체를 제공한다.
+
+대표적인 구현체는 다음과 같다.
+
+| 구현체           | 역할                      |
+| ------------- | ----------------------- |
+| TaskletStep   | Tasklet 실행              |
+| PartitionStep | 작업을 Partition으로 분할하여 실행 |
+| JobStep       | Step 안에서 Job 실행         |
+| FlowStep      | Step 안에서 Flow 실행        |
+
+이 중 가장 기본적인 구현체는 TaskletStep이다.
+
+TaskletStep은 직접 구현한 Tasklet을 실행할 수도 있고, Chunk 기반 처리를 위한 ChunkOrientedTasklet을 실행할 수도 있다.
+
+즉 다음 두 방식 모두 TaskletStep을 생성한다.
+
+```java
+.tasklet(tasklet, transactionManager)
+```
+
+```java
+.<Input, Output>chunk(100, transactionManager)
+```
+
+차이는 내부적으로 실행되는 Tasklet의 종류에 있다.
+
+Spring Batch 5.2에서는 StepBuilder를 이용해 Step을 생성한다.
+
+Tasklet 기반 Step의 생성 흐름은 다음과 같다.
+
+```text
+StepBuilder
+     │
+     ▼
+TaskletStepBuilder
+     │
+     ▼
+TaskletStep 생성
+     │
+     ▼
+Tasklet 설정
+```
+
+생성된 Step은 Job에 등록된다.
+
+그리고 실제 Job 실행 시 다음 흐름으로 작업이 수행된다.
+
+```text
+JobLauncher
+      │
+      ▼
+SimpleJob
+      │
+      ▼
+StepHandler
+      │
+      ▼
+AbstractStep.execute()
+      │
+      ▼
+TaskletStep.doExecute()
+      │
+      ▼
+Tasklet.execute()
+      │
+      ▼
+비즈니스 로직 실행
+```
+
+이러한 구조를 통해 Spring Batch는 Job의 실행 흐름과 Step의 실제 처리 로직을 분리한다.
+
+또한 Step은 개별 실행 정보를 관리하기 위해 StepExecution을 사용한다.
+
+StepExecution에는 실행 상태, 시작 시간, 종료 시간, 처리 건수, 트랜잭션 정보 등이 기록된다.
+
+따라서 동일한 Step 정의가 여러 번 실행되더라도 각각의 실행 기록을 구분할 수 있다.
+
+실무에서는 Step을 단순히 코드를 나누는 단위로만 생각해서는 안 된다.
+
+**Step은 트랜잭션, 실행 상태, 실패 처리, 재시작 등을 관리하는 중요한 실행 경계**다.
+
+따라서 하나의 Step이 어떤 책임을 가져야 하는지, 실패했을 때 어떻게 재시작할지, 다른 Step과 어떤 데이터를 공유해야 하는지 등을 함께 고려해야 한다.
+
+결국 Spring Batch의 Step은 실제 비즈니스 로직을 실행하는 데 필요한 설정과 실행 제어 기능을 연결하는 핵심 도메인 객체다.
+
+#### 한 줄 요약
+
+> Spring Batch의 `Step`은 Job을 구성하는 독립적인 실행 단위이며, `AbstractStep`이 공통 실행 기능을 담당하고 `TaskletStep`, `PartitionStep`, `JobStep`, `FlowStep`이 각각 다른 처리 방식을 구현한다. 특히 TaskletStep은 사용자 정의 Tasklet과 ChunkOrientedTasklet을 실행할 수 있으며, Job에서 Step을 호출하면 `AbstractStep.execute()`와 `TaskletStep.doExecute()`를 거쳐 최종적으로 Tasklet의 비즈니스 로직이 실행된다.
