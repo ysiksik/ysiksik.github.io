@@ -137,6 +137,8 @@ menu:
                 url: /developer-yumi-spring-security-6/
               - title: Resilience4J
                 url: /developer-yumi-resilience4j/
+              - title: 스프링 시큐리티 JWT
+                url: /spring-security-jwt/
       - title: 스터디 랩
         url: /study-lab/
       - title: 스파르타

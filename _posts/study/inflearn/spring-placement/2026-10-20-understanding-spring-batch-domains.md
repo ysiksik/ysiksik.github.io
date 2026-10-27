@@ -10719,3 +10719,4550 @@ StepExecution에는 실행 상태, 시작 시간, 종료 시간, 처리 건수, 
 #### 한 줄 요약
 
 > Spring Batch의 `Step`은 Job을 구성하는 독립적인 실행 단위이며, `AbstractStep`이 공통 실행 기능을 담당하고 `TaskletStep`, `PartitionStep`, `JobStep`, `FlowStep`이 각각 다른 처리 방식을 구현한다. 특히 TaskletStep은 사용자 정의 Tasklet과 ChunkOrientedTasklet을 실행할 수 있으며, Job에서 Step을 호출하면 `AbstractStep.execute()`와 `TaskletStep.doExecute()`를 거쳐 최종적으로 Tasklet의 비즈니스 로직이 실행된다.
+
+## StepExecution
+
+### Spring Batch StepExecution 이해: 실행 상태 관리와 JobExecution 관계 및 재시작 원리
+
+Spring Batch에서 `Job`은 배치 작업 전체를 정의하는 객체이고, `Step`은 Job을 구성하는 개별 실행 단계다.
+
+예를 들어 다음과 같은 일별 정산 Job이 있다고 생각해보자.
+
+```text
+dailySettlementJob
+       │
+       ├── Step 1: 정산 대상 조회
+       │
+       ├── Step 2: 정산 데이터 생성
+       │
+       └── Step 3: 정산 결과 저장
+```
+
+Job이 실행되면 등록된 Step들이 순서대로 실행된다.
+
+그런데 실행 과정에서 다음과 같은 상황이 발생할 수 있다.
+
+```text
+Step 1 → COMPLETED
+
+Step 2 → FAILED
+
+Step 3 → 실행되지 않음
+```
+
+첫 번째 Step은 정상적으로 완료되었다.
+
+하지만 두 번째 Step에서 예외가 발생했기 때문에 세 번째 Step은 실행되지 않았다.
+
+이때 Spring Batch는 어떤 Step이 성공했고, 어떤 Step이 실패했는지 구분해서 관리해야 한다.
+
+또한 배치를 다시 실행할 때는 이전에 완료된 Step을 다시 실행할 필요가 있는지도 판단해야 한다.
+
+이를 위해 Spring Batch에서는 `StepExecution`이라는 도메인 객체를 제공한다.
+
+**StepExecution은 Step에 대한 한 번의 실제 실행 시도를 나타내며, 해당 실행에서 발생하는 상태와 처리 정보를 관리하는 객체다.**
+
+StepExecution을 이해하면 다음과 같은 질문에 답할 수 있다.
+
+* 하나의 Step이 여러 번 실행되면 실행 기록은 어떻게 관리될까?
+* 이전 Step이 실패하여 다음 Step이 실행되지 않았다면 어떤 데이터가 저장될까?
+* Job을 재시작할 때 이미 완료된 Step은 어떻게 처리될까?
+* Step의 실패가 JobExecution의 상태에 어떤 영향을 줄까?
+* 처리 건수와 커밋, 롤백 횟수는 어디에 저장될까?
+
+이번에는 StepExecution의 기본 개념부터 JobExecution과의 관계, 주요 속성, 데이터베이스 저장 구조, 실패 및 재시작 과정까지 살펴보자.
+
+**개발 환경**
+
+| 항목           | 기술         |
+| ------------ | ---------- |
+| Java         | Java 17    |
+| Spring Boot  | 3.4        |
+| Spring Batch | 5.2        |
+| Build Tool   | Maven      |
+| Database     | MySQL 8    |
+| Step 구성      | Tasklet 기반 |
+
+---
+
+### StepExecution이란?
+
+`StepExecution`은 **Step이 실제로 실행될 때 생성되는 개별 실행 정보 객체**다.
+
+앞에서 `JobExecution`은 JobInstance에 대한 한 번의 실행 시도를 나타낸다고 설명했다.
+
+StepExecution도 비슷한 역할을 담당한다.
+
+다만 차이점은 JobExecution이 Job의 실행을 관리한다면 StepExecution은 Step의 실행을 관리한다는 것이다.
+
+예를 들어 다음과 같은 Job이 있다고 생각해보자.
+
+```text
+Job
+ │
+ ├── Step 1
+ │
+ ├── Step 2
+ │
+ └── Step 3
+```
+
+Job이 실행되면 하나의 JobExecution이 생성된다.
+
+그리고 세 개의 Step이 모두 실행되었다면 각 Step에 대응하는 StepExecution이 생성된다.
+
+```mermaid
+flowchart TD
+    A["Job"]
+    B["JobExecution 1"]
+
+    C["Step 1"]
+    D["Step 2"]
+    E["Step 3"]
+
+    F["StepExecution 1"]
+    G["StepExecution 2"]
+    H["StepExecution 3"]
+
+    A --> B
+
+    B --> C
+    B --> D
+    B --> E
+
+    C --> F
+    D --> G
+    E --> H
+```
+
+여기서 중요한 점은 하나의 JobExecution이 여러 StepExecution을 가질 수 있다는 것이다.
+
+또한 StepExecution은 실제 실행된 Step마다 각각 생성된다.
+
+#### Step과 StepExecution의 차이
+
+Step과 StepExecution은 이름이 비슷하지만 서로 다른 개념이다.
+
+| 구분       | Step                    | StepExecution            |
+| -------- | ----------------------- | ------------------------ |
+| 의미       | 실행할 작업의 정의              | Step의 개별 실행 시도           |
+| 생성 시점    | 일반적으로 Spring Bean 구성 시점 | Step의 실제 실행 과정           |
+| 역할       | 작업 구성 및 실행 로직 관리        | 실행 상태 및 처리 결과 관리         |
+| 주요 정보    | Tasklet, 트랜잭션, 실행 옵션    | 상태, 시간, 처리 건수, 예외        |
+| 재시작 시    | 기존 Step 정의 사용           | 새로운 실행 정보 생성 가능          |
+| 메타데이터 저장 | Step 정의 자체는 저장하지 않음     | BATCH_STEP_EXECUTION에 저장 |
+
+예를 들어 다음 코드는 Step을 정의한다.
+
+```java
+@Bean
+public Step settlementStep(
+        JobRepository jobRepository,
+        PlatformTransactionManager transactionManager
+) {
+    return new StepBuilder("settlementStep", jobRepository)
+            .tasklet((contribution, chunkContext) -> {
+
+                System.out.println("정산 작업 실행");
+
+                return RepeatStatus.FINISHED;
+
+            }, transactionManager)
+            .build();
+}
+```
+
+여기서 생성되는 것은 `Step` 객체다.
+
+Step이 실제로 실행되면 Spring Batch는 실행 정보를 관리하기 위한 StepExecution을 생성한다.
+
+따라서 Step Bean이 하나라고 해서 StepExecution도 반드시 하나만 존재하는 것은 아니다.
+
+**동일한 Step 정의가 여러 번 실행되면 실행 시도에 따라 여러 StepExecution이 생성될 수 있다.**
+
+---
+
+### StepExecution의 주요 특징
+
+StepExecution은 다음과 같은 특징을 가진다.
+
+#### Step이 실행될 때마다 생성된다
+
+예를 들어 다음과 같은 Step이 있다고 생각해보자.
+
+```text
+Step Name: calculateStep
+```
+
+첫 번째 실행에서 오류가 발생했다.
+
+```text
+calculateStep
+      │
+      ▼
+StepExecution 1
+      │
+      ▼
+FAILED
+```
+
+이후 Job을 재시작하면서 같은 Step을 다시 실행했다.
+
+이번에는 정상적으로 완료되었다.
+
+```text
+calculateStep
+      │
+      ├── StepExecution 1
+      │       └── FAILED
+      │
+      └── StepExecution 2
+              └── COMPLETED
+```
+
+Step의 이름과 정의는 동일하다.
+
+하지만 실제 실행 시도는 두 번 발생했다.
+
+따라서 StepExecution도 두 개가 생성된다.
+
+이러한 구조 덕분에 Spring Batch는 같은 Step이 언제 실행되었고, 각각 어떤 결과로 종료되었는지 구분할 수 있다.
+
+#### Step별로 독립적으로 생성된다
+
+하나의 Job이 여러 Step을 가지고 있다면 각 Step은 자신의 StepExecution을 가진다.
+
+```text
+JobExecution 1
+      │
+      ├── Step 1
+      │      └── StepExecution 1
+      │
+      ├── Step 2
+      │      └── StepExecution 2
+      │
+      └── Step 3
+             └── StepExecution 3
+```
+
+StepExecution은 Step 간에 공유하는 실행 객체가 아니다.
+
+각 Step은 자신의 실행 상태와 처리 건수를 별도로 관리한다.
+
+예를 들어 다음과 같은 상태가 가능하다.
+
+```text
+StepExecution 1 → COMPLETED
+
+StepExecution 2 → FAILED
+```
+
+첫 번째 Step의 성공 여부와 두 번째 Step의 성공 여부를 독립적으로 확인할 수 있는 것이다.
+
+#### 실행되지 않은 Step의 StepExecution은 생성되지 않는다
+
+StepExecution에서 반드시 이해해야 하는 특징이다.
+
+다음과 같은 Job이 있다고 생각해보자.
+
+```text
+Step 1 → Step 2 → Step 3
+```
+
+Step 1은 정상적으로 완료되었다.
+
+하지만 Step 2에서 예외가 발생했다.
+
+```text
+Step 1 → COMPLETED
+              │
+              ▼
+Step 2 → FAILED
+              │
+              X
+Step 3 → 실행되지 않음
+```
+
+이 경우 어떤 StepExecution이 생성될까?
+
+| Step   | 실행 여부   | StepExecution 생성 | 상태          |
+| ------ | ------- | ---------------- | ----------- |
+| Step 1 | 실행      | O                | COMPLETED   |
+| Step 2 | 실행      | O                | FAILED      |
+| Step 3 | 실행되지 않음 | X                | 해당 실행 기록 없음 |
+
+Step 2는 실패했지만 실제로 실행이 시작되었다.
+
+따라서 StepExecution이 생성된다.
+
+반면 Step 3은 실행 자체가 시작되지 않았다.
+
+따라서 Step 3에 대한 StepExecution은 생성되지 않는다.
+
+**StepExecution은 Job에 Step이 등록되어 있다는 이유만으로 생성되는 것이 아니라, 해당 Step의 실행이 실제로 시작될 때 생성된다.**
+
+이러한 동작은 Spring Batch의 기본 실행 모델에서 중요한 특징이다.
+
+---
+
+### JobExecution과 StepExecution의 관계
+
+StepExecution은 독립적으로 존재하는 실행 기록이 아니다.
+
+각 StepExecution은 자신이 속한 JobExecution을 참조한다.
+
+예를 들어 다음과 같은 Job이 있다고 생각해보자.
+
+```text
+Job Name: dailySettlementJob
+
+JobParameters:
+businessDate=2026-10-15
+```
+
+이 Job에는 세 개의 Step이 존재한다.
+
+```text
+Step 1
+
+Step 2
+
+Step 3
+```
+
+Job이 실행되면 JobExecution이 생성된다.
+
+그리고 각각의 Step이 실행되면서 StepExecution이 생성된다.
+
+```mermaid
+flowchart TD
+    A["dailySettlementJob"]
+    B["JobInstance 1"]
+    C["JobExecution 1"]
+
+    D["StepExecution 1<br/>Step 1"]
+    E["StepExecution 2<br/>Step 2"]
+    F["StepExecution 3<br/>Step 3"]
+
+    A --> B
+    B --> C
+
+    C --> D
+    C --> E
+    C --> F
+```
+
+이때 세 개의 StepExecution은 모두 동일한 JobExecution을 부모로 가진다.
+
+따라서 JobExecution과 StepExecution은 일대다 관계다.
+
+```text
+JobExecution : StepExecution = 1 : N
+```
+
+이를 데이터베이스 관계로 표현하면 다음과 같다.
+
+```mermaid
+erDiagram
+    BATCH_JOB_INSTANCE ||--o{ BATCH_JOB_EXECUTION : has
+    BATCH_JOB_EXECUTION ||--o{ BATCH_STEP_EXECUTION : has
+    BATCH_STEP_EXECUTION ||--o| BATCH_STEP_EXECUTION_CONTEXT : has
+```
+
+여기서 `BATCH_STEP_EXECUTION` 테이블은 `JOB_EXECUTION_ID`를 외래 키로 가진다.
+
+즉 StepExecution이 어떤 JobExecution에 속하는지 데이터베이스에서도 확인할 수 있다.
+
+---
+
+### StepExecution의 상태가 JobExecution에 미치는 영향
+
+일반적인 순차 실행 Job에서는 Step의 실행 결과가 Job 전체의 실행 결과에 영향을 준다.
+
+예를 들어 다음과 같은 SimpleJob이 있다고 생각해보자.
+
+```text
+Job
+ │
+ ├── Step 1
+ │
+ ├── Step 2
+ │
+ └── Step 3
+```
+
+모든 Step이 정상적으로 완료되면 Job도 정상적으로 완료된다.
+
+```text
+Step 1 → COMPLETED
+
+Step 2 → COMPLETED
+
+Step 3 → COMPLETED
+
+        │
+        ▼
+
+JobExecution → COMPLETED
+```
+
+반면 중간에 Step이 실패하면 기본적인 순차 실행에서는 이후 Step으로 진행하지 않는다.
+
+```text
+Step 1 → COMPLETED
+
+Step 2 → FAILED
+
+Step 3 → 실행되지 않음
+
+        │
+        ▼
+
+JobExecution → FAILED
+```
+
+따라서 가장 기본적인 순차 실행 구조에서는 다음과 같이 이해할 수 있다.
+
+| Step 실행 결과              | JobExecution 결과 |
+| ----------------------- | --------------- |
+| 모든 Step 정상 완료           | COMPLETED       |
+| 실행 도중 Step 실패           | FAILED          |
+| 이전 Step 실패로 다음 Step 미실행 | 일반적으로 FAILED    |
+| 중지 요청에 따라 실행 중지         | STOPPED 가능      |
+
+다만 이것은 **별도의 조건부 Flow를 설정하지 않은 기본 순차 실행 Job을 기준으로 한 설명**이다.
+
+Spring Batch에서는 Step의 종료 코드에 따라 다른 Step으로 분기하거나 Job의 최종 상태를 다르게 지정할 수 있다.
+
+따라서 모든 Job에서 Step 하나가 실패하면 무조건 최종 JobExecution이 FAILED가 된다고 일반화해서는 안 된다.
+
+조건부 Flow를 구성한 경우에는 별도의 실행 상태 전이 규칙이 적용된다.
+
+---
+
+### Job을 재시작하면 StepExecution은 어떻게 될까?
+
+StepExecution의 중요한 역할 중 하나는 Job 재시작과 관련되어 있다.
+
+예를 들어 다음과 같은 Job이 있다고 생각해보자.
+
+```text
+dailySettlementJob
+       │
+       ├── Step 1
+       ├── Step 2
+       └── Step 3
+```
+
+첫 번째 실행에서 다음과 같은 결과가 발생했다.
+
+```text
+Step 1 → COMPLETED
+
+Step 2 → FAILED
+
+Step 3 → 실행되지 않음
+```
+
+따라서 JobExecution도 FAILED 상태로 종료된다.
+
+```text
+JobInstance 1
+      │
+      ▼
+JobExecution 1
+      │
+      ├── StepExecution 1 → COMPLETED
+      │
+      └── StepExecution 2 → FAILED
+```
+
+여기서 주목할 점은 Step 3의 실행 기록이 존재하지 않는다는 것이다.
+
+#### 실패한 Job을 재시작하는 경우
+
+이제 장애를 해결하고 동일한 식별용 JobParameters로 다시 실행한다고 생각해보자.
+
+이전 JobExecution은 FAILED 상태다.
+
+따라서 Job이 재시작을 허용한다면 새로운 JobExecution이 생성된다.
+
+```text
+JobInstance 1
+      │
+      ├── JobExecution 1 → FAILED
+      │
+      └── JobExecution 2 → 새 실행
+```
+
+하지만 모든 Step을 다시 실행하지는 않는다.
+
+Spring Batch는 이전 실행에서 완료된 Step의 상태를 확인한다.
+
+기본적으로 `COMPLETED` 상태인 Step은 다시 실행하지 않는다.
+
+따라서 재시작 과정은 다음과 같다.
+
+```text
+Step 1 → 이전에 완료됨 → 실행 생략
+
+Step 2 → 이전에 실패함 → 재실행
+
+Step 3 → 이전에 실행되지 않음 → 실행
+```
+
+두 번째 JobExecution에 생성되는 StepExecution은 다음과 같다.
+
+```text
+JobInstance 1
+      │
+      ├── JobExecution 1 → FAILED
+      │       │
+      │       ├── StepExecution 1
+      │       │       └── Step 1: COMPLETED
+      │       │
+      │       └── StepExecution 2
+      │               └── Step 2: FAILED
+      │
+      └── JobExecution 2 → COMPLETED
+              │
+              ├── StepExecution 3
+              │       └── Step 2: COMPLETED
+              │
+              └── StepExecution 4
+                      └── Step 3: COMPLETED
+```
+
+여기서 중요한 사실은 다음과 같다.
+
+첫 번째 실행에서는 Step 1과 Step 2에 대한 StepExecution이 생성되었다.
+
+두 번째 실행에서는 Step 2와 Step 3에 대한 StepExecution이 생성되었다.
+
+Step 1은 이전에 완료되었으므로 두 번째 실행에서 새로운 StepExecution이 생성되지 않았다.
+
+따라서 최종적으로 다음과 같은 결과가 나타난다.
+
+| JobExecution | Step   | StepExecution | 상태        |
+| ------------ | ------ | ------------- | --------- |
+| 1            | Step 1 | 1             | COMPLETED |
+| 1            | Step 2 | 2             | FAILED    |
+| 2            | Step 2 | 3             | COMPLETED |
+| 2            | Step 3 | 4             | COMPLETED |
+
+이것이 Spring Batch의 기본적인 Step 재시작 동작이다.
+
+---
+
+### 완료된 Step을 재시작할 때 다시 실행하려면?
+
+Spring Batch는 이미 완료된 Step을 재시작 시 다시 실행할 수 있도록 설정하는 기능도 제공한다.
+
+바로 `allowStartIfComplete()`다.
+
+기본값은 `false`다.
+
+따라서 이전에 완료된 Step은 재시작 시 건너뛴다.
+
+하지만 다음과 같이 설정할 수 있다.
+
+```java
+@Bean
+public Step prepareStep(
+        JobRepository jobRepository,
+        PlatformTransactionManager transactionManager
+) {
+    return new StepBuilder("prepareStep", jobRepository)
+            .tasklet((contribution, chunkContext) -> {
+
+                System.out.println("정산 사전 준비");
+
+                return RepeatStatus.FINISHED;
+
+            }, transactionManager)
+            .allowStartIfComplete(true)
+            .build();
+}
+```
+
+여기서 중요한 부분은 다음과 같다.
+
+```java
+.allowStartIfComplete(true)
+```
+
+이 설정을 적용하면 이전 실행에서 완료된 Step이라도 Job을 재시작할 때 다시 실행하도록 할 수 있다.
+
+예를 들어 다음과 같은 Job이 있다고 생각해보자.
+
+```text
+Step 1: 정산 대상 준비
+
+Step 2: 정산 데이터 생성
+
+Step 3: 정산 결과 저장
+```
+
+Step 1은 매번 실행 시점의 환경을 점검해야 하는 작업이라고 가정하자.
+
+이 경우 Step 1에 `allowStartIfComplete(true)`를 적용할 수 있다.
+
+그러면 Job을 재시작할 때 Step 1도 다시 실행한다.
+
+다만 이 설정은 이미 완료된 JobInstance 자체를 다시 실행할 수 있도록 만드는 설정이 아니다.
+
+**Job 재시작이 허용된 상황에서 개별 Step의 재실행 여부를 결정하는 설정**이다.
+
+---
+
+### StepExecution의 내부 구조
+
+이제 StepExecution 객체가 어떤 속성을 가지고 있는지 살펴보자.
+
+Spring Batch 5.2에서 `StepExecution`은 `Entity`를 상속하는 도메인 클래스다.
+
+StepExecution은 실행 상태와 처리 통계를 관리하기 위한 여러 속성을 가진다.
+
+대표적인 구조를 정리하면 다음과 같다.
+
+```mermaid
+classDiagram
+    class Entity {
+        -id
+        -version
+    }
+
+    class StepExecution {
+        -stepName
+        -jobExecution
+        -status
+        -exitStatus
+        -executionContext
+        -readCount
+        -writeCount
+        -filterCount
+        -commitCount
+        -rollbackCount
+        -readSkipCount
+        -processSkipCount
+        -writeSkipCount
+        -startTime
+        -endTime
+        -lastUpdated
+        -failureExceptions
+
+        +getStepName() String
+        +getJobExecution() JobExecution
+        +getStatus() BatchStatus
+        +getExitStatus() ExitStatus
+        +getExecutionContext() ExecutionContext
+        +getReadCount() long
+        +getWriteCount() long
+        +getCommitCount() long
+        +getRollbackCount() long
+    }
+
+    Entity <|-- StepExecution
+```
+
+StepExecution의 속성은 크게 네 가지로 구분할 수 있다.
+
+| 구분         | 대표 속성                                 | 역할                         |
+| ---------- | ------------------------------------- | -------------------------- |
+| 실행 식별 정보   | id, stepName, jobExecution            | 실행 대상 및 부모 JobExecution 식별 |
+| 실행 상태 정보   | status, exitStatus, failureExceptions | 성공·실패 및 예외 관리              |
+| 처리 통계      | readCount, writeCount, commitCount 등  | 데이터 처리 결과 관리               |
+| 실행 시간 및 상태 | startTime, endTime, executionContext  | 실행 시점 및 재시작 상태 관리          |
+
+각 속성의 의미를 자세히 살펴보자.
+
+---
+
+### StepExecution의 실행 식별 정보
+
+StepExecution은 자신이 어떤 Step에 대한 실행인지 식별하기 위한 정보를 가진다.
+
+대표적으로 다음과 같다.
+
+```text
+id
+
+stepName
+
+jobExecution
+```
+
+#### id
+
+`id`는 StepExecution의 고유 식별자다.
+
+예를 들어 다음과 같이 조회할 수 있다.
+
+```java
+Long stepExecutionId =
+        stepExecution.getId();
+```
+
+이 값은 JDBC 기반 JobRepository를 사용하는 경우 `BATCH_STEP_EXECUTION` 테이블의 기본 키와 연결된다.
+
+#### stepName
+
+`stepName`은 현재 실행 중인 Step의 이름이다.
+
+```java
+String stepName =
+        stepExecution.getStepName();
+```
+
+예를 들어 다음과 같이 Step을 생성했다면
+
+```java
+new StepBuilder("settlementStep", jobRepository)
+```
+
+StepExecution의 이름도 다음과 같다.
+
+```text
+settlementStep
+```
+
+Step 이름은 재시작 시 이전 Step 실행 이력을 식별하는 데 사용되므로 중요한 값이다.
+
+#### jobExecution
+
+`jobExecution`은 해당 StepExecution이 속한 부모 JobExecution을 나타낸다.
+
+```java
+JobExecution jobExecution =
+        stepExecution.getJobExecution();
+```
+
+이렇게 부모 JobExecution을 조회할 수 있다.
+
+그리고 다음과 같이 JobExecution ID도 확인할 수 있다.
+
+```java
+Long jobExecutionId =
+        stepExecution
+                .getJobExecution()
+                .getId();
+```
+
+따라서 StepExecution을 통해 자신이 어떤 JobExecution에 속하는지 확인할 수 있다.
+
+---
+
+### StepExecution의 실행 상태
+
+StepExecution은 현재 실행 상태와 종료 결과를 관리한다.
+
+대표적으로 두 객체를 사용한다.
+
+```java
+BatchStatus
+
+ExitStatus
+```
+
+#### BatchStatus
+
+`BatchStatus`는 실제 실행 상태를 나타내는 Enum이다.
+
+대표적인 상태는 다음과 같다.
+
+| 상태        | 의미                    |
+| --------- | --------------------- |
+| STARTING  | 실행 시작 준비 중            |
+| STARTED   | 실행 중                  |
+| COMPLETED | 정상적으로 완료              |
+| FAILED    | 실행 실패                 |
+| STOPPING  | 중지 진행 중               |
+| STOPPED   | 중지됨                   |
+| ABANDONED | 정상적인 재시작 대상으로 취급하지 않음 |
+| UNKNOWN   | 실행 상태를 명확하게 판단하기 어려움  |
+
+현재 Step의 상태는 다음과 같이 확인할 수 있다.
+
+```java
+BatchStatus status =
+        stepExecution.getStatus();
+```
+
+예를 들어 다음과 같이 사용할 수 있다.
+
+```java
+if (stepExecution.getStatus() == BatchStatus.COMPLETED) {
+
+    System.out.println("Step 정상 완료");
+
+} else if (stepExecution.getStatus() == BatchStatus.FAILED) {
+
+    System.out.println("Step 실행 실패");
+}
+```
+
+#### ExitStatus
+
+`ExitStatus`는 실행 종료 결과를 나타낸다.
+
+```java
+ExitStatus exitStatus =
+        stepExecution.getExitStatus();
+```
+
+종료 코드는 다음과 같이 조회할 수 있다.
+
+```java
+String exitCode =
+        stepExecution
+                .getExitStatus()
+                .getExitCode();
+```
+
+일반적으로 정상적으로 완료된 Step에서는 다음과 같은 값을 확인할 수 있다.
+
+```text
+BatchStatus = COMPLETED
+
+ExitStatus = COMPLETED
+```
+
+실패한 Step에서는 다음과 같은 값이 나타날 수 있다.
+
+```text
+BatchStatus = FAILED
+
+ExitStatus = FAILED
+```
+
+다만 BatchStatus와 ExitStatus는 항상 동일한 값을 가지는 것은 아니다.
+
+BatchStatus는 실행 상태를 나타낸다.
+
+ExitStatus는 종료 결과를 나타내며 사용자 정의 종료 코드도 사용할 수 있다.
+
+이러한 차이는 조건부 Flow를 구성할 때 중요하다.
+
+---
+
+### StepExecution의 처리 통계 정보
+
+StepExecution은 Step에서 처리한 데이터 수와 트랜잭션 관련 정보도 관리한다.
+
+대표적으로 다음과 같은 속성이 있다.
+
+```text
+readCount
+
+writeCount
+
+filterCount
+
+commitCount
+
+rollbackCount
+
+readSkipCount
+
+processSkipCount
+
+writeSkipCount
+```
+
+이러한 속성은 Chunk 기반 배치를 운영할 때 특히 중요하다.
+
+#### readCount
+
+`readCount`는 Reader를 통해 정상적으로 읽은 Item의 수를 나타낸다.
+
+예를 들어 다음과 같은 데이터를 처리한다고 생각해보자.
+
+```text
+Order 1
+
+Order 2
+
+Order 3
+
+Order 4
+
+Order 5
+```
+
+Reader가 다섯 개의 Item을 정상적으로 반환했다면 다음과 같은 값이 기록될 수 있다.
+
+```text
+READ_COUNT = 5
+```
+
+여기서 READ_COUNT는 실행한 SQL 쿼리의 수가 아니라 읽은 Item의 수다.
+
+#### writeCount
+
+`writeCount`는 Writer를 통해 쓰기 처리한 Item의 수를 나타낸다.
+
+예를 들어 100건을 읽고 90건을 정상적으로 쓰기 처리했다면 다음과 같은 값이 기록될 수 있다.
+
+```text
+READ_COUNT = 100
+
+WRITE_COUNT = 90
+```
+
+다만 외부 API나 파일처럼 트랜잭션으로 완전히 보호되지 않는 저장소에서는 이 값만으로 외부 시스템에 최종 반영된 데이터 수를 확정할 수는 없다.
+
+#### filterCount
+
+`filterCount`는 ItemProcessor에서 필터링한 Item의 수를 나타낸다.
+
+Spring Batch에서는 ItemProcessor가 `null`을 반환하면 해당 Item이 필터링된다.
+
+예를 들어 다음과 같은 Processor가 있다고 생각해보자.
+
+```java
+public class OrderProcessor
+        implements ItemProcessor<Order, Order> {
+
+    @Override
+    public Order process(Order order) {
+
+        if (order.isCancelled()) {
+            return null;
+        }
+
+        return order;
+    }
+}
+```
+
+100건의 주문 중 10건이 취소된 주문이라면 다음과 같은 결과가 나타날 수 있다.
+
+```text
+READ_COUNT = 100
+
+FILTER_COUNT = 10
+
+WRITE_COUNT = 90
+```
+
+필터링은 오류가 발생해서 데이터를 건너뛰는 Skip과는 다른 개념이다.
+
+#### commitCount
+
+`commitCount`는 해당 Step 실행에서 발생한 커밋 횟수를 나타낸다.
+
+예를 들어 1,000건을 100건씩 처리하는 Chunk 기반 Step이 있다고 생각해보자.
+
+```java
+.<Order, Settlement>chunk(100, transactionManager)
+```
+
+100건마다 트랜잭션을 커밋하는 일반적인 구조에서는 여러 번의 커밋이 발생한다.
+
+```text
+1 ~ 100건        → Commit
+
+101 ~ 200건      → Commit
+
+201 ~ 300건      → Commit
+
+...
+
+901 ~ 1,000건    → Commit
+```
+
+`COMMIT_COUNT`는 이렇게 Step 실행에서 발생한 커밋 횟수를 관리한다.
+
+여기서 중요한 것은 **COMMIT_COUNT가 커밋한 데이터 건수가 아니라 커밋 횟수**라는 사실이다.
+
+실제 커밋 횟수는 마지막 Chunk 처리와 종료 확인, Retry 등의 동작에 따라 달라질 수 있다.
+
+#### rollbackCount
+
+`rollbackCount`는 Step 실행 중 트랜잭션 롤백이 발생한 횟수를 나타낸다.
+
+예를 들어 다음과 같은 상황이다.
+
+```text
+트랜잭션 시작
+      │
+      ▼
+데이터 읽기
+      │
+      ▼
+데이터 가공
+      │
+      ▼
+데이터 저장
+      │
+      ▼
+예외 발생
+      │
+      ▼
+Rollback
+```
+
+이 경우 Rollback 횟수가 증가할 수 있다.
+
+다만 `ROLLBACK_COUNT`가 1 이상이라고 해서 반드시 Step이 최종적으로 실패한 것은 아니다.
+
+Retry나 Skip을 수행하는 과정에서도 롤백이 발생할 수 있기 때문이다.
+
+따라서 최종 실패 여부는 BatchStatus와 함께 확인해야 한다.
+
+#### Skip 관련 속성
+
+Spring Batch는 특정 오류가 발생했을 때 해당 Item을 건너뛰고 계속 처리하는 Skip 기능을 제공한다.
+
+Skip은 오류가 발생한 단계에 따라 구분된다.
+
+| 속성               | 의미                        |
+| ---------------- | ------------------------- |
+| readSkipCount    | Reader 단계에서 건너뛴 Item 수    |
+| processSkipCount | Processor 단계에서 건너뛴 Item 수 |
+| writeSkipCount   | Writer 단계에서 건너뛴 Item 수    |
+
+예를 들어 잘못된 형식의 데이터를 읽었을 때 해당 예외를 Skip하도록 구성했다면 readSkipCount가 증가할 수 있다.
+
+다만 모든 예외가 자동으로 Skip되는 것은 아니다.
+
+Skip할 예외의 종류와 허용 범위를 별도로 설정해야 한다.
+
+---
+
+### StepExecution의 시간 및 상태 정보
+
+StepExecution은 실행 시점과 재시작에 필요한 정보를 관리한다.
+
+대표적인 속성은 다음과 같다.
+
+```text
+startTime
+
+endTime
+
+lastUpdated
+
+executionContext
+
+failureExceptions
+```
+
+#### startTime과 endTime
+
+`startTime`은 Step이 시작된 시점이다.
+
+`endTime`은 Step 실행이 종료된 시점이다.
+
+Spring Batch 5.2에서는 `LocalDateTime` 타입을 사용한다.
+
+예를 들어 다음과 같은 값이 저장될 수 있다.
+
+```text
+START_TIME = 2026-10-15 02:00:00
+
+END_TIME = 2026-10-15 02:00:05
+```
+
+이를 통해 Step 실행에 걸린 시간을 파악할 수 있다.
+
+다만 실행 중인 Step은 아직 종료되지 않았으므로 endTime이 없을 수 있다.
+
+또한 애플리케이션이 비정상적으로 종료되어 최종 상태를 저장하지 못한 경우에도 종료 시간이 남지 않을 수 있다.
+
+#### lastUpdated
+
+`lastUpdated`는 StepExecution 메타데이터가 마지막으로 갱신된 시점을 나타낸다.
+
+이 값은 실행 상태 분석에 참고할 수 있다.
+
+하지만 주기적으로 갱신되는 Heartbeat와 동일한 의미는 아니다.
+
+따라서 이 값만으로 Step의 정상 실행 여부를 확정해서는 안 된다.
+
+#### ExecutionContext
+
+StepExecution은 자신의 ExecutionContext를 가진다.
+
+```java
+ExecutionContext context =
+        stepExecution.getExecutionContext();
+```
+
+ExecutionContext는 실행 중 필요한 상태 정보를 Key-Value 형태로 관리한다.
+
+예를 들어 다음과 같이 사용할 수 있다.
+
+```java
+context.putLong(
+        "lastProcessedId",
+        10000L
+);
+```
+
+이 값이 적절한 시점에 영속화되었다면 재시작 과정에서 이전 처리 위치를 복원하는 데 활용할 수 있다.
+
+다만 값을 저장했다고 해서 Spring Batch가 자동으로 해당 ID부터 데이터를 조회하는 것은 아니다.
+
+실제 처리 위치 복원은 Reader 등의 구현과 연결되어야 한다.
+
+#### failureExceptions
+
+StepExecution은 실행 중 발생한 예외를 관리할 수 있다.
+
+```java
+List<Throwable> exceptions =
+        stepExecution.getFailureExceptions();
+```
+
+예를 들어 다음과 같이 오류 메시지를 확인할 수 있다.
+
+```java
+for (Throwable exception : exceptions) {
+
+    System.out.println(
+            exception.getMessage()
+    );
+}
+```
+
+다만 예외 객체 전체가 데이터베이스에 그대로 직렬화되어 저장되는 것은 아니다.
+
+일반적으로 종료 코드와 종료 메시지 등의 실행 정보가 메타데이터에 저장되며, 상세한 장애 분석에는 애플리케이션 로그를 함께 활용하는 것이 좋다.
+
+---
+
+### BATCH_STEP_EXECUTION 테이블
+
+Spring Batch는 StepExecution 정보를 `BATCH_STEP_EXECUTION` 테이블에 저장한다.
+
+이 테이블은 Step의 실행 상태와 처리 통계를 관리한다.
+
+주요 컬럼은 다음과 같다.
+
+| 컬럼                 | 의미                    |
+| ------------------ | --------------------- |
+| STEP_EXECUTION_ID  | StepExecution의 고유 식별자 |
+| VERSION            | 낙관적 락을 위한 버전          |
+| STEP_NAME          | 실행한 Step의 이름          |
+| JOB_EXECUTION_ID   | 부모 JobExecution의 ID   |
+| CREATE_TIME        | StepExecution 생성 시점   |
+| START_TIME         | Step 실행 시작 시점         |
+| END_TIME           | Step 실행 종료 시점         |
+| STATUS             | BatchStatus           |
+| COMMIT_COUNT       | 커밋 횟수                 |
+| READ_COUNT         | 읽은 Item 수             |
+| FILTER_COUNT       | 필터링한 Item 수           |
+| WRITE_COUNT        | 쓰기 처리한 Item 수         |
+| READ_SKIP_COUNT    | 읽기 단계 Skip 수          |
+| PROCESS_SKIP_COUNT | 처리 단계 Skip 수          |
+| WRITE_SKIP_COUNT   | 쓰기 단계 Skip 수          |
+| ROLLBACK_COUNT     | 롤백 횟수                 |
+| EXIT_CODE          | 종료 코드                 |
+| EXIT_MESSAGE       | 종료 메시지                |
+| LAST_UPDATED       | 마지막 갱신 시점             |
+
+여기서 주목할 부분은 다음 컬럼이다.
+
+```text
+JOB_EXECUTION_ID
+```
+
+이 컬럼은 해당 StepExecution이 어떤 JobExecution에 속하는지 나타낸다.
+
+예를 들어 다음과 같은 데이터가 있다고 생각해보자.
+
+| STEP_EXECUTION_ID | STEP_NAME | JOB_EXECUTION_ID | STATUS    |
+| ----------------- | --------- | ---------------- | --------- |
+| 1                 | step1     | 1                | COMPLETED |
+| 2                 | step2     | 1                | FAILED    |
+| 3                 | step2     | 2                | COMPLETED |
+| 4                 | step3     | 2                | COMPLETED |
+
+첫 번째와 두 번째 StepExecution은 JobExecution 1에 속한다.
+
+세 번째와 네 번째 StepExecution은 JobExecution 2에 속한다.
+
+이러한 구조를 통해 Spring Batch는 각각의 실행에서 어떤 Step이 실행되었는지 추적할 수 있다.
+
+---
+
+### 실제 StepExecution 생성 및 재시작 확인하기
+
+이번에는 Job을 직접 구성하고 실행하면서 StepExecution이 어떻게 생성되는지 확인해보자.
+
+다음과 같은 Job을 생성한다.
+
+```text
+stepExecutionJob
+       │
+       ├── stepExecutionStep1
+       │
+       ├── stepExecutionStep2
+       │
+       └── stepExecutionStep3
+```
+
+세 개의 Step은 순차적으로 실행된다.
+
+두 번째 Step에서는 JobParameters에 따라 의도적으로 예외를 발생시킬 수 있도록 구성한다.
+
+이를 통해 다음 세 가지 상황을 확인한다.
+
+| 상황            | 확인할 내용                         |
+| ------------- | ------------------------------ |
+| 모든 Step 정상 완료 | 세 개의 StepExecution 생성          |
+| Step 2에서 실패   | Step 1, Step 2의 실행 기록만 생성      |
+| 실패한 Job 재시작   | Step 1은 생략하고 Step 2, Step 3 실행 |
+
+기존 실행 이력을 유지해야 하므로 MySQL을 사용한다.
+
+---
+
+### StepExecutionConfiguration 전체 코드
+
+다음과 같이 설정 클래스를 작성한다.
+
+```java
+package com.example.batch;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.Step;
+import org.springframework.batch.core.StepExecution;
+
+import org.springframework.batch.core.job.builder.JobBuilder;
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.step.builder.StepBuilder;
+import org.springframework.batch.repeat.RepeatStatus;
+
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.transaction.PlatformTransactionManager;
+
+@Configuration
+public class StepExecutionConfiguration {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(
+                    StepExecutionConfiguration.class
+            );
+
+    @Bean
+    public Job stepExecutionJob(
+            JobRepository jobRepository,
+            @Qualifier("stepExecutionStep1") Step step1,
+            @Qualifier("stepExecutionStep2") Step step2,
+            @Qualifier("stepExecutionStep3") Step step3
+    ) {
+        return new JobBuilder(
+                "stepExecutionJob",
+                jobRepository
+        )
+                .start(step1)
+                .next(step2)
+                .next(step3)
+                .build();
+    }
+
+    @Bean
+    public Step stepExecutionStep1(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+        return new StepBuilder(
+                "stepExecutionStep1",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    StepExecution stepExecution =
+                            contribution.getStepExecution();
+
+                    JobExecution jobExecution =
+                            stepExecution.getJobExecution();
+
+                    log.info(
+                            "Step 1 실행 - JobExecution ID: {}",
+                            jobExecution.getId()
+                    );
+
+                    log.info(
+                            "StepExecution ID: {}",
+                            stepExecution.getId()
+                    );
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+
+    @Bean
+    public Step stepExecutionStep2(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+        return new StepBuilder(
+                "stepExecutionStep2",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    StepExecution stepExecution =
+                            contribution.getStepExecution();
+
+                    JobExecution jobExecution =
+                            stepExecution.getJobExecution();
+
+                    String failStep2 =
+                            jobExecution
+                                    .getJobParameters()
+                                    .getString("failStep2");
+
+                    log.info(
+                            "Step 2 실행 - JobExecution ID: {}",
+                            jobExecution.getId()
+                    );
+
+                    log.info(
+                            "StepExecution ID: {}",
+                            stepExecution.getId()
+                    );
+
+                    if ("true".equalsIgnoreCase(failStep2)) {
+
+                        throw new IllegalStateException(
+                                "Step 2 의도적인 실패"
+                        );
+                    }
+
+                    log.info("Step 2 정상 완료");
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+
+    @Bean
+    public Step stepExecutionStep3(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+        return new StepBuilder(
+                "stepExecutionStep3",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    StepExecution stepExecution =
+                            contribution.getStepExecution();
+
+                    log.info(
+                            "Step 3 실행 - StepExecution ID: {}",
+                            stepExecution.getId()
+                    );
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+}
+```
+
+이 코드에서는 세 개의 Step을 정의했다.
+
+Job은 다음과 같다.
+
+```java
+return new JobBuilder("stepExecutionJob", jobRepository)
+        .start(step1)
+        .next(step2)
+        .next(step3)
+        .build();
+```
+
+따라서 Step 1부터 Step 3까지 순차적으로 실행된다.
+
+두 번째 Step에는 실패 조건을 추가했다.
+
+```java
+if ("true".equalsIgnoreCase(failStep2)) {
+
+    throw new IllegalStateException(
+            "Step 2 의도적인 실패"
+    );
+}
+```
+
+`failStep2=true`라면 예외가 발생한다.
+
+반면 `failStep2=false`라면 Step 2가 정상적으로 종료된다.
+
+이렇게 하면 동일한 Job 설정을 사용하면서 성공과 실패 상황을 모두 확인할 수 있다.
+
+---
+
+### MySQL 환경 설정
+
+기존 Spring Batch 프로젝트에서 사용하는 MySQL 설정을 그대로 활용한다.
+
+`application-mysql.yml`
+
+```yaml
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3307/batch_db
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    username: ${BATCH_DB_USERNAME:batch_user}
+    password: ${BATCH_DB_PASSWORD:localpass}
+
+  batch:
+    job:
+      enabled: true
+      name: stepExecutionJob
+
+    jdbc:
+      initialize-schema: never
+```
+
+여기서 다음 설정은 실행할 Job을 지정한다.
+
+```yaml
+spring:
+  batch:
+    job:
+      name: stepExecutionJob
+```
+
+그리고 다음 설정은 메타데이터 스키마 자동 생성을 비활성화한다.
+
+```yaml
+spring:
+  batch:
+    jdbc:
+      initialize-schema: never
+```
+
+따라서 Spring Batch 메타데이터 테이블이 이미 생성되어 있어야 한다.
+
+이번에는 기존 실행 이력을 유지하면서 실패와 재시작 과정을 확인하는 것이 목적이다.
+
+또한 Spring Boot의 기본 Batch 자동 실행 구성을 사용하므로 `@EnableBatchProcessing`을 별도로 선언하지 않는 일반적인 Spring Boot 3.4 프로젝트를 전제로 한다.
+
+기존에 다른 Job을 수동 실행하는 ApplicationRunner가 있다면 함께 실행되지 않도록 Profile 등을 이용해 분리해야 한다.
+
+---
+
+### 첫 번째 실행: 모든 Step이 성공한 경우
+
+먼저 모든 Step이 정상적으로 완료되는 상황을 확인해보자.
+
+Maven으로 프로젝트를 빌드한다.
+
+```bash
+./mvnw clean package
+```
+
+정상적으로 빌드가 완료되었다면 JAR 파일을 실행한다.
+
+```bash
+java -jar target/spring-batch-demo-0.0.1-SNAPSHOT.jar \
+  --spring.profiles.active=mysql \
+  businessDate=2026-10-14 \
+  'failStep2=false,java.lang.String,false'
+```
+
+여기서는 두 개의 JobParameters를 전달했다.
+
+```text
+businessDate=2026-10-14
+
+failStep2=false
+```
+
+`businessDate`는 식별용 파라미터다.
+
+반면 `failStep2`는 비식별용 파라미터다.
+
+따라서 같은 businessDate를 사용하면서 failStep2만 변경하면 동일한 JobInstance를 식별할 수 있다.
+
+#### 실행 결과
+
+정상적으로 실행되었다면 다음과 같은 로그를 확인할 수 있다.
+
+```text
+Step 1 실행 - JobExecution ID: 1
+StepExecution ID: 1
+
+Step 2 실행 - JobExecution ID: 1
+StepExecution ID: 2
+
+Step 2 정상 완료
+
+Step 3 실행 - StepExecution ID: 3
+```
+
+위 ID는 해당 Job을 처음 실행하는 데이터베이스를 가정한 예시다.
+
+실제 ID는 기존 실행 이력에 따라 달라진다.
+
+세 개의 Step이 모두 실행되었다.
+
+따라서 세 개의 StepExecution이 생성된다.
+
+```text
+JobExecution 1
+      │
+      ├── StepExecution 1 → COMPLETED
+      │
+      ├── StepExecution 2 → COMPLETED
+      │
+      └── StepExecution 3 → COMPLETED
+```
+
+Job도 정상적으로 완료된다.
+
+```text
+JobExecution 1 → COMPLETED
+```
+
+---
+
+### BATCH_STEP_EXECUTION에서 결과 확인하기
+
+이제 MySQL에서 다음 SQL을 실행해보자.
+
+```sql
+SELECT
+    STEP_EXECUTION_ID,
+    JOB_EXECUTION_ID,
+    STEP_NAME,
+    STATUS,
+    EXIT_CODE
+FROM BATCH_STEP_EXECUTION
+ORDER BY STEP_EXECUTION_ID;
+```
+
+앞선 예제가 정상적으로 실행되었다면 다음과 같은 데이터가 저장될 수 있다.
+
+| STEP_EXECUTION_ID | JOB_EXECUTION_ID | STEP_NAME          | STATUS    |
+| ----------------- | ---------------- | ------------------ | --------- |
+| 1                 | 1                | stepExecutionStep1 | COMPLETED |
+| 2                 | 1                | stepExecutionStep2 | COMPLETED |
+| 3                 | 1                | stepExecutionStep3 | COMPLETED |
+
+여기서 세 개의 StepExecution은 모두 동일한 JOB_EXECUTION_ID를 가지고 있다.
+
+```text
+JOB_EXECUTION_ID = 1
+```
+
+이는 세 Step이 같은 JobExecution에 속한다는 의미다.
+
+또한 세 Step이 모두 정상적으로 완료되었으므로 JobExecution도 COMPLETED 상태로 종료된다.
+
+다음 SQL로 확인할 수 있다.
+
+```sql
+SELECT
+    JOB_EXECUTION_ID,
+    JOB_INSTANCE_ID,
+    STATUS,
+    EXIT_CODE
+FROM BATCH_JOB_EXECUTION
+ORDER BY JOB_EXECUTION_ID;
+```
+
+실행 결과는 다음과 같은 형태다.
+
+| JOB_EXECUTION_ID | JOB_INSTANCE_ID | STATUS    |
+| ---------------- | --------------- | --------- |
+| 1                | 1               | COMPLETED |
+
+---
+
+### 두 번째 실행: Step 2에서 실패하는 경우
+
+이번에는 의도적으로 Step 2에서 예외를 발생시켜보자.
+
+새로운 JobInstance를 생성하기 위해 businessDate를 변경한다.
+
+```text
+businessDate=2026-10-15
+```
+
+그리고 다음 값을 전달한다.
+
+```text
+failStep2=true
+```
+
+실행 명령어는 다음과 같다.
+
+```bash
+java -jar target/spring-batch-demo-0.0.1-SNAPSHOT.jar \
+  --spring.profiles.active=mysql \
+  businessDate=2026-10-15 \
+  'failStep2=true,java.lang.String,false'
+```
+
+이번에는 다음과 같은 실행 흐름이 발생한다.
+
+```text
+Step 1 실행
+      │
+      ▼
+COMPLETED
+      │
+      ▼
+Step 2 실행
+      │
+      ▼
+IllegalStateException 발생
+      │
+      ▼
+FAILED
+      │
+      X
+Step 3 실행되지 않음
+```
+
+#### 실행 결과
+
+다음과 같은 로그를 확인할 수 있다.
+
+```text
+Step 1 실행 - JobExecution ID: 2
+StepExecution ID: 4
+
+Step 2 실행 - JobExecution ID: 2
+StepExecution ID: 5
+
+java.lang.IllegalStateException:
+Step 2 의도적인 실패
+```
+
+Step 1은 정상적으로 실행되었다.
+
+Step 2는 실행 도중 예외가 발생했다.
+
+Step 3은 실행되지 않았다.
+
+따라서 생성되는 StepExecution은 두 개다.
+
+```text
+JobExecution 2
+      │
+      ├── StepExecution 4 → COMPLETED
+      │
+      └── StepExecution 5 → FAILED
+```
+
+Step 3에 대한 StepExecution은 존재하지 않는다.
+
+이것이 **실제로 시작된 Step에 대해서만 StepExecution이 생성된다**는 의미다.
+
+---
+
+### 실패한 실행의 데이터베이스 기록
+
+다음 SQL을 다시 실행해보자.
+
+```sql
+SELECT
+    STEP_EXECUTION_ID,
+    JOB_EXECUTION_ID,
+    STEP_NAME,
+    STATUS,
+    EXIT_CODE
+FROM BATCH_STEP_EXECUTION
+ORDER BY STEP_EXECUTION_ID;
+```
+
+기존 정상 실행에 이어 다음과 같은 데이터가 추가될 수 있다.
+
+| STEP_EXECUTION_ID | JOB_EXECUTION_ID | STEP_NAME          | STATUS    |
+| ----------------- | ---------------- | ------------------ | --------- |
+| 1                 | 1                | stepExecutionStep1 | COMPLETED |
+| 2                 | 1                | stepExecutionStep2 | COMPLETED |
+| 3                 | 1                | stepExecutionStep3 | COMPLETED |
+| 4                 | 2                | stepExecutionStep1 | COMPLETED |
+| 5                 | 2                | stepExecutionStep2 | FAILED    |
+
+두 번째 JobExecution에 대한 StepExecution은 두 개만 존재한다.
+
+Step 3은 실행되지 않았기 때문이다.
+
+이번에는 JobExecution을 조회해보자.
+
+```sql
+SELECT
+    JOB_EXECUTION_ID,
+    JOB_INSTANCE_ID,
+    STATUS,
+    EXIT_CODE
+FROM BATCH_JOB_EXECUTION
+ORDER BY JOB_EXECUTION_ID;
+```
+
+결과는 다음과 같은 형태다.
+
+| JOB_EXECUTION_ID | JOB_INSTANCE_ID | STATUS    |
+| ---------------- | --------------- | --------- |
+| 1                | 1               | COMPLETED |
+| 2                | 2               | FAILED    |
+
+첫 번째 JobInstance는 정상적으로 완료되었다.
+
+반면 두 번째 JobInstance의 첫 실행은 실패했다.
+
+따라서 두 번째 JobInstance는 재시작 가능한 상태가 된다.
+
+---
+
+### 세 번째 실행: 실패한 Job 재시작하기
+
+이번에는 두 번째 실행에서 실패한 Job을 재시작해보자.
+
+중요한 것은 식별용 JobParameters를 변경하지 않는다는 점이다.
+
+```text
+businessDate=2026-10-15
+```
+
+이 값은 그대로 유지한다.
+
+반면 비식별용 파라미터인 `failStep2`는 `false`로 변경한다.
+
+```text
+failStep2=false
+```
+
+실행 명령어는 다음과 같다.
+
+```bash
+java -jar target/spring-batch-demo-0.0.1-SNAPSHOT.jar \
+  --spring.profiles.active=mysql \
+  businessDate=2026-10-15 \
+  'failStep2=false,java.lang.String,false'
+```
+
+Spring Batch는 기존 JobInstance를 조회한다.
+
+앞선 실행에서 해당 JobInstance는 FAILED 상태로 종료되었다.
+
+따라서 Job이 재시작 가능한 경우 새로운 JobExecution을 생성한다.
+
+하지만 새로운 JobInstance를 생성하지는 않는다.
+
+#### 재시작 실행 흐름
+
+```mermaid
+flowchart TD
+    A["Job 재시작"]
+    B["기존 JobInstance 조회"]
+    C["새 JobExecution 생성"]
+
+    D["Step 1 이전 상태 확인"]
+    E["COMPLETED → 실행 생략"]
+
+    F["Step 2 이전 상태 확인"]
+    G["FAILED → 재실행"]
+
+    H["Step 2 정상 완료"]
+    I["Step 3 실행"]
+    J["JobExecution COMPLETED"]
+
+    A --> B
+    B --> C
+
+    C --> D
+    D --> E
+    E --> F
+
+    F --> G
+    G --> H
+    H --> I
+    I --> J
+```
+
+Step 1은 이전 실행에서 완료되었다.
+
+따라서 재시작 시 실행하지 않는다.
+
+Step 2는 이전 실행에서 실패했다.
+
+따라서 다시 실행한다.
+
+Step 3은 이전 실행에서 실행되지 않았다.
+
+이번에는 Step 2가 정상적으로 완료되었으므로 Step 3도 실행된다.
+
+#### 실행 결과
+
+다음과 같은 로그를 확인할 수 있다.
+
+```text
+Step 2 실행 - JobExecution ID: 3
+StepExecution ID: 6
+
+Step 2 정상 완료
+
+Step 3 실행 - StepExecution ID: 7
+```
+
+여기서 Step 1의 실행 로그가 없다는 점이 중요하다.
+
+Step 1은 재시작 과정에서 건너뛰었기 때문이다.
+
+따라서 새로운 JobExecution에는 Step 2와 Step 3에 대한 실행 정보만 생성된다.
+
+```text
+JobInstance 2
+      │
+      ├── JobExecution 2 → FAILED
+      │       │
+      │       ├── StepExecution 4
+      │       │       └── Step 1: COMPLETED
+      │       │
+      │       └── StepExecution 5
+      │               └── Step 2: FAILED
+      │
+      └── JobExecution 3 → COMPLETED
+              │
+              ├── StepExecution 6
+              │       └── Step 2: COMPLETED
+              │
+              └── StepExecution 7
+                      └── Step 3: COMPLETED
+```
+
+이 구조를 통해 StepExecution이 재시작 시 어떻게 생성되는지 확인할 수 있다.
+
+---
+
+### 재시작 후 데이터베이스 확인하기
+
+다음 SQL을 실행한다.
+
+```sql
+SELECT
+    STEP_EXECUTION_ID,
+    JOB_EXECUTION_ID,
+    STEP_NAME,
+    STATUS
+FROM BATCH_STEP_EXECUTION
+ORDER BY STEP_EXECUTION_ID;
+```
+
+전체 실행 결과는 다음과 같은 형태다.
+
+| STEP_EXECUTION_ID | JOB_EXECUTION_ID | STEP_NAME          | STATUS    |
+| ----------------- | ---------------- | ------------------ | --------- |
+| 1                 | 1                | stepExecutionStep1 | COMPLETED |
+| 2                 | 1                | stepExecutionStep2 | COMPLETED |
+| 3                 | 1                | stepExecutionStep3 | COMPLETED |
+| 4                 | 2                | stepExecutionStep1 | COMPLETED |
+| 5                 | 2                | stepExecutionStep2 | FAILED    |
+| 6                 | 3                | stepExecutionStep2 | COMPLETED |
+| 7                 | 3                | stepExecutionStep3 | COMPLETED |
+
+이 결과를 보면 세 번째 JobExecution에는 Step 1에 대한 새로운 StepExecution이 존재하지 않는다.
+
+이전에 완료된 Step을 건너뛰었기 때문이다.
+
+반면 Step 2와 Step 3에는 새로운 StepExecution이 생성되었다.
+
+이것이 Spring Batch의 기본적인 재시작 처리 방식이다.
+
+---
+
+### JobInstance, JobExecution, StepExecution 관계 정리
+
+지금까지 실행한 결과를 하나의 구조로 정리해보자.
+
+```mermaid
+flowchart TD
+    A["stepExecutionJob"]
+
+    B["JobInstance 1<br/>2026-10-14"]
+    C["JobInstance 2<br/>2026-10-15"]
+
+    D["JobExecution 1<br/>COMPLETED"]
+
+    E["JobExecution 2<br/>FAILED"]
+    F["JobExecution 3<br/>COMPLETED"]
+
+    G["Step 1: COMPLETED"]
+    H["Step 2: COMPLETED"]
+    I["Step 3: COMPLETED"]
+
+    J["Step 1: COMPLETED"]
+    K["Step 2: FAILED"]
+
+    L["Step 2: COMPLETED"]
+    M["Step 3: COMPLETED"]
+
+    A --> B
+    A --> C
+
+    B --> D
+
+    C --> E
+    C --> F
+
+    D --> G
+    D --> H
+    D --> I
+
+    E --> J
+    E --> K
+
+    F --> L
+    F --> M
+```
+
+전체 실행 횟수를 정리하면 다음과 같다.
+
+| 구분            | 생성된 개수 |
+| ------------- | -----: |
+| Job 정의        |      1 |
+| JobInstance   |      2 |
+| JobExecution  |      3 |
+| StepExecution |      7 |
+
+Job 정의는 하나다.
+
+하지만 식별용 JobParameters가 서로 다른 날짜로 전달되었으므로 JobInstance는 두 개다.
+
+첫 번째 JobInstance는 한 번 실행되어 성공했다.
+
+두 번째 JobInstance는 첫 번째 실행에서 실패했고, 두 번째 실행에서 성공했다.
+
+따라서 JobExecution은 총 세 개다.
+
+그리고 실제 실행된 Step의 수를 합산하면 StepExecution은 일곱 개다.
+
+**StepExecution의 개수는 Job에 등록된 Step의 개수만으로 결정되지 않는다. 실제로 각 Step이 몇 번 실행되었는지에 따라 달라진다.**
+
+---
+
+### JobExecution과 StepExecution을 함께 조회하기
+
+실무에서는 JobExecution과 StepExecution을 연결해 배치 실행 결과를 확인하는 경우가 많다.
+
+예를 들어 특정 Job이 실패했다면 어느 Step에서 실패했는지 확인해야 한다.
+
+이때 다음 SQL을 사용할 수 있다.
+
+```sql
+SELECT
+    ji.JOB_NAME,
+    ji.JOB_INSTANCE_ID,
+
+    je.JOB_EXECUTION_ID,
+    je.STATUS AS JOB_STATUS,
+    je.START_TIME AS JOB_START_TIME,
+    je.END_TIME AS JOB_END_TIME,
+
+    se.STEP_EXECUTION_ID,
+    se.STEP_NAME,
+    se.STATUS AS STEP_STATUS,
+
+    se.READ_COUNT,
+    se.WRITE_COUNT,
+    se.COMMIT_COUNT,
+    se.ROLLBACK_COUNT,
+
+    se.EXIT_CODE,
+    se.EXIT_MESSAGE
+
+FROM BATCH_JOB_INSTANCE ji
+
+JOIN BATCH_JOB_EXECUTION je
+    ON ji.JOB_INSTANCE_ID = je.JOB_INSTANCE_ID
+
+LEFT JOIN BATCH_STEP_EXECUTION se
+    ON je.JOB_EXECUTION_ID = se.JOB_EXECUTION_ID
+
+WHERE ji.JOB_NAME = 'stepExecutionJob'
+
+ORDER BY
+    ji.JOB_INSTANCE_ID,
+    je.JOB_EXECUTION_ID,
+    se.STEP_EXECUTION_ID;
+```
+
+이 쿼리를 이용하면 다음 정보를 한 번에 확인할 수 있다.
+
+```text
+Job 이름
+
+JobInstance ID
+
+JobExecution ID
+
+Job 실행 상태
+
+StepExecution ID
+
+Step 이름
+
+Step 실행 상태
+
+읽기 및 쓰기 건수
+
+커밋 및 롤백 횟수
+
+종료 코드와 메시지
+```
+
+이러한 정보는 배치 모니터링 및 장애 분석에 활용할 수 있다.
+
+특히 실패 후 재시작한 작업이라면 이전 JobExecution과 새로운 JobExecution을 비교해 어떤 Step이 다시 실행되었는지 확인할 수 있다.
+
+---
+
+### StepExecution과 ExecutionContext의 관계
+
+StepExecution은 자신의 ExecutionContext를 가진다.
+
+ExecutionContext는 Step 실행 과정에서 필요한 상태 정보를 저장한다.
+
+예를 들어 대량의 결제 데이터를 처리하는 Step이 있다고 생각해보자.
+
+```text
+결제 데이터 100만 건 처리
+        │
+        ▼
+100,000건 완료
+        │
+        ▼
+200,000건 완료
+        │
+        ▼
+300,000건 완료
+        │
+        ▼
+장애 발생
+```
+
+배치가 중단되었을 때 이전에 어디까지 처리했는지 알아야 할 수 있다.
+
+이때 ExecutionContext에 마지막 처리 위치를 저장할 수 있다.
+
+```java
+ExecutionContext context =
+        stepExecution.getExecutionContext();
+
+context.putLong(
+        "lastProcessedId",
+        300000L
+);
+```
+
+이 값이 적절한 시점에 데이터베이스에 저장되었다면 재시작할 때 이전 상태를 복원할 수 있다.
+
+#### StepExecutionContext는 어디에 저장될까?
+
+StepExecution의 ExecutionContext는 다음 테이블에 저장된다.
+
+```text
+BATCH_STEP_EXECUTION_CONTEXT
+```
+
+StepExecution과 StepExecutionContext는 다음과 같은 관계를 가진다.
+
+```mermaid
+erDiagram
+    BATCH_STEP_EXECUTION ||--o| BATCH_STEP_EXECUTION_CONTEXT : has
+```
+
+하나의 StepExecution에는 자신의 ExecutionContext가 대응한다.
+
+Spring Batch는 StepExecutionContext를 이용해 재시작에 필요한 정보를 관리한다.
+
+특히 Chunk 기반 Step에서는 커밋 시점에 ExecutionContext를 저장하는 구조를 활용할 수 있다.
+
+이러한 기능은 대용량 데이터를 처리할 때 중요하다.
+
+다만 커스텀 Reader를 구현한 경우에는 저장된 처리 위치를 실제 조회 로직에 반영하도록 개발해야 한다.
+
+또한 실행 중 외부 시스템에 반영된 데이터까지 자동으로 롤백하거나 중복 처리를 방지하는 것은 아니므로 멱등성도 함께 고려해야 한다.
+
+---
+
+### 실무에서 StepExecution을 어떻게 활용할까?
+
+StepExecution은 단순히 Spring Batch 내부에서 사용하는 객체가 아니다.
+
+실제 운영 환경에서는 배치 모니터링과 장애 분석에 중요한 정보를 제공한다.
+
+#### Step별 실행 시간 분석
+
+StepExecution에는 시작 시간과 종료 시간이 저장된다.
+
+따라서 어떤 Step에서 많은 시간이 소요되는지 확인할 수 있다.
+
+예를 들어 다음과 같은 정산 Job이 있다고 생각해보자.
+
+| Step     | 실행 시간 |
+| -------- | ----: |
+| 정산 대상 조회 |    2분 |
+| 정산 금액 계산 |   15분 |
+| 정산 결과 저장 |    3분 |
+
+이 경우 전체 배치 시간 중 정산 금액 계산 Step이 가장 많은 시간을 차지한다.
+
+따라서 해당 Step의 데이터 처리 구조나 SQL을 분석할 수 있다.
+
+다음 SQL을 사용할 수 있다.
+
+```sql
+SELECT
+    STEP_NAME,
+    STATUS,
+    TIMESTAMPDIFF(
+        SECOND,
+        START_TIME,
+        END_TIME
+    ) AS EXECUTION_SECONDS
+FROM BATCH_STEP_EXECUTION
+WHERE START_TIME IS NOT NULL
+  AND END_TIME IS NOT NULL
+ORDER BY EXECUTION_SECONDS DESC;
+```
+
+이 쿼리는 Step별 실행 시간을 초 단위로 계산한다.
+
+이를 활용하면 상대적으로 처리 시간이 오래 걸리는 Step을 찾을 수 있다.
+
+#### 실패한 Step 확인
+
+다음 SQL을 이용해 실패한 Step을 확인할 수 있다.
+
+```sql
+SELECT
+    STEP_EXECUTION_ID,
+    JOB_EXECUTION_ID,
+    STEP_NAME,
+    STATUS,
+    EXIT_CODE,
+    EXIT_MESSAGE
+FROM BATCH_STEP_EXECUTION
+WHERE STATUS = 'FAILED'
+ORDER BY STEP_EXECUTION_ID DESC;
+```
+
+실패한 Step의 종료 메시지를 확인하면 장애 원인을 파악하는 데 도움이 된다.
+
+다만 EXIT_MESSAGE에 모든 예외 정보가 저장되는 것은 아니므로 상세 분석에는 애플리케이션 로그도 함께 확인해야 한다.
+
+#### 데이터 처리량 확인
+
+Chunk 기반 배치에서는 READ_COUNT와 WRITE_COUNT를 통해 처리 건수를 확인할 수 있다.
+
+```sql
+SELECT
+    STEP_NAME,
+    READ_COUNT,
+    FILTER_COUNT,
+    WRITE_COUNT,
+    READ_SKIP_COUNT,
+    PROCESS_SKIP_COUNT,
+    WRITE_SKIP_COUNT
+FROM BATCH_STEP_EXECUTION
+ORDER BY STEP_EXECUTION_ID DESC;
+```
+
+이 정보를 통해 다음과 같은 사항을 확인할 수 있다.
+
+```text
+몇 건의 데이터를 읽었는가?
+
+몇 건이 필터링되었는가?
+
+몇 건이 Writer로 처리되었는가?
+
+어느 단계에서 Skip이 발생했는가?
+```
+
+또한 COMMIT_COUNT와 ROLLBACK_COUNT를 활용하면 트랜잭션 처리 상황을 분석할 수 있다.
+
+다만 이러한 카운터는 Spring Batch가 관리하는 처리 통계이므로 외부 시스템에 실제 반영된 데이터 건수와 항상 일치한다고 볼 수는 없다.
+
+---
+
+### StepExecution을 사용할 때 주의할 점
+
+StepExecution은 배치의 실행 상태를 관리하는 중요한 객체이므로 몇 가지 사항을 주의해야 한다.
+
+#### 완료된 Step은 재시작 시 기본적으로 실행되지 않는다
+
+기본적인 재시작 동작에서는 이미 COMPLETED 상태인 Step을 건너뛴다.
+
+따라서 실패한 Job을 다시 실행할 때 모든 Step이 처음부터 실행된다고 가정하면 안 된다.
+
+매번 실행해야 하는 Step이라면 `allowStartIfComplete(true)` 설정을 고려할 수 있다.
+
+하지만 이 경우에도 중복 실행으로 인한 부작용이 없는지 확인해야 한다.
+
+#### StepExecution은 실행 시도마다 별도로 생성된다
+
+동일한 Step이 여러 번 실행되었다면 여러 StepExecution이 존재할 수 있다.
+
+따라서 Step의 실행 횟수를 분석할 때는 Step 이름만 보는 것이 아니라 JobInstance와 JobExecution의 관계를 함께 확인해야 한다.
+
+예를 들어 같은 Step 이름이라도 서로 다른 JobInstance에서 실행된 기록일 수 있다.
+
+#### StepExecutionContext는 Step별로 구분된다
+
+각 Step은 자신의 ExecutionContext를 가진다.
+
+따라서 Step 1의 ExecutionContext에 저장한 값이 Step 2의 ExecutionContext에 자동으로 전달되는 것은 아니다.
+
+Step 간 데이터를 공유해야 한다면 JobExecutionContext나 ExecutionContextPromotionListener 등을 활용할 수 있다.
+
+#### 실패한 Step을 재시작한다고 중복 처리가 자동으로 방지되지는 않는다
+
+Spring Batch는 이전 실행 상태를 참고해 재시작할 Step을 결정한다.
+
+하지만 실제 비즈니스 데이터가 중복 처리되지 않도록 보장하는 것은 별도의 문제다.
+
+예를 들어 외부 API 호출 이후 네트워크 타임아웃이 발생했다면 외부 시스템에서는 이미 요청을 정상적으로 처리했을 수 있다.
+
+따라서 재시작 가능한 Step을 설계할 때는 비즈니스 키 기반 중복 처리 방지, 멱등성 키, 처리 완료 여부 확인 등을 함께 고려해야 한다.
+
+---
+
+### 정리
+
+Spring Batch에서 `StepExecution`은 Step에 대한 한 번의 실제 실행 시도를 나타내는 도메인 객체다.
+
+JobExecution이 Job의 실행 정보를 관리한다면 StepExecution은 각 Step의 실행 정보를 관리한다.
+
+StepExecution은 Step이 실제로 실행될 때 생성되며, 실행 상태와 처리 통계 등의 정보를 저장한다.
+
+가장 기본적인 관계는 다음과 같다.
+
+```text
+Job
+ │
+ ▼
+JobInstance
+ │
+ ▼
+JobExecution
+ │
+ ├── StepExecution 1
+ │
+ ├── StepExecution 2
+ │
+ └── StepExecution 3
+```
+
+하나의 JobExecution에는 여러 StepExecution이 존재할 수 있다.
+
+하지만 등록된 모든 Step에 대해 StepExecution이 무조건 생성되는 것은 아니다.
+
+이전 Step이 실패하여 다음 Step이 실행되지 않았다면 해당 Step의 StepExecution은 생성되지 않는다.
+
+또한 Job을 재시작할 때는 이전 실행의 Step 상태를 참고한다.
+
+기본적으로 완료된 Step은 다시 실행하지 않는다.
+
+반면 실패한 Step이나 아직 실행되지 않은 Step은 재시작 과정에서 실행될 수 있다.
+
+예를 들어 다음과 같은 상황이다.
+
+```text
+첫 번째 실행
+
+Step 1 → COMPLETED
+
+Step 2 → FAILED
+
+Step 3 → 실행되지 않음
+```
+
+재시작하면 다음과 같이 처리된다.
+
+```text
+두 번째 실행
+
+Step 1 → 실행 생략
+
+Step 2 → COMPLETED
+
+Step 3 → COMPLETED
+```
+
+이 과정에서 새로운 JobExecution이 생성된다.
+
+그리고 실제로 실행된 Step 2와 Step 3에 대한 새로운 StepExecution이 생성된다.
+
+이전 실행에서 생성된 StepExecution은 삭제되거나 덮어써지는 것이 아니라 실행 이력으로 남는다.
+
+StepExecution은 다음과 같은 정보를 관리한다.
+
+| 구분    | 주요 정보                                           |
+| ----- | ----------------------------------------------- |
+| 실행 식별 | StepExecution ID, Step 이름, JobExecution         |
+| 실행 상태 | BatchStatus, ExitStatus                         |
+| 실행 시간 | StartTime, EndTime, LastUpdated                 |
+| 처리 통계 | ReadCount, WriteCount, FilterCount              |
+| 트랜잭션  | CommitCount, RollbackCount                      |
+| 예외 처리 | ReadSkipCount, ProcessSkipCount, WriteSkipCount |
+| 상태 관리 | ExecutionContext, FailureExceptions             |
+
+이러한 정보는 `BATCH_STEP_EXECUTION` 테이블과 관련 메타데이터 테이블에 저장된다.
+
+따라서 실제 운영 환경에서는 StepExecution을 이용해 특정 배치가 어느 단계에서 실패했는지, 몇 건의 데이터를 처리했는지, 어떤 Step이 재시작되었는지 확인할 수 있다.
+
+또한 Chunk 기반 배치에서는 StepExecution의 처리 통계를 활용해 데이터 처리량과 트랜잭션 상태를 분석할 수 있다.
+
+결국 **StepExecution은 Step의 실행 상태를 기록하는 객체인 동시에, 배치의 재시작과 장애 분석 및 운영 관리를 가능하게 하는 핵심 도메인 객체**다.
+
+#### 한 줄 요약
+
+> Spring Batch의 `StepExecution`은 Step이 실제로 실행될 때 생성되는 개별 실행 정보 객체이며, 하나의 JobExecution에 여러 StepExecution이 연결될 수 있다. 실패한 Job을 재시작하면 이전에 완료된 Step은 기본적으로 건너뛰고 실패했거나 실행되지 않은 Step을 실행하며, 이 과정에서 새로운 StepExecution이 생성되어 실행 상태와 처리 결과가 각각 관리된다.
+
+## StepContribution
+
+### Spring Batch StepContribution 이해: Chunk 처리 통계와 StepExecution 업데이트 원리
+
+Spring Batch에서 `StepExecution`은 Step에 대한 한 번의 실행 시도를 나타내는 도메인 객체다.
+
+StepExecution은 실행 상태뿐 아니라 실제 데이터 처리 과정에서 발생한 다양한 정보를 관리한다.
+
+대표적으로 다음과 같은 정보가 있다.
+
+| 속성               | 의미                 |
+| ---------------- | ------------------ |
+| readCount        | 읽은 Item 수          |
+| writeCount       | 쓴 Item 수           |
+| filterCount      | 필터링된 Item 수        |
+| readSkipCount    | 읽기 과정에서 건너뛴 Item 수 |
+| processSkipCount | 처리 과정에서 건너뛴 Item 수 |
+| writeSkipCount   | 쓰기 과정에서 건너뛴 Item 수 |
+| commitCount      | 커밋 횟수              |
+| rollbackCount    | 롤백 횟수              |
+
+그런데 한 가지 궁금한 점이 있다.
+
+**Spring Batch는 데이터를 처리하면서 발생하는 Read, Write, Filter, Skip 등의 횟수를 어떤 방식으로 StepExecution에 반영할까?**
+
+예를 들어 1,000건의 주문을 처리하는 배치가 있다고 생각해보자.
+
+```text
+Order 1
+Order 2
+Order 3
+...
+Order 1000
+```
+
+이 데이터를 100건씩 처리한다면 전체 작업은 여러 개의 Chunk로 나뉜다.
+
+```text
+Chunk 1 → 100건 처리
+Chunk 2 → 100건 처리
+Chunk 3 → 100건 처리
+...
+Chunk 10 → 100건 처리
+```
+
+각 Chunk에서는 데이터를 읽거나 저장하면서 처리 건수가 변경된다.
+
+그렇다면 매번 Item을 읽을 때마다 StepExecution의 전체 통계를 직접 변경해야 할까?
+
+Spring Batch는 이러한 역할을 분리하기 위해 `StepContribution`이라는 도메인 객체를 제공한다.
+
+StepContribution은 **하나의 처리 단위에서 발생한 변경사항을 임시로 누적하고, 적절한 시점에 StepExecution에 반영하는 역할**을 담당한다.
+
+이번에는 StepContribution의 구조부터 생성 과정, Tasklet과의 관계, `StepExecution.apply()`의 동작 원리, 종료 코드 변경 기능까지 살펴보자.
+
+또한 실제 Spring Batch 프로젝트에서 StepContribution을 조회하고, 데이터베이스에 실행 통계가 어떻게 저장되는지도 확인해보자.
+
+**개발 환경**
+
+| 항목           | 기술         |
+| ------------ | ---------- |
+| Java         | Java 17    |
+| Spring Boot  | 3.4.13     |
+| Spring Batch | 5.2.4      |
+| Build Tool   | Maven      |
+| Database     | MySQL 8.4  |
+| Step 구성      | Tasklet 기반 |
+
+---
+
+### StepContribution이란?
+
+`StepContribution`은 Step 실행 중 발생하는 처리 통계의 변경사항을 임시로 관리하는 도메인 객체다.
+
+Spring Batch에서는 이를 통해 Read, Write, Filter, Skip 등의 변경사항을 누적한 뒤 StepExecution에 반영한다.
+
+예를 들어 다음과 같은 Step이 있다고 생각해보자.
+
+```text
+Step: settlementStep
+```
+
+이 Step에서 100건의 정산 데이터를 처리한다.
+
+처리 과정에서 다음과 같은 결과가 발생했다고 가정하자.
+
+```text
+읽은 데이터: 100건
+
+필터링된 데이터: 10건
+
+저장한 데이터: 90건
+```
+
+이러한 변경사항은 StepContribution에 누적될 수 있다.
+
+```text
+StepContribution
+    │
+    ├── readCount = 100
+    │
+    ├── filterCount = 10
+    │
+    └── writeCount = 90
+```
+
+그리고 트랜잭션 처리 과정에서 StepExecution에 누적된 값을 반영한다.
+
+```text
+StepContribution
+        │
+        │ apply()
+        ▼
+StepExecution
+        │
+        ├── readCount += 100
+        │
+        ├── filterCount += 10
+        │
+        └── writeCount += 90
+```
+
+StepExecution은 이러한 변경사항을 반영하면서 해당 Step의 누적 실행 통계를 관리하게 된다.
+
+#### StepContribution의 핵심 역할
+
+StepContribution은 크게 세 가지 역할을 담당한다.
+
+| 역할                 | 설명                                      |
+| ------------------ | --------------------------------------- |
+| 처리 통계 누적           | Read, Write, Filter, Skip 등의 변경사항 관리    |
+| StepExecution 업데이트 | 누적된 변경사항을 StepExecution에 반영             |
+| ExitStatus 관리      | Step의 종료 결과에 사용자 정의 종료 코드를 적용할 수 있도록 지원 |
+
+여기서 가장 중요한 역할은 첫 번째와 두 번째다.
+
+**StepContribution은 개별 처리 단위에서 발생한 변경사항을 관리하고, StepExecution은 Step 전체의 누적 실행 정보를 관리한다.**
+
+---
+
+### 왜 StepContribution이 필요할까?
+
+StepContribution이 필요한 이유를 이해하려면 Chunk 기반 처리 구조를 생각해볼 필요가 있다.
+
+Spring Batch는 대량의 데이터를 처리할 때 일반적으로 Chunk 기반 방식을 사용한다.
+
+Chunk 기반 처리에서는 일정한 개수의 데이터를 읽고, 가공하고, 저장한 뒤 트랜잭션을 커밋한다.
+
+예를 들어 다음과 같은 설정이 있다고 생각해보자.
+
+```java
+.<Order, Settlement>chunk(100, transactionManager)
+```
+
+이 설정은 일반적으로 100개의 Item을 하나의 Chunk 처리 단위로 구성한다.
+
+전체 처리 흐름은 다음과 같다.
+
+```text
+트랜잭션 시작
+       │
+       ▼
+ItemReader
+       │
+       ▼
+100건 읽기
+       │
+       ▼
+ItemProcessor
+       │
+       ▼
+데이터 가공
+       │
+       ▼
+ItemWriter
+       │
+       ▼
+데이터 저장
+       │
+       ▼
+트랜잭션 커밋
+```
+
+여기서 중요한 점은 모든 데이터가 한 번에 처리되는 것이 아니라는 사실이다.
+
+1,000건의 데이터를 100건씩 처리한다면 여러 번의 트랜잭션이 발생할 수 있다.
+
+```text
+Chunk 1
+   │
+   ├── Read: 100
+   ├── Write: 100
+   └── Commit
+
+Chunk 2
+   │
+   ├── Read: 100
+   ├── Write: 100
+   └── Commit
+
+Chunk 3
+   │
+   ├── Read: 100
+   ├── Write: 100
+   └── Commit
+```
+
+StepExecution은 Step 전체의 누적 통계를 관리해야 한다.
+
+반면 각 Chunk는 자신이 처리한 결과를 계산해야 한다.
+
+이 두 책임을 하나의 객체에 모두 집중시키는 것보다 구분하는 편이 자연스럽다.
+
+그래서 Spring Batch에서는 StepContribution을 사용한다.
+
+```mermaid
+flowchart TD
+    A["TaskletStep"]
+    B["Chunk 1"]
+    C["Chunk 2"]
+    D["Chunk 3"]
+
+    E["StepContribution 1"]
+    F["StepContribution 2"]
+    G["StepContribution 3"]
+
+    H["StepExecution"]
+
+    A --> B
+    A --> C
+    A --> D
+
+    B --> E
+    C --> F
+    D --> G
+
+    E -->|"apply"| H
+    F -->|"apply"| H
+    G -->|"apply"| H
+```
+
+각 처리 단위에서는 자신의 변경사항을 관리한다.
+
+그리고 StepExecution에는 이러한 값이 누적된다.
+
+따라서 StepContribution을 이해할 때는 다음과 같이 구분하면 된다.
+
+**StepContribution은 처리 단위별 변경사항이고, StepExecution은 Step 전체의 누적 실행 정보다.**
+
+---
+
+### StepContribution과 StepExecution의 차이
+
+두 객체는 모두 Read, Write, Filter, Skip 등의 정보를 관리한다.
+
+하지만 관리하는 범위와 목적이 다르다.
+
+| 구분              | StepContribution          | StepExecution             |
+| --------------- | ------------------------- | ------------------------- |
+| 역할              | 처리 단위의 변경사항 누적            | Step 전체 실행 정보 관리          |
+| 관리 범위           | Tasklet 실행 또는 Chunk 처리 단위 | 개별 Step 실행 전체             |
+| 생성 시점           | TaskletStep의 트랜잭션 처리 과정   | Step 실행 준비 과정             |
+| Read/Write 정보   | 현재 처리 단위의 증분 값            | Step의 누적 값                |
+| Commit/Rollback | 직접 관리하지 않음                | 횟수 관리                     |
+| ExitStatus      | 종료 결과 변경에 기여              | 최종 종료 결과 관리               |
+| 데이터베이스 저장       | 별도 전용 테이블 없음              | BATCH_STEP_EXECUTION      |
+| 주요 메서드          | increment 계열 메서드          | apply(), getReadCount() 등 |
+
+예를 들어 현재 StepExecution에 다음 값이 있다고 생각해보자.
+
+```text
+StepExecution
+
+readCount = 200
+
+writeCount = 190
+
+filterCount = 10
+```
+
+이번 Chunk에서 100건을 추가로 읽었다.
+
+그중 5건을 필터링하고 95건을 저장했다.
+
+```text
+StepContribution
+
+readCount = 100
+
+writeCount = 95
+
+filterCount = 5
+```
+
+이 Contribution을 StepExecution에 반영하면 다음과 같이 변경된다.
+
+```text
+StepExecution
+
+readCount = 300
+
+writeCount = 285
+
+filterCount = 15
+```
+
+기존 값을 새로운 값으로 덮어쓰는 것이 아니다.
+
+**기존 누적 값에 이번 처리 단위에서 발생한 변경사항을 더한다.**
+
+이러한 방식으로 StepExecution은 전체 실행 결과를 관리한다.
+
+---
+
+### StepContribution의 내부 구조
+
+Spring Batch 5.2.4에서 StepContribution은 다음과 같은 주요 속성을 가진다.
+
+```text
+StepContribution
+    │
+    ├── readCount
+    │
+    ├── writeCount
+    │
+    ├── filterCount
+    │
+    ├── parentSkipCount
+    │
+    ├── readSkipCount
+    │
+    ├── writeSkipCount
+    │
+    ├── processSkipCount
+    │
+    ├── exitStatus
+    │
+    └── stepExecution
+```
+
+각 속성의 의미를 살펴보자.
+
+| 속성               | 역할                                            |
+| ---------------- | --------------------------------------------- |
+| readCount        | 현재 처리 단위에서 읽은 Item 수                          |
+| writeCount       | 현재 처리 단위에서 쓴 Item 수                           |
+| filterCount      | ItemProcessor에서 필터링한 Item 수                   |
+| parentSkipCount  | Contribution 생성 시점에 StepExecution에 누적된 Skip 수 |
+| readSkipCount    | 현재 처리 단위에서 읽기 과정의 Skip 수                      |
+| processSkipCount | 현재 처리 단위에서 가공 과정의 Skip 수                      |
+| writeSkipCount   | 현재 처리 단위에서 쓰기 과정의 Skip 수                      |
+| exitStatus       | 처리 결과에 대한 종료 코드                               |
+| stepExecution    | 현재 Contribution이 속한 StepExecution             |
+
+여기서 중요한 부분은 `stepExecution`이다.
+
+StepContribution은 자신이 속한 StepExecution을 참조한다.
+
+따라서 Tasklet에서 StepContribution을 전달받으면 해당 StepExecution에도 접근할 수 있다.
+
+#### StepContribution은 StepExecution을 상속하는 객체일까?
+
+그렇지 않다.
+
+두 객체는 상속 관계가 아니다.
+
+StepContribution은 StepExecution을 참조하는 구조다.
+
+```mermaid
+classDiagram
+    class StepExecution {
+        -readCount
+        -writeCount
+        -filterCount
+        -readSkipCount
+        -processSkipCount
+        -writeSkipCount
+        -commitCount
+        -rollbackCount
+        -exitStatus
+
+        +createStepContribution() StepContribution
+        +apply(StepContribution) void
+    }
+
+    class StepContribution {
+        -readCount
+        -writeCount
+        -filterCount
+        -parentSkipCount
+        -readSkipCount
+        -processSkipCount
+        -writeSkipCount
+        -exitStatus
+        -stepExecution
+
+        +getStepExecution() StepExecution
+        +getReadCount() long
+        +getWriteCount() long
+        +getSkipCount() long
+        +setExitStatus(ExitStatus) void
+    }
+
+    StepContribution --> StepExecution : references
+    StepExecution ..> StepContribution : creates_and_applies
+```
+
+StepExecution은 StepContribution을 생성하고 변경사항을 반영할 수 있다.
+
+StepContribution은 자신을 생성한 StepExecution을 참조한다.
+
+이처럼 두 객체는 서로 협력하지만 역할은 다르다.
+
+---
+
+### StepContribution의 주요 메서드
+
+StepContribution은 처리 통계를 변경하기 위한 메서드를 제공한다.
+
+대표적인 메서드를 살펴보자.
+
+| 메서드                           | 역할                                 |
+| ----------------------------- | ---------------------------------- |
+| `incrementReadCount()`        | Read 횟수 증가                         |
+| `incrementWriteCount(long)`   | Write 건수 증가                        |
+| `incrementFilterCount(long)`  | Filter 건수 증가                       |
+| `incrementReadSkipCount()`    | Read Skip 횟수 증가                    |
+| `incrementProcessSkipCount()` | Process Skip 횟수 증가                 |
+| `incrementWriteSkipCount()`   | Write Skip 횟수 증가                   |
+| `getSkipCount()`              | 현재 Contribution의 총 Skip 수          |
+| `getStepSkipCount()`          | 기존 StepExecution의 Skip과 현재 Skip의 합 |
+| `getStepExecution()`          | 연결된 StepExecution 조회               |
+| `getExitStatus()`             | 현재 ExitStatus 조회                   |
+| `setExitStatus()`             | ExitStatus 설정                      |
+
+이 중 일부 메서드는 실제 Item 처리 과정에서 Spring Batch 내부 구성 요소에 의해 호출된다.
+
+#### incrementReadCount()
+
+다음 메서드는 읽은 Item 수를 1 증가시킨다.
+
+```java
+contribution.incrementReadCount();
+```
+
+개념적으로 다음과 같다.
+
+```text
+readCount = 0
+
+incrementReadCount()
+
+readCount = 1
+```
+
+다시 호출하면 2가 된다.
+
+Chunk 기반 처리에서는 Reader가 반환한 Item의 처리 건수를 집계하기 위해 이러한 메서드를 활용한다.
+
+#### incrementWriteCount()
+
+Write 건수는 다음과 같이 증가시킬 수 있다.
+
+```java
+contribution.incrementWriteCount(10);
+```
+
+이 경우 writeCount가 10 증가한다.
+
+읽기와 달리 증가시킬 개수를 직접 전달하는 방식이다.
+
+예를 들어 Writer가 10개의 Item을 처리했다면 다음과 같은 통계를 반영할 수 있다.
+
+```text
+writeCount = 10
+```
+
+#### incrementFilterCount()
+
+Filter 건수는 다음 메서드로 증가시킬 수 있다.
+
+```java
+contribution.incrementFilterCount(3);
+```
+
+이 경우 filterCount가 3 증가한다.
+
+Spring Batch에서는 ItemProcessor가 `null`을 반환하면 해당 Item을 필터링할 수 있다.
+
+예를 들어 100개의 주문 중 취소된 주문 10건을 제외한다면 다음과 같은 결과가 발생할 수 있다.
+
+```text
+readCount = 100
+
+filterCount = 10
+
+writeCount = 90
+```
+
+#### Skip 관련 메서드
+
+읽기, 처리, 쓰기 과정에서 Skip이 발생하면 각각의 Skip 카운터가 증가할 수 있다.
+
+```java
+contribution.incrementReadSkipCount();
+
+contribution.incrementProcessSkipCount();
+
+contribution.incrementWriteSkipCount();
+```
+
+이러한 메서드는 오류가 발생한 Item을 무조건 건너뛰게 만드는 기능이 아니다.
+
+실제 Skip 여부는 Spring Batch의 예외 처리 및 Skip 정책에 따라 결정된다.
+
+StepContribution은 그 결과로 발생한 통계를 관리하는 역할을 담당한다.
+
+---
+
+### parentSkipCount는 무엇인가?
+
+StepContribution에는 `parentSkipCount`라는 속성이 존재한다.
+
+다른 카운터와 비교하면 의미가 다소 특별하다.
+
+일반적인 Skip 카운터는 현재 Contribution에서 발생한 Skip 횟수를 관리한다.
+
+반면 parentSkipCount는 **Contribution이 생성되는 시점에 StepExecution에 이미 누적되어 있던 Skip 횟수**를 나타낸다.
+
+예를 들어 이전 Chunk까지 StepExecution에 다음과 같은 값이 있다고 생각해보자.
+
+```text
+StepExecution
+
+readSkipCount = 2
+
+processSkipCount = 1
+
+writeSkipCount = 0
+```
+
+기존 전체 Skip 횟수는 3이다.
+
+```text
+2 + 1 + 0 = 3
+```
+
+새로운 StepContribution이 생성되면 이 누적 값을 기준으로 parentSkipCount를 초기화한다.
+
+```text
+StepContribution
+
+parentSkipCount = 3
+```
+
+이번 Chunk에서 Read Skip이 한 번 발생했다고 생각해보자.
+
+```text
+readSkipCount = 1
+```
+
+이때 다음 두 메서드의 결과가 다르다.
+
+```java
+contribution.getSkipCount();
+```
+
+현재 Contribution의 Skip 수를 반환한다.
+
+```text
+1
+```
+
+반면 다음 메서드는
+
+```java
+contribution.getStepSkipCount();
+```
+
+이전 StepExecution의 누적 Skip과 현재 Contribution의 Skip을 합산한 값을 반환한다.
+
+```text
+3 + 1 = 4
+```
+
+두 메서드의 차이를 정리하면 다음과 같다.
+
+| 메서드                  | 의미                               | 예시 결과 |
+| -------------------- | -------------------------------- | ----: |
+| `getSkipCount()`     | 현재 Contribution에서 발생한 Skip 수     |     1 |
+| `getStepSkipCount()` | 기존 StepExecution의 Skip + 현재 Skip |     4 |
+
+이러한 구조는 Chunk 처리 과정에서 누적 Skip 횟수를 고려해야 할 때 유용하다.
+
+---
+
+### StepContribution은 언제 생성될까?
+
+StepContribution은 StepExecution이 생성되는 시점과 정확히 같은 시점에 생성되는 객체가 아니다.
+
+실제 생성 과정은 `TaskletStep`의 실행과 연결되어 있다.
+
+앞에서 TaskletStep은 Tasklet을 실행하는 Step 구현체라고 설명했다.
+
+TaskletStep은 내부적으로 트랜잭션을 처리하면서 Tasklet을 실행한다.
+
+그리고 해당 처리 과정에서 StepContribution을 생성한다.
+
+전체 흐름은 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["TaskletStep 실행"]
+    B["StepExecution 준비"]
+    C["트랜잭션 처리 시작"]
+    D["StepExecution.createStepContribution()"]
+    E["StepContribution 생성"]
+    F["Tasklet.execute()"]
+    G["처리 통계 누적"]
+    H["StepExecution.apply()"]
+    I["JobRepository에 실행 정보 반영"]
+    J["트랜잭션 커밋"]
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+    F --> G
+    G --> H
+    H --> I
+    I --> J
+```
+
+이 구조에서 중요한 부분은 다음이다.
+
+```java
+stepExecution.createStepContribution();
+```
+
+StepExecution은 StepContribution을 생성하기 위한 팩토리 메서드를 제공한다.
+
+해당 메서드는 다음과 같은 구조를 가진다.
+
+```java
+public StepContribution createStepContribution() {
+    return new StepContribution(this);
+}
+```
+
+여기서 `this`는 현재 StepExecution 객체다.
+
+따라서 생성된 StepContribution은 자신이 속한 StepExecution을 참조하게 된다.
+
+```text
+StepExecution
+      │
+      │ createStepContribution()
+      ▼
+StepContribution
+      │
+      └── stepExecution 참조
+```
+
+이렇게 생성된 StepContribution은 이후 Tasklet의 `execute()` 메서드에 전달된다.
+
+---
+
+### TaskletStep과 StepContribution의 관계
+
+Spring Batch의 `Tasklet` 인터페이스는 다음 메서드를 정의한다.
+
+```java
+RepeatStatus execute(
+        StepContribution contribution,
+        ChunkContext chunkContext
+) throws Exception;
+```
+
+여기서 첫 번째 매개변수가 StepContribution이다.
+
+두 번째 매개변수는 ChunkContext다.
+
+TaskletStep은 처리 과정에서 StepContribution을 생성하고 Tasklet에 전달한다.
+
+개념적으로 다음과 같다.
+
+```java
+StepContribution contribution =
+        stepExecution.createStepContribution();
+
+RepeatStatus result =
+        tasklet.execute(contribution, chunkContext);
+```
+
+이 코드는 핵심 흐름만 표현한 것이다.
+
+실제 TaskletStep에는 트랜잭션 관리, 반복 실행, 예외 처리, 메타데이터 저장 등의 기능이 추가되어 있다.
+
+여기서 알아야 할 핵심은 다음과 같다.
+
+**Tasklet에 전달되는 StepContribution은 개발자가 직접 생성할 필요가 없다. Spring Batch가 실행 과정에서 생성하여 전달한다.**
+
+따라서 다음과 같이 작성하면 된다.
+
+```java
+.tasklet((contribution, chunkContext) -> {
+
+    StepExecution stepExecution =
+            contribution.getStepExecution();
+
+    return RepeatStatus.FINISHED;
+
+}, transactionManager)
+```
+
+이 코드에서는 Spring Batch가 전달한 StepContribution을 통해 현재 StepExecution을 조회한다.
+
+---
+
+### TaskletStep과 ChunkOrientedTasklet의 관계
+
+앞에서 TaskletStep은 Tasklet을 실행하는 구현체라고 설명했다.
+
+그런데 Spring Batch에는 두 가지 대표적인 Tasklet 실행 방식이 있다.
+
+첫 번째는 개발자가 직접 구현하는 Tasklet이다.
+
+두 번째는 Chunk 기반 처리를 수행하는 `ChunkOrientedTasklet`이다.
+
+#### 사용자 정의 Tasklet
+
+다음과 같이 직접 Tasklet을 작성할 수 있다.
+
+```java
+@Bean
+public Step cleanupStep(
+        JobRepository jobRepository,
+        PlatformTransactionManager transactionManager
+) {
+    return new StepBuilder("cleanupStep", jobRepository)
+            .tasklet((contribution, chunkContext) -> {
+
+                System.out.println("임시 데이터 정리");
+
+                return RepeatStatus.FINISHED;
+
+            }, transactionManager)
+            .build();
+}
+```
+
+이 경우 TaskletStep은 개발자가 작성한 Tasklet을 실행한다.
+
+단순한 Tasklet에서는 ItemReader, ItemProcessor, ItemWriter를 사용하지 않을 수 있다.
+
+따라서 Read, Write, Filter 등의 카운터가 모두 0으로 남을 수 있다.
+
+#### ChunkOrientedTasklet
+
+반면 Chunk 기반 처리는 일반적으로 다음 구성 요소를 사용한다.
+
+```text
+ItemReader
+    │
+    ▼
+ItemProcessor
+    │
+    ▼
+ItemWriter
+```
+
+Spring Batch는 이러한 구조를 실행하기 위해 내부적으로 ChunkOrientedTasklet을 사용한다.
+
+```mermaid
+flowchart TD
+    A["TaskletStep"]
+    B["ChunkOrientedTasklet"]
+    C["ChunkProvider"]
+    D["ItemReader"]
+    E["ChunkProcessor"]
+    F["ItemProcessor"]
+    G["ItemWriter"]
+    H["StepContribution"]
+
+    A --> B
+
+    B --> C
+    C --> D
+
+    B --> E
+    E --> F
+    E --> G
+
+    C -.->|"Read 통계"| H
+    E -.->|"Process / Write 통계"| H
+```
+
+ItemReader는 데이터를 읽는다.
+
+ItemProcessor는 데이터를 가공하거나 필터링한다.
+
+ItemWriter는 처리된 데이터를 저장한다.
+
+이 과정에서 Read, Write, Filter, Skip 등의 통계가 StepContribution에 누적된다.
+
+따라서 ChunkOrientedTasklet은 StepContribution을 통해 처리 결과를 관리할 수 있다.
+
+---
+
+### StepContribution의 변경사항은 언제 StepExecution에 반영될까?
+
+StepContribution의 핵심 동작은 `StepExecution.apply()`를 이해하면 명확해진다.
+
+Spring Batch는 처리 단위에서 발생한 변경사항을 StepContribution에 누적한다.
+
+이후 Chunk의 트랜잭션을 커밋하기 전에 StepExecution에 해당 값을 적용한다.
+
+중요한 점은 **Step 전체가 종료될 때까지 기다렸다가 단 한 번 적용하는 구조가 아니라는 것**이다.
+
+Chunk 기반 Step에서는 여러 번의 트랜잭션이 발생할 수 있다.
+
+그리고 각 트랜잭션 처리 과정에서 StepContribution을 생성하고 StepExecution에 반영할 수 있다.
+
+예를 들어 다음과 같다.
+
+```text
+StepExecution
+    │
+    ├── Chunk 1
+    │      │
+    │      ├── StepContribution 1
+    │      └── apply()
+    │
+    ├── Chunk 2
+    │      │
+    │      ├── StepContribution 2
+    │      └── apply()
+    │
+    └── Chunk 3
+           │
+           ├── StepContribution 3
+           └── apply()
+```
+
+따라서 StepExecution은 Chunk가 처리될 때마다 누적 통계가 갱신되는 구조를 가진다.
+
+Spring Batch 5.2.4의 실제 TaskletStep 구현에서도 Tasklet 실행 후 `stepExecution.apply(contribution)`을 호출하고, JobRepository를 통한 메타데이터 업데이트를 수행한 뒤 트랜잭션 커밋을 진행한다.
+
+---
+
+### StepExecution.apply()의 동작 원리
+
+StepExecution에는 다음 메서드가 존재한다.
+
+```java
+public synchronized void apply(
+        StepContribution contribution
+)
+```
+
+이 메서드는 StepContribution에 누적된 변경사항을 현재 StepExecution에 반영한다.
+
+Spring Batch 5.2.4의 주요 처리 로직은 다음과 같다.
+
+```java
+public synchronized void apply(
+        StepContribution contribution
+) {
+
+    readSkipCount += contribution.getReadSkipCount();
+
+    writeSkipCount += contribution.getWriteSkipCount();
+
+    processSkipCount += contribution.getProcessSkipCount();
+
+    filterCount += contribution.getFilterCount();
+
+    readCount += contribution.getReadCount();
+
+    writeCount += contribution.getWriteCount();
+
+    exitStatus = exitStatus.and(
+            contribution.getExitStatus()
+    );
+}
+```
+
+이 코드를 보면 StepContribution의 역할이 명확해진다.
+
+기존 값을 덮어쓰는 것이 아니라 현재 Contribution에서 발생한 변경사항을 더하고 있다.
+
+예를 들어 다음 코드를 보자.
+
+```java
+readCount += contribution.getReadCount();
+```
+
+기존 StepExecution의 readCount가 200이라고 생각해보자.
+
+```text
+StepExecution.readCount = 200
+```
+
+이번 Contribution의 readCount는 100이다.
+
+```text
+StepContribution.readCount = 100
+```
+
+`apply()`가 실행되면 다음과 같이 변경된다.
+
+```text
+200 + 100 = 300
+```
+
+따라서 최종적으로 StepExecution의 readCount는 300이 된다.
+
+다른 카운터도 동일한 방식으로 처리된다.
+
+이러한 방식으로 Spring Batch는 Step 전체의 누적 통계를 관리한다.
+
+#### synchronized를 사용하는 이유
+
+메서드 선언에는 다음 키워드가 포함되어 있다.
+
+```java
+synchronized
+```
+
+이는 동시에 여러 실행 흐름이 같은 StepExecution의 값을 변경할 때 발생할 수 있는 충돌을 방지하기 위한 장치다.
+
+Spring Batch는 일부 멀티스레드 실행 구조를 지원한다.
+
+이러한 환경에서는 StepExecution의 통계가 동시에 갱신될 수 있다.
+
+따라서 `apply()` 메서드는 동기화를 통해 관련 값의 누적 처리가 원자적으로 수행되도록 한다.
+
+다만 `synchronized`만으로 데이터베이스 트랜잭션 정합성까지 보장되는 것은 아니다.
+
+실제 메타데이터 저장의 정합성은 JobRepository와 트랜잭션 처리 구조도 함께 담당한다.
+
+---
+
+### CommitCount와 RollbackCount는 왜 StepContribution에 없을까?
+
+StepContribution에는 Read, Write, Filter, Skip 관련 속성이 존재한다.
+
+하지만 다음 두 속성은 존재하지 않는다.
+
+```text
+commitCount
+
+rollbackCount
+```
+
+두 값은 StepExecution에서 직접 관리한다.
+
+왜 이러한 차이가 있을까?
+
+Read, Write, Filter 등의 통계는 Item 처리 과정에서 발생한다.
+
+반면 Commit과 Rollback은 트랜잭션 처리 결과와 직접 연결된다.
+
+따라서 Spring Batch는 이러한 트랜잭션 관련 카운터를 StepExecution에서 별도로 관리한다.
+
+예를 들어 TaskletStep 내부에서는 커밋을 준비하는 과정에서 다음 메서드를 호출할 수 있다.
+
+```java
+stepExecution.incrementCommitCount();
+```
+
+롤백이 발생하면 다음 메서드를 사용할 수 있다.
+
+```java
+stepExecution.incrementRollbackCount();
+```
+
+두 메서드는 StepExecution의 트랜잭션 관련 통계를 변경한다.
+
+이를 정리하면 다음과 같다.
+
+| 통계            | 주요 관리 객체                         |
+| ------------- | -------------------------------- |
+| ReadCount     | StepContribution → StepExecution |
+| WriteCount    | StepContribution → StepExecution |
+| FilterCount   | StepContribution → StepExecution |
+| SkipCount     | StepContribution → StepExecution |
+| CommitCount   | StepExecution                    |
+| RollbackCount | StepExecution                    |
+
+따라서 StepContribution이 StepExecution의 모든 속성을 관리한다고 이해해서는 안 된다.
+
+**StepContribution은 Item 처리와 관련된 주요 변경사항을 담당하고, Commit과 Rollback 같은 트랜잭션 통계는 StepExecution에서 별도로 관리한다.**
+
+---
+
+### StepContribution과 트랜잭션의 관계
+
+StepContribution이 변경사항을 누적한다고 해서 해당 값이 즉시 데이터베이스에 저장되는 것은 아니다.
+
+일반적으로 다음 과정을 거친다.
+
+```text
+트랜잭션 시작
+       │
+       ▼
+StepContribution 생성
+       │
+       ▼
+Tasklet 실행
+       │
+       ▼
+Read / Write / Filter 통계 누적
+       │
+       ▼
+StepExecution.apply()
+       │
+       ▼
+JobRepository 메타데이터 업데이트
+       │
+       ▼
+Commit
+```
+
+여기서 주의해야 할 부분이 있다.
+
+`apply()`는 Java 메모리에 존재하는 StepExecution 객체의 값을 변경한다.
+
+반면 JobRepository는 해당 실행 정보를 데이터베이스에 저장하는 역할을 담당한다.
+
+따라서 다음 두 과정은 서로 다르다.
+
+```text
+StepExecution.apply()
+    │
+    └── 메모리 객체의 누적 통계 변경
+```
+
+```text
+JobRepository.update()
+    │
+    └── 데이터베이스 메타데이터 갱신
+```
+
+이 두 과정을 구분하면 StepContribution의 역할을 더 정확하게 이해할 수 있다.
+
+#### 트랜잭션이 실패하면 어떻게 될까?
+
+예를 들어 Writer에서 예외가 발생했다고 생각해보자.
+
+```text
+ItemReader
+    │
+    ▼
+ItemProcessor
+    │
+    ▼
+ItemWriter
+    │
+    ▼
+예외 발생
+    │
+    ▼
+Rollback
+```
+
+이 경우 처리 통계의 최종 반영 결과는 트랜잭션 처리 및 오류 복구 과정에 따라 달라질 수 있다.
+
+특히 TaskletStep 내부에서는 실패한 트랜잭션의 변경사항을 처리하고, 필요에 따라 StepExecution 상태를 복구하는 로직이 존재한다.
+
+따라서 단순히 `apply()`가 호출되었다는 이유만으로 해당 통계가 모두 데이터베이스에 영구 반영되었다고 판단해서는 안 된다.
+
+또한 비즈니스 데이터베이스와 JobRepository가 서로 다른 트랜잭션 경계를 사용한다면 두 저장소 사이에 정합성 문제가 발생할 수 있다.
+
+실무에서는 이러한 차이를 고려해 트랜잭션과 재시작 전략을 설계해야 한다.
+
+---
+
+### StepContribution의 ExitStatus 변경 기능
+
+StepContribution은 처리 건수만 관리하는 객체가 아니다.
+
+Step의 종료 결과를 나타내는 ExitStatus도 관리할 수 있다.
+
+StepContribution은 기본적으로 다음과 같은 ExitStatus를 가진다.
+
+```java
+ExitStatus.EXECUTING
+```
+
+이 값은 현재 처리 단위가 실행 중임을 나타내는 초기 종료 코드다.
+
+일반적으로 Step이 정상적으로 완료되면 최종 StepExecution의 종료 상태는 COMPLETED가 된다.
+
+하지만 개발자가 직접 사용자 정의 종료 코드를 설정할 수도 있다.
+
+#### 사용자 정의 ExitStatus 설정
+
+예를 들어 정산 대상 데이터가 없다고 생각해보자.
+
+이 경우 작업 자체가 실패한 것은 아니다.
+
+하지만 정상적으로 데이터를 처리한 경우와 구분하고 싶을 수 있다.
+
+이때 다음과 같은 종료 코드를 정의할 수 있다.
+
+```java
+contribution.setExitStatus(
+        new ExitStatus("NO_DATA")
+);
+```
+
+여기서 `NO_DATA`는 개발자가 정의한 종료 코드다.
+
+Spring Batch가 기본적으로 제공하는 BatchStatus는 아니다.
+
+이 코드는 StepContribution의 ExitStatus를 변경한다.
+
+이후 StepExecution에 Contribution을 반영할 때 종료 코드도 함께 반영된다.
+
+#### BatchStatus와 ExitStatus의 차이
+
+두 개념을 다시 비교해보자.
+
+| 구분     | BatchStatus       | ExitStatus                 |
+| ------ | ----------------- | -------------------------- |
+| 목적     | 실행 상태 관리          | 종료 결과 관리                   |
+| 타입     | Enum              | Class                      |
+| 사용자 정의 | 제한적               | 사용자 정의 종료 코드 가능            |
+| 예시     | COMPLETED, FAILED | COMPLETED, FAILED, NO_DATA |
+| 주요 활용  | 실행 및 재시작 상태 판단    | 실행 결과 구분 및 Flow 제어         |
+
+예를 들어 정산 대상이 없지만 오류 없이 작업이 종료되었다면 다음과 같은 상태를 사용할 수 있다.
+
+```text
+BatchStatus = COMPLETED
+
+ExitStatus = NO_DATA
+```
+
+이 경우 작업은 정상적으로 완료되었지만 처리할 데이터가 없었다는 의미를 표현할 수 있다.
+
+다만 종료 코드만 변경한다고 해서 Step의 BatchStatus가 자동으로 FAILED로 변경되는 것은 아니다.
+
+또한 ExitStatus는 기존 상태와 결합되는 과정이 존재하므로 실제 최종 종료 코드는 Job 및 Step의 실행 흐름에 따라 확인해야 한다.
+
+---
+
+### StepContribution을 이용해 StepExecution에 접근하기
+
+StepContribution은 현재 StepExecution을 참조한다.
+
+따라서 Tasklet에서 StepContribution을 전달받으면 StepExecution에 접근할 수 있다.
+
+다음 코드를 살펴보자.
+
+```java
+StepExecution stepExecution =
+        contribution.getStepExecution();
+```
+
+이제 StepExecution이 가진 다양한 정보에 접근할 수 있다.
+
+예를 들어 Step 이름을 확인할 수 있다.
+
+```java
+String stepName =
+        stepExecution.getStepName();
+```
+
+StepExecution ID도 조회할 수 있다.
+
+```java
+Long stepExecutionId =
+        stepExecution.getId();
+```
+
+그리고 부모 JobExecution도 가져올 수 있다.
+
+```java
+JobExecution jobExecution =
+        stepExecution.getJobExecution();
+```
+
+JobExecution ID는 다음과 같이 조회한다.
+
+```java
+Long jobExecutionId =
+        jobExecution.getId();
+```
+
+Job 이름도 확인할 수 있다.
+
+```java
+String jobName =
+        jobExecution
+                .getJobInstance()
+                .getJobName();
+```
+
+전체 참조 관계를 표현하면 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["StepContribution"]
+    B["StepExecution"]
+    C["JobExecution"]
+    D["JobInstance"]
+    E["Job Name"]
+    F["JobParameters"]
+
+    A -->|"getStepExecution()"| B
+    B -->|"getJobExecution()"| C
+    C -->|"getJobInstance()"| D
+    D -->|"getJobName()"| E
+    C -->|"getJobParameters()"| F
+```
+
+이처럼 StepContribution을 이용하면 현재 Step에 대한 정보뿐 아니라 부모 Job의 실행 정보에도 접근할 수 있다.
+
+실제 비즈니스 로직에서는 JobParameters나 ExecutionContext를 조회해야 하는 경우가 많다.
+
+이러한 참조 구조를 알아두면 필요한 정보를 쉽게 가져올 수 있다.
+
+---
+
+### 실제 StepContribution 동작 확인하기
+
+이번에는 Spring Batch 프로젝트에서 StepContribution이 생성되고 전달되는 과정을 확인해보자.
+
+예제에서는 두 개의 Step으로 구성된 Job을 생성한다.
+
+```text
+stepContributionJob
+       │
+       ├── contributionStep1
+       │      │
+       │      └── StepContribution 확인
+       │
+       └── contributionStep2
+              │
+              └── StepContribution 확인
+```
+
+두 Step은 모두 Tasklet 기반으로 구성한다.
+
+Chunk 기반 처리를 사용하지 않기 때문에 Read, Write, Filter 등의 통계는 기본적으로 0이다.
+
+반면 Tasklet이 정상적으로 실행되면 트랜잭션 커밋이 발생할 수 있다.
+
+이러한 차이를 실제 실행 결과로 확인해보자.
+
+---
+
+### StepContributionConfiguration 전체 코드
+
+다음과 같이 설정 클래스를 작성한다.
+
+`StepContributionConfiguration.java`
+
+```java
+package com.example.batch;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.batch.core.ExitStatus;
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.Step;
+import org.springframework.batch.core.StepContribution;
+import org.springframework.batch.core.StepExecution;
+import org.springframework.batch.core.StepExecutionListener;
+
+import org.springframework.batch.core.job.builder.JobBuilder;
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.step.builder.StepBuilder;
+
+import org.springframework.batch.repeat.RepeatStatus;
+
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import org.springframework.transaction.PlatformTransactionManager;
+
+@Configuration
+public class StepContributionConfiguration {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(
+                    StepContributionConfiguration.class
+            );
+
+    @Bean
+    public Job stepContributionJob(
+            JobRepository jobRepository,
+            @Qualifier("contributionStep1") Step step1,
+            @Qualifier("contributionStep2") Step step2
+    ) {
+        return new JobBuilder(
+                "stepContributionJob",
+                jobRepository
+        )
+                .start(step1)
+                .next(step2)
+                .build();
+    }
+
+    @Bean
+    public Step contributionStep1(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager,
+            StepExecutionListener contributionListener
+    ) {
+        return new StepBuilder(
+                "contributionStep1",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    logContribution(contribution);
+
+                    log.info("Step 1 비즈니스 로직 실행");
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .listener(contributionListener)
+                .build();
+    }
+
+    @Bean
+    public Step contributionStep2(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager,
+            StepExecutionListener contributionListener
+    ) {
+        return new StepBuilder(
+                "contributionStep2",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    logContribution(contribution);
+
+                    log.info("Step 2 비즈니스 로직 실행");
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .listener(contributionListener)
+                .build();
+    }
+
+    @Bean
+    public StepExecutionListener contributionListener() {
+
+        return new StepExecutionListener() {
+
+            @Override
+            public ExitStatus afterStep(
+                    StepExecution stepExecution
+            ) {
+                log.info(
+                        "Step 종료 - name={}, readCount={}, "
+                                + "writeCount={}, filterCount={}, "
+                                + "commitCount={}, rollbackCount={}",
+                        stepExecution.getStepName(),
+                        stepExecution.getReadCount(),
+                        stepExecution.getWriteCount(),
+                        stepExecution.getFilterCount(),
+                        stepExecution.getCommitCount(),
+                        stepExecution.getRollbackCount()
+                );
+
+                return null;
+            }
+        };
+    }
+
+    private void logContribution(
+            StepContribution contribution
+    ) {
+        StepExecution stepExecution =
+                contribution.getStepExecution();
+
+        JobExecution jobExecution =
+                stepExecution.getJobExecution();
+
+        log.info(
+                "Job Name: {}",
+                jobExecution.getJobInstance().getJobName()
+        );
+
+        log.info(
+                "JobExecution ID: {}",
+                jobExecution.getId()
+        );
+
+        log.info(
+                "StepExecution ID: {}",
+                stepExecution.getId()
+        );
+
+        log.info(
+                "Step Name: {}",
+                stepExecution.getStepName()
+        );
+
+        log.info(
+                "Contribution ReadCount: {}",
+                contribution.getReadCount()
+        );
+
+        log.info(
+                "Contribution WriteCount: {}",
+                contribution.getWriteCount()
+        );
+
+        log.info(
+                "Contribution FilterCount: {}",
+                contribution.getFilterCount()
+        );
+
+        log.info(
+                "Contribution SkipCount: {}",
+                contribution.getSkipCount()
+        );
+
+        log.info(
+                "Contribution ExitStatus: {}",
+                contribution.getExitStatus().getExitCode()
+        );
+    }
+}
+```
+
+이 코드는 두 개의 TaskletStep을 생성한다.
+
+Job은 다음과 같다.
+
+```java
+return new JobBuilder(
+        "stepContributionJob",
+        jobRepository
+)
+        .start(step1)
+        .next(step2)
+        .build();
+```
+
+첫 번째 Step과 두 번째 Step은 모두 다음 메서드를 이용해 StepContribution을 확인한다.
+
+```java
+logContribution(contribution);
+```
+
+이때 StepContribution은 Spring Batch가 생성하여 Tasklet에 전달한 객체다.
+
+개발자가 직접 생성한 객체가 아니다.
+
+---
+
+### 코드 분석: StepContribution을 통한 실행 정보 조회
+
+먼저 다음 코드를 살펴보자.
+
+```java
+StepExecution stepExecution =
+        contribution.getStepExecution();
+```
+
+StepContribution이 참조하는 StepExecution을 가져온다.
+
+이후 부모 JobExecution을 조회한다.
+
+```java
+JobExecution jobExecution =
+        stepExecution.getJobExecution();
+```
+
+여기서 JobInstance의 이름도 확인할 수 있다.
+
+```java
+String jobName =
+        jobExecution
+                .getJobInstance()
+                .getJobName();
+```
+
+이러한 구조는 앞에서 살펴본 도메인 객체들의 관계와 동일하다.
+
+```text
+StepContribution
+        │
+        ▼
+StepExecution
+        │
+        ▼
+JobExecution
+        │
+        ▼
+JobInstance
+```
+
+#### ReadCount 확인
+
+다음 코드는 Contribution에 누적된 ReadCount를 확인한다.
+
+```java
+contribution.getReadCount();
+```
+
+이번 예제는 ItemReader를 사용하지 않는다.
+
+따라서 값은 0이다.
+
+```text
+Contribution ReadCount: 0
+```
+
+#### WriteCount 확인
+
+다음 코드는 WriteCount를 확인한다.
+
+```java
+contribution.getWriteCount();
+```
+
+ItemWriter를 사용하지 않으므로 역시 0이다.
+
+```text
+Contribution WriteCount: 0
+```
+
+#### FilterCount 확인
+
+다음 코드는 FilterCount를 확인한다.
+
+```java
+contribution.getFilterCount();
+```
+
+ItemProcessor를 사용하지 않으므로 0이다.
+
+```text
+Contribution FilterCount: 0
+```
+
+#### ExitStatus 확인
+
+다음 코드는 현재 Contribution의 ExitStatus를 조회한다.
+
+```java
+contribution.getExitStatus().getExitCode();
+```
+
+Contribution이 생성되었을 때 기본 종료 코드는 `EXECUTING`이다.
+
+따라서 별도의 종료 코드를 설정하지 않았다면 다음과 같이 출력된다.
+
+```text
+Contribution ExitStatus: EXECUTING
+```
+
+이 값은 최종 StepExecution의 ExitStatus와 구분해야 한다.
+
+Step이 정상적으로 완료되면 최종 종료 상태는 일반적으로 COMPLETED가 된다.
+
+---
+
+### StepExecutionListener로 최종 처리 결과 확인하기
+
+이번 예제에서는 StepExecutionListener를 사용했다.
+
+이 Listener는 Step이 종료된 뒤 StepExecution의 최종 정보를 확인하는 역할을 담당한다.
+
+```java
+@Override
+public ExitStatus afterStep(
+        StepExecution stepExecution
+) {
+    log.info(
+            "Step 종료 - name={}, readCount={}, "
+                    + "writeCount={}, filterCount={}, "
+                    + "commitCount={}, rollbackCount={}",
+            stepExecution.getStepName(),
+            stepExecution.getReadCount(),
+            stepExecution.getWriteCount(),
+            stepExecution.getFilterCount(),
+            stepExecution.getCommitCount(),
+            stepExecution.getRollbackCount()
+    );
+
+    return null;
+}
+```
+
+여기서 주의해야 할 부분은 StepContribution이 아니라 StepExecution을 조회하고 있다는 점이다.
+
+```java
+StepExecution stepExecution
+```
+
+Tasklet 안에서는 현재 처리 단위의 Contribution을 확인했다.
+
+반면 Listener에서는 Step 전체의 실행 통계를 확인한다.
+
+따라서 두 시점의 값을 비교하면 StepContribution과 StepExecution의 역할 차이를 이해할 수 있다.
+
+---
+
+### Spring Boot 실행 환경 설정
+
+이번에는 이전에 구성한 Spring Batch 프로젝트를 그대로 사용한다.
+
+데이터베이스는 MySQL을 사용한다.
+
+`application-mysql.yml`
+
+```yaml
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3307/batch_db
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    username: ${BATCH_DB_USERNAME:batch_user}
+    password: ${BATCH_DB_PASSWORD:localpass}
+
+  batch:
+    job:
+      enabled: true
+      name: stepContributionJob
+
+    jdbc:
+      initialize-schema: never
+```
+
+여기서 다음 설정은 자동 실행할 Job을 지정한다.
+
+```yaml
+spring:
+  batch:
+    job:
+      enabled: true
+      name: stepContributionJob
+```
+
+Spring Boot가 시작되면 등록된 Job 중 `stepContributionJob`을 실행하도록 구성한다.
+
+그리고 다음 설정을 사용했다.
+
+```yaml
+spring:
+  batch:
+    jdbc:
+      initialize-schema: never
+```
+
+이미 Spring Batch의 메타데이터 테이블이 생성되어 있다는 전제다.
+
+아직 메타데이터 스키마가 없다면 Spring Batch 5.2에 맞는 스키마를 먼저 생성해야 한다.
+
+또한 이전 예제에서 수동으로 JobLauncher를 호출하는 ApplicationRunner를 등록했다면 동시에 실행되지 않도록 Profile 등을 이용해 분리해야 한다.
+
+---
+
+### 애플리케이션 실행하기
+
+먼저 Maven으로 프로젝트를 빌드한다.
+
+```bash
+./mvnw clean package
+```
+
+정상적으로 빌드가 완료되었다면 JAR 파일을 실행한다.
+
+```bash
+java -jar target/spring-batch-demo-0.0.1-SNAPSHOT.jar \
+  --spring.profiles.active=mysql \
+  businessDate=2026-10-15
+```
+
+이번에는 다음 JobParameters를 전달했다.
+
+```text
+businessDate=2026-10-15
+```
+
+이 값은 기본적으로 식별용 파라미터로 사용된다.
+
+따라서 동일한 Job 이름과 동일한 파라미터로 이미 완료된 실행이 존재한다면 중복 실행 예외가 발생할 수 있다.
+
+처음 실행하는 파라미터를 사용한다고 가정하자.
+
+#### 실행 결과
+
+정상적으로 실행되면 다음과 유사한 로그를 확인할 수 있다.
+
+```text
+Job Name: stepContributionJob
+JobExecution ID: 1
+StepExecution ID: 1
+Step Name: contributionStep1
+
+Contribution ReadCount: 0
+Contribution WriteCount: 0
+Contribution FilterCount: 0
+Contribution SkipCount: 0
+Contribution ExitStatus: EXECUTING
+
+Step 1 비즈니스 로직 실행
+
+Step 종료 - name=contributionStep1,
+readCount=0,
+writeCount=0,
+filterCount=0,
+commitCount=1,
+rollbackCount=0
+
+Job Name: stepContributionJob
+JobExecution ID: 1
+StepExecution ID: 2
+Step Name: contributionStep2
+
+Contribution ReadCount: 0
+Contribution WriteCount: 0
+Contribution FilterCount: 0
+Contribution SkipCount: 0
+Contribution ExitStatus: EXECUTING
+
+Step 2 비즈니스 로직 실행
+
+Step 종료 - name=contributionStep2,
+readCount=0,
+writeCount=0,
+filterCount=0,
+commitCount=1,
+rollbackCount=0
+```
+
+위 ID와 CommitCount는 기존 메타데이터가 없는 환경에서 각각의 Tasklet이 한 번씩 정상 실행되는 일반적인 상황을 가정한 예시다.
+
+실제 ID와 트랜잭션 통계는 실행 환경에 따라 달라질 수 있다.
+
+여기서 중요한 부분은 다음이다.
+
+```text
+Contribution ReadCount: 0
+
+Contribution WriteCount: 0
+
+Contribution FilterCount: 0
+```
+
+이번에는 ItemReader, ItemProcessor, ItemWriter를 사용하지 않았다.
+
+따라서 Item 처리 통계는 증가하지 않았다.
+
+반면 다음 값은 증가할 수 있다.
+
+```text
+commitCount = 1
+```
+
+TaskletStep에서 Tasklet 실행을 트랜잭션으로 처리하기 때문이다.
+
+이처럼 ReadCount와 WriteCount는 0이더라도 CommitCount는 0보다 클 수 있다.
+
+---
+
+### 데이터베이스에서 StepExecution 확인하기
+
+이번에는 MySQL에서 실행 결과를 확인해보자.
+
+StepExecution의 메타데이터는 다음 테이블에 저장된다.
+
+```text
+BATCH_STEP_EXECUTION
+```
+
+다음 SQL을 실행한다.
+
+```sql
+SELECT
+    se.STEP_EXECUTION_ID,
+    se.JOB_EXECUTION_ID,
+    se.STEP_NAME,
+
+    se.STATUS,
+    se.EXIT_CODE,
+
+    se.READ_COUNT,
+    se.WRITE_COUNT,
+    se.FILTER_COUNT,
+
+    se.READ_SKIP_COUNT,
+    se.PROCESS_SKIP_COUNT,
+    se.WRITE_SKIP_COUNT,
+
+    se.COMMIT_COUNT,
+    se.ROLLBACK_COUNT
+
+FROM BATCH_STEP_EXECUTION se
+
+JOIN BATCH_JOB_EXECUTION je
+    ON se.JOB_EXECUTION_ID = je.JOB_EXECUTION_ID
+
+JOIN BATCH_JOB_INSTANCE ji
+    ON je.JOB_INSTANCE_ID = ji.JOB_INSTANCE_ID
+
+WHERE ji.JOB_NAME = 'stepContributionJob'
+
+ORDER BY se.STEP_EXECUTION_ID DESC;
+```
+
+정상적으로 실행되었다면 다음과 같은 결과를 확인할 수 있다.
+
+| STEP_NAME         | STATUS    | READ_COUNT | WRITE_COUNT | FILTER_COUNT | COMMIT_COUNT |
+| ----------------- | --------- | ---------: | ----------: | -----------: | -----------: |
+| contributionStep1 | COMPLETED |          0 |           0 |            0 |            1 |
+| contributionStep2 | COMPLETED |          0 |           0 |            0 |            1 |
+
+이 결과에서 두 가지 사실을 확인할 수 있다.
+
+첫 번째는 Tasklet 기반 Step에서도 StepExecution이 생성된다는 것이다.
+
+두 번째는 Read, Write 등의 Item 처리 통계가 없더라도 트랜잭션 관련 통계는 기록될 수 있다는 것이다.
+
+그리고 이러한 통계는 StepExecution에 저장된다.
+
+**StepContribution 자체를 저장하는 별도의 메타데이터 테이블은 존재하지 않는다.**
+
+StepContribution은 메모리에서 처리 단위의 변경사항을 관리하고, 최종적으로 StepExecution에 그 값을 반영하는 역할을 담당한다.
+
+---
+
+### Chunk 기반 처리에서 StepContribution이 동작하는 예시
+
+앞에서는 단순한 Tasklet을 이용해 StepContribution을 확인했다.
+
+이번에는 Chunk 기반 처리에서는 어떤 값들이 증가하는지 간단한 예시로 살펴보자.
+
+다음과 같은 주문 데이터가 있다고 생각해보자.
+
+```text
+Order 1 → 정상
+
+Order 2 → 정상
+
+Order 3 → 취소
+
+Order 4 → 정상
+
+Order 5 → 정상
+```
+
+Reader는 다섯 개의 주문을 읽는다.
+
+Processor는 취소된 주문을 필터링한다.
+
+Writer는 정상 주문 네 개를 저장한다.
+
+전체 흐름은 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["ItemReader"]
+    B["주문 5건 읽기"]
+    C["ItemProcessor"]
+    D["취소 주문 1건 필터링"]
+    E["정상 주문 4건"]
+    F["ItemWriter"]
+    G["4건 저장"]
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+    F --> G
+```
+
+이 경우 정상적으로 모든 작업이 완료되었다면 다음과 같은 통계가 기록될 수 있다.
+
+```text
+READ_COUNT = 5
+
+FILTER_COUNT = 1
+
+WRITE_COUNT = 4
+```
+
+여기서 StepContribution이 담당하는 역할을 살펴보자.
+
+#### ItemReader 처리
+
+Reader가 Item을 정상적으로 읽으면 ReadCount가 증가한다.
+
+```text
+readCount 증가
+```
+
+#### ItemProcessor 처리
+
+Processor가 특정 Item을 필터링하면 FilterCount가 증가한다.
+
+```text
+filterCount 증가
+```
+
+#### ItemWriter 처리
+
+Writer가 Item을 처리하면 WriteCount가 증가한다.
+
+```text
+writeCount 증가
+```
+
+이러한 변경사항이 StepContribution에 누적된다.
+
+이후 해당 처리 단위의 변경사항을 StepExecution에 반영한다.
+
+```mermaid
+flowchart TD
+    A["ItemReader"]
+    B["ItemProcessor"]
+    C["ItemWriter"]
+
+    D["StepContribution"]
+
+    E["readCount"]
+    F["filterCount"]
+    G["writeCount"]
+
+    H["StepExecution.apply()"]
+    I["StepExecution"]
+    J["BATCH_STEP_EXECUTION"]
+
+    A --> E
+    B --> F
+    C --> G
+
+    E --> D
+    F --> D
+    G --> D
+
+    D --> H
+    H --> I
+    I --> J
+```
+
+여기서 DB에 반영되는 값은 StepContribution의 단순한 복사본이 아니다.
+
+각 처리 단위의 증가분이 StepExecution에 누적된 결과다.
+
+이러한 구조를 이해하면 Chunk 기반 처리에서 READ_COUNT, WRITE_COUNT 등의 통계가 어떻게 계산되는지 파악하기 쉬워진다.
+
+---
+
+### StepContribution 생성 및 반영 시점 확인하기
+
+Spring Batch의 내부 동작을 더 정확하게 이해하려면 실제 메서드 호출 순서를 살펴보는 것이 좋다.
+
+특히 다음 세 메서드가 중요하다.
+
+```java
+StepExecution.createStepContribution()
+```
+
+```java
+Tasklet.execute(
+        StepContribution contribution,
+        ChunkContext chunkContext
+)
+```
+
+```java
+StepExecution.apply(
+        StepContribution contribution
+)
+```
+
+이 세 메서드가 StepContribution의 전체 역할을 보여준다.
+
+#### 첫 번째: createStepContribution()
+
+TaskletStep의 트랜잭션 처리 과정에서 호출된다.
+
+이때 새로운 StepContribution이 생성된다.
+
+```java
+StepContribution contribution =
+        stepExecution.createStepContribution();
+```
+
+StepContribution의 Read, Write, Filter 등의 기본 카운터는 0으로 초기화된다.
+
+ExitStatus는 기본적으로 EXECUTING 상태다.
+
+그리고 현재 StepExecution을 참조한다.
+
+#### 두 번째: Tasklet.execute()
+
+생성된 Contribution은 Tasklet에 전달된다.
+
+```java
+tasklet.execute(
+        contribution,
+        chunkContext
+);
+```
+
+이 과정에서 실제 비즈니스 로직이 실행된다.
+
+Chunk 기반 처리라면 Reader, Processor, Writer 등을 통해 Item 처리 통계가 변경될 수 있다.
+
+#### 세 번째: StepExecution.apply()
+
+Tasklet의 처리 결과를 StepExecution에 반영한다.
+
+```java
+stepExecution.apply(contribution);
+```
+
+이 과정에서 Read, Write, Filter, Skip 등의 증가분을 누적한다.
+
+그리고 ExitStatus도 결합한다.
+
+이후 JobRepository를 통한 메타데이터 업데이트와 트랜잭션 처리가 이어진다.
+
+세 메서드를 하나의 흐름으로 나타내면 다음과 같다.
+
+```mermaid
+sequenceDiagram
+    participant TS as TaskletStep
+    participant SE as StepExecution
+    participant SC as StepContribution
+    participant T as Tasklet
+    participant JR as JobRepository
+
+    TS->>SE: createStepContribution()
+    SE-->>TS: StepContribution
+
+    TS->>T: execute(contribution, chunkContext)
+
+    T->>SC: 처리 통계 변경
+    SC-->>T: 현재 통계 유지
+
+    T-->>TS: RepeatStatus
+
+    TS->>SE: apply(contribution)
+
+    SE->>SE: 누적 통계 및 ExitStatus 반영
+
+    TS->>JR: StepExecution 업데이트
+
+    JR-->>TS: 메타데이터 저장 처리
+```
+
+이러한 구조를 이해하면 StepContribution이 단순히 데이터를 담는 객체가 아니라 Spring Batch의 실행 통계 관리에서 중요한 역할을 담당한다는 사실을 알 수 있다.
+
+---
+
+### 실무에서 StepContribution을 이해해야 하는 이유
+
+실제 배치 시스템에서는 StepContribution을 직접 생성하거나 조작하는 경우가 많지 않다.
+
+일반적인 ItemReader, ItemProcessor, ItemWriter를 이용한다면 Spring Batch 내부에서 관련 통계를 관리하기 때문이다.
+
+그렇다면 StepContribution의 내부 동작을 알아야 하는 이유는 무엇일까?
+
+가장 큰 이유는 **배치 실행 통계를 정확하게 해석하고 장애 상황에서 메타데이터가 갱신되는 과정을 이해하기 위해서**다.
+
+#### 1. Chunk별 처리 통계를 이해할 수 있다
+
+예를 들어 10만 건의 결제 데이터를 처리하는 Step이 있다고 생각해보자.
+
+```text
+전체 데이터: 100,000건
+
+Chunk 크기: 1,000
+```
+
+정상적으로 모든 데이터를 처리하면 여러 번의 Chunk 실행이 발생한다.
+
+각 Chunk에서 처리한 결과는 StepContribution을 통해 StepExecution에 누적된다.
+
+따라서 StepExecution의 READ_COUNT는 전체 Step 실행에서 읽은 Item의 누적 수를 의미한다.
+
+StepContribution의 구조를 이해하면 이러한 누적 방식이 자연스럽게 연결된다.
+
+#### 2. 커밋 및 롤백 통계를 구분할 수 있다
+
+READ_COUNT와 WRITE_COUNT는 Item 처리 통계다.
+
+반면 COMMIT_COUNT와 ROLLBACK_COUNT는 트랜잭션 통계다.
+
+따라서 다음과 같은 결과가 발생할 수 있다.
+
+```text
+READ_COUNT = 1000
+
+WRITE_COUNT = 1000
+
+COMMIT_COUNT = 12
+
+ROLLBACK_COUNT = 2
+```
+
+이 경우 전체 1,000건의 Item을 처리했지만 실행 과정에서 롤백이 두 번 발생했을 수 있다.
+
+최종적으로 Step이 COMPLETED 상태라면 Retry 등의 과정을 통해 정상적으로 완료되었을 가능성도 있다.
+
+따라서 단순히 RollbackCount가 증가했다는 이유만으로 Step이 실패했다고 판단해서는 안 된다.
+
+#### 3. 실행 통계와 실제 비즈니스 데이터의 차이를 이해할 수 있다
+
+Spring Batch는 Item 처리 통계를 관리한다.
+
+하지만 해당 통계가 실제 외부 시스템에 반영된 데이터와 반드시 일치하는 것은 아니다.
+
+예를 들어 외부 결제 API를 호출하는 Writer가 있다고 생각해보자.
+
+```text
+ItemWriter
+     │
+     ▼
+외부 결제 API 호출
+     │
+     ▼
+요청 성공
+     │
+     ▼
+네트워크 오류
+```
+
+Spring Batch 내부에서는 예외가 발생했을 수 있다.
+
+하지만 외부 결제 시스템에서는 이미 요청이 처리되었을 가능성이 있다.
+
+이 경우 StepContribution과 StepExecution의 처리 통계만으로 실제 결제 완료 여부를 확정할 수 없다.
+
+따라서 외부 시스템과 연동하는 배치에서는 멱등성 키와 처리 결과 조회 기능 등을 함께 고려해야 한다.
+
+#### 4. Step 실행 상태와 종료 결과를 구분할 수 있다
+
+StepContribution은 ExitStatus를 변경할 수 있다.
+
+이를 통해 정상적으로 완료되었지만 처리할 데이터가 없는 상황 등을 사용자 정의 종료 코드로 구분할 수 있다.
+
+다만 종료 코드를 변경하는 것과 실제 BatchStatus를 변경하는 것은 서로 다른 작업이다.
+
+이 차이를 이해하면 향후 조건부 Flow를 구성할 때 실행 결과에 따라 다른 Step을 실행하는 구조를 설계할 수 있다.
+
+---
+
+### 정리
+
+Spring Batch의 `StepContribution`은 Step 실행 과정에서 발생하는 변경사항을 임시로 누적하고 StepExecution에 반영하는 도메인 객체다.
+
+StepExecution은 Step 전체의 실행 정보를 관리한다.
+
+반면 StepContribution은 현재 처리 단위에서 발생한 Read, Write, Filter, Skip 등의 증가분을 관리한다.
+
+두 객체의 관계는 다음과 같다.
+
+```text
+StepExecution
+       │
+       │ createStepContribution()
+       ▼
+StepContribution
+       │
+       │ 처리 통계 누적
+       ▼
+StepExecution.apply()
+       │
+       ▼
+StepExecution 누적 통계 업데이트
+       │
+       ▼
+JobRepository
+       │
+       ▼
+BATCH_STEP_EXECUTION
+```
+
+StepContribution은 TaskletStep의 실행 과정에서 생성된다.
+
+이후 Tasklet의 `execute()` 메서드에 전달된다.
+
+Tasklet이 수행되는 동안 처리 통계가 변경될 수 있으며, 이러한 값들은 `StepExecution.apply()`를 통해 StepExecution에 반영된다.
+
+주요 속성은 다음과 같다.
+
+| 속성               | 역할                                |
+| ---------------- | --------------------------------- |
+| readCount        | 읽은 Item 수                         |
+| writeCount       | 쓴 Item 수                          |
+| filterCount      | 필터링한 Item 수                       |
+| parentSkipCount  | 기존 StepExecution의 누적 Skip 수       |
+| readSkipCount    | 읽기 과정의 Skip 수                     |
+| processSkipCount | 처리 과정의 Skip 수                     |
+| writeSkipCount   | 쓰기 과정의 Skip 수                     |
+| exitStatus       | 처리 결과에 대한 종료 코드                   |
+| stepExecution    | 현재 Contribution이 속한 StepExecution |
+
+그리고 CommitCount와 RollbackCount는 StepContribution이 아니라 StepExecution에서 별도로 관리한다.
+
+StepContribution은 처리 단위의 누적 통계를 직접 데이터베이스에 저장하지 않는다.
+
+해당 변경사항을 StepExecution에 반영하고, Spring Batch가 JobRepository를 통해 실행 메타데이터를 관리한다.
+
+또한 StepContribution은 사용자 정의 ExitStatus를 설정할 수 있다.
+
+따라서 처리 결과에 따라 일반적인 COMPLETED, FAILED 이외의 종료 코드를 사용할 수 있다.
+
+실무에서는 StepContribution의 생성 시점과 `apply()` 호출 시점을 이해하는 것이 중요하다.
+
+특히 Chunk 기반 Step에서는 데이터 처리와 메타데이터 갱신이 트랜잭션 경계와 연결되어 있다.
+
+따라서 단순히 Step이 종료될 때 통계를 한 번 저장하는 구조로 이해해서는 안 된다.
+
+**StepContribution은 개별 처리 단위의 변경사항을 관리하고, StepExecution은 이를 누적하여 Step 전체의 실행 결과를 관리한다.**
+
+이러한 구조를 통해 Spring Batch는 대량 데이터 처리 과정에서도 Read, Write, Filter, Skip 등의 통계를 체계적으로 관리할 수 있다.
+
+#### 한 줄 요약
+
+> Spring Batch의 `StepContribution`은 Tasklet 또는 Chunk 처리 과정에서 발생하는 Read, Write, Filter, Skip 등의 변경사항을 임시로 누적하는 객체다. TaskletStep은 처리 단위마다 StepContribution을 생성하고, `StepExecution.apply()`를 통해 증가분을 StepExecution에 반영한다. 최종적으로 StepExecution에 누적된 실행 통계는 JobRepository를 통해 메타데이터 테이블에 저장된다.

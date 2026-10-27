@@ -21,6 +21,7 @@ submenu: true
 * [스프링 WebFlux 데이터베이스]{:.heading.flip-title}
 * [스프링 시큐리티 6]{:.heading.flip-title}
 * [Resilience4J]{:.heading.flip-title}
+* [스프링 시큐리티 JWT]{:.heading.flip-title}
 
 [레디스: Redis]: /developer-yumi-redis/
 [스프링 부트 CKEditor]: /developer-yumi-spring-boot-ckeditor/
@@ -29,3 +30,5 @@ submenu: true
 [스프링 WebFlux 데이터베이스]: /developer-yumi-spring-webflux-database/
 [스프링 시큐리티 6]: /developer-yumi-spring-security-6/
 [Resilience4J]: /developer-yumi-resilience4j/
+[스프링 시큐리티 JWT]: /spring-security-jwt/
+
