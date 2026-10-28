@@ -2,7 +2,7 @@
 layout: post
 bigtitle: 'Part 3. 실전 Kubernetes 프로젝트'
 subtitle: Ch 8. 서비스 배포와 운영
-date: '2026-10-19 00:00:10 +0900'
+date: '2026-10-27 00:00:10 +0900'
 categories:
     - for-backend-developers-kubernetes
 comments: true
