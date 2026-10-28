@@ -15266,3 +15266,5373 @@ StepContribution은 처리 단위의 누적 통계를 직접 데이터베이스�
 #### 한 줄 요약
 
 > Spring Batch의 `StepContribution`은 Tasklet 또는 Chunk 처리 과정에서 발생하는 Read, Write, Filter, Skip 등의 변경사항을 임시로 누적하는 객체다. TaskletStep은 처리 단위마다 StepContribution을 생성하고, `StepExecution.apply()`를 통해 증가분을 StepExecution에 반영한다. 최종적으로 StepExecution에 누적된 실행 통계는 JobRepository를 통해 메타데이터 테이블에 저장된다.
+
+## ExecutionContext
+
+### Spring Batch ExecutionContext 이해: Job과 Step 간 데이터 공유 및 재시작 원리
+
+Spring Batch에서 `JobExecution`은 Job의 실행 정보를 관리하고, `StepExecution`은 Step의 실행 상태와 처리 결과를 관리한다.
+
+그런데 배치 작업을 개발하다 보면 실행 상태 외에도 다양한 데이터를 저장해야 하는 상황이 발생한다.
+
+예를 들어 다음과 같은 정산 Job이 있다고 생각해보자.
+
+```text
+SettlementJob
+      │
+      ├── Step 1. 정산 대상 조회
+      │
+      ├── Step 2. 정산 금액 계산
+      │
+      ├── Step 3. 정산 결과 저장
+      │
+      └── Step 4. 정산 완료 처리
+```
+
+첫 번째 Step에서는 정산 대상 데이터를 조회한다.
+
+이때 조회한 데이터의 건수가 1,000건이라고 가정하자.
+
+두 번째 Step에서는 첫 번째 Step에서 조회한 데이터의 건수를 참조해야 할 수 있다.
+
+또한 세 번째 Step에서는 정산 결과를 저장하면서 마지막으로 처리한 데이터의 위치를 기록해야 할 수도 있다.
+
+만약 세 번째 Step에서 장애가 발생한다면 어떻게 될까?
+
+배치를 처음부터 다시 실행하는 대신 이전에 어디까지 처리했는지 확인하고, 필요한 지점부터 작업을 재시작해야 한다.
+
+이러한 상황에서는 다음 두 가지 기능이 필요하다.
+
+첫째, **Job과 Step의 실행 과정에서 필요한 데이터를 저장하고 공유할 수 있어야 한다.**
+
+둘째, **실행 중 저장한 상태를 데이터베이스에 유지하고, 장애 이후 재시작할 때 복원할 수 있어야 한다.**
+
+Spring Batch는 이러한 기능을 위해 `ExecutionContext`라는 도메인 객체를 제공한다.
+
+ExecutionContext는 단순한 Map처럼 데이터를 저장할 수 있지만, Spring Batch의 실행 메타데이터와 연결되어 있기 때문에 일반적인 메모리 Map과는 차이가 있다.
+
+이번에는 ExecutionContext의 기본 개념부터 JobExecutionContext와 StepExecutionContext의 차이, 실제 데이터 저장 및 조회 방법, 실패와 재시작 과정까지 살펴보자.
+
+**개발 환경**
+
+| 구분           | 기술         |
+| ------------ | ---------- |
+| Java         | Java 17    |
+| Spring Boot  | 3.4.13     |
+| Spring Batch | 5.2.4      |
+| Build Tool   | Maven      |
+| Database     | MySQL 8.4  |
+| Step 구성      | Tasklet 기반 |
+
+---
+
+### ExecutionContext란?
+
+`ExecutionContext`는 Spring Batch에서 실행 상태와 공유 데이터를 관리하기 위한 Key-Value 기반의 도메인 객체다.
+
+내부적으로 Map과 유사한 구조를 가지고 있으며, 개발자는 Key를 이용해 데이터를 저장하거나 조회할 수 있다.
+
+예를 들어 다음과 같은 데이터를 저장할 수 있다.
+
+```text
+jobName = settlementJob
+
+businessDate = 2026-10-15
+
+lastProcessedId = 10000
+
+processedCount = 500
+```
+
+각 데이터는 Key와 Value로 구성된다.
+
+| Key             | Value         | 의미            |
+| --------------- | ------------- | ------------- |
+| jobName         | settlementJob | Job 이름        |
+| businessDate    | 2026-10-15    | 정산 기준일        |
+| lastProcessedId | 10000         | 마지막 처리 데이터 ID |
+| processedCount  | 500           | 처리한 데이터 건수    |
+
+일반적인 Java Map과 비슷하지만 ExecutionContext에는 중요한 특징이 하나 더 있다.
+
+**Spring Batch는 ExecutionContext를 JobRepository를 통해 데이터베이스에 저장하고, 배치를 재시작할 때 이전 실행 상태를 복원할 수 있다.**
+
+따라서 ExecutionContext는 단순한 임시 데이터 저장소가 아니라 배치의 실행 상태를 유지하기 위한 객체다.
+
+#### ExecutionContext의 핵심 역할
+
+ExecutionContext의 역할을 정리하면 다음과 같다.
+
+| 역할         | 설명                                    |
+| ---------- | ------------------------------------- |
+| 실행 상태 저장   | 현재 Job 또는 Step에서 필요한 상태 정보 관리         |
+| 데이터 공유     | 같은 Job에 속한 Step 사이에서 필요한 데이터 공유       |
+| 재시작 정보 관리  | 마지막 처리 위치 등 재시작에 필요한 상태 저장            |
+| 데이터베이스 영속화 | JobRepository를 통해 실행 상태 저장            |
+| 실행별 상태 분리  | JobExecution과 StepExecution 단위로 상태 관리 |
+
+예를 들어 데이터베이스에서 100만 건의 주문을 처리하는 배치가 있다고 생각해보자.
+
+```text
+전체 주문 데이터: 1,000,000건
+          │
+          ▼
+100,000건 처리
+          │
+          ▼
+200,000건 처리
+          │
+          ▼
+300,000건 처리
+          │
+          ▼
+장애 발생
+```
+
+장애가 발생했을 때 이전 처리 위치를 알 수 있다면 이미 처리한 데이터를 불필요하게 다시 읽지 않도록 설계할 수 있다.
+
+이때 ExecutionContext에 다음과 같은 값을 저장할 수 있다.
+
+```java
+executionContext.putLong(
+        "lastProcessedId",
+        300000L
+);
+```
+
+이 값이 적절한 시점에 영속화되었다면 재시작 과정에서 조회할 수 있다.
+
+```java
+long lastProcessedId =
+        executionContext.getLong(
+                "lastProcessedId"
+        );
+```
+
+이후 Reader가 해당 값을 기준으로 다음 데이터를 조회하도록 구성할 수 있다.
+
+다만 **ExecutionContext에 마지막 처리 위치를 저장하는 것만으로 Spring Batch가 자동으로 해당 위치부터 데이터를 읽는 것은 아니다.**
+
+실제 재시작 위치의 복원은 Reader나 비즈니스 처리 로직과 연결되어야 한다.
+
+---
+
+### ExecutionContext의 내부 구조
+
+ExecutionContext는 내부적으로 Key와 Value를 관리하는 Map을 포함한다.
+
+개념적으로 다음과 같은 구조다.
+
+```java
+public class ExecutionContext {
+
+    private Map<String, Object> map;
+
+    // 데이터 저장 및 조회 기능
+}
+```
+
+위 코드는 내부 구조를 이해하기 위한 단순화된 표현이다.
+
+실제 클래스에는 Map 외에도 변경 여부를 감지하기 위한 상태와 다양한 조회 및 저장 메서드가 존재한다.
+
+ExecutionContext를 구조적으로 표현하면 다음과 같다.
+
+```mermaid
+classDiagram
+    class ExecutionContext {
+        -Map~String,Object~ map
+        -boolean dirty
+
+        +putString(String, String) void
+        +putLong(String, long) void
+        +putInt(String, int) void
+        +putDouble(String, double) void
+        +put(String, Object) void
+
+        +getString(String) String
+        +getLong(String) long
+        +getInt(String) int
+        +getDouble(String) double
+        +get(String) Object
+
+        +containsKey(String) boolean
+        +isDirty() boolean
+        +remove(String) Object
+    }
+```
+
+여기서 핵심은 Map 구조다.
+
+개발자는 다양한 데이터를 저장하고 필요한 시점에 조회할 수 있다.
+
+#### ExecutionContext 생성하기
+
+ExecutionContext는 직접 생성할 수도 있다.
+
+```java
+ExecutionContext executionContext =
+        new ExecutionContext();
+```
+
+이후 다음과 같이 데이터를 저장한다.
+
+```java
+executionContext.putString(
+        "jobName",
+        "settlementJob"
+);
+```
+
+Long 타입의 데이터도 저장할 수 있다.
+
+```java
+executionContext.putLong(
+        "lastProcessedId",
+        10000L
+);
+```
+
+정수 타입은 다음과 같다.
+
+```java
+executionContext.putInt(
+        "retryCount",
+        3
+);
+```
+
+실수 타입도 저장할 수 있다.
+
+```java
+executionContext.putDouble(
+        "progressRate",
+        75.5
+);
+```
+
+그리고 다음과 같이 조회한다.
+
+```java
+String jobName =
+        executionContext.getString("jobName");
+
+long lastProcessedId =
+        executionContext.getLong("lastProcessedId");
+
+int retryCount =
+        executionContext.getInt("retryCount");
+
+double progressRate =
+        executionContext.getDouble("progressRate");
+```
+
+이처럼 ExecutionContext는 다양한 타입의 데이터를 Key-Value 형태로 관리할 수 있다.
+
+---
+
+### ExecutionContext와 일반적인 Map의 차이
+
+ExecutionContext는 Map과 비슷하지만 일반적인 Map과 동일한 객체는 아니다.
+
+가장 중요한 차이는 **변경 감지와 영속화**다.
+
+일반적인 Map을 생각해보자.
+
+```java
+Map<String, Object> map =
+        new HashMap<>();
+
+map.put(
+        "lastProcessedId",
+        10000L
+);
+```
+
+이 데이터는 일반적으로 JVM 메모리에 존재한다.
+
+별도의 저장 처리를 하지 않았다면 애플리케이션이 종료될 때 데이터도 사라진다.
+
+반면 ExecutionContext는 Spring Batch의 실행 메타데이터 관리 구조와 연결되어 있다.
+
+```java
+ExecutionContext context =
+        stepExecution.getExecutionContext();
+
+context.putLong(
+        "lastProcessedId",
+        10000L
+);
+```
+
+Spring Batch는 적절한 시점에 이 ExecutionContext를 JobRepository를 통해 저장할 수 있다.
+
+따라서 배치를 재시작할 때 이전에 저장된 상태를 다시 사용할 수 있다.
+
+두 객체의 차이를 정리하면 다음과 같다.
+
+| 구분        | 일반적인 Map     | ExecutionContext                 |
+| --------- | ------------ | -------------------------------- |
+| 데이터 구조    | Key-Value    | Key-Value                        |
+| 데이터 저장    | 메모리          | 메모리 및 JobRepository 영속화          |
+| 변경 감지     | 기본 제공하지 않음   | Dirty Flag 제공                    |
+| 재시작 연동    | 직접 구현 필요     | Spring Batch 실행 구조와 연동           |
+| 데이터 공유 범위 | 참조 관계에 따라 결정 | JobExecution 또는 StepExecution 범위 |
+| 대표 사용     | 일반적인 데이터 보관  | 배치 실행 상태 및 체크포인트                 |
+
+따라서 ExecutionContext는 **Spring Batch의 실행 및 재시작 기능을 지원하도록 설계된 상태 저장용 Map**이라고 이해하면 된다.
+
+---
+
+### ExecutionContext의 Dirty Flag
+
+ExecutionContext는 내부 데이터가 변경되었는지 확인하기 위한 Dirty Flag를 제공한다.
+
+Dirty Flag는 데이터가 변경되었음을 나타내는 상태값이다.
+
+예를 들어 다음 코드를 살펴보자.
+
+```java
+ExecutionContext context =
+        new ExecutionContext();
+
+System.out.println(context.isDirty());
+
+context.putString(
+        "jobName",
+        "settlementJob"
+);
+
+System.out.println(context.isDirty());
+```
+
+실행 결과는 다음과 같다.
+
+```text
+false
+
+true
+```
+
+처음 생성된 ExecutionContext는 변경되지 않은 상태다.
+
+따라서 `isDirty()`는 false를 반환한다.
+
+하지만 `putString()`을 호출하면 Dirty Flag가 true로 변경된다.
+
+Spring Batch는 이러한 변경 여부를 메타데이터 갱신 과정에서 활용한다.
+
+#### Dirty Flag는 언제 변경될까?
+
+ExecutionContext의 put 계열 메서드를 호출하면 변경 상태가 표시된다.
+
+```java
+context.putString(
+        "status",
+        "READY"
+);
+```
+
+이후 다음 메서드를 이용해 변경 여부를 확인할 수 있다.
+
+```java
+boolean dirty =
+        context.isDirty();
+```
+
+Dirty Flag는 명시적으로 초기화할 수도 있다.
+
+```java
+context.clearDirtyFlag();
+```
+
+다만 실제 Spring Batch 실행 과정에서는 프레임워크가 변경 상태를 관리하므로 일반적인 비즈니스 로직에서 직접 초기화할 필요는 거의 없다.
+
+#### Map 내부 객체를 변경할 때 주의할 점
+
+ExecutionContext에 변경 가능한 객체를 저장했다고 생각해보자.
+
+```java
+List<String> processedIds =
+        new ArrayList<>();
+
+context.put(
+        "processedIds",
+        processedIds
+);
+```
+
+이후 List 객체에 데이터를 추가한다.
+
+```java
+processedIds.add("ORDER-1001");
+```
+
+이 경우 List 자체는 변경되었지만 ExecutionContext의 put 메서드는 다시 호출되지 않았다.
+
+따라서 이러한 내부 객체 변경만으로 Dirty Flag가 항상 기대한 대로 갱신된다고 가정해서는 안 된다.
+
+실행 상태를 관리할 때는 불변에 가까운 단순한 값을 저장하거나, 변경된 값을 ExecutionContext에 명시적으로 다시 저장하는 것이 좋다.
+
+특히 처리 위치와 같은 값은 다음과 같이 관리하는 편이 명확하다.
+
+```java
+context.putLong(
+        "lastProcessedId",
+        10001L
+);
+```
+
+---
+
+### ExecutionContext는 두 가지 범위로 구분된다
+
+ExecutionContext는 크게 두 가지 범위로 구분된다.
+
+첫 번째는 Job 범위다.
+
+두 번째는 Step 범위다.
+
+각각 다음 객체에 연결된다.
+
+```text
+JobExecution
+      │
+      └── ExecutionContext
+
+StepExecution
+      │
+      └── ExecutionContext
+```
+
+두 ExecutionContext는 같은 클래스의 객체지만 공유 범위가 다르다.
+
+일반적으로 다음과 같이 구분해서 부른다.
+
+| 구분                   | 의미                                  |
+| -------------------- | ----------------------------------- |
+| JobExecutionContext  | JobExecution에 연결된 ExecutionContext  |
+| StepExecutionContext | StepExecution에 연결된 ExecutionContext |
+
+여기서 `JobExecutionContext`와 `StepExecutionContext`는 별도의 Java 클래스 이름이 아니다.
+
+둘 다 실제 타입은 다음과 같다.
+
+```java
+ExecutionContext
+```
+
+다만 어느 실행 객체에 연결되어 있는지에 따라 역할과 공유 범위가 달라진다.
+
+---
+
+### JobExecutionContext란?
+
+JobExecutionContext는 JobExecution에 연결된 ExecutionContext다.
+
+JobExecution은 현재 Job 실행에 대한 정보를 관리하는 객체다.
+
+따라서 JobExecutionContext는 해당 Job 실행에서 필요한 데이터를 저장한다.
+
+중요한 특징은 다음과 같다.
+
+**같은 JobExecution에 속한 여러 Step은 JobExecutionContext를 통해 데이터를 공유할 수 있다.**
+
+예를 들어 다음과 같은 Job이 있다고 생각해보자.
+
+```text
+settlementJob
+       │
+       ├── Step 1
+       │
+       ├── Step 2
+       │
+       ├── Step 3
+       │
+       └── Step 4
+```
+
+Step 1에서 JobExecutionContext에 데이터를 저장한다.
+
+```text
+jobName = settlementJob
+
+userName = user1
+```
+
+이후 Step 2에서 해당 데이터를 조회할 수 있다.
+
+Step 3에서도 조회할 수 있다.
+
+Step 4에서도 조회할 수 있다.
+
+전체 구조를 표현하면 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["JobExecution"]
+    B["JobExecutionContext"]
+
+    C["Step 1"]
+    D["Step 2"]
+    E["Step 3"]
+    F["Step 4"]
+
+    G["jobName = settlementJob"]
+    H["userName = user1"]
+
+    A --> B
+
+    B --> G
+    B --> H
+
+    C <-->|"공유"| B
+    D <-->|"공유"| B
+    E <-->|"공유"| B
+    F <-->|"공유"| B
+```
+
+여기서 중요한 점은 Step마다 별도의 JobExecutionContext가 생성되는 것이 아니라는 것이다.
+
+같은 JobExecution에 속한 Step은 동일한 JobExecutionContext를 참조할 수 있다.
+
+따라서 Step 사이에서 데이터를 공유해야 한다면 JobExecutionContext를 사용할 수 있다.
+
+#### JobExecutionContext 조회하기
+
+Tasklet에서는 다음과 같이 JobExecutionContext를 가져올 수 있다.
+
+```java
+StepExecution stepExecution =
+        contribution.getStepExecution();
+
+JobExecution jobExecution =
+        stepExecution.getJobExecution();
+
+ExecutionContext jobExecutionContext =
+        jobExecution.getExecutionContext();
+```
+
+이 코드는 다음 순서로 동작한다.
+
+```text
+StepContribution
+       │
+       ▼
+StepExecution
+       │
+       ▼
+JobExecution
+       │
+       ▼
+ExecutionContext
+```
+
+이제 JobExecutionContext에 데이터를 저장할 수 있다.
+
+```java
+jobExecutionContext.putString(
+        "userName",
+        "user1"
+);
+```
+
+그리고 다른 Step에서 다음과 같이 조회할 수 있다.
+
+```java
+String userName =
+        jobExecutionContext.getString(
+                "userName"
+        );
+```
+
+단, JobExecutionContext는 서로 다른 JobInstance나 독립적으로 실행되는 다른 Job의 상태를 자동으로 공유하는 전역 저장소가 아니다.
+
+같은 논리적 작업의 재시작 시에는 이전 실행의 저장 상태가 복원될 수 있지만, 별개의 Job 사이에서 정보를 공유하려면 별도의 저장소나 명시적인 전달 구조가 필요하다.
+
+---
+
+### StepExecutionContext란?
+
+StepExecutionContext는 StepExecution에 연결된 ExecutionContext다.
+
+StepExecution은 특정 Step에 대한 개별 실행 정보를 관리한다.
+
+따라서 StepExecutionContext는 해당 Step의 실행 상태를 저장한다.
+
+JobExecutionContext와 가장 큰 차이는 공유 범위다.
+
+**StepExecutionContext는 다른 Step과 자동으로 공유되지 않는다.**
+
+예를 들어 다음과 같은 Job이 있다고 생각해보자.
+
+```text
+settlementJob
+       │
+       ├── Step 1
+       │
+       ├── Step 2
+       │
+       └── Step 3
+```
+
+각 Step은 자신의 StepExecutionContext를 가진다.
+
+```mermaid
+flowchart TD
+    A["JobExecution"]
+
+    B["StepExecution 1"]
+    C["StepExecution 2"]
+    D["StepExecution 3"]
+
+    E["ExecutionContext 1"]
+    F["ExecutionContext 2"]
+    G["ExecutionContext 3"]
+
+    A --> B
+    A --> C
+    A --> D
+
+    B --> E
+    C --> F
+    D --> G
+```
+
+Step 1에서 다음과 같은 데이터를 저장했다고 생각해보자.
+
+```text
+stepName = step1
+```
+
+Step 2에서 자신의 ExecutionContext를 조회하더라도 Step 1에서 저장한 stepName을 자동으로 가져오지는 않는다.
+
+Step 2는 별도의 ExecutionContext를 사용하기 때문이다.
+
+#### StepExecutionContext 조회하기
+
+Tasklet에서는 다음과 같이 조회한다.
+
+```java
+StepExecution stepExecution =
+        contribution.getStepExecution();
+
+ExecutionContext stepExecutionContext =
+        stepExecution.getExecutionContext();
+```
+
+이제 현재 Step의 이름을 저장할 수 있다.
+
+```java
+stepExecutionContext.putString(
+        "stepName",
+        stepExecution.getStepName()
+);
+```
+
+그리고 같은 Step의 처리 과정에서는 다음과 같이 조회할 수 있다.
+
+```java
+String stepName =
+        stepExecutionContext.getString(
+                "stepName"
+        );
+```
+
+하지만 다른 Step에서 자신의 ExecutionContext를 조회하면 해당 값이 존재하지 않을 수 있다.
+
+이것이 StepExecutionContext의 독립적인 공유 범위다.
+
+---
+
+### JobExecutionContext와 StepExecutionContext의 차이
+
+두 ExecutionContext의 차이를 정리하면 다음과 같다.
+
+| 구분        | JobExecutionContext          | StepExecutionContext         |
+| --------- | ---------------------------- | ---------------------------- |
+| 연결 객체     | JobExecution                 | StepExecution                |
+| 관리 범위     | Job 실행 단위                    | Step 실행 단위                   |
+| Step 간 공유 | 가능                           | 자동 공유되지 않음                   |
+| 주요 목적     | 여러 Step에서 사용하는 데이터 관리        | 특정 Step의 처리 상태 관리            |
+| 영속화 시점    | 주로 Step 사이의 경계               | Chunk 커밋 및 Step 종료 시점        |
+| 저장 테이블    | BATCH_JOB_EXECUTION_CONTEXT  | BATCH_STEP_EXECUTION_CONTEXT |
+| 대표 데이터    | 공통 처리 기준, 결과 요약, 다음 Step 전달값 | 마지막 처리 위치, Reader 상태         |
+
+이 차이를 이해하면 어떤 데이터를 어디에 저장해야 하는지 판단하기 쉽다.
+
+예를 들어 Step 1에서 계산한 정산 대상 건수를 Step 2에서 사용해야 한다면 JobExecutionContext를 고려할 수 있다.
+
+반면 Step 2에서 100만 건의 데이터를 처리하면서 마지막으로 읽은 위치를 저장한다면 StepExecutionContext가 적절하다.
+
+---
+
+### ExecutionContext의 저장 구조
+
+ExecutionContext는 메모리에서만 사용되는 객체가 아니다.
+
+JDBC 기반 JobRepository를 사용하는 경우 Spring Batch는 ExecutionContext의 데이터를 데이터베이스에 저장한다.
+
+이때 사용하는 테이블은 두 개다.
+
+```text
+BATCH_JOB_EXECUTION_CONTEXT
+
+BATCH_STEP_EXECUTION_CONTEXT
+```
+
+두 테이블은 각각 JobExecution과 StepExecution에 연결된다.
+
+```mermaid
+erDiagram
+    BATCH_JOB_EXECUTION ||--o| BATCH_JOB_EXECUTION_CONTEXT : has
+    BATCH_STEP_EXECUTION ||--o| BATCH_STEP_EXECUTION_CONTEXT : has
+```
+
+JobExecutionContext는 JobExecution ID를 기준으로 저장한다.
+
+StepExecutionContext는 StepExecution ID를 기준으로 저장한다.
+
+#### BATCH_JOB_EXECUTION_CONTEXT
+
+주요 컬럼은 다음과 같다.
+
+| 컬럼                 | 설명                           |
+| ------------------ | ---------------------------- |
+| JOB_EXECUTION_ID   | JobExecution 식별자             |
+| SHORT_CONTEXT      | 직렬화된 ExecutionContext의 짧은 표현 |
+| SERIALIZED_CONTEXT | 직렬화된 전체 데이터를 위한 대용량 컬럼       |
+
+JobExecutionContext에 저장한 값은 이 테이블에서 관리된다.
+
+#### BATCH_STEP_EXECUTION_CONTEXT
+
+주요 컬럼은 다음과 같다.
+
+| 컬럼                 | 설명                           |
+| ------------------ | ---------------------------- |
+| STEP_EXECUTION_ID  | StepExecution 식별자            |
+| SHORT_CONTEXT      | 직렬화된 ExecutionContext의 짧은 표현 |
+| SERIALIZED_CONTEXT | 직렬화된 전체 데이터를 위한 대용량 컬럼       |
+
+StepExecutionContext에 저장한 값은 이 테이블에서 관리된다.
+
+이때 중요한 부분은 ExecutionContext의 데이터가 Key마다 별도의 테이블 행으로 저장되는 것이 아니라는 점이다.
+
+일반적으로 ExecutionContext에 포함된 Map의 내용이 직렬화되어 저장된다.
+
+---
+
+### ExecutionContext의 직렬화 방식
+
+ExecutionContext는 내부적으로 Map 형태의 데이터를 관리한다.
+
+하지만 JDBC 기반 JobRepository는 해당 객체를 그대로 데이터베이스 컬럼에 저장하지 않는다.
+
+저장 가능한 형태로 직렬화한 뒤 저장한다.
+
+예를 들어 다음과 같은 데이터가 있다고 생각해보자.
+
+```java
+executionContext.putString(
+        "jobName",
+        "settlementJob"
+);
+
+executionContext.putLong(
+        "lastProcessedId",
+        10000L
+);
+```
+
+논리적인 데이터 구조는 다음과 비슷하다.
+
+```json
+{
+  "jobName": "settlementJob",
+  "lastProcessedId": 10000
+}
+```
+
+다만 이것은 ExecutionContext의 내용을 이해하기 위한 JSON 표현이다.
+
+**Spring Batch 5.2.4의 기본 ExecutionContextSerializer가 실제로 이 JSON 문자열을 저장한다는 의미는 아니다.**
+
+Spring Batch 5부터 기본 직렬화 방식이 변경되었다.
+
+Spring Batch 5.2.4의 기본 JDBC ExecutionContext 직렬화는 `DefaultExecutionContextSerializer`를 사용하며, Java 직렬화 데이터를 Base64로 표현한다.
+
+따라서 기본 설정에서는 `SHORT_CONTEXT`에 사람이 직접 읽기 어려운 문자열이 저장될 수 있다.
+
+```text
+rO0ABXNy...
+```
+
+위 값은 실제 데이터가 아닌 형식을 설명하기 위한 예시다.
+
+JSON 형식으로 저장하려면 별도의 Serializer를 구성해야 할 수 있다.
+
+따라서 데이터베이스에서 SHORT_CONTEXT를 조회했을 때 JSON 문자열이 보이지 않더라도 오류라고 판단해서는 안 된다.
+
+---
+
+### ExecutionContext는 언제 데이터베이스에 저장될까?
+
+ExecutionContext를 사용할 때 가장 중요한 부분 중 하나다.
+
+JobExecutionContext와 StepExecutionContext는 저장 시점이 다르다.
+
+#### StepExecutionContext의 저장 시점
+
+StepExecutionContext는 Step의 실행 상태와 처리 위치를 관리하기 위한 용도로 사용된다.
+
+Chunk 기반 처리에서는 일반적으로 Chunk가 커밋되는 시점에 ExecutionContext를 저장한다.
+
+예를 들어 1,000건의 데이터를 100건씩 처리한다고 생각해보자.
+
+```text
+Chunk 1
+   │
+   ├── 100건 처리
+   ├── ExecutionContext 업데이트
+   └── Commit
+
+Chunk 2
+   │
+   ├── 100건 처리
+   ├── ExecutionContext 업데이트
+   └── Commit
+
+Chunk 3
+   │
+   ├── 100건 처리
+   ├── ExecutionContext 업데이트
+   └── Commit
+```
+
+이러한 방식은 장애가 발생했을 때 마지막으로 저장한 처리 상태를 복원하는 데 활용된다.
+
+따라서 StepExecutionContext는 실행 중 여러 번 저장될 수 있다.
+
+#### JobExecutionContext의 저장 시점
+
+JobExecutionContext는 일반적으로 Step 실행 사이의 경계에서 저장된다.
+
+예를 들어 다음과 같은 Job이 있다고 생각해보자.
+
+```text
+Step 1
+   │
+   ▼
+JobExecutionContext 갱신
+   │
+   ▼
+Step 2
+   │
+   ▼
+JobExecutionContext 갱신
+   │
+   ▼
+Step 3
+```
+
+Step 1이 정상적으로 완료되면 해당 Step에서 JobExecutionContext에 저장한 값을 다음 Step에서 사용할 수 있다.
+
+그리고 Spring Batch는 Step 사이의 실행 경계에서 JobExecutionContext를 영속화한다.
+
+이때 주의해야 할 점이 있다.
+
+**JobExecutionContext에 put한 값이 Step 실행 중 매번 즉시 데이터베이스에 저장되는 것은 아니다.**
+
+예를 들어 Step 3에서 다음 코드를 실행했다고 생각해보자.
+
+```java
+jobExecutionContext.putString(
+        "userName",
+        "user1"
+);
+
+throw new IllegalStateException(
+        "Step 3 실행 실패"
+);
+```
+
+이 경우 메모리에 값을 저장한 직후 예외가 발생한다.
+
+실패 처리 경로와 메타데이터 갱신 시점에 따라 값이 데이터베이스에 반영될 수는 있지만, 실패 직전에 저장한 값이 모든 장애 상황에서 반드시 복원된다고 가정해서는 안 된다.
+
+특히 JVM 강제 종료나 전원 장애처럼 정상적인 종료 처리가 수행되지 못하는 경우에는 마지막 영속화 이후의 변경사항이 사라질 수 있다.
+
+따라서 **장애 직전까지의 처리 위치를 안정적으로 관리해야 한다면 StepExecutionContext와 커밋 경계를 중심으로 설계하는 것이 적절하다.**
+
+---
+
+### 실제 ExecutionContext 공유 구조 구현하기
+
+이번에는 실제 Spring Batch 프로젝트를 구성해보자.
+
+다음과 같은 Job을 생성한다.
+
+```text
+executionContextJob
+       │
+       ├── executionContextStep1
+       │
+       ├── executionContextStep2
+       │
+       ├── executionContextStep3
+       │
+       └── executionContextStep4
+```
+
+총 네 개의 Step을 사용한다.
+
+각 Step에서는 다음과 같은 작업을 수행한다.
+
+| Step   | 수행 작업                                                 |
+| ------ | ----------------------------------------------------- |
+| Step 1 | JobExecutionContext와 자신의 StepExecutionContext에 데이터 저장 |
+| Step 2 | Step 1의 공유 데이터 조회 및 자신의 StepExecutionContext 확인       |
+| Step 3 | JobExecutionContext 조회 후 조건에 따라 의도적인 실패 발생            |
+| Step 4 | 앞선 Step에서 저장한 JobExecutionContext 데이터 조회              |
+
+이 예제에서 확인할 핵심은 세 가지다.
+
+첫째, JobExecutionContext에 저장한 값은 다른 Step에서도 조회할 수 있다.
+
+둘째, StepExecutionContext에 저장한 값은 다른 Step의 ExecutionContext에 자동으로 나타나지 않는다.
+
+셋째, Job이 실패한 뒤 재시작해도 이전에 영속화된 ExecutionContext를 복원할 수 있다.
+
+---
+
+### ExecutionContextConfiguration 전체 코드
+
+다음과 같이 설정 클래스를 작성한다.
+
+`ExecutionContextConfiguration.java`
+
+```java
+package com.example.batch;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.Step;
+import org.springframework.batch.core.StepExecution;
+
+import org.springframework.batch.core.job.builder.JobBuilder;
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.step.builder.StepBuilder;
+
+import org.springframework.batch.item.ExecutionContext;
+import org.springframework.batch.repeat.RepeatStatus;
+
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import org.springframework.transaction.PlatformTransactionManager;
+
+@Configuration
+public class ExecutionContextConfiguration {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(
+                    ExecutionContextConfiguration.class
+            );
+
+    @Bean
+    public Job executionContextJob(
+            JobRepository jobRepository,
+            @Qualifier("executionContextStep1") Step step1,
+            @Qualifier("executionContextStep2") Step step2,
+            @Qualifier("executionContextStep3") Step step3,
+            @Qualifier("executionContextStep4") Step step4
+    ) {
+        return new JobBuilder(
+                "executionContextJob",
+                jobRepository
+        )
+                .start(step1)
+                .next(step2)
+                .next(step3)
+                .next(step4)
+                .build();
+    }
+
+    @Bean
+    public Step executionContextStep1(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+        return new StepBuilder(
+                "executionContextStep1",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    StepExecution stepExecution =
+                            contribution.getStepExecution();
+
+                    JobExecution jobExecution =
+                            stepExecution.getJobExecution();
+
+                    ExecutionContext jobContext =
+                            jobExecution.getExecutionContext();
+
+                    ExecutionContext stepContext =
+                            stepExecution.getExecutionContext();
+
+                    String jobName =
+                            jobExecution
+                                    .getJobInstance()
+                                    .getJobName();
+
+                    String stepName =
+                            stepExecution.getStepName();
+
+                    jobContext.putString(
+                            "shared.jobName",
+                            jobName
+                    );
+
+                    jobContext.putString(
+                            "shared.userName",
+                            "user1"
+                    );
+
+                    stepContext.putString(
+                            "private.stepName",
+                            stepName
+                    );
+
+                    log.info(
+                            "Step 1 - JobContext jobName={}",
+                            jobContext.getString("shared.jobName")
+                    );
+
+                    log.info(
+                            "Step 1 - StepContext stepName={}",
+                            stepContext.getString("private.stepName")
+                    );
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+
+    @Bean
+    public Step executionContextStep2(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+        return new StepBuilder(
+                "executionContextStep2",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    StepExecution stepExecution =
+                            contribution.getStepExecution();
+
+                    ExecutionContext jobContext =
+                            stepExecution
+                                    .getJobExecution()
+                                    .getExecutionContext();
+
+                    ExecutionContext stepContext =
+                            stepExecution.getExecutionContext();
+
+                    String jobName =
+                            jobContext.getString(
+                                    "shared.jobName"
+                            );
+
+                    String userName =
+                            jobContext.getString(
+                                    "shared.userName"
+                            );
+
+                    String previousStepName =
+                            stepContext.getString(
+                                    "private.stepName"
+                            );
+
+                    log.info(
+                            "Step 2 - JobContext jobName={}",
+                            jobName
+                    );
+
+                    log.info(
+                            "Step 2 - JobContext userName={}",
+                            userName
+                    );
+
+                    log.info(
+                            "Step 2 - StepContext previousStepName={}",
+                            previousStepName
+                    );
+
+                    stepContext.putString(
+                            "private.stepName",
+                            stepExecution.getStepName()
+                    );
+
+                    jobContext.putString(
+                            "shared.step2Result",
+                            "STEP2_COMPLETED"
+                    );
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+
+    @Bean
+    public Step executionContextStep3(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+        return new StepBuilder(
+                "executionContextStep3",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    StepExecution stepExecution =
+                            contribution.getStepExecution();
+
+                    JobExecution jobExecution =
+                            stepExecution.getJobExecution();
+
+                    ExecutionContext jobContext =
+                            jobExecution.getExecutionContext();
+
+                    String userName =
+                            jobContext.getString(
+                                    "shared.userName"
+                            );
+
+                    String step2Result =
+                            jobContext.getString(
+                                    "shared.step2Result"
+                            );
+
+                    String failStep3 =
+                            jobExecution
+                                    .getJobParameters()
+                                    .getString("failStep3");
+
+                    log.info(
+                            "Step 3 - JobContext userName={}",
+                            userName
+                    );
+
+                    log.info(
+                            "Step 3 - JobContext step2Result={}",
+                            step2Result
+                    );
+
+                    if ("true".equalsIgnoreCase(failStep3)) {
+
+                        throw new IllegalStateException(
+                                "Step 3 의도적인 실패"
+                        );
+                    }
+
+                    log.info("Step 3 정상 완료");
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+
+    @Bean
+    public Step executionContextStep4(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+        return new StepBuilder(
+                "executionContextStep4",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    StepExecution stepExecution =
+                            contribution.getStepExecution();
+
+                    ExecutionContext jobContext =
+                            stepExecution
+                                    .getJobExecution()
+                                    .getExecutionContext();
+
+                    String jobName =
+                            jobContext.getString(
+                                    "shared.jobName"
+                            );
+
+                    String userName =
+                            jobContext.getString(
+                                    "shared.userName"
+                            );
+
+                    String step2Result =
+                            jobContext.getString(
+                                    "shared.step2Result"
+                            );
+
+                    log.info(
+                            "Step 4 - JobContext jobName={}",
+                            jobName
+                    );
+
+                    log.info(
+                            "Step 4 - JobContext userName={}",
+                            userName
+                    );
+
+                    log.info(
+                            "Step 4 - JobContext step2Result={}",
+                            step2Result
+                    );
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+}
+```
+
+이 코드에서는 Job 하나와 네 개의 Step을 생성했다.
+
+각 Step은 Tasklet 기반으로 구성되어 있으며, 실제 ExecutionContext는 Spring Batch가 생성한 실행 객체에서 가져온다.
+
+이제 각 Step이 어떤 방식으로 ExecutionContext를 사용하는지 살펴보자.
+
+---
+
+### Step 1: JobExecutionContext와 StepExecutionContext에 데이터 저장
+
+첫 번째 Step에서는 두 개의 ExecutionContext에 데이터를 저장한다.
+
+먼저 StepExecution을 가져온다.
+
+```java
+StepExecution stepExecution =
+        contribution.getStepExecution();
+```
+
+그리고 JobExecution을 가져온다.
+
+```java
+JobExecution jobExecution =
+        stepExecution.getJobExecution();
+```
+
+이제 JobExecutionContext를 조회한다.
+
+```java
+ExecutionContext jobContext =
+        jobExecution.getExecutionContext();
+```
+
+StepExecutionContext도 조회한다.
+
+```java
+ExecutionContext stepContext =
+        stepExecution.getExecutionContext();
+```
+
+이때 두 객체는 서로 다른 ExecutionContext다.
+
+다음과 같은 관계다.
+
+```text
+JobExecution
+       │
+       └── JobExecutionContext
+
+StepExecution
+       │
+       └── StepExecutionContext
+```
+
+먼저 JobExecutionContext에 Job 이름과 사용자 이름을 저장한다.
+
+```java
+jobContext.putString(
+        "shared.jobName",
+        jobName
+);
+
+jobContext.putString(
+        "shared.userName",
+        "user1"
+);
+```
+
+이 데이터는 같은 JobExecution에 속한 다른 Step에서도 사용할 수 있다.
+
+반면 StepExecutionContext에는 현재 Step 이름을 저장한다.
+
+```java
+stepContext.putString(
+        "private.stepName",
+        stepName
+);
+```
+
+이 값은 현재 Step의 실행 상태를 관리하기 위한 데이터다.
+
+따라서 Step 2가 자신의 StepExecutionContext를 조회하더라도 Step 1의 private.stepName이 자동으로 나타나지는 않는다.
+
+---
+
+### Step 2: 다른 Step에서 데이터를 조회하면 어떻게 될까?
+
+두 번째 Step에서는 첫 번째 Step에서 저장한 데이터를 조회한다.
+
+먼저 JobExecutionContext를 가져온다.
+
+```java
+ExecutionContext jobContext =
+        stepExecution
+                .getJobExecution()
+                .getExecutionContext();
+```
+
+그리고 다음 값을 조회한다.
+
+```java
+String jobName =
+        jobContext.getString(
+                "shared.jobName"
+        );
+```
+
+Step 1에서 저장한 값이므로 정상적으로 조회할 수 있다.
+
+```text
+shared.jobName = executionContextJob
+```
+
+사용자 이름도 마찬가지다.
+
+```java
+String userName =
+        jobContext.getString(
+                "shared.userName"
+        );
+```
+
+결과는 다음과 같다.
+
+```text
+shared.userName = user1
+```
+
+이번에는 StepExecutionContext를 조회해보자.
+
+```java
+ExecutionContext stepContext =
+        stepExecution.getExecutionContext();
+```
+
+그리고 첫 번째 Step에서 사용했던 Key를 조회한다.
+
+```java
+String previousStepName =
+        stepContext.getString(
+                "private.stepName"
+        );
+```
+
+이 경우 결과는 다음과 같다.
+
+```text
+null
+```
+
+왜 그럴까?
+
+Step 1에서 저장했던 private.stepName은 Step 1의 StepExecutionContext에 존재한다.
+
+하지만 Step 2에서는 Step 2의 StepExecutionContext를 조회하고 있다.
+
+서로 다른 ExecutionContext이기 때문에 해당 값이 존재하지 않는 것이다.
+
+이러한 동작을 정리하면 다음과 같다.
+
+| 데이터              | 저장 위치                        | Step 2 조회 결과 |
+| ---------------- | ---------------------------- | ------------ |
+| shared.jobName   | JobExecutionContext          | 조회 가능        |
+| shared.userName  | JobExecutionContext          | 조회 가능        |
+| private.stepName | Step 1의 StepExecutionContext | 자동 공유되지 않음   |
+
+이것이 두 ExecutionContext의 공유 범위가 다르다는 의미다.
+
+---
+
+### Step 2에서 새로운 공유 데이터를 저장하기
+
+두 번째 Step에서는 JobExecutionContext에 새로운 데이터도 저장한다.
+
+```java
+jobContext.putString(
+        "shared.step2Result",
+        "STEP2_COMPLETED"
+);
+```
+
+이 값은 이후 Step에서도 사용할 수 있다.
+
+예를 들어 Step 3에서는 다음과 같이 조회한다.
+
+```java
+String step2Result =
+        jobContext.getString(
+                "shared.step2Result"
+        );
+```
+
+결과는 다음과 같다.
+
+```text
+STEP2_COMPLETED
+```
+
+이처럼 JobExecutionContext를 활용하면 여러 Step 사이에서 실행 과정의 데이터를 전달할 수 있다.
+
+전체 흐름은 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["Step 1"]
+    B["JobExecutionContext"]
+    C["Step 2"]
+    D["Step 3"]
+    E["Step 4"]
+
+    F["shared.jobName"]
+    G["shared.userName"]
+    H["shared.step2Result"]
+
+    A -->|"데이터 저장"| B
+    B --> F
+    B --> G
+
+    C -->|"기존 데이터 조회"| B
+    C -->|"새 데이터 저장"| B
+    B --> H
+
+    D -->|"데이터 조회"| B
+    E -->|"데이터 조회"| B
+```
+
+단, JobExecutionContext를 여러 Step이 공유한다고 해서 모든 데이터를 무조건 이곳에 저장하는 것이 좋은 것은 아니다.
+
+Step 내부에서만 필요한 처리 위치나 재시작 상태는 StepExecutionContext에 저장하는 편이 적절하다.
+
+---
+
+### Step 3: 의도적으로 Job 실행을 실패시키기
+
+이번에는 Job을 의도적으로 실패시켜보자.
+
+세 번째 Step에서는 JobParameters에 따라 예외를 발생시키도록 구현했다.
+
+```java
+String failStep3 =
+        jobExecution
+                .getJobParameters()
+                .getString("failStep3");
+```
+
+그리고 다음 조건을 확인한다.
+
+```java
+if ("true".equalsIgnoreCase(failStep3)) {
+
+    throw new IllegalStateException(
+            "Step 3 의도적인 실패"
+    );
+}
+```
+
+`failStep3=true`라면 예외가 발생한다.
+
+반대로 `failStep3=false`라면 정상적으로 완료된다.
+
+이번 예제에서는 `failStep3`를 비식별용 JobParameters로 전달한다.
+
+이렇게 하면 처음에는 의도적으로 실패시키고, 이후 같은 JobInstance를 재시작할 때는 실패 조건을 해제할 수 있다.
+
+중요한 것은 식별용 JobParameters를 유지해야 한다는 점이다.
+
+---
+
+### MySQL 실행 환경 설정
+
+이번 예제에서는 Job이 실패한 뒤 애플리케이션을 다시 실행해야 한다.
+
+따라서 실행 메타데이터가 유지되는 MySQL을 사용한다.
+
+이전 프로젝트의 MySQL 설정을 그대로 활용한다.
+
+`application-mysql.yml`
+
+```yaml
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3307/batch_db
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    username: ${BATCH_DB_USERNAME:batch_user}
+    password: ${BATCH_DB_PASSWORD:localpass}
+
+  batch:
+    job:
+      enabled: true
+      name: executionContextJob
+
+    jdbc:
+      initialize-schema: never
+```
+
+여기서 다음 설정은 실행할 Job을 지정한다.
+
+```yaml
+spring:
+  batch:
+    job:
+      name: executionContextJob
+```
+
+그리고 다음 설정을 사용했다.
+
+```yaml
+spring:
+  batch:
+    jdbc:
+      initialize-schema: never
+```
+
+이미 Spring Batch의 메타데이터 테이블이 생성되어 있다는 전제다.
+
+아직 테이블이 없다면 사용하는 Spring Batch 버전에 맞는 스키마를 먼저 생성해야 한다.
+
+또한 이전에 작성한 수동 실행용 ApplicationRunner가 있다면 이번 실행에 영향을 주지 않도록 Profile 등을 이용해 분리해야 한다.
+
+---
+
+### 첫 번째 실행: Step 3에서 실패시키기
+
+먼저 프로젝트를 빌드한다.
+
+```bash
+./mvnw clean package
+```
+
+빌드가 완료되었다면 다음 명령어를 실행한다.
+
+```bash
+java -jar target/spring-batch-demo-0.0.1-SNAPSHOT.jar \
+  --spring.profiles.active=mysql \
+  businessDate=2026-10-15 \
+  'failStep3=true,java.lang.String,false'
+```
+
+여기서 전달한 JobParameters는 다음과 같다.
+
+```text
+businessDate=2026-10-15
+
+failStep3=true
+```
+
+`businessDate`는 식별용 파라미터다.
+
+`failStep3`는 비식별용 파라미터다.
+
+따라서 이후 failStep3 값을 변경하더라도 businessDate가 동일하다면 같은 JobInstance를 식별한다.
+
+#### 실행 흐름
+
+첫 번째 실행에서는 다음과 같은 흐름이 발생한다.
+
+```text
+executionContextJob
+       │
+       ▼
+Step 1
+       │
+       ├── JobExecutionContext 저장
+       ├── StepExecutionContext 저장
+       │
+       ▼
+COMPLETED
+       │
+       ▼
+Step 2
+       │
+       ├── JobExecutionContext 조회
+       ├── StepExecutionContext 조회
+       │
+       ▼
+COMPLETED
+       │
+       ▼
+Step 3
+       │
+       ├── JobExecutionContext 조회
+       ├── failStep3=true 확인
+       │
+       ▼
+IllegalStateException
+       │
+       ▼
+FAILED
+
+Step 4 → 실행되지 않음
+```
+
+Step 1과 Step 2는 정상적으로 완료된다.
+
+Step 3에서는 의도적으로 예외가 발생한다.
+
+따라서 Step 4는 실행되지 않는다.
+
+기본적인 순차 실행 Job이므로 전체 Job도 FAILED 상태로 종료된다.
+
+#### 실행 로그
+
+정상적으로 실패 상황을 재현했다면 다음과 유사한 로그를 확인할 수 있다.
+
+```text
+Step 1 - JobContext jobName=executionContextJob
+
+Step 1 - StepContext stepName=executionContextStep1
+
+Step 2 - JobContext jobName=executionContextJob
+
+Step 2 - JobContext userName=user1
+
+Step 2 - StepContext previousStepName=null
+
+Step 3 - JobContext userName=user1
+
+Step 3 - JobContext step2Result=STEP2_COMPLETED
+
+java.lang.IllegalStateException:
+Step 3 의도적인 실패
+```
+
+여기서 중요한 내용은 두 번째 Step의 실행 로그다.
+
+```text
+Step 2 - JobContext userName=user1
+
+Step 2 - StepContext previousStepName=null
+```
+
+JobExecutionContext에 저장한 사용자 이름은 정상적으로 조회되었다.
+
+반면 Step 1의 StepExecutionContext에 저장한 이름은 Step 2에서 조회되지 않았다.
+
+따라서 공유 범위의 차이를 확인할 수 있다.
+
+---
+
+### 첫 번째 실행 이후 메타데이터 확인하기
+
+이번에는 MySQL에서 JobExecution과 StepExecution의 상태를 확인해보자.
+
+#### JobExecution 조회
+
+```sql
+SELECT
+    ji.JOB_INSTANCE_ID,
+    ji.JOB_NAME,
+
+    je.JOB_EXECUTION_ID,
+    je.STATUS,
+    je.EXIT_CODE
+
+FROM BATCH_JOB_INSTANCE ji
+
+JOIN BATCH_JOB_EXECUTION je
+    ON ji.JOB_INSTANCE_ID = je.JOB_INSTANCE_ID
+
+WHERE ji.JOB_NAME = 'executionContextJob'
+
+ORDER BY je.JOB_EXECUTION_ID;
+```
+
+새로운 데이터베이스에서 처음 실행했다고 가정하면 다음과 같은 결과가 나타날 수 있다.
+
+| JOB_INSTANCE_ID | JOB_EXECUTION_ID | STATUS |
+| --------------- | ---------------- | ------ |
+| 1               | 1                | FAILED |
+
+JobInstance가 하나 생성되었다.
+
+그리고 첫 번째 JobExecution이 실패했다.
+
+#### StepExecution 조회
+
+```sql
+SELECT
+    se.STEP_EXECUTION_ID,
+    se.JOB_EXECUTION_ID,
+    se.STEP_NAME,
+    se.STATUS
+
+FROM BATCH_STEP_EXECUTION se
+
+JOIN BATCH_JOB_EXECUTION je
+    ON se.JOB_EXECUTION_ID = je.JOB_EXECUTION_ID
+
+JOIN BATCH_JOB_INSTANCE ji
+    ON je.JOB_INSTANCE_ID = ji.JOB_INSTANCE_ID
+
+WHERE ji.JOB_NAME = 'executionContextJob'
+
+ORDER BY se.STEP_EXECUTION_ID;
+```
+
+결과는 다음과 같은 형태다.
+
+| STEP_EXECUTION_ID | STEP_NAME             | STATUS    |
+| ----------------- | --------------------- | --------- |
+| 1                 | executionContextStep1 | COMPLETED |
+| 2                 | executionContextStep2 | COMPLETED |
+| 3                 | executionContextStep3 | FAILED    |
+
+Step 4는 실행되지 않았으므로 해당 실행에 대한 StepExecution이 생성되지 않았다.
+
+이제 ExecutionContext 테이블을 확인해보자.
+
+---
+
+### BATCH_JOB_EXECUTION_CONTEXT 조회하기
+
+JobExecutionContext의 데이터는 다음 테이블에 저장된다.
+
+```text
+BATCH_JOB_EXECUTION_CONTEXT
+```
+
+다음 SQL을 실행한다.
+
+```sql
+SELECT
+    jec.JOB_EXECUTION_ID,
+    jec.SHORT_CONTEXT,
+    jec.SERIALIZED_CONTEXT
+
+FROM BATCH_JOB_EXECUTION_CONTEXT jec
+
+JOIN BATCH_JOB_EXECUTION je
+    ON jec.JOB_EXECUTION_ID = je.JOB_EXECUTION_ID
+
+JOIN BATCH_JOB_INSTANCE ji
+    ON je.JOB_INSTANCE_ID = ji.JOB_INSTANCE_ID
+
+WHERE ji.JOB_NAME = 'executionContextJob'
+
+ORDER BY jec.JOB_EXECUTION_ID;
+```
+
+이 테이블에는 Step 1과 Step 2에서 저장한 공유 데이터가 직렬화된 형태로 존재할 수 있다.
+
+논리적인 내용은 다음과 같다.
+
+```text
+shared.jobName = executionContextJob
+
+shared.userName = user1
+
+shared.step2Result = STEP2_COMPLETED
+```
+
+다만 실제 SHORT_CONTEXT 컬럼에는 기본 Serializer에 의해 Base64 문자열이 저장될 수 있다.
+
+따라서 사람이 직접 내용을 읽기 어렵다고 해서 값이 저장되지 않은 것은 아니다.
+
+실제 값은 ExecutionContext를 역직렬화하여 조회하거나 Job 실행 중 Getter를 통해 확인할 수 있다.
+
+---
+
+### BATCH_STEP_EXECUTION_CONTEXT 조회하기
+
+이번에는 StepExecutionContext를 확인해보자.
+
+다음 SQL을 실행한다.
+
+```sql
+SELECT
+    se.STEP_EXECUTION_ID,
+    se.STEP_NAME,
+    se.STATUS,
+
+    sec.SHORT_CONTEXT,
+    sec.SERIALIZED_CONTEXT
+
+FROM BATCH_STEP_EXECUTION se
+
+JOIN BATCH_STEP_EXECUTION_CONTEXT sec
+    ON se.STEP_EXECUTION_ID = sec.STEP_EXECUTION_ID
+
+JOIN BATCH_JOB_EXECUTION je
+    ON se.JOB_EXECUTION_ID = je.JOB_EXECUTION_ID
+
+JOIN BATCH_JOB_INSTANCE ji
+    ON je.JOB_INSTANCE_ID = ji.JOB_INSTANCE_ID
+
+WHERE ji.JOB_NAME = 'executionContextJob'
+
+ORDER BY se.STEP_EXECUTION_ID;
+```
+
+이 쿼리를 실행하면 각 StepExecution에 연결된 ExecutionContext를 확인할 수 있다.
+
+앞에서 작성한 코드에서는 Step 1과 Step 2가 자신의 ExecutionContext에 Step 이름을 저장했다.
+
+따라서 논리적으로 다음과 같은 데이터가 관리된다.
+
+```text
+StepExecution 1
+    │
+    └── private.stepName = executionContextStep1
+```
+
+```text
+StepExecution 2
+    │
+    └── private.stepName = executionContextStep2
+```
+
+두 값은 서로 다른 StepExecutionContext에 저장된다.
+
+이것이 StepExecutionContext가 Step별로 분리된다는 의미다.
+
+---
+
+### 실패한 Job을 재시작하면 어떻게 될까?
+
+이번에는 첫 번째 실행에서 실패한 Job을 재시작해보자.
+
+앞서 실행했던 Job의 식별용 파라미터는 다음과 같다.
+
+```text
+businessDate=2026-10-15
+```
+
+이 값을 그대로 유지한다.
+
+반면 비식별용 파라미터인 failStep3는 false로 변경한다.
+
+```text
+failStep3=false
+```
+
+실행 명령어는 다음과 같다.
+
+```bash
+java -jar target/spring-batch-demo-0.0.1-SNAPSHOT.jar \
+  --spring.profiles.active=mysql \
+  businessDate=2026-10-15 \
+  'failStep3=false,java.lang.String,false'
+```
+
+여기서 중요한 점은 식별용 JobParameters가 동일하다는 것이다.
+
+따라서 새로운 JobInstance가 생성되지 않는다.
+
+Spring Batch는 기존 JobInstance를 조회한다.
+
+하지만 이전 실행은 FAILED 상태였으므로 재시작 가능한 Job이라면 새로운 JobExecution을 생성한다.
+
+#### 재시작 시 Step 실행 흐름
+
+첫 번째 실행에서는 다음과 같은 상태였다.
+
+```text
+Step 1 → COMPLETED
+
+Step 2 → COMPLETED
+
+Step 3 → FAILED
+
+Step 4 → 실행되지 않음
+```
+
+Job을 재시작하면 Spring Batch는 이전 실행의 Step 상태를 확인한다.
+
+기본적으로 이미 완료된 Step은 다시 실행하지 않는다.
+
+따라서 이번에는 다음과 같이 실행된다.
+
+```text
+Step 1 → 실행 생략
+
+Step 2 → 실행 생략
+
+Step 3 → 재실행
+
+Step 4 → 실행
+```
+
+전체 흐름을 표현하면 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["Job 재시작"]
+    B["기존 JobInstance 조회"]
+    C["새 JobExecution 생성"]
+
+    D["Step 1: COMPLETED"]
+    E["Step 1 실행 생략"]
+
+    F["Step 2: COMPLETED"]
+    G["Step 2 실행 생략"]
+
+    H["Step 3: FAILED"]
+    I["Step 3 재실행"]
+
+    J["Step 4 실행"]
+    K["Job COMPLETED"]
+
+    A --> B
+    B --> C
+
+    C --> D
+    D --> E
+
+    E --> F
+    F --> G
+
+    G --> H
+    H --> I
+
+    I --> J
+    J --> K
+```
+
+이번에는 failStep3 값이 false이므로 Step 3에서 예외가 발생하지 않는다.
+
+따라서 Step 4까지 정상적으로 실행될 수 있다.
+
+---
+
+### 재시작 시 ExecutionContext는 어떻게 복원될까?
+
+이 부분이 ExecutionContext의 핵심이다.
+
+첫 번째 실행에서 Step 1과 Step 2는 JobExecutionContext에 다음 값을 저장했다.
+
+```text
+shared.jobName = executionContextJob
+
+shared.userName = user1
+
+shared.step2Result = STEP2_COMPLETED
+```
+
+이 값들은 Step 사이의 저장 경계를 거쳐 JobRepository에 영속화되었다.
+
+따라서 Job을 재시작할 때 Spring Batch는 이전 실행의 JobExecutionContext를 복원할 수 있다.
+
+재시작 과정에서 새로운 JobExecution이 생성되지만, 같은 JobInstance에 속한 이전 실행의 상태를 이어받을 수 있는 것이다.
+
+```text
+JobInstance 1
+      │
+      ├── JobExecution 1
+      │       │
+      │       ├── Step 1 → COMPLETED
+      │       ├── Step 2 → COMPLETED
+      │       └── Step 3 → FAILED
+      │
+      │       JobExecutionContext
+      │            │
+      │            ├── shared.jobName
+      │            ├── shared.userName
+      │            └── shared.step2Result
+      │
+      └── JobExecution 2
+              │
+              ├── 이전 JobExecutionContext 복원
+              │
+              ├── Step 3 → COMPLETED
+              │
+              └── Step 4 → COMPLETED
+```
+
+여기서 중요한 점은 첫 번째 실행과 두 번째 실행이 서로 다른 JobExecution이라는 것이다.
+
+하지만 같은 JobInstance에 대한 재시작이므로 이전 실행의 저장된 상태를 이어받을 수 있다.
+
+**ExecutionContext는 단순히 같은 JVM 안에서 데이터를 공유하기 위한 객체가 아니라, 애플리케이션이 종료된 뒤에도 실행 상태를 복원하기 위한 객체다.**
+
+---
+
+### 재시작 실행 결과 확인하기
+
+재시작이 정상적으로 이루어지면 다음과 유사한 로그를 확인할 수 있다.
+
+```text
+Step 3 - JobContext userName=user1
+
+Step 3 - JobContext step2Result=STEP2_COMPLETED
+
+Step 3 정상 완료
+
+Step 4 - JobContext jobName=executionContextJob
+
+Step 4 - JobContext userName=user1
+
+Step 4 - JobContext step2Result=STEP2_COMPLETED
+```
+
+여기서 중요한 점은 Step 1과 Step 2의 실행 로그가 없다는 것이다.
+
+두 Step은 이전 실행에서 이미 완료되었기 때문에 건너뛰었다.
+
+그런데 Step 3과 Step 4에서는 Step 1과 Step 2가 저장했던 값을 정상적으로 조회하고 있다.
+
+왜 그럴까?
+
+Spring Batch가 이전 실행의 JobExecutionContext를 복원했기 때문이다.
+
+따라서 다음 두 사실을 확인할 수 있다.
+
+첫째, 이미 완료된 Step을 다시 실행하지 않아도 이전에 영속화된 JobExecutionContext의 값을 사용할 수 있다.
+
+둘째, 새로운 JobExecution이 생성되더라도 같은 JobInstance의 재시작이라면 이전 실행 상태를 이어받을 수 있다.
+
+이것이 ExecutionContext를 이용한 재시작 기능의 중요한 특징이다.
+
+---
+
+### 재시작 이후 메타데이터의 관계
+
+이번 예제에서는 하나의 JobInstance가 두 번 실행되었다.
+
+첫 번째 실행은 실패했다.
+
+두 번째 실행은 정상적으로 완료되었다.
+
+따라서 JobInstance는 하나지만 JobExecution은 두 개다.
+
+```text
+JobInstance 1
+      │
+      ├── JobExecution 1 → FAILED
+      │
+      └── JobExecution 2 → COMPLETED
+```
+
+StepExecution은 다음과 같이 생성된다.
+
+```text
+JobExecution 1
+      │
+      ├── StepExecution 1 → Step 1 COMPLETED
+      │
+      ├── StepExecution 2 → Step 2 COMPLETED
+      │
+      └── StepExecution 3 → Step 3 FAILED
+```
+
+```text
+JobExecution 2
+      │
+      ├── StepExecution 4 → Step 3 COMPLETED
+      │
+      └── StepExecution 5 → Step 4 COMPLETED
+```
+
+최종적으로 다음과 같은 관계가 만들어진다.
+
+| 구분                       | 생성된 개수 |
+| ------------------------ | -----: |
+| Job 정의                   |      1 |
+| JobInstance              |      1 |
+| JobExecution             |      2 |
+| StepExecution            |      5 |
+| JobExecutionContext 레코드  |      2 |
+| StepExecutionContext 레코드 |      5 |
+
+실제 식별자와 결과는 기존 실행 이력에 따라 달라질 수 있다.
+
+이러한 구조를 통해 Spring Batch는 각 실행 시도와 Step의 상태를 구분해서 관리한다.
+
+---
+
+### StepExecutionContext도 재시작할 때 복원될까?
+
+그렇다.
+
+StepExecutionContext도 재시작 시 이전 실행 상태를 복원하는 데 활용된다.
+
+다만 JobExecutionContext와는 복원 범위가 다르다.
+
+JobExecutionContext는 Job 전체의 상태를 관리한다.
+
+반면 StepExecutionContext는 특정 Step의 실행 상태를 관리한다.
+
+예를 들어 Step 3에서 다음과 같은 값을 저장했다고 생각해보자.
+
+```java
+stepExecutionContext.putLong(
+        "lastProcessedId",
+        10000L
+);
+```
+
+이 값이 적절한 커밋 시점에 영속화되었다면 Step 3이 재시작될 때 이전 값을 복원할 수 있다.
+
+다음과 같은 구조다.
+
+```text
+첫 번째 실행
+
+Step 3
+    │
+    ├── 10,000건 처리
+    │
+    ├── ExecutionContext 저장
+    │
+    └── 장애 발생
+```
+
+```text
+재시작
+
+Step 3
+    │
+    ├── ExecutionContext 복원
+    │
+    ├── lastProcessedId 조회
+    │
+    └── 다음 데이터부터 처리
+```
+
+이때 마지막 처리 위치를 실제 Reader에 반영하는 로직이 필요하다.
+
+Spring Batch가 제공하는 ItemStream 기반 Reader 중에는 이러한 상태 관리 기능을 구현한 컴포넌트도 있다.
+
+커스텀 Reader를 작성한다면 개발자가 저장과 복원 로직을 구현해야 할 수 있다.
+
+---
+
+### JobExecutionContext와 StepExecutionContext의 영속화 시점 비교
+
+두 ExecutionContext는 저장 주기가 다르므로 용도도 달라진다.
+
+예를 들어 100만 건의 데이터를 처리하는 Step이 있다고 생각해보자.
+
+```text
+Step 1
+    │
+    ├── Chunk 1 → Commit
+    ├── Chunk 2 → Commit
+    ├── Chunk 3 → Commit
+    ├── Chunk 4 → Commit
+    └── Chunk 5 → 장애 발생
+```
+
+이때 StepExecutionContext는 Chunk의 커밋 시점마다 처리 상태를 저장할 수 있다.
+
+따라서 Chunk 4까지 저장된 상태를 복원하도록 설계할 수 있다.
+
+반면 같은 Step에서 JobExecutionContext만 계속 변경했다면, Step 내부의 각 Chunk 커밋 시점마다 해당 변경사항이 영속화된다고 보장할 수 없다.
+
+이 차이를 정리하면 다음과 같다.
+
+| 구분          | JobExecutionContext | StepExecutionContext |
+| ----------- | ------------------- | -------------------- |
+| 주된 저장 경계    | Step 실행 사이          | Chunk 커밋 및 Step 종료   |
+| Step 간 공유   | 가능                  | 자동 공유되지 않음           |
+| 처리 위치 체크포인트 | 일반적으로 덜 적합          | 적합                   |
+| 공통 결과 전달    | 적합                  | 직접 공유되지 않음           |
+| 재시작 시 활용    | Job 전체의 이전 상태 복원    | 해당 Step의 이전 상태 복원    |
+
+따라서 마지막 처리 위치처럼 장애 시점에 민감한 상태는 StepExecutionContext에 저장하는 것이 일반적으로 더 적합하다.
+
+반면 다른 Step으로 전달해야 하는 데이터는 JobExecutionContext를 활용할 수 있다.
+
+---
+
+### ExecutionContextPromotionListener란?
+
+StepExecutionContext에 저장한 값을 다른 Step에서 사용해야 하는 경우가 있다.
+
+예를 들어 Step 1에서 데이터 처리 건수를 계산했다고 생각해보자.
+
+```text
+Step 1
+
+processedCount = 1000
+```
+
+그런데 Step 2에서도 이 값이 필요하다.
+
+StepExecutionContext는 다른 Step과 자동 공유되지 않으므로 그대로는 값을 전달할 수 없다.
+
+이때 Spring Batch에서 제공하는 `ExecutionContextPromotionListener`를 활용할 수 있다.
+
+이 Listener는 StepExecutionContext에 저장한 특정 값을 JobExecutionContext로 옮기는 역할을 담당한다.
+
+```mermaid
+flowchart TD
+    A["Step 1"]
+    B["StepExecutionContext"]
+    C["ExecutionContextPromotionListener"]
+    D["JobExecutionContext"]
+    E["Step 2"]
+
+    A -->|"processedCount 저장"| B
+    B --> C
+    C -->|"값 승격"| D
+    D -->|"공유 데이터 조회"| E
+```
+
+예를 들어 다음과 같이 구성할 수 있다.
+
+```java
+@Bean
+public ExecutionContextPromotionListener promotionListener() {
+
+    ExecutionContextPromotionListener listener =
+            new ExecutionContextPromotionListener();
+
+    listener.setKeys(
+            new String[]{"processedCount"}
+    );
+
+    return listener;
+}
+```
+
+그리고 Step에 Listener를 등록한다.
+
+```java
+@Bean
+public Step promotionStep(
+        JobRepository jobRepository,
+        PlatformTransactionManager transactionManager,
+        ExecutionContextPromotionListener promotionListener
+) {
+    return new StepBuilder("promotionStep", jobRepository)
+            .tasklet((contribution, chunkContext) -> {
+
+                ExecutionContext stepContext =
+                        contribution
+                                .getStepExecution()
+                                .getExecutionContext();
+
+                stepContext.putLong(
+                        "processedCount",
+                        1000L
+                );
+
+                return RepeatStatus.FINISHED;
+
+            }, transactionManager)
+            .listener(promotionListener)
+            .build();
+}
+```
+
+이렇게 구성하면 Step이 정상적으로 완료된 뒤 지정한 Key를 JobExecutionContext로 승격할 수 있다.
+
+다만 Listener는 설정한 종료 상태에 따라 승격 여부를 판단한다.
+
+또한 같은 Key를 여러 Step에서 사용한다면 값이 덮어써질 수 있으므로 Key 이름을 신중하게 관리해야 한다.
+
+---
+
+### ExecutionContext와 JobParameters의 차이
+
+ExecutionContext와 함께 구분해야 하는 객체가 있다.
+
+바로 `JobParameters`다.
+
+두 객체 모두 Key-Value 형태의 데이터를 관리할 수 있지만 목적은 전혀 다르다.
+
+JobParameters는 Job을 실행할 때 전달하는 입력값이다.
+
+ExecutionContext는 Job이나 Step이 실행되는 동안 필요한 상태를 관리한다.
+
+예를 들어 다음과 같은 정산 Job이 있다고 생각해보자.
+
+```text
+businessDate = 2026-10-15
+
+lastProcessedId = 10000
+```
+
+`businessDate`는 Job 실행 전에 결정된다.
+
+따라서 JobParameters에 저장하는 것이 자연스럽다.
+
+반면 `lastProcessedId`는 배치가 실행되면서 변경된다.
+
+따라서 ExecutionContext에 저장하는 것이 적합하다.
+
+| 구분             | JobParameters  | ExecutionContext     |
+| -------------- | -------------- | -------------------- |
+| 목적             | 실행 조건 전달       | 실행 상태 관리             |
+| 생성 시점          | Job 실행 요청      | Job 또는 Step 실행 관리 과정 |
+| 변경 가능성         | 실행 중 변경하지 않음   | 실행 과정에서 변경 가능        |
+| JobInstance 식별 | 식별용 파라미터 사용    | 사용하지 않음              |
+| 재시작 활용         | 같은 논리적 작업 식별   | 이전 처리 상태 복원          |
+| 대표 데이터         | 정산 기준일, 가맹점 ID | 마지막 처리 ID, 진행 상태     |
+
+이 차이를 이해하면 어떤 데이터를 어디에 저장해야 할지 판단하기 쉬워진다.
+
+---
+
+### ExecutionContext에 객체를 저장할 때 주의할 점
+
+ExecutionContext는 Object 타입의 값을 저장할 수 있다.
+
+```java
+executionContext.put(
+        "data",
+        someObject
+);
+```
+
+하지만 아무 객체나 저장해도 안전한 것은 아니다.
+
+ExecutionContext는 데이터베이스에 직렬화되어 저장될 수 있기 때문이다.
+
+따라서 저장하려는 객체가 Serializer에서 지원하는 타입인지 확인해야 한다.
+
+기본 직렬화 방식에서는 Java 직렬화가 가능한 값이 필요하다.
+
+예를 들어 다음과 같은 데이터는 일반적으로 다루기 쉽다.
+
+```java
+executionContext.putString(
+        "status",
+        "READY"
+);
+
+executionContext.putLong(
+        "lastProcessedId",
+        10000L
+);
+```
+
+반면 다음과 같은 객체는 주의해야 한다.
+
+```text
+대용량 데이터 목록
+
+DB Connection
+
+EntityManager
+
+HTTP Client
+
+Spring Bean
+
+직렬화할 수 없는 사용자 정의 객체
+```
+
+이러한 객체는 실행 상태 복원에 적합하지 않거나 직렬화 과정에서 문제가 발생할 수 있다.
+
+또한 DB Connection이나 EntityManager처럼 실행 환경에 종속적인 객체를 저장하더라도 애플리케이션이 재시작되었을 때 정상적으로 복원해 사용할 수 있다고 볼 수 없다.
+
+#### 대용량 데이터는 ExecutionContext에 저장하지 않는 것이 좋다
+
+예를 들어 100만 건의 주문 데이터를 ExecutionContext에 저장한다고 생각해보자.
+
+```java
+executionContext.put(
+        "orders",
+        orders
+);
+```
+
+이러한 방식은 여러 문제를 발생시킬 수 있다.
+
+ExecutionContext가 너무 커지면 직렬화와 데이터베이스 저장 비용이 증가한다.
+
+또한 메타데이터 조회 및 재시작 과정에서도 불필요한 부담이 발생한다.
+
+따라서 대용량 데이터 자체를 저장하기보다는 데이터를 다시 조회할 수 있는 기준을 저장하는 편이 적절하다.
+
+예를 들어 다음과 같다.
+
+```java
+executionContext.putLong(
+        "lastProcessedId",
+        10000L
+);
+```
+
+또는 다음과 같은 값을 저장할 수 있다.
+
+```java
+executionContext.putString(
+        "batchRequestId",
+        "REQ-20261015-001"
+);
+```
+
+이처럼 **실제 데이터 전체보다는 상태를 복원하는 데 필요한 최소한의 정보를 저장하는 것이 좋다.**
+
+---
+
+### ExecutionContext의 Key 충돌 문제
+
+ExecutionContext는 Map 기반 구조를 사용한다.
+
+따라서 동일한 Key로 데이터를 저장하면 이전 값이 변경될 수 있다.
+
+예를 들어 Step 1에서 다음 값을 저장했다고 생각해보자.
+
+```java
+jobContext.putString(
+        "status",
+        "READY"
+);
+```
+
+그런데 Step 2에서 동일한 Key를 사용한다.
+
+```java
+jobContext.putString(
+        "status",
+        "COMPLETED"
+);
+```
+
+이 경우 기존 값이 변경된다.
+
+```text
+status = COMPLETED
+```
+
+이러한 동작 자체는 Map의 일반적인 특징이다.
+
+하지만 여러 Step이 같은 JobExecutionContext를 공유하는 구조에서는 의도하지 않은 데이터 변경이 발생할 수 있다.
+
+따라서 Key를 명확하게 구분하는 것이 좋다.
+
+예를 들어 다음과 같이 작성할 수 있다.
+
+```java
+jobContext.putString(
+        "settlement.prepare.status",
+        "COMPLETED"
+);
+```
+
+```java
+jobContext.putString(
+        "settlement.calculate.status",
+        "COMPLETED"
+);
+```
+
+이처럼 업무와 Step의 역할을 나타내는 접두사를 사용하면 Key 충돌 가능성을 줄일 수 있다.
+
+특히 여러 개발자가 하나의 Job을 구성하는 환경에서는 ExecutionContext의 Key 이름에 대한 규칙을 정해두는 것이 좋다.
+
+---
+
+### ExecutionContext와 재시작의 정합성
+
+ExecutionContext는 배치 재시작을 지원하지만 데이터 정합성까지 자동으로 보장하는 것은 아니다.
+
+예를 들어 다음과 같은 배치가 있다고 생각해보자.
+
+```text
+결제 데이터 조회
+       │
+       ▼
+결제 정산 처리
+       │
+       ▼
+외부 정산 API 호출
+       │
+       ▼
+ExecutionContext 업데이트
+```
+
+외부 API 호출이 성공했지만 ExecutionContext를 저장하기 전에 장애가 발생할 수 있다.
+
+이 경우 외부 시스템에서는 정산 요청이 처리되었지만 ExecutionContext에는 해당 작업이 완료되지 않은 것으로 남을 수 있다.
+
+따라서 재시작하면 같은 요청을 다시 전송할 가능성이 있다.
+
+이러한 상황을 방지하려면 ExecutionContext와 별도로 비즈니스 멱등성을 고려해야 한다.
+
+예를 들어 정산 요청에 고유한 멱등성 키를 전달할 수 있다.
+
+```text
+Idempotency-Key:
+settlement-20261015-merchant1001
+```
+
+또는 데이터베이스에 처리 완료 여부를 관리하는 별도의 테이블을 둘 수도 있다.
+
+ExecutionContext는 어디까지 처리했는지 기록하는 데 도움이 된다.
+
+하지만 외부 시스템에서 실제로 어떤 작업이 완료되었는지는 해당 시스템의 상태와 함께 검증해야 한다.
+
+**배치의 재시작 가능성과 비즈니스 처리의 멱등성은 서로 다른 문제다.**
+
+---
+
+### ExecutionContext 전체 동작 흐름
+
+지금까지 살펴본 내용을 하나의 실행 흐름으로 정리해보자.
+
+```mermaid
+sequenceDiagram
+    participant Launcher as JobLauncher
+    participant Repository as JobRepository
+    participant Job as JobExecution
+    participant Step as StepExecution
+    participant Context as ExecutionContext
+    participant DB as Database
+
+    Launcher->>Repository: Job 실행 요청
+    Repository->>DB: 기존 실행 정보 조회
+
+    DB-->>Repository: JobInstance 및 실행 상태
+
+    Repository->>Job: JobExecution 생성 또는 재시작 준비
+
+    Job->>Step: Step 실행
+
+    Step->>Context: ExecutionContext 조회
+
+    Context-->>Step: 저장된 실행 상태
+
+    Step->>Context: put / get
+
+    Note over Step,Context: 실행 상태 변경
+
+    Step->>Repository: StepExecutionContext 저장 요청
+    Repository->>DB: 실행 메타데이터 저장
+
+    Note over Job,Repository: Step 실행 경계에서 JobExecutionContext 갱신
+
+    Job->>Repository: JobExecutionContext 저장 요청
+    Repository->>DB: 공유 상태 저장
+```
+
+이 구조에서 가장 중요한 부분은 다음과 같다.
+
+Step에서는 StepExecutionContext를 통해 자신의 처리 상태를 관리할 수 있다.
+
+같은 Job에 속한 여러 Step은 JobExecutionContext를 통해 공유 데이터를 사용할 수 있다.
+
+Spring Batch는 각각의 실행 상태를 적절한 시점에 데이터베이스에 저장한다.
+
+그리고 실패한 Job을 재시작할 때 저장된 ExecutionContext를 복원해 이전 상태를 이어받을 수 있도록 한다.
+
+---
+
+### 실무에서 ExecutionContext를 어떻게 활용할까?
+
+ExecutionContext는 다양한 배치 시스템에서 활용할 수 있다.
+
+특히 대용량 데이터 처리, 정산, 통계 집계, 외부 시스템 연동과 같은 작업에서 중요하다.
+
+#### 1. 대용량 데이터 처리 위치 저장
+
+100만 건의 데이터를 처리하는 배치에서 마지막 처리 ID를 저장할 수 있다.
+
+```java
+stepContext.putLong(
+        "lastProcessedId",
+        lastProcessedId
+);
+```
+
+재시작할 때는 해당 값을 조회한다.
+
+```java
+long lastProcessedId =
+        stepContext.getLong(
+                "lastProcessedId",
+                0L
+        );
+```
+
+이후 Reader가 해당 ID를 기준으로 데이터를 조회하도록 구성한다.
+
+```sql
+SELECT *
+FROM PAYMENT
+WHERE PAYMENT_ID > :lastProcessedId
+ORDER BY PAYMENT_ID
+LIMIT :pageSize;
+```
+
+이 방식은 처리 대상의 정렬 기준과 데이터 변경 가능성을 고려하여 설계해야 한다.
+
+또한 저장 위치와 실제 비즈니스 데이터의 커밋 경계가 일치하도록 구성하는 것이 중요하다.
+
+#### 2. Step 간 데이터 공유
+
+Step 1에서 처리 대상 건수를 계산했다고 생각해보자.
+
+```java
+jobContext.putLong(
+        "settlement.targetCount",
+        10000L
+);
+```
+
+Step 2에서는 다음과 같이 조회할 수 있다.
+
+```java
+long targetCount =
+        jobContext.getLong(
+                "settlement.targetCount"
+        );
+```
+
+이를 통해 앞선 Step의 처리 결과를 다음 Step에서 사용할 수 있다.
+
+#### 3. 배치 처리 상태 관리
+
+배치의 처리 단계를 기록할 수도 있다.
+
+```java
+jobContext.putString(
+        "settlement.status",
+        "PREPARED"
+);
+```
+
+다음 Step에서 작업을 완료한 뒤 상태를 갱신할 수 있다.
+
+```java
+jobContext.putString(
+        "settlement.status",
+        "CALCULATED"
+);
+```
+
+다만 ExecutionContext는 운영용 업무 상태 테이블을 완전히 대체하기 위한 저장소는 아니다.
+
+외부 시스템이나 관리자 화면에서 빈번하게 조회해야 하는 업무 상태라면 별도의 관리 테이블을 구성하는 것이 더 적절할 수 있다.
+
+#### 4. 재시작 시 이전 처리 정보 복원
+
+재시작이 가능한 Job에서는 이전 실행의 ExecutionContext를 복원할 수 있다.
+
+예를 들어 Step이 다음 값을 저장했다고 생각해보자.
+
+```java
+stepContext.putLong(
+        "processedCount",
+        50000L
+);
+```
+
+이 값이 영속화되었다면 재시작 시 이전 처리 상태를 조회할 수 있다.
+
+```java
+long processedCount =
+        stepContext.getLong(
+                "processedCount",
+                0L
+        );
+```
+
+이러한 값을 Reader의 초기 위치나 작업 처리 범위를 결정하는 데 활용할 수 있다.
+
+---
+
+### 운영 환경에서 주의해야 할 사항
+
+ExecutionContext는 Spring Batch의 실행 메타데이터와 직접 연결되므로 운영 환경에서는 몇 가지 사항을 고려해야 한다.
+
+#### 메타데이터 테이블을 임의로 수정하지 않는다
+
+Spring Batch는 ExecutionContext를 직렬화한 형태로 저장한다.
+
+따라서 데이터베이스에서 SHORT_CONTEXT나 SERIALIZED_CONTEXT 값을 임의로 변경하면 역직렬화 오류가 발생할 수 있다.
+
+또한 재시작 시 잘못된 상태가 복원되어 데이터 중복 처리나 누락이 발생할 수도 있다.
+
+따라서 장애를 해결하기 위해 ExecutionContext 값을 직접 수정해야 한다면 직렬화 방식과 실행 상태를 정확하게 확인해야 한다.
+
+#### 실행 상태는 최소한으로 저장한다
+
+ExecutionContext는 대용량 객체 저장소가 아니다.
+
+상태 복원에 필요한 최소한의 Key-Value 데이터만 저장하는 것이 좋다.
+
+불필요한 대용량 데이터를 저장하면 메타데이터 저장 비용과 메모리 사용량이 증가할 수 있다.
+
+#### 저장 시점과 커밋 경계를 고려한다
+
+StepExecutionContext에 값을 저장했다고 해서 해당 값이 즉시 데이터베이스에 영구 반영되는 것은 아니다.
+
+실제 영속화는 Spring Batch의 트랜잭션 및 메타데이터 갱신 구조와 연결되어 있다.
+
+따라서 배치가 실패했을 때 어느 시점까지의 상태가 복원될 수 있는지 확인해야 한다.
+
+특히 외부 API 호출이나 메시지 발행처럼 DB 트랜잭션만으로 롤백할 수 없는 작업은 별도의 멱등성 정책이 필요하다.
+
+#### Serializer 변경은 재시작 호환성에 영향을 줄 수 있다
+
+ExecutionContext는 직렬화된 상태로 저장된다.
+
+따라서 운영 중 Serializer를 변경하면 이전 형식으로 저장된 ExecutionContext를 읽지 못할 수 있다.
+
+Spring Batch 버전 변경이나 Serializer 교체 시에는 기존 메타데이터와의 호환성을 검증해야 한다.
+
+또한 Spring Batch 5.2.4의 기본 Serializer는 Java 역직렬화를 사용하므로, 메타데이터 데이터베이스의 접근 권한을 엄격하게 관리해야 한다. 운영 환경에서는 사용 중인 버전의 보안 업데이트와 직렬화 설정도 점검하는 것이 좋다.
+
+---
+
+### 정리
+
+Spring Batch에서 `ExecutionContext`는 Job 또는 Step의 실행 상태를 유지하고 관리하기 위한 Key-Value 기반 도메인 객체다.
+
+내부적으로 Map과 유사한 구조를 가지고 있으며, 개발자는 put과 get 계열 메서드를 이용해 데이터를 저장하고 조회할 수 있다.
+
+하지만 일반적인 Map과 달리 Spring Batch의 JobRepository와 연결되어 실행 상태를 데이터베이스에 저장하고 재시작할 때 복원할 수 있다는 특징이 있다.
+
+ExecutionContext는 크게 두 가지 범위로 구분된다.
+
+첫 번째는 JobExecutionContext다.
+
+JobExecutionContext는 JobExecution에 연결되며 같은 Job에 속한 여러 Step이 공유할 수 있다.
+
+두 번째는 StepExecutionContext다.
+
+StepExecutionContext는 개별 StepExecution에 연결되며 해당 Step의 실행 상태를 관리한다.
+
+두 객체를 비교하면 다음과 같다.
+
+| 구분        | JobExecutionContext         | StepExecutionContext         |
+| --------- | --------------------------- | ---------------------------- |
+| 연결 객체     | JobExecution                | StepExecution                |
+| Step 간 공유 | 가능                          | 자동 공유되지 않음                   |
+| 주요 목적     | 공통 실행 데이터 관리                | 개별 Step 실행 상태 관리             |
+| 저장 시점     | Step 실행 사이                  | Chunk 커밋 및 Step 종료           |
+| 저장 테이블    | BATCH_JOB_EXECUTION_CONTEXT | BATCH_STEP_EXECUTION_CONTEXT |
+| 대표 활용     | Step 간 결과 전달                | 마지막 처리 위치 복원                 |
+
+특히 재시작 기능에서 ExecutionContext는 중요한 역할을 담당한다.
+
+예를 들어 다음과 같은 Job이 있다고 생각해보자.
+
+```text
+첫 번째 실행
+
+Step 1 → COMPLETED
+
+Step 2 → COMPLETED
+
+Step 3 → FAILED
+
+Step 4 → 실행되지 않음
+```
+
+이후 같은 JobInstance를 재시작하면 다음과 같이 처리될 수 있다.
+
+```text
+두 번째 실행
+
+Step 1 → 실행 생략
+
+Step 2 → 실행 생략
+
+Step 3 → COMPLETED
+
+Step 4 → COMPLETED
+```
+
+이때 Spring Batch는 이전 실행에서 영속화된 ExecutionContext를 복원할 수 있다.
+
+따라서 Step 1과 Step 2를 다시 실행하지 않더라도 이전에 저장한 공유 데이터를 사용할 수 있다.
+
+또한 StepExecutionContext에 저장한 처리 위치를 활용하면 실패한 Step의 작업을 이어서 수행하도록 설계할 수 있다.
+
+다만 저장된 상태를 실제 Reader나 비즈니스 처리 로직에 반영하는 과정은 별도로 구현해야 할 수 있다.
+
+ExecutionContext의 값을 변경했다고 해서 즉시 데이터베이스에 반영되는 것은 아니므로 저장 시점과 트랜잭션 경계를 이해하는 것도 중요하다.
+
+또한 ExecutionContext는 여러 데이터를 저장할 수 있지만 대용량 객체나 실행 환경에 종속적인 객체를 보관하기 위한 용도로 사용하는 것은 적절하지 않다.
+
+실무에서는 상태 복원에 필요한 최소한의 정보를 저장하고, JobExecutionContext와 StepExecutionContext의 공유 범위를 구분해서 사용하는 것이 좋다.
+
+결국 **ExecutionContext는 Spring Batch에서 Job과 Step의 실행 상태를 유지하고, Step 사이의 데이터를 공유하며, 실패한 배치를 재시작할 수 있도록 지원하는 핵심 도메인 객체**다.
+
+#### 한 줄 요약
+
+> Spring Batch의 `ExecutionContext`는 Job과 Step의 실행 상태를 Key-Value 형태로 저장하고 관리하는 객체다. `JobExecutionContext`는 같은 Job의 Step 사이에서 데이터를 공유하는 데 사용하고, `StepExecutionContext`는 특정 Step의 처리 위치와 재시작 상태를 관리하는 데 사용한다. Spring Batch는 이러한 상태를 데이터베이스에 영속화하며, 실패한 Job을 재시작할 때 저장된 정보를 복원해 이전 작업을 이어서 수행할 수 있도록 지원한다.
+
+
+## JobRepository
+
+### Spring Batch JobRepository 이해: 메타데이터 저장과 조회, 트랜잭션 및 설정 커스터마이징
+
+Spring Batch에서 Job은 배치 작업 전체를 정의하고, Step은 Job을 구성하는 개별 실행 단위다.
+
+Job이 실행되면 Spring Batch는 다양한 도메인 객체를 생성하거나 갱신한다.
+
+대표적으로 다음과 같은 객체들이 있다.
+
+| 도메인 객체           | 역할                    |
+| ---------------- | --------------------- |
+| JobInstance      | 논리적인 Job 실행 단위        |
+| JobExecution     | Job의 개별 실행 시도         |
+| JobParameters    | 실행 조건과 JobInstance 식별 |
+| StepExecution    | Step의 개별 실행 시도        |
+| ExecutionContext | 실행 상태와 재시작 정보 관리      |
+
+이러한 객체들은 서로 연결되어 Spring Batch의 실행 상태를 관리한다.
+
+그렇다면 실제 실행 정보는 어디에 저장될까?
+
+예를 들어 매일 새벽 실행되는 정산 배치가 있다고 생각해보자.
+
+```text
+dailySettlementJob
+       │
+       ├── Step 1: 정산 대상 조회
+       │
+       ├── Step 2: 정산 금액 계산
+       │
+       └── Step 3: 정산 결과 저장
+```
+
+이 Job이 실행되면 Spring Batch는 다음과 같은 정보를 관리해야 한다.
+
+* 어떤 Job이 실행되었는가?
+* 어떤 파라미터를 사용했는가?
+* 언제 시작하고 종료되었는가?
+* 어떤 Step이 성공하거나 실패했는가?
+* 몇 건의 데이터를 처리했는가?
+* 이전에 실패한 작업을 다시 시작할 수 있는가?
+
+이 정보를 JVM 메모리에서만 관리한다면 애플리케이션이 종료되었을 때 실행 이력이 사라질 수 있다.
+
+특히 실패한 배치를 재시작해야 하는 상황에서는 이전 실행 상태가 반드시 필요하다.
+
+Spring Batch는 이러한 문제를 해결하기 위해 `JobRepository`라는 핵심 컴포넌트를 제공한다.
+
+**JobRepository는 배치 실행 과정에서 발생하는 메타데이터를 생성, 조회, 수정하고 영속화하는 저장소 역할을 담당한다.**
+
+JobLauncher, Job, Step 등의 실행 컴포넌트는 JobRepository를 이용해 실행 이력을 관리한다.
+
+이번에는 JobRepository의 역할과 내부 구조, 주요 메서드, 트랜잭션 관리 방식, 설정 커스터마이징 방법을 살펴보자.
+
+**개발 환경**
+
+| 항목            | 기술        |
+| ------------- | --------- |
+| Java          | Java 17   |
+| Spring Boot   | 3.4.13    |
+| Spring Batch  | 5.2.4     |
+| Build Tool    | Maven     |
+| Database      | MySQL 8.4 |
+| JobRepository | JDBC 기반   |
+
+---
+
+### JobRepository란?
+
+JobRepository는 Spring Batch의 실행 메타데이터를 관리하는 인터페이스다.
+
+Spring Batch에서는 Job과 Step이 실행되는 동안 다양한 상태 정보가 생성된다.
+
+예를 들어 다음과 같은 Job을 실행한다고 생각해보자.
+
+```text
+Job Name: settlementJob
+
+JobParameters:
+businessDate=2026-10-15
+```
+
+처음 실행하는 작업이라면 새로운 JobInstance가 생성된다.
+
+그리고 JobExecution이 생성된다.
+
+이후 각 Step이 실행될 때마다 StepExecution이 생성된다.
+
+```mermaid
+flowchart TD
+    A["Job 실행 요청"]
+    B["JobInstance 생성"]
+    C["JobExecution 생성"]
+    D["StepExecution 생성"]
+    E["Step 실행"]
+    F["실행 상태 변경"]
+    G["JobRepository"]
+    H["메타데이터 DB"]
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+
+    B -.-> G
+    C -.-> G
+    D -.-> G
+    F -.-> G
+
+    G --> H
+```
+
+JobRepository는 이 과정에서 발생하는 실행 정보를 관리한다.
+
+대표적인 역할은 다음과 같다.
+
+| 기능         | 설명                                          |
+| ---------- | ------------------------------------------- |
+| Create     | JobInstance, JobExecution, StepExecution 생성 |
+| Read       | 이전 Job 및 Step 실행 이력 조회                      |
+| Update     | 실행 상태, 처리 건수, 종료 결과 갱신                      |
+| Delete     | 실행 메타데이터 삭제 기능 제공                           |
+| Restart 지원 | 이전 실행 상태를 조회하여 재시작에 필요한 정보 제공               |
+
+여기서 중요한 사실은 **JobRepository가 단순히 실행 결과를 저장하는 역할만 담당하지 않는다는 것**이다.
+
+Spring Batch는 Job을 실행하기 전에도 JobRepository에 접근한다.
+
+이미 동일한 JobInstance가 존재하는지 확인해야 하기 때문이다.
+
+또한 Step을 실행하기 전에도 이전 StepExecution을 조회한다.
+
+이미 완료된 Step인지, 실패한 Step인지 확인해야 재시작 여부를 판단할 수 있기 때문이다.
+
+따라서 JobRepository는 배치 실행의 시작부터 종료까지 여러 단계에서 사용되는 핵심 인프라 컴포넌트다.
+
+---
+
+### JobRepository는 왜 필요한가?
+
+JobRepository가 필요한 이유는 크게 세 가지로 설명할 수 있다.
+
+#### 실행 이력을 영구적으로 관리하기 위해
+
+일반적인 애플리케이션에서는 메서드를 호출해 작업을 수행하고 결과를 반환할 수 있다.
+
+```java
+public void processSettlement() {
+    // 정산 처리
+}
+```
+
+하지만 이 방식만으로는 다음 정보를 관리하기 어렵다.
+
+```text
+어제 정산이 성공했는가?
+
+오늘 정산은 몇 번 실행되었는가?
+
+실패한 정산은 어느 단계까지 처리되었는가?
+```
+
+이러한 정보를 관리하려면 별도의 실행 이력 저장소가 필요하다.
+
+Spring Batch에서는 JobRepository가 이 역할을 담당한다.
+
+예를 들어 다음과 같은 실행 이력이 있다고 생각해보자.
+
+| 실행일        | Job 이름        | 실행 결과     |
+| ---------- | ------------- | --------- |
+| 2026-10-15 | settlementJob | COMPLETED |
+| 2026-10-16 | settlementJob | FAILED    |
+| 2026-10-16 | settlementJob | COMPLETED |
+| 2026-10-17 | settlementJob | COMPLETED |
+
+10월 16일의 정산 작업은 두 번 실행되었다.
+
+첫 번째 실행은 실패했고 두 번째 실행은 성공했다.
+
+JobRepository는 이러한 실행 이력을 구분해서 관리할 수 있도록 지원한다.
+
+#### 중복 실행을 제어하기 위해
+
+Spring Batch에서는 Job 이름과 식별용 JobParameters로 JobInstance를 구분한다.
+
+예를 들어 다음과 같다.
+
+```text
+Job Name: settlementJob
+
+businessDate=2026-10-15
+```
+
+이미 해당 JobInstance가 정상적으로 완료되었다면 동일한 식별용 파라미터로 다시 실행하는 것은 일반적으로 허용되지 않는다.
+
+이때 Spring Batch는 기존 실행 이력을 확인해야 한다.
+
+JobRepository는 이러한 판단에 필요한 정보를 제공한다.
+
+```mermaid
+flowchart TD
+    A["Job 실행 요청"]
+    B["JobRepository 조회"]
+    C{"동일한 JobInstance 존재?"}
+    D["새 JobInstance 생성"]
+    E["마지막 JobExecution 조회"]
+    F{"이전 실행 상태"}
+    G["새 JobExecution 생성"]
+    H["재시작 가능 여부 확인"]
+    I["실행 거부"]
+
+    A --> B
+    B --> C
+
+    C -->|No| D
+    D --> G
+
+    C -->|Yes| E
+    E --> F
+
+    F -->|COMPLETED| I
+    F -->|FAILED / STOPPED| H
+    H -->|가능| G
+    H -->|불가능| I
+```
+
+여기서 JobRepository가 메타데이터를 조회한다는 사실은 중요하다.
+
+하지만 실제 재시작 가능 여부는 Job의 설정과 이전 실행 상태 등을 함께 고려해 결정된다.
+
+JobRepository가 모든 비즈니스 중복 처리를 자동으로 해결한다는 의미는 아니다.
+
+#### 실패한 Job을 재시작하기 위해
+
+다음과 같은 Job이 있다고 생각해보자.
+
+```text
+Step 1 → COMPLETED
+
+Step 2 → FAILED
+
+Step 3 → 실행되지 않음
+```
+
+이 작업을 다시 실행할 때 모든 Step을 처음부터 수행할 필요는 없을 수 있다.
+
+Spring Batch는 JobRepository에 저장된 StepExecution 정보를 조회해 이전 Step의 실행 상태를 확인한다.
+
+기본적으로 완료된 Step은 건너뛰고 실패한 Step부터 다시 실행할 수 있다.
+
+```text
+재시작
+
+Step 1 → 실행 생략
+
+Step 2 → 재실행
+
+Step 3 → 실행
+```
+
+이러한 재시작 구조는 이전 실행 메타데이터가 유지되어야 가능하다.
+
+따라서 재시작이 중요한 배치에서는 영속성 있는 JobRepository가 필요하다.
+
+---
+
+### Spring Batch 실행 과정에서 JobRepository의 역할
+
+JobRepository는 특정한 한 지점에서만 호출되는 객체가 아니다.
+
+JobLauncher부터 Step 실행 과정까지 여러 곳에서 사용된다.
+
+전체적인 실행 흐름을 살펴보자.
+
+```mermaid
+sequenceDiagram
+    participant Client as 실행 요청
+    participant Launcher as JobLauncher
+    participant Repository as JobRepository
+    participant Job as Job
+    participant Handler as StepHandler
+    participant Step as Step
+    participant DB as Metadata DB
+
+    Client->>Launcher: run(Job, JobParameters)
+
+    Launcher->>Repository: createJobExecution()
+    Repository->>DB: JobInstance 조회
+
+    alt 새로운 JobInstance
+        Repository->>DB: JobInstance INSERT
+    else 기존 JobInstance
+        Repository->>DB: 이전 JobExecution 조회
+        Note over Repository: 실행 가능 여부 확인
+    end
+
+    Repository->>DB: JobExecution INSERT
+    Repository-->>Launcher: JobExecution
+
+    Launcher->>Job: execute(JobExecution)
+
+    Job->>Handler: Step 실행 요청
+
+    Handler->>Repository: getLastStepExecution()
+    Repository->>DB: 이전 StepExecution 조회
+
+    Handler->>Repository: add(StepExecution)
+    Repository->>DB: StepExecution INSERT
+
+    Handler->>Step: execute(StepExecution)
+
+    Step->>Repository: update(StepExecution)
+    Repository->>DB: StepExecution UPDATE
+
+    Step-->>Handler: 실행 결과
+    Handler-->>Job: StepExecution
+
+    Job->>Repository: update(JobExecution)
+    Repository->>DB: JobExecution UPDATE
+```
+
+이 흐름을 보면 JobRepository의 역할이 명확해진다.
+
+Job이 실행되기 전에는 이전 실행 이력을 조회한다.
+
+새로운 실행이 허용되면 메타데이터를 생성한다.
+
+실행 중에는 Job과 Step의 상태를 갱신한다.
+
+그리고 실행이 종료되면 최종 상태를 저장한다.
+
+즉 **JobRepository는 배치 실행의 전 과정에서 메타데이터의 일관성을 관리하기 위한 중심 컴포넌트**다.
+
+---
+
+### JobRepository의 내부 구조
+
+Spring Batch에서 `JobRepository`는 인터페이스다.
+
+실제 데이터베이스 접근은 JobRepository의 구현체와 내부 DAO가 담당한다.
+
+Spring Batch 5.2.4에서 JDBC 기반 메타데이터 관리에 사용되는 대표적인 구현체는 `SimpleJobRepository`다.
+
+SimpleJobRepository는 직접 모든 SQL을 처리하는 것이 아니라 여러 DAO에 작업을 위임한다.
+
+주요 DAO는 다음과 같다.
+
+| DAO                 | 역할                       |
+| ------------------- | ------------------------ |
+| JobInstanceDao      | JobInstance 생성 및 조회      |
+| JobExecutionDao     | JobExecution 저장 및 조회     |
+| StepExecutionDao    | StepExecution 저장 및 조회    |
+| ExecutionContextDao | ExecutionContext 저장 및 조회 |
+
+이 구조를 그림으로 나타내면 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["JobRepository"]
+    B["SimpleJobRepository"]
+
+    C["JobInstanceDao"]
+    D["JobExecutionDao"]
+    E["StepExecutionDao"]
+    F["ExecutionContextDao"]
+
+    G["JdbcJobInstanceDao"]
+    H["JdbcJobExecutionDao"]
+    I["JdbcStepExecutionDao"]
+    J["JdbcExecutionContextDao"]
+
+    K["MySQL"]
+
+    A --> B
+
+    B --> C
+    B --> D
+    B --> E
+    B --> F
+
+    C --> G
+    D --> H
+    E --> I
+    F --> J
+
+    G --> K
+    H --> K
+    I --> K
+    J --> K
+```
+
+각 DAO는 담당하는 도메인 객체의 영속화를 처리한다.
+
+예를 들어 JobInstance를 조회해야 한다면 JobInstanceDao를 사용한다.
+
+JobExecution의 상태를 저장해야 한다면 JobExecutionDao를 사용한다.
+
+StepExecution의 처리 통계를 저장해야 한다면 StepExecutionDao를 사용한다.
+
+이처럼 역할을 분리했기 때문에 Spring Batch는 메타데이터 관리 기능을 체계적으로 구성할 수 있다.
+
+#### SimpleJobRepository의 구조
+
+실제 Spring Batch 5.2.4의 SimpleJobRepository는 개념적으로 다음과 같은 의존 관계를 가진다.
+
+```java
+public class SimpleJobRepository implements JobRepository {
+
+    private JobInstanceDao jobInstanceDao;
+
+    private JobExecutionDao jobExecutionDao;
+
+    private StepExecutionDao stepExecutionDao;
+
+    private ExecutionContextDao ecDao;
+
+    // JobRepository 메서드 구현
+}
+```
+
+위 코드는 주요 필드만 나타낸 것이다.
+
+중요한 것은 SimpleJobRepository가 네 개의 DAO를 통해 실행 정보를 관리한다는 사실이다.
+
+예를 들어 다음 메서드를 호출했다고 생각해보자.
+
+```java
+jobRepository.getLastJobExecution(
+        jobName,
+        jobParameters
+);
+```
+
+SimpleJobRepository는 내부 DAO를 이용해 JobInstance를 조회한다.
+
+이후 해당 JobInstance에 속한 마지막 JobExecution을 조회한다.
+
+그리고 필요한 실행 정보를 반환한다.
+
+따라서 개발자는 직접 메타데이터 테이블에 SQL을 작성하지 않고도 JobRepository의 API를 이용해 실행 이력을 조회할 수 있다.
+
+---
+
+### JobRepository와 메타데이터 테이블
+
+Spring Batch의 JDBC 기반 JobRepository는 메타데이터 테이블을 이용해 실행 정보를 저장한다.
+
+Spring Batch 5.2.4의 MySQL 환경에서는 기본적으로 다음 여섯 개의 핵심 테이블을 사용한다.
+
+| 테이블                          | 저장 정보                |
+| ---------------------------- | -------------------- |
+| BATCH_JOB_INSTANCE           | JobInstance          |
+| BATCH_JOB_EXECUTION          | JobExecution         |
+| BATCH_JOB_EXECUTION_PARAMS   | JobParameters        |
+| BATCH_JOB_EXECUTION_CONTEXT  | JobExecutionContext  |
+| BATCH_STEP_EXECUTION         | StepExecution        |
+| BATCH_STEP_EXECUTION_CONTEXT | StepExecutionContext |
+
+이 외에도 ID를 생성하기 위한 시퀀스 관련 테이블을 사용한다.
+
+MySQL 스키마에서는 일반적으로 다음 세 개가 추가된다.
+
+```text
+BATCH_JOB_SEQ
+
+BATCH_JOB_EXECUTION_SEQ
+
+BATCH_STEP_EXECUTION_SEQ
+```
+
+따라서 기존 MySQL 스키마를 사용한다면 총 아홉 개의 관련 테이블을 확인할 수 있다.
+
+#### 메타데이터 테이블 간 관계
+
+```mermaid
+erDiagram
+    BATCH_JOB_INSTANCE ||--o{ BATCH_JOB_EXECUTION : has
+
+    BATCH_JOB_EXECUTION ||--o{ BATCH_JOB_EXECUTION_PARAMS : has
+
+    BATCH_JOB_EXECUTION ||--o| BATCH_JOB_EXECUTION_CONTEXT : has
+
+    BATCH_JOB_EXECUTION ||--o{ BATCH_STEP_EXECUTION : has
+
+    BATCH_STEP_EXECUTION ||--o| BATCH_STEP_EXECUTION_CONTEXT : has
+```
+
+JobRepository는 이러한 테이블에 저장된 데이터를 조회하고 갱신한다.
+
+따라서 메타데이터 스키마는 JobRepository가 정상적으로 동작하기 위한 중요한 기반이다.
+
+---
+
+### JobRepository의 주요 메서드
+
+JobRepository는 메타데이터를 생성하고 조회하기 위한 여러 메서드를 제공한다.
+
+Spring Batch 5.2.4에서 대표적으로 사용하는 메서드를 살펴보자.
+
+#### Job 관련 메서드
+
+| 메서드                     | 역할                                  |
+| ----------------------- | ----------------------------------- |
+| `createJobExecution()`  | JobExecution 생성                     |
+| `createJobInstance()`   | JobInstance 생성                      |
+| `getJobInstance()`      | JobInstance 조회                      |
+| `getLastJobExecution()` | 특정 JobInstance의 마지막 JobExecution 조회 |
+| `isJobInstanceExists()` | 동일한 JobInstance 존재 여부 확인            |
+| `findJobExecutions()`   | JobInstance에 속한 실행 이력 조회            |
+| `getJobNames()`         | 저장된 Job 이름 목록 조회                    |
+
+여기서 중요한 메서드는 `createJobExecution()`이다.
+
+JobLauncher는 Job을 실행하기 위해 JobRepository에 새로운 JobExecution 생성을 요청한다.
+
+이 과정에서 기존 JobInstance가 있는지 확인하고 재시작 가능 여부를 판단한다.
+
+#### Step 관련 메서드
+
+| 메서드                       | 역할                              |
+| ------------------------- | ------------------------------- |
+| `add()`                   | StepExecution 생성 및 저장           |
+| `update(StepExecution)`   | StepExecution 정보 갱신             |
+| `getLastStepExecution()`  | 특정 Step의 마지막 실행 조회              |
+| `getStepExecutionCount()` | 동일한 JobInstance 내 Step 실행 횟수 조회 |
+
+이러한 메서드는 Step 실행과 재시작 과정에서 사용된다.
+
+예를 들어 다음 메서드는 특정 Step의 마지막 실행 정보를 조회한다.
+
+```java
+StepExecution lastStepExecution =
+        jobRepository.getLastStepExecution(
+                jobInstance,
+                "settlementStep"
+        );
+```
+
+이 정보를 통해 이전 실행 상태와 처리 결과를 확인할 수 있다.
+
+#### ExecutionContext 관련 메서드
+
+ExecutionContext는 별도의 업데이트 메서드를 사용한다.
+
+```java
+jobRepository.updateExecutionContext(
+        jobExecution
+);
+```
+
+또는 다음과 같이 사용할 수 있다.
+
+```java
+jobRepository.updateExecutionContext(
+        stepExecution
+);
+```
+
+여기서 반드시 이해해야 하는 부분이 있다.
+
+다음 두 메서드는 서로 다른 작업을 수행한다.
+
+```java
+jobRepository.update(stepExecution);
+```
+
+```java
+jobRepository.updateExecutionContext(stepExecution);
+```
+
+첫 번째는 StepExecution의 실행 상태와 통계 등을 갱신한다.
+
+두 번째는 StepExecution에 연결된 ExecutionContext를 영속화한다.
+
+**JobRepository의 `update()` 메서드는 해당 ExecutionContext까지 자동으로 업데이트하는 메서드가 아니다.**
+
+Spring Batch는 실행 과정에서 필요한 시점에 두 작업을 각각 수행한다.
+
+따라서 JobRepository를 직접 사용해야 하는 경우에는 이 차이를 이해해야 한다.
+
+---
+
+### createJobExecution()의 내부 동작
+
+JobRepository에서 가장 중요한 메서드 중 하나는 `createJobExecution()`이다.
+
+이 메서드는 새로운 JobExecution을 생성한다.
+
+하지만 단순히 객체를 생성하는 것으로 끝나지 않는다.
+
+기존 JobInstance가 존재하는지 확인해야 한다.
+
+또한 이전 실행 상태에 따라 새로운 실행이 가능한지도 판단해야 한다.
+
+예를 들어 다음과 같은 요청이 있다고 생각해보자.
+
+```text
+Job Name: settlementJob
+
+JobParameters:
+businessDate=2026-10-15
+```
+
+처음 실행하는 작업이라면 새로운 JobInstance가 생성된다.
+
+그리고 새로운 JobExecution이 생성된다.
+
+```text
+JobInstance 1
+      │
+      ▼
+JobExecution 1
+```
+
+그런데 첫 번째 실행이 실패했다면 어떻게 될까?
+
+```text
+JobInstance 1
+      │
+      ▼
+JobExecution 1
+      │
+      ▼
+FAILED
+```
+
+이후 같은 식별용 JobParameters로 실행하면 기존 JobInstance를 다시 사용한다.
+
+그리고 재시작이 허용된다면 새로운 JobExecution을 생성한다.
+
+```text
+JobInstance 1
+      │
+      ├── JobExecution 1 → FAILED
+      │
+      └── JobExecution 2 → COMPLETED
+```
+
+반면 이미 완료된 JobInstance라면 새로운 실행이 제한된다.
+
+대표적으로 다음 예외가 발생한다.
+
+```text
+JobInstanceAlreadyCompleteException
+```
+
+이러한 판단 과정에 JobRepository가 관여한다.
+
+#### createJobExecution()의 처리 흐름
+
+```mermaid
+flowchart TD
+    A["createJobExecution()"]
+    B["Job 이름과 JobParameters 확인"]
+    C["기존 JobInstance 조회"]
+    D{"JobInstance 존재?"}
+
+    E["새로운 JobInstance 생성"]
+    F["이전 JobExecution 목록 조회"]
+
+    G{"실행 가능한 상태?"}
+    H["새 JobExecution 생성"]
+    I["ExecutionContext 준비"]
+    J["메타데이터 DB 저장"]
+
+    K["실행 예외 발생"]
+
+    A --> B
+    B --> C
+    C --> D
+
+    D -->|No| E
+    E --> H
+
+    D -->|Yes| F
+    F --> G
+
+    G -->|Yes| H
+    G -->|No| K
+
+    H --> I
+    I --> J
+```
+
+여기서 중요한 부분은 기존 JobInstance가 존재하더라도 새로운 JobExecution이 생성될 수 있다는 점이다.
+
+이것이 Spring Batch의 재시작을 가능하게 하는 구조다.
+
+---
+
+### getLastJobExecution()이란?
+
+JobRepository는 특정 JobInstance에 대해 마지막으로 생성된 JobExecution을 조회하는 메서드를 제공한다.
+
+```java
+JobExecution getLastJobExecution(
+        String jobName,
+        JobParameters jobParameters
+);
+```
+
+두 개의 인자를 전달한다.
+
+첫 번째는 Job 이름이다.
+
+두 번째는 JobParameters다.
+
+여기서 중요한 것은 **이 메서드가 같은 이름을 가진 모든 JobExecution 중 가장 최근 실행을 조회하는 것이 아니라는 점**이다.
+
+Job 이름과 식별용 JobParameters로 구분되는 특정 JobInstance를 기준으로 마지막 실행을 조회한다.
+
+예를 들어 다음과 같은 실행 이력이 있다고 생각해보자.
+
+| JobInstance | businessDate | JobExecution | 상태        |
+| ----------- | ------------ | ------------ | --------- |
+| 1           | 2026-10-15   | 1            | FAILED    |
+| 1           | 2026-10-15   | 2            | COMPLETED |
+| 2           | 2026-10-16   | 3            | COMPLETED |
+
+다음 조건으로 조회한다고 생각해보자.
+
+```text
+Job Name: settlementJob
+
+businessDate=2026-10-15
+```
+
+이 경우 조회 대상은 JobInstance 1이다.
+
+따라서 마지막 실행인 JobExecution 2를 가져온다.
+
+JobExecution 3이 전체적으로 더 최근에 생성되었더라도 다른 JobInstance에 속하므로 조회 대상이 아니다.
+
+이 차이는 실제 운영 환경에서 매우 중요하다.
+
+---
+
+### getLastStepExecution()이란?
+
+JobRepository는 Step의 마지막 실행 정보도 조회할 수 있다.
+
+```java
+StepExecution getLastStepExecution(
+        JobInstance jobInstance,
+        String stepName
+);
+```
+
+첫 번째 인자는 JobInstance다.
+
+두 번째 인자는 Step 이름이다.
+
+예를 들어 다음과 같은 실행 이력이 있다고 생각해보자.
+
+```text
+JobInstance 1
+      │
+      ├── JobExecution 1
+      │       │
+      │       └── settlementStep → FAILED
+      │
+      └── JobExecution 2
+              │
+              └── settlementStep → COMPLETED
+```
+
+다음 메서드를 호출한다.
+
+```java
+StepExecution stepExecution =
+        jobRepository.getLastStepExecution(
+                jobInstance,
+                "settlementStep"
+        );
+```
+
+이 경우 해당 JobInstance에서 마지막으로 실행된 settlementStep의 실행 정보를 조회할 수 있다.
+
+따라서 재시작할 때 Step의 상태를 확인하는 데 활용할 수 있다.
+
+---
+
+### JobRepository 설정 방식
+
+JobRepository를 사용하려면 먼저 해당 Bean이 생성되어야 한다.
+
+Spring Boot에서는 Spring Batch 관련 의존성이 존재하고 필요한 조건이 충족되면 Batch 인프라를 자동으로 구성할 수 있다.
+
+대표적으로 다음 객체들이 구성된다.
+
+```text
+JobRepository
+
+JobLauncher
+
+JobExplorer
+
+JobOperator
+```
+
+일반적인 Spring Boot 프로젝트에서는 직접 JobRepositoryFactoryBean을 생성하지 않아도 된다.
+
+Spring Boot가 기본 구성을 제공하기 때문이다.
+
+다만 데이터베이스 연결, 트랜잭션 격리 수준, 테이블 Prefix 등은 상황에 따라 변경할 수 있다.
+
+Spring Batch 5.2.4를 기준으로 대표적인 설정 방식은 다음과 같다.
+
+| 설정 방식                       | 특징                            |
+| --------------------------- | ----------------------------- |
+| Spring Boot 자동 설정           | 일반적인 프로젝트에서 가장 간단한 방법         |
+| `@EnableBatchProcessing`    | Spring Batch 인프라 구성을 명시적으로 제어 |
+| `DefaultBatchConfiguration` | 설정 메서드를 재정의하여 인프라 구성 변경       |
+| `JobRepositoryFactoryBean`  | JDBC JobRepository를 세부적으로 구성  |
+
+**Spring Boot를 사용하는 경우에는 우선 자동 설정을 활용하고, 필요한 설정만 변경하는 방식이 관리하기 쉽다.**
+
+---
+
+### Spring Batch 4와 5의 설정 방식 차이
+
+Spring Batch의 설정 방법은 버전에 따라 차이가 있다.
+
+기존 Spring Batch 4 환경에서는 `BasicBatchConfigurer`나 `BatchConfigurer`를 이용한 설정 방식이 사용되었다.
+
+또한 `MapJobRepositoryFactoryBean`을 이용한 인메모리 설정 방식도 사용되었다.
+
+하지만 Spring Batch 5에서는 이러한 과거 설정 방식을 그대로 적용해서는 안 된다.
+
+Spring Batch 5에서는 `DefaultBatchConfiguration`을 이용한 설정 방식이 제공된다.
+
+그리고 Spring Batch 5.2에서는 `ResourcelessJobRepository`도 제공된다.
+
+다만 ResourcelessJobRepository는 영속적인 메타데이터 저장소를 제공하는 방식이 아니다.
+
+따라서 실패한 배치를 재시작하거나 복잡한 실행 이력을 관리해야 하는 시스템에는 적합하지 않다.
+
+이를 정리하면 다음과 같다.
+
+| 구분                 | 과거 방식                    | Spring Batch 5.2                             |
+| ------------------ | ------------------------ | -------------------------------------------- |
+| Batch 설정 확장        | BasicBatchConfigurer 등   | DefaultBatchConfiguration                    |
+| JDBC Repository 생성 | JobRepositoryFactoryBean | JobRepositoryFactoryBean                     |
+| 인메모리 Repository    | Map 기반 구현                | ResourcelessJobRepository 또는 인메모리 DB 기반 JDBC |
+| Spring Boot 통합     | Boot 자동 설정               | Boot 자동 설정                                   |
+| 실행 이력 영속화          | JDBC 사용                  | JDBC 사용                                      |
+
+여기서 인메모리 방식도 두 가지를 구분해야 한다.
+
+**H2 인메모리 데이터베이스를 사용하는 JDBC JobRepository**는 프로세스가 실행되는 동안 실제 메타데이터 테이블을 사용한다.
+
+반면 **ResourcelessJobRepository**는 메타데이터 저장을 제공하지 않는 제한적인 구현체다.
+
+따라서 두 방식을 동일하게 이해해서는 안 된다.
+
+---
+
+### 실제 JobRepository 조회 기능 구현하기
+
+이번에는 JobRepository를 직접 사용해 실행 이력을 조회하는 예제를 구성해보자.
+
+다음과 같은 Job을 생성한다.
+
+```text
+repositoryDemoJob
+       │
+       ├── repositoryStep1
+       │
+       └── repositoryStep2
+```
+
+그리고 JobExecutionListener를 이용해 이전 실행 이력을 조회한다.
+
+예제의 실행 순서는 다음과 같다.
+
+1. 2026-10-15 기준으로 Job을 실행한다.
+2. 해당 실행의 메타데이터를 MySQL에 저장한다.
+3. 2026-10-16 기준으로 Job을 다시 실행한다.
+4. JobExecutionListener에서 2026-10-15의 마지막 JobExecution을 조회한다.
+5. 해당 JobExecution에 속한 StepExecution의 상태를 출력한다.
+
+이렇게 하면 JobRepository가 이전 실행 정보를 데이터베이스에서 조회하는 과정을 확인할 수 있다.
+
+---
+
+### RepositoryJobConfiguration 전체 코드
+
+먼저 Job과 Step을 정의한다.
+
+`RepositoryJobConfiguration.java`
+
+```java
+package com.example.batch;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.Step;
+import org.springframework.batch.core.JobExecutionListener;
+
+import org.springframework.batch.core.job.builder.JobBuilder;
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.step.builder.StepBuilder;
+
+import org.springframework.batch.repeat.RepeatStatus;
+
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
+
+import org.springframework.transaction.PlatformTransactionManager;
+
+@Configuration
+@Profile("repository-demo")
+public class RepositoryJobConfiguration {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(
+                    RepositoryJobConfiguration.class
+            );
+
+    @Bean
+    public Job repositoryDemoJob(
+            JobRepository jobRepository,
+            @Qualifier("repositoryStep1") Step step1,
+            @Qualifier("repositoryStep2") Step step2,
+            JobExecutionListener repositoryLookupListener
+    ) {
+        return new JobBuilder(
+                "repositoryDemoJob",
+                jobRepository
+        )
+                .listener(repositoryLookupListener)
+                .start(step1)
+                .next(step2)
+                .build();
+    }
+
+    @Bean
+    public Step repositoryStep1(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+        return new StepBuilder(
+                "repositoryStep1",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    log.info("Repository Step 1 실행");
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+
+    @Bean
+    public Step repositoryStep2(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+        return new StepBuilder(
+                "repositoryStep2",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    log.info("Repository Step 2 실행");
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+}
+```
+
+이 코드는 하나의 Job과 두 개의 Step을 정의한다.
+
+각 Step은 Tasklet 기반으로 구성되어 있다.
+
+따라서 Job을 실행하면 첫 번째 Step과 두 번째 Step이 순차적으로 실행된다.
+
+중요한 부분은 Job에 Listener를 등록했다는 것이다.
+
+```java
+.listener(repositoryLookupListener)
+```
+
+이 Listener에서 JobRepository를 이용해 이전 실행 정보를 조회할 예정이다.
+
+---
+
+### JobExecutionListener를 이용한 실행 이력 조회
+
+Spring Batch는 Job 실행 전후에 특정 처리를 수행할 수 있도록 `JobExecutionListener`를 제공한다.
+
+대표적인 메서드는 다음과 같다.
+
+```java
+void beforeJob(JobExecution jobExecution);
+```
+
+```java
+void afterJob(JobExecution jobExecution);
+```
+
+`beforeJob()`은 Job 실행 전에 호출된다.
+
+`afterJob()`은 Job 실행이 종료된 후 호출된다.
+
+이번 예제에서는 `afterJob()`에서 과거 JobExecution을 조회한다.
+
+#### RepositoryLookupListenerConfiguration 전체 코드
+
+`RepositoryLookupListenerConfiguration.java`
+
+```java
+package com.example.batch;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobExecutionListener;
+import org.springframework.batch.core.JobParameters;
+import org.springframework.batch.core.JobParametersBuilder;
+import org.springframework.batch.core.StepExecution;
+
+import org.springframework.batch.core.repository.JobRepository;
+
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
+
+@Configuration
+@Profile("repository-demo")
+public class RepositoryLookupListenerConfiguration {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(
+                    RepositoryLookupListenerConfiguration.class
+            );
+
+    @Bean
+    public JobExecutionListener repositoryLookupListener(
+            JobRepository jobRepository,
+            @Value("${demo.lookup-date:2026-10-15}")
+            String lookupDate
+    ) {
+
+        return new JobExecutionListener() {
+
+            @Override
+            public void afterJob(JobExecution currentExecution) {
+
+                String jobName =
+                        currentExecution
+                                .getJobInstance()
+                                .getJobName();
+
+                String currentDate =
+                        currentExecution
+                                .getJobParameters()
+                                .getString("businessDate");
+
+                if (lookupDate.equals(currentDate)) {
+
+                    log.info(
+                            "현재 실행 날짜와 조회 날짜가 같으므로 "
+                                    + "과거 실행 조회를 생략합니다."
+                    );
+
+                    return;
+                }
+
+                JobParameters lookupParameters =
+                        new JobParametersBuilder()
+                                .addString(
+                                        "businessDate",
+                                        lookupDate,
+                                        true
+                                )
+                                .toJobParameters();
+
+                JobExecution lastExecution =
+                        jobRepository.getLastJobExecution(
+                                jobName,
+                                lookupParameters
+                        );
+
+                if (lastExecution == null) {
+
+                    log.info(
+                            "조회 조건에 해당하는 실행 이력이 없습니다."
+                    );
+
+                    return;
+                }
+
+                log.info(
+                        "조회한 JobInstance ID: {}",
+                        lastExecution
+                                .getJobInstance()
+                                .getInstanceId()
+                );
+
+                log.info(
+                        "조회한 JobExecution ID: {}",
+                        lastExecution.getId()
+                );
+
+                log.info(
+                        "조회한 Job 상태: {}",
+                        lastExecution.getStatus()
+                );
+
+                for (StepExecution stepExecution
+                        : lastExecution.getStepExecutions()) {
+
+                    log.info(
+                            "Step Name: {}",
+                            stepExecution.getStepName()
+                    );
+
+                    log.info(
+                            "BatchStatus: {}",
+                            stepExecution.getStatus()
+                    );
+
+                    log.info(
+                            "ExitStatus: {}",
+                            stepExecution
+                                    .getExitStatus()
+                                    .getExitCode()
+                    );
+                }
+            }
+        };
+    }
+}
+```
+
+이 코드는 JobRepository의 조회 기능을 확인하기 위한 예제다.
+
+가장 중요한 부분은 다음과 같다.
+
+```java
+JobExecution lastExecution =
+        jobRepository.getLastJobExecution(
+                jobName,
+                lookupParameters
+        );
+```
+
+Job 이름과 JobParameters를 전달하여 마지막 JobExecution을 조회한다.
+
+이때 `lookupParameters`는 과거 실행과 동일한 식별용 파라미터를 사용해야 한다.
+
+```java
+JobParameters lookupParameters =
+        new JobParametersBuilder()
+                .addString(
+                        "businessDate",
+                        lookupDate,
+                        true
+                )
+                .toJobParameters();
+```
+
+이번 예제에서는 businessDate를 식별용 파라미터로 사용한다.
+
+따라서 해당 날짜에 대응하는 JobInstance를 조회할 수 있다.
+
+---
+
+### JobExecution에서 StepExecution 목록 조회하기
+
+JobRepository가 반환한 JobExecution에는 해당 실행에 속한 StepExecution 목록이 포함될 수 있다.
+
+JDBC 기반 SimpleJobRepository의 `getLastJobExecution()` 구현은 관련 StepExecution도 조회해 반환한다.
+
+따라서 다음과 같이 사용할 수 있다.
+
+```java
+for (StepExecution stepExecution
+        : lastExecution.getStepExecutions()) {
+
+    System.out.println(
+            stepExecution.getStepName()
+    );
+
+    System.out.println(
+            stepExecution.getStatus()
+    );
+
+    System.out.println(
+            stepExecution
+                    .getExitStatus()
+                    .getExitCode()
+    );
+}
+```
+
+이 코드는 StepExecution 목록을 순회하면서 다음 정보를 출력한다.
+
+| 정보          | 조회 메서드                          |
+| ----------- | ------------------------------- |
+| Step 이름     | `getStepName()`                 |
+| BatchStatus | `getStatus()`                   |
+| ExitStatus  | `getExitStatus().getExitCode()` |
+
+예를 들어 두 Step이 정상적으로 완료되었다면 다음과 같은 값을 확인할 수 있다.
+
+```text
+Step Name: repositoryStep1
+BatchStatus: COMPLETED
+ExitStatus: COMPLETED
+
+Step Name: repositoryStep2
+BatchStatus: COMPLETED
+ExitStatus: COMPLETED
+```
+
+이러한 방식은 배치 실행 이력을 확인하거나 운영 관리 기능을 개발할 때 유용하다.
+
+---
+
+### Spring Boot 및 MySQL 설정
+
+이번에는 실행 이력이 유지되어야 하므로 MySQL을 사용한다.
+
+기존에 구성한 MySQL 환경을 그대로 활용한다.
+
+`application-mysql.yml`
+
+```yaml
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3307/batch_db
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    username: ${BATCH_DB_USERNAME:batch_user}
+    password: ${BATCH_DB_PASSWORD:localpass}
+
+  batch:
+    jdbc:
+      initialize-schema: never
+```
+
+여기서는 메타데이터 테이블이 이미 생성되어 있다고 가정한다.
+
+따라서 `initialize-schema`를 `never`로 설정했다.
+
+이번 예제의 실행 설정은 별도의 Profile로 분리한다.
+
+`application-repository-demo.yml`
+
+```yaml
+spring:
+  batch:
+    job:
+      enabled: true
+      name: repositoryDemoJob
+
+demo:
+  lookup-date: "2026-10-15"
+```
+
+여기서 `spring.batch.job.name`은 Spring Boot가 자동 실행할 Job을 지정한다.
+
+또한 `demo.lookup-date`는 Listener에서 조회할 과거 실행 날짜다.
+
+이 값은 JobParameters가 아니라 Spring Boot의 환경 설정값이다.
+
+따라서 실행 시 다음 두 정보를 구분해야 한다.
+
+| 값                  | 용도                            |
+| ------------------ | ----------------------------- |
+| `businessDate`     | 현재 Job을 실행하기 위한 JobParameters |
+| `demo.lookup-date` | Listener에서 조회할 과거 Job의 날짜     |
+
+---
+
+### 첫 번째 실행: 메타데이터 생성
+
+먼저 프로젝트를 빌드한다.
+
+```bash
+./mvnw clean package
+```
+
+이 명령어는 이전 빌드 결과를 정리하고 애플리케이션을 빌드한다.
+
+빌드가 정상적으로 완료되었다면 실행 가능한 JAR 파일이 생성된다.
+
+다음 명령어로 첫 번째 Job을 실행한다.
+
+```bash
+java -jar target/spring-batch-demo-0.0.1-SNAPSHOT.jar \
+  --spring.profiles.active=mysql,repository-demo \
+  businessDate=2026-10-15
+```
+
+여기서 `businessDate=2026-10-15`는 JobParameters로 전달된다.
+
+처음 실행하는 파라미터라면 새로운 JobInstance와 JobExecution이 생성된다.
+
+실행 과정은 다음과 같다.
+
+```text
+repositoryDemoJob
+       │
+       ▼
+repositoryStep1
+       │
+       ▼
+COMPLETED
+       │
+       ▼
+repositoryStep2
+       │
+       ▼
+COMPLETED
+       │
+       ▼
+JobExecution COMPLETED
+```
+
+실행 로그는 다음과 유사하다.
+
+```text
+Repository Step 1 실행
+
+Repository Step 2 실행
+
+현재 실행 날짜와 조회 날짜가 같으므로
+과거 실행 조회를 생략합니다.
+```
+
+이번 실행에서는 이전 실행을 조회하지 않는다.
+
+현재 실행 날짜와 조회 날짜가 같기 때문이다.
+
+대신 MySQL에는 실행 메타데이터가 저장된다.
+
+---
+
+### 첫 번째 실행의 데이터베이스 확인
+
+먼저 JobInstance를 조회한다.
+
+```sql
+SELECT
+    JOB_INSTANCE_ID,
+    JOB_NAME,
+    JOB_KEY
+FROM BATCH_JOB_INSTANCE
+WHERE JOB_NAME = 'repositoryDemoJob';
+```
+
+처음 실행한 데이터베이스라면 다음과 유사한 결과를 확인할 수 있다.
+
+| JOB_INSTANCE_ID | JOB_NAME          | JOB_KEY |
+| --------------- | ----------------- | ------- |
+| 1               | repositoryDemoJob | HASH_A  |
+
+`JOB_KEY`에는 식별용 JobParameters를 기반으로 생성한 값이 저장된다.
+
+다음으로 JobExecution을 조회한다.
+
+```sql
+SELECT
+    je.JOB_EXECUTION_ID,
+    je.JOB_INSTANCE_ID,
+    je.STATUS,
+    je.EXIT_CODE,
+    je.START_TIME,
+    je.END_TIME
+FROM BATCH_JOB_EXECUTION je
+ORDER BY je.JOB_EXECUTION_ID;
+```
+
+결과는 다음과 같은 형태다.
+
+| JOB_EXECUTION_ID | JOB_INSTANCE_ID | STATUS    | EXIT_CODE |
+| ---------------- | --------------- | --------- | --------- |
+| 1                | 1               | COMPLETED | COMPLETED |
+
+마지막으로 StepExecution을 조회한다.
+
+```sql
+SELECT
+    STEP_EXECUTION_ID,
+    JOB_EXECUTION_ID,
+    STEP_NAME,
+    STATUS,
+    EXIT_CODE
+FROM BATCH_STEP_EXECUTION
+ORDER BY STEP_EXECUTION_ID;
+```
+
+결과는 다음과 같은 형태다.
+
+| STEP_EXECUTION_ID | JOB_EXECUTION_ID | STEP_NAME       | STATUS    |
+| ----------------- | ---------------- | --------------- | --------- |
+| 1                 | 1                | repositoryStep1 | COMPLETED |
+| 2                 | 1                | repositoryStep2 | COMPLETED |
+
+이렇게 JobRepository를 통해 생성된 실행 메타데이터가 각각의 테이블에 저장된다.
+
+---
+
+### 두 번째 실행: 과거 JobExecution 조회
+
+이번에는 다른 JobParameters로 실행한다.
+
+```bash
+java -jar target/spring-batch-demo-0.0.1-SNAPSHOT.jar \
+  --spring.profiles.active=mysql,repository-demo \
+  businessDate=2026-10-16
+```
+
+이번에는 businessDate가 변경되었다.
+
+따라서 새로운 JobInstance가 생성된다.
+
+그리고 새로운 JobExecution이 생성된다.
+
+```text
+JobInstance 1
+    │
+    └── JobExecution 1
+            └── COMPLETED
+
+JobInstance 2
+    │
+    └── JobExecution 2
+            └── COMPLETED
+```
+
+여기서 Listener는 다음 값을 이용해 과거 실행을 조회한다.
+
+```text
+Job Name: repositoryDemoJob
+
+businessDate=2026-10-15
+```
+
+따라서 JobInstance 1의 마지막 JobExecution을 조회한다.
+
+#### 실행 결과
+
+다음과 유사한 로그를 확인할 수 있다.
+
+```text
+Repository Step 1 실행
+
+Repository Step 2 실행
+
+조회한 JobInstance ID: 1
+
+조회한 JobExecution ID: 1
+
+조회한 Job 상태: COMPLETED
+
+Step Name: repositoryStep1
+
+BatchStatus: COMPLETED
+
+ExitStatus: COMPLETED
+
+Step Name: repositoryStep2
+
+BatchStatus: COMPLETED
+
+ExitStatus: COMPLETED
+```
+
+여기서 중요한 것은 현재 실행 중인 JobInstance는 2지만 조회한 JobInstance는 1이라는 사실이다.
+
+즉 **JobRepository를 이용해 현재 실행과 다른 과거 JobInstance의 메타데이터를 조회할 수 있다.**
+
+이러한 방식은 배치 실행 이력을 분석하거나 과거 작업의 상태를 확인할 때 사용할 수 있다.
+
+---
+
+### JobRepository와 JobExplorer의 차이
+
+Spring Batch에는 JobRepository 외에도 메타데이터를 조회하기 위한 컴포넌트가 있다.
+
+바로 `JobExplorer`다.
+
+JobRepository는 실행 메타데이터를 생성하고 갱신하는 역할을 중심으로 설계되어 있다.
+
+반면 JobExplorer는 저장된 실행 정보를 조회하기 위한 인터페이스다.
+
+| 구분                 | JobRepository | JobExplorer  |
+| ------------------ | ------------- | ------------ |
+| 주요 목적              | 실행 메타데이터 관리   | 실행 메타데이터 조회  |
+| JobExecution 생성    | 가능            | 담당하지 않음      |
+| StepExecution 업데이트 | 가능            | 담당하지 않음      |
+| 실행 이력 조회           | 가능            | 가능           |
+| 실행 정보 탐색           | 일부 조회 기능 제공   | 다양한 조회 기능 제공 |
+| 대표 활용              | Job 실행 및 재시작  | 운영 관리 및 모니터링 |
+
+예를 들어 운영 관리 화면에서 최근 Job 실행 이력을 조회해야 한다고 생각해보자.
+
+이 경우 JobExplorer를 사용하는 것이 더 적절할 수 있다.
+
+반면 실제 Job을 실행하면서 새로운 JobExecution을 생성하거나 StepExecution의 상태를 갱신할 때는 JobRepository가 사용된다.
+
+두 컴포넌트는 서로 경쟁하는 객체가 아니라 서로 다른 역할을 담당한다.
+
+---
+
+### JobRepository의 트랜잭션 관리
+
+JobRepository는 메타데이터의 일관성을 유지해야 한다.
+
+예를 들어 JobExecution을 생성한다고 생각해보자.
+
+이때 JobInstance가 존재하지 않으면 JobInstance도 생성해야 한다.
+
+```text
+JobInstance 생성
+       │
+       ▼
+JobExecution 생성
+       │
+       ▼
+ExecutionContext 생성
+```
+
+그런데 JobInstance 생성에는 성공했지만 JobExecution 생성 과정에서 문제가 발생한다면 어떻게 될까?
+
+메타데이터가 불완전한 상태로 남을 수 있다.
+
+따라서 JobRepository는 관련 작업을 트랜잭션으로 관리해야 한다.
+
+Spring Batch에서는 JobRepository에 트랜잭션 처리를 적용할 수 있는 구조를 제공한다.
+
+JDBC 기반 JobRepositoryFactoryBean 등의 표준 구성을 사용하면 트랜잭션 프록시가 구성된다.
+
+따라서 개발자가 JobRepository의 모든 메서드에 직접 `@Transactional`을 선언할 필요는 없다.
+
+```mermaid
+flowchart TD
+    A["JobLauncher"]
+    B["JobRepository Proxy"]
+    C["Transaction Interceptor"]
+    D["SimpleJobRepository"]
+    E["JDBC DAO"]
+    F["Database"]
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+```
+
+이 구조에서 중요한 부분은 JobRepository 프록시다.
+
+프록시는 메서드 호출 전후에 필요한 트랜잭션 처리를 적용할 수 있다.
+
+이러한 방식으로 메타데이터 생성 및 갱신의 일관성을 관리한다.
+
+다만 JobRepository의 트랜잭션과 실제 비즈니스 데이터를 처리하는 Step의 트랜잭션이 항상 동일한 것은 아니다.
+
+사용하는 DataSource와 TransactionManager의 구성에 따라 달라진다.
+
+---
+
+### JobRepository의 트랜잭션 격리 수준
+
+JobRepository에서는 트랜잭션 격리 수준을 설정할 수 있다.
+
+특히 중요한 설정은 JobExecution 생성 시 적용되는 격리 수준이다.
+
+기본적인 설정은 다음과 같다.
+
+```text
+SERIALIZABLE
+```
+
+이는 일반적인 트랜잭션 격리 수준 중 가장 엄격한 수준이다.
+
+그렇다면 Spring Batch는 왜 높은 격리 수준을 사용하는 것일까?
+
+핵심적인 이유는 **동일한 JobInstance에 대한 동시 실행 요청을 제어하기 위해서**다.
+
+#### 동일한 Job을 동시에 실행하는 상황
+
+예를 들어 두 개의 서버가 같은 정산 Job을 동시에 실행한다고 생각해보자.
+
+```text
+Server A
+
+settlementJob
+businessDate=2026-10-15
+```
+
+```text
+Server B
+
+settlementJob
+businessDate=2026-10-15
+```
+
+두 서버가 동시에 실행 요청을 보냈다.
+
+두 요청은 Job 이름과 식별용 JobParameters가 동일하다.
+
+따라서 논리적으로 동일한 JobInstance를 실행하려는 것이다.
+
+이때 아무런 동시성 제어가 없다면 다음과 같은 상황이 발생할 수 있다.
+
+```text
+Server A
+    │
+    ├── JobInstance 조회
+    └── 존재하지 않음
+
+
+Server B
+    │
+    ├── JobInstance 조회
+    └── 존재하지 않음
+```
+
+두 서버 모두 기존 JobInstance가 존재하지 않는다고 판단할 수 있다.
+
+그 결과 동시에 JobInstance를 생성하려고 할 수 있다.
+
+Spring Batch는 이러한 동시 실행 상황을 제어하기 위해 트랜잭션과 메타데이터의 유니크 제약조건 등을 활용한다.
+
+```mermaid
+sequenceDiagram
+    participant A as Server A
+    participant B as Server B
+    participant DB as Metadata DB
+
+    A->>DB: 동일한 JobInstance 조회
+    B->>DB: 동일한 JobInstance 조회
+
+    A->>DB: JobExecution 생성 트랜잭션
+    B->>DB: JobExecution 생성 시도
+
+    Note over A,DB: 격리 수준 및 무결성 제약으로 동시성 제어
+
+    DB-->>A: 생성 성공
+    DB-->>B: 실행 충돌 또는 중복 실행 거부
+```
+
+여기서 중요한 점이 있다.
+
+**SERIALIZABLE을 사용한다고 해서 모든 동시 실행 문제가 자동으로 해결되는 것은 아니다.**
+
+실제 동작은 데이터베이스의 트랜잭션 격리 구현과 Spring Batch의 실행 상태 검증에 따라 달라진다.
+
+또한 READ_COMMITTED로 격리 수준을 낮추면 동시 실행 요청에서 발생할 수 있는 경쟁 조건을 별도로 검토해야 한다.
+
+따라서 격리 수준을 변경할 때는 데이터베이스의 특성과 Job 실행 방식을 함께 고려해야 한다.
+
+---
+
+### SERIALIZABLE은 Job의 모든 비즈니스 트랜잭션에 적용될까?
+
+그렇지 않다.
+
+여기서 반드시 구분해야 하는 부분이 있다.
+
+JobRepository의 `isolationLevelForCreate` 설정은 주로 Job 메타데이터를 생성하는 트랜잭션에 적용된다.
+
+즉 모든 Step의 데이터 처리 트랜잭션을 SERIALIZABLE로 실행한다는 의미가 아니다.
+
+예를 들어 다음과 같은 구조다.
+
+```text
+Job 실행 요청
+       │
+       ▼
+JobRepository.createJobExecution()
+       │
+       └── 메타데이터 생성 트랜잭션
+            Isolation: SERIALIZABLE
+```
+
+반면 실제 Step에서 수행하는 비즈니스 데이터 처리는 별도의 트랜잭션 속성에 따라 실행될 수 있다.
+
+```text
+TaskletStep
+       │
+       ▼
+비즈니스 데이터 처리
+       │
+       └── Step TransactionManager
+            Isolation: 별도 설정
+```
+
+따라서 JobRepository의 격리 수준을 변경했다고 해서 모든 비즈니스 SQL의 격리 수준이 동일하게 변경되는 것은 아니다.
+
+이 차이를 이해하지 못하면 배치 성능 문제를 분석할 때 잘못된 결론을 내릴 수 있다.
+
+---
+
+### JobRepository의 격리 수준 변경하기
+
+Spring Boot 3.4.13에서는 JobRepository의 주요 설정을 `application.yml`에서 변경할 수 있다.
+
+예를 들어 다음과 같다.
+
+```yaml
+spring:
+  batch:
+    jdbc:
+      isolation-level-for-create: READ_COMMITTED
+```
+
+이 설정은 Job 메타데이터 생성 시 사용하는 트랜잭션 격리 수준을 변경한다.
+
+설정값을 변경하면 Spring Boot가 자동 구성하는 JDBC JobRepository에 해당 설정을 반영할 수 있다.
+
+물론 이 방식은 Spring Boot의 Batch 자동 설정이 활성화된 경우를 전제로 한다.
+
+`@EnableBatchProcessing`을 직접 선언하거나 `DefaultBatchConfiguration`을 상속하는 경우에는 별도의 설정 방식이 적용될 수 있다.
+
+#### 격리 수준 비교
+
+| 격리 수준            | 특징                   | 고려 사항               |
+| ---------------- | -------------------- | ------------------- |
+| READ_UNCOMMITTED | 커밋되지 않은 데이터 조회 가능    | 동시성 및 데이터 정합성 검토 필요 |
+| READ_COMMITTED   | 커밋된 데이터만 조회          | 동시 Job 생성 경쟁 조건 검토  |
+| REPEATABLE_READ  | 트랜잭션 내 반복 조회의 일관성 강화 | 잠금 및 충돌 가능성 고려      |
+| SERIALIZABLE     | 가장 엄격한 격리 수준         | 동시성 비용 및 잠금 경합 가능성  |
+
+Spring Batch의 기본적인 JobExecution 생성 트랜잭션은 짧은 편이다.
+
+따라서 기본 설정을 유지하는 것이 항상 큰 성능 문제로 이어지는 것은 아니다.
+
+격리 수준을 변경하기 전에는 실제로 JobRepository의 트랜잭션에서 잠금 대기나 데드락이 발생하는지 확인하는 것이 좋다.
+
+---
+
+### JobRepository의 테이블 Prefix 변경하기
+
+JobRepository는 메타데이터 테이블의 Prefix를 변경할 수 있다.
+
+기본 Prefix는 다음과 같다.
+
+```text
+BATCH_
+```
+
+따라서 기본 테이블 이름은 다음과 같다.
+
+```text
+BATCH_JOB_INSTANCE
+
+BATCH_JOB_EXECUTION
+
+BATCH_STEP_EXECUTION
+```
+
+그런데 하나의 데이터베이스에서 서로 다른 배치 시스템의 메타데이터를 분리하고 싶을 수 있다.
+
+예를 들어 정산 배치와 통계 배치가 같은 MySQL 데이터베이스를 사용한다고 생각해보자.
+
+이때 서로 다른 Prefix를 사용하도록 구성할 수 있다.
+
+```text
+SETTLEMENT_JOB_INSTANCE
+
+SETTLEMENT_JOB_EXECUTION
+```
+
+```text
+STATISTICS_JOB_INSTANCE
+
+STATISTICS_JOB_EXECUTION
+```
+
+Spring Batch에서는 이러한 요구사항을 지원하기 위해 테이블 Prefix 설정을 제공한다.
+
+#### Spring Boot에서 Prefix 변경
+
+Spring Boot 3.4.13에서는 다음과 같이 설정할 수 있다.
+
+```yaml
+spring:
+  batch:
+    jdbc:
+      table-prefix: SYSTEM_
+```
+
+이렇게 설정하면 JobRepository는 기본 Prefix인 `BATCH_` 대신 `SYSTEM_`으로 시작하는 메타데이터 테이블을 사용하도록 구성된다.
+
+예를 들어 다음 테이블을 조회한다.
+
+```text
+SYSTEM_JOB_INSTANCE
+
+SYSTEM_JOB_EXECUTION
+
+SYSTEM_STEP_EXECUTION
+```
+
+여기서 주의해야 할 점이 있다.
+
+**Prefix 설정을 변경한다고 해서 기존 데이터베이스 테이블 이름이 자동으로 변경되는 것은 아니다.**
+
+Spring Batch는 설정한 Prefix를 기준으로 SQL을 실행한다.
+
+따라서 실제 데이터베이스에도 해당 이름의 메타데이터 테이블이 존재해야 한다.
+
+---
+
+### Prefix만 변경하면 어떤 문제가 발생할까?
+
+기존 MySQL 데이터베이스에 다음 테이블이 있다고 생각해보자.
+
+```text
+BATCH_JOB_INSTANCE
+
+BATCH_JOB_EXECUTION
+
+BATCH_STEP_EXECUTION
+```
+
+그런데 설정을 변경한다.
+
+```yaml
+spring:
+  batch:
+    jdbc:
+      table-prefix: SYSTEM_
+```
+
+이 상태에서 Job을 실행하면 JobRepository는 다음 테이블에 접근하려고 한다.
+
+```text
+SYSTEM_JOB_INSTANCE
+```
+
+하지만 실제 데이터베이스에는 이 테이블이 존재하지 않는다.
+
+따라서 다음과 유사한 오류가 발생할 수 있다.
+
+```text
+Table 'batch_db.SYSTEM_JOB_INSTANCE' doesn't exist
+```
+
+이 오류는 JobRepository에 설정한 Prefix가 실제 메타데이터 테이블과 일치하지 않아서 발생한다.
+
+따라서 Prefix를 변경하려면 데이터베이스 스키마도 함께 준비해야 한다.
+
+---
+
+### MySQL에서 메타데이터 테이블 Prefix 변경하기
+
+개발 환경에서 Prefix 변경을 확인하려면 기존 메타데이터 테이블을 변경하는 방법을 사용할 수 있다.
+
+다만 다음 SQL은 **배치 실행 이력을 보존할 필요가 없는 독립적인 개발 환경에서만 사용해야 한다.**
+
+운영 중인 데이터베이스에서 메타데이터 테이블 이름을 임의로 변경하면 실행 중인 배치와 다른 애플리케이션에 영향을 줄 수 있다.
+
+Spring Batch 5.2.4의 MySQL 기본 스키마를 기준으로 기존 테이블 이름을 변경하려면 다음과 같이 작성할 수 있다.
+
+```sql
+RENAME TABLE
+    BATCH_JOB_INSTANCE
+        TO SYSTEM_JOB_INSTANCE,
+
+    BATCH_JOB_EXECUTION
+        TO SYSTEM_JOB_EXECUTION,
+
+    BATCH_JOB_EXECUTION_PARAMS
+        TO SYSTEM_JOB_EXECUTION_PARAMS,
+
+    BATCH_JOB_EXECUTION_CONTEXT
+        TO SYSTEM_JOB_EXECUTION_CONTEXT,
+
+    BATCH_STEP_EXECUTION
+        TO SYSTEM_STEP_EXECUTION,
+
+    BATCH_STEP_EXECUTION_CONTEXT
+        TO SYSTEM_STEP_EXECUTION_CONTEXT,
+
+    BATCH_JOB_SEQ
+        TO SYSTEM_JOB_SEQ,
+
+    BATCH_JOB_EXECUTION_SEQ
+        TO SYSTEM_JOB_EXECUTION_SEQ,
+
+    BATCH_STEP_EXECUTION_SEQ
+        TO SYSTEM_STEP_EXECUTION_SEQ;
+```
+
+이 SQL은 기존 메타데이터 테이블의 이름을 변경한다.
+
+여기서 중요한 것은 여섯 개의 핵심 테이블뿐 아니라 세 개의 시퀀스 관련 테이블도 함께 고려했다는 점이다.
+
+테이블 이름을 변경한 뒤에는 다음 SQL로 확인할 수 있다.
+
+```sql
+SHOW TABLES LIKE 'SYSTEM_%';
+```
+
+정상적으로 변경되었다면 다음과 같은 결과를 확인할 수 있다.
+
+```text
+SYSTEM_JOB_INSTANCE
+
+SYSTEM_JOB_EXECUTION
+
+SYSTEM_JOB_EXECUTION_PARAMS
+
+SYSTEM_JOB_EXECUTION_CONTEXT
+
+SYSTEM_STEP_EXECUTION
+
+SYSTEM_STEP_EXECUTION_CONTEXT
+
+SYSTEM_JOB_SEQ
+
+SYSTEM_JOB_EXECUTION_SEQ
+
+SYSTEM_STEP_EXECUTION_SEQ
+```
+
+다만 테이블을 직접 변경하는 방식은 기존 실행 이력과 스키마를 함께 이동하는 작업이다.
+
+실제 운영 환경에서는 별도의 마이그레이션 계획을 수립해야 한다.
+
+특히 외래 키, 인덱스, 접근 권한, 다른 서비스의 참조 여부 등을 함께 확인해야 한다.
+
+---
+
+### Prefix 변경 설정을 별도 Profile로 분리하기
+
+이번에는 기존 설정과 구분하기 위해 별도의 Profile을 만들어보자.
+
+`application-repository-custom.yml`
+
+```yaml
+spring:
+  batch:
+    jdbc:
+      table-prefix: SYSTEM_
+      isolation-level-for-create: READ_COMMITTED
+
+    job:
+      enabled: true
+      name: repositoryDemoJob
+```
+
+이 설정은 두 가지를 변경한다.
+
+첫 번째는 테이블 Prefix다.
+
+```yaml
+table-prefix: SYSTEM_
+```
+
+두 번째는 메타데이터 생성 트랜잭션의 격리 수준이다.
+
+```yaml
+isolation-level-for-create: READ_COMMITTED
+```
+
+이제 다음 명령어로 실행할 수 있다.
+
+```bash
+java -jar target/spring-batch-demo-0.0.1-SNAPSHOT.jar \
+  --spring.profiles.active=mysql,repository-demo,repository-custom \
+  businessDate=2026-10-17
+```
+
+이 명령어는 세 개의 Profile을 활성화한다.
+
+```text
+mysql
+
+repository-demo
+
+repository-custom
+```
+
+MySQL 연결 정보를 사용하면서 JobRepository의 Prefix와 격리 수준을 변경하는 것이다.
+
+실제 테이블을 SYSTEM_으로 준비했다면 JobRepository는 변경된 테이블을 이용해 메타데이터를 관리할 수 있다.
+
+---
+
+### DefaultBatchConfiguration을 이용한 설정
+
+Spring Boot의 자동 설정을 사용하는 대신 Spring Batch의 설정 클래스를 직접 확장할 수도 있다.
+
+Spring Batch 5.2에서는 `DefaultBatchConfiguration`이 이러한 역할을 담당한다.
+
+이 클래스는 Batch 인프라를 구성하기 위한 기본 설정을 제공한다.
+
+그리고 일부 설정 메서드를 재정의할 수 있다.
+
+대표적으로 다음 메서드가 있다.
+
+| 메서드                            | 역할                          |
+| ------------------------------ | --------------------------- |
+| `getDataSource()`              | 메타데이터 저장용 DataSource        |
+| `getTransactionManager()`      | 메타데이터용 TransactionManager   |
+| `getIsolationLevelForCreate()` | JobExecution 생성 트랜잭션의 격리 수준 |
+| `getTablePrefix()`             | 메타데이터 테이블 Prefix            |
+| `getMaxVarCharLength()`        | 일부 메타데이터 문자열 컬럼 관련 설정       |
+
+예를 들어 다음과 같이 작성할 수 있다.
+
+```java
+package com.example.batch;
+
+import org.springframework.batch.core.configuration.support.DefaultBatchConfiguration;
+
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
+
+import org.springframework.transaction.annotation.Isolation;
+
+@Configuration
+@Profile("batch-infrastructure-custom")
+public class CustomBatchConfiguration
+        extends DefaultBatchConfiguration {
+
+    @Override
+    protected Isolation getIsolationLevelForCreate() {
+        return Isolation.READ_COMMITTED;
+    }
+
+    @Override
+    protected String getTablePrefix() {
+        return "SYSTEM_";
+    }
+}
+```
+
+이 코드는 두 가지 설정을 변경한다.
+
+먼저 JobExecution 생성에 사용되는 트랜잭션의 격리 수준을 변경한다.
+
+```java
+@Override
+protected Isolation getIsolationLevelForCreate() {
+    return Isolation.READ_COMMITTED;
+}
+```
+
+그리고 메타데이터 테이블 Prefix를 변경한다.
+
+```java
+@Override
+protected String getTablePrefix() {
+    return "SYSTEM_";
+}
+```
+
+이 방식은 Spring Batch 인프라 구성을 직접 제어하고 싶을 때 사용할 수 있다.
+
+다만 중요한 주의사항이 있다.
+
+**Spring Boot 프로젝트에서 DefaultBatchConfiguration을 직접 확장하면 Spring Boot의 Batch 자동 설정이 비활성화될 수 있다.**
+
+따라서 Spring Boot의 스키마 초기화 및 Job 자동 실행 동작 등을 함께 검토해야 한다.
+
+또한 `@EnableBatchProcessing`과 DefaultBatchConfiguration을 중복으로 구성하는 방식은 피해야 한다.
+
+일반적인 Spring Boot 프로젝트에서는 먼저 `application.yml`을 통한 설정 변경을 고려하는 것이 좋다.
+
+---
+
+### @EnableBatchProcessing을 이용한 설정
+
+Spring Batch는 `@EnableBatchProcessing` 애너테이션을 이용한 설정 방식도 제공한다.
+
+Spring Batch 5.2에서는 다음과 같이 주요 옵션을 지정할 수 있다.
+
+```java
+package com.example.batch;
+
+import org.springframework.batch.core.configuration.annotation.EnableBatchProcessing;
+
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
+
+@Configuration
+@Profile("batch-annotation-custom")
+@EnableBatchProcessing(
+        tablePrefix = "SYSTEM_",
+        isolationLevelForCreate = "ISOLATION_READ_COMMITTED"
+)
+public class BatchInfrastructureConfiguration {
+}
+```
+
+이 방식은 애너테이션 속성을 통해 JobRepository의 설정을 지정한다.
+
+여기서 중요한 옵션은 다음과 같다.
+
+```java
+tablePrefix = "SYSTEM_"
+```
+
+메타데이터 테이블 Prefix를 변경한다.
+
+그리고 다음 옵션은
+
+```java
+isolationLevelForCreate = "ISOLATION_READ_COMMITTED"
+```
+
+JobExecution 생성 트랜잭션의 격리 수준을 변경한다.
+
+다만 이 구성은 앞에서 살펴본 DefaultBatchConfiguration 확장 방식과 **별개의 대안**이다.
+
+두 구성을 동시에 활성화해서는 안 된다.
+
+또한 Spring Boot 자동 설정이 비활성화될 수 있으므로 데이터베이스 스키마 초기화와 Job 실행 방식 등을 별도로 확인해야 한다.
+
+---
+
+### JobRepositoryFactoryBean의 역할
+
+Spring Batch 내부에서는 JDBC 기반 JobRepository를 생성하기 위해 `JobRepositoryFactoryBean`을 사용한다.
+
+이 클래스는 JDBC DAO를 이용한 JobRepository를 구성하는 FactoryBean이다.
+
+주요 설정 항목은 다음과 같다.
+
+```text
+DataSource
+
+TransactionManager
+
+IsolationLevelForCreate
+
+TablePrefix
+
+MaxVarCharLength
+```
+
+예를 들어 개발자가 직접 FactoryBean을 구성해야 한다면 다음과 같은 속성을 지정할 수 있다.
+
+```java
+JobRepositoryFactoryBean factory =
+        new JobRepositoryFactoryBean();
+
+factory.setDataSource(dataSource);
+
+factory.setTransactionManager(transactionManager);
+
+factory.setIsolationLevelForCreate(
+        "ISOLATION_READ_COMMITTED"
+);
+
+factory.setTablePrefix("SYSTEM_");
+```
+
+이 코드는 주요 설정 방법을 나타내는 예시다.
+
+실제로 직접 Bean을 등록하려면 FactoryBean의 초기화, 프록시, 다른 Batch 인프라와의 연결 등을 함께 고려해야 한다.
+
+따라서 일반적인 Spring Boot 프로젝트에서는 JobRepositoryFactoryBean을 직접 생성하기보다 Spring Boot 자동 설정 또는 DefaultBatchConfiguration을 이용하는 편이 안전하다.
+
+---
+
+### JobRepository 설정과 트랜잭션 성능의 관계
+
+JobRepository의 설정은 배치 실행의 안정성과 성능에 영향을 줄 수 있다.
+
+하지만 모든 설정을 무조건 낮은 격리 수준으로 변경하는 것이 좋은 것은 아니다.
+
+예를 들어 다음과 같은 환경을 생각해보자.
+
+```text
+배치 서버 A
+
+배치 서버 B
+
+배치 서버 C
+```
+
+세 서버가 동일한 메타데이터 데이터베이스를 사용한다.
+
+그리고 같은 Job을 동시에 실행할 수 있다.
+
+이 경우 JobRepository의 동시성 제어가 중요해진다.
+
+반대로 하나의 서버에서 하루에 한 번 실행되는 단순한 배치라면 동시 Job 생성 요청이 거의 발생하지 않을 수 있다.
+
+따라서 시스템의 실행 환경에 따라 필요한 설정이 달라진다.
+
+#### 격리 수준을 변경하기 전에 확인할 사항
+
+| 확인 항목      | 설명                                   |
+| ---------- | ------------------------------------ |
+| 동시 실행 서버 수 | 여러 서버에서 같은 Job을 실행하는지                |
+| 동일 파라미터 충돌 | 같은 JobInstance에 대한 동시 요청이 가능한지       |
+| DB 잠금 경합   | 실제 JobRepository 트랜잭션에서 잠금 대기가 발생하는지 |
+| 트랜잭션 실행 시간 | 메타데이터 생성 트랜잭션이 얼마나 오래 수행되는지          |
+| 유니크 제약조건   | JobInstance 중복 생성 방지 제약이 존재하는지       |
+| 재시작 요구사항   | 장애 발생 시 실행 이력을 반드시 복원해야 하는지          |
+
+이러한 요소를 확인한 뒤 설정을 변경해야 한다.
+
+특히 READ_COMMITTED로 격리 수준을 변경하는 경우에는 동시 실행 요청을 재현하는 검증이 필요하다.
+
+---
+
+### JobRepository의 메타데이터를 직접 수정해도 될까?
+
+JobRepository는 실행 메타데이터를 관리하기 위한 공식적인 인터페이스다.
+
+따라서 메타데이터를 직접 수정하는 것은 신중해야 한다.
+
+예를 들어 다음과 같은 JobExecution이 있다고 생각해보자.
+
+```text
+JobExecution ID = 100
+
+STATUS = STARTED
+```
+
+그런데 실제 JVM은 장애로 종료되었다.
+
+운영자는 JobExecution을 다시 실행하고 싶을 수 있다.
+
+이때 다음과 같이 직접 상태를 변경하는 방법을 생각할 수 있다.
+
+```sql
+UPDATE BATCH_JOB_EXECUTION
+SET STATUS = 'FAILED'
+WHERE JOB_EXECUTION_ID = 100;
+```
+
+하지만 이런 방식은 위험할 수 있다.
+
+실제 비즈니스 데이터가 어디까지 처리되었는지 확인하지 않고 메타데이터만 변경하면 재시작 시 중복 처리가 발생할 수 있기 때문이다.
+
+또한 JobExecution과 StepExecution의 상태가 서로 일치하지 않을 수 있다.
+
+따라서 운영 환경에서는 먼저 다음 사항을 확인해야 한다.
+
+| 확인 항목            | 설명                                    |
+| ---------------- | ------------------------------------- |
+| 실제 프로세스 상태       | JVM과 배치 프로세스가 종료되었는지                  |
+| 마지막 성공 Step      | 어느 단계까지 완료되었는지                        |
+| 비즈니스 데이터         | 이미 저장하거나 외부로 전송한 데이터가 있는지             |
+| ExecutionContext | 재시작 위치가 정상적으로 저장되었는지                  |
+| 메타데이터 일관성        | JobExecution과 StepExecution 상태가 일치하는지 |
+
+메타데이터 수정은 이러한 사항을 확인한 뒤 통제된 복구 절차로 수행해야 한다.
+
+**JobRepository가 관리하는 메타데이터는 단순한 로그가 아니라 Spring Batch의 재시작 동작에 직접적인 영향을 주는 상태 정보**이기 때문이다.
+
+---
+
+### 실무에서 JobRepository를 활용하는 10가지 방법
+
+JobRepository는 단순히 배치 실행 정보를 저장하는 기능 이상의 의미를 가진다.
+
+실제 운영 환경에서는 다양한 방식으로 활용할 수 있다.
+
+#### 1. Job의 실행 이력 관리
+
+JobRepository와 JobExplorer를 이용하면 Job의 실행 이력을 조회할 수 있다.
+
+이를 통해 언제 어떤 Job이 실행되었는지 확인할 수 있다.
+
+예를 들어 관리자 화면에 다음 정보를 표시할 수 있다.
+
+| Job             | 시작 시간 | 종료 시간 | 상태        |
+| --------------- | ----- | ----- | --------- |
+| settlementJob   | 02:00 | 02:05 | COMPLETED |
+| couponExpireJob | 03:00 | 03:01 | COMPLETED |
+| statisticsJob   | 04:00 | 04:12 | FAILED    |
+
+이러한 정보는 배치 운영 상태를 파악하는 데 도움이 된다.
+
+#### 2. 실패한 Job의 재시작 대상 판단
+
+JobExecution의 마지막 실행 상태를 조회하면 실패한 작업을 확인할 수 있다.
+
+또한 StepExecution을 조회해 어느 Step에서 실패했는지 확인할 수 있다.
+
+다만 실제 재시작 여부는 메타데이터와 비즈니스 데이터의 정합성을 함께 고려해야 한다.
+
+#### 3. Job의 중복 실행 제어
+
+JobRepository는 동일한 JobInstance에 대한 실행 상태를 관리한다.
+
+따라서 이미 완료된 Job이나 실행 중인 Job에 대한 중복 실행 요청을 제한하는 데 활용된다.
+
+하지만 서로 다른 JobParameters로 같은 비즈니스 데이터를 처리하는 경우까지 자동으로 방지하는 것은 아니다.
+
+따라서 업무별 멱등성 설계가 필요하다.
+
+#### 4. Step별 실행 시간 분석
+
+StepExecution에 저장된 시작 시간과 종료 시간을 이용해 작업별 실행 시간을 분석할 수 있다.
+
+이를 통해 처리 시간이 오래 걸리는 Step을 찾을 수 있다.
+
+특히 대량의 데이터를 읽거나 저장하는 Step에서 병목을 분석할 때 도움이 된다.
+
+#### 5. 데이터 처리 통계 분석
+
+StepExecution에는 ReadCount, WriteCount, CommitCount 등의 정보가 저장된다.
+
+이를 통해 데이터를 몇 건 읽었고 몇 건 처리했는지 확인할 수 있다.
+
+또한 Skip과 Rollback 횟수를 분석해 데이터 처리 과정의 오류를 파악할 수 있다.
+
+#### 6. 배치 실행 모니터링
+
+JobRepository에 저장된 실행 상태를 이용하면 배치 모니터링 시스템을 구성할 수 있다.
+
+예를 들어 예상 실행 시간이 10분인 Job이 1시간 이상 실행 중인 것으로 나타난다면 점검 대상으로 분류할 수 있다.
+
+다만 메타데이터 상태만으로 실제 프로세스가 실행 중인지 확정할 수는 없다.
+
+애플리케이션 상태와 함께 확인해야 한다.
+
+#### 7. 실행 이력 보존 정책 수립
+
+배치가 오랫동안 운영되면 메타데이터 테이블에 많은 실행 이력이 누적된다.
+
+특히 매일 수백 개의 Job이 실행되는 시스템이라면 JobExecution과 StepExecution 데이터가 빠르게 증가할 수 있다.
+
+따라서 메타데이터의 보존 기간과 정리 정책을 수립해야 한다.
+
+단, 재시작이 필요한 실행 이력을 무조건 삭제해서는 안 된다.
+
+#### 8. 여러 배치 시스템의 메타데이터 분리
+
+테이블 Prefix를 변경하면 하나의 데이터베이스에서 서로 다른 배치 시스템의 메타데이터를 분리할 수 있다.
+
+예를 들어 다음과 같다.
+
+```text
+SETTLEMENT_
+
+STATISTICS_
+
+LOGISTICS_
+```
+
+다만 실제 테이블 스키마도 Prefix에 맞춰 생성해야 한다.
+
+#### 9. 배치 실행 관련 장애 분석
+
+JobRepository를 통해 저장된 종료 코드와 메시지, 실행 상태를 확인할 수 있다.
+
+이를 통해 어떤 Step에서 실패했는지 확인할 수 있다.
+
+하지만 상세한 예외 정보나 외부 시스템의 처리 결과까지 모두 저장되는 것은 아니다.
+
+따라서 애플리케이션 로그와 분산 추적 정보 등을 함께 사용하는 것이 좋다.
+
+#### 10. 배치 재시작과 멱등성 정책 연결
+
+JobRepository는 이전 실행 상태를 관리한다.
+
+하지만 외부 시스템에서 실제로 처리된 데이터까지 완벽하게 보장하지는 않는다.
+
+예를 들어 결제 정산 Job이 외부 API 호출 후 네트워크 오류로 실패했다면 실제 정산 요청이 처리되었는지 확인해야 한다.
+
+따라서 JobRepository의 재시작 기능과 비즈니스 멱등성 정책을 함께 설계해야 한다.
+
+---
+
+### JobRepository와 비즈니스 데이터 저장소는 구분해야 한다
+
+실무에서 중요한 설계 관점이 하나 있다.
+
+바로 **JobRepository가 관리하는 메타데이터와 실제 비즈니스 데이터를 구분하는 것**이다.
+
+예를 들어 정산 배치가 있다고 생각해보자.
+
+```text
+정산 Job 실행
+       │
+       ├── Spring Batch 메타데이터 저장
+       │
+       └── 실제 정산 데이터 저장
+```
+
+Spring Batch 메타데이터는 다음 테이블에 저장된다.
+
+```text
+BATCH_JOB_INSTANCE
+
+BATCH_JOB_EXECUTION
+
+BATCH_STEP_EXECUTION
+```
+
+반면 실제 비즈니스 데이터는 다음과 같은 테이블에 저장될 수 있다.
+
+```text
+PAYMENT
+
+SETTLEMENT
+
+SETTLEMENT_DETAIL
+```
+
+두 데이터는 목적이 다르다.
+
+| 구분     | Spring Batch 메타데이터  | 비즈니스 데이터          |
+| ------ | ------------------- | ----------------- |
+| 저장 목적  | 실행 상태 및 이력 관리       | 실제 업무 데이터 관리      |
+| 관리 주체  | JobRepository       | Repository, DAO 등 |
+| 대표 테이블 | BATCH_JOB_EXECUTION | SETTLEMENT        |
+| 주요 관심사 | 실행 상태, 재시작, 통계      | 데이터 정합성, 거래 처리    |
+| 장애 복구  | 실행 이력 기반 재시작        | 멱등성 및 트랜잭션 복구     |
+
+JobRepository는 배치 실행의 상태를 관리한다.
+
+하지만 실제 정산 데이터의 중복 생성이나 외부 결제 API의 중복 호출까지 자동으로 방지하지는 않는다.
+
+따라서 배치 시스템을 설계할 때는 메타데이터 관리와 비즈니스 데이터 처리를 구분해야 한다.
+
+---
+
+### JobRepository를 디버깅할 때 확인할 부분
+
+Spring Batch 내부 동작을 확인할 때는 JobRepository가 호출되는 지점을 살펴보면 도움이 된다.
+
+대표적으로 다음 클래스와 메서드를 확인할 수 있다.
+
+| 클래스                     | 메서드                     | 확인할 내용                           |
+| ----------------------- | ----------------------- | -------------------------------- |
+| TaskExecutorJobLauncher | `run()`                 | Job 실행 요청                        |
+| SimpleJobRepository     | `createJobExecution()`  | JobInstance 조회 및 JobExecution 생성 |
+| SimpleJobRepository     | `getLastJobExecution()` | 이전 JobExecution 조회               |
+| SimpleStepHandler       | `handleStep()`          | Step 실행 이력 확인                    |
+| AbstractStep            | `execute()`             | Step 실행 및 상태 관리                  |
+| SimpleJobRepository     | `update()`              | 실행 메타데이터 갱신                      |
+
+특히 `createJobExecution()`을 확인하면 Job 실행 이전에 어떤 검증이 수행되는지 이해할 수 있다.
+
+그리고 `getLastStepExecution()`을 확인하면 Spring Batch가 이전 Step의 실행 상태를 어떻게 조회하는지 확인할 수 있다.
+
+메타데이터 테이블에서 데이터가 생성되는 시점을 확인하고 싶다면 JDBC DAO의 저장 메서드도 함께 살펴보면 좋다.
+
+---
+
+### 정리
+
+Spring Batch의 `JobRepository`는 배치 실행 과정에서 발생하는 메타데이터를 관리하는 핵심 인터페이스다.
+
+JobLauncher, Job, Step 등의 실행 컴포넌트는 JobRepository를 이용해 실행 상태를 저장하고 조회한다.
+
+JobRepository는 다음과 같은 정보를 관리한다.
+
+| 메타데이터            | 역할                 |
+| ---------------- | ------------------ |
+| JobInstance      | 논리적인 실행 단위         |
+| JobExecution     | 개별 Job 실행 시도       |
+| JobParameters    | 실행 조건              |
+| StepExecution    | Step 실행 이력 및 처리 통계 |
+| ExecutionContext | 실행 상태 및 재시작 정보     |
+
+JDBC 기반 JobRepository는 일반적으로 SimpleJobRepository와 여러 DAO를 통해 메타데이터를 관리한다.
+
+```text
+JobRepository
+      │
+      ▼
+SimpleJobRepository
+      │
+      ├── JobInstanceDao
+      │
+      ├── JobExecutionDao
+      │
+      ├── StepExecutionDao
+      │
+      └── ExecutionContextDao
+              │
+              ▼
+         Metadata DB
+```
+
+이 구조를 통해 Spring Batch는 실행 메타데이터에 대한 CRUD 기능을 제공한다.
+
+JobRepository의 중요한 역할 중 하나는 재시작이다.
+
+실패한 Job을 재시작할 때 Spring Batch는 이전 JobExecution과 StepExecution을 조회한다.
+
+그리고 이미 완료된 Step을 건너뛰거나 실패한 Step을 다시 실행하는 등의 동작을 수행한다.
+
+또한 JobRepository는 트랜잭션과 밀접하게 연결되어 있다.
+
+특히 JobExecution 생성 과정에서는 동일한 JobInstance에 대한 동시 실행을 제어하기 위해 트랜잭션 격리 수준을 적용한다.
+
+Spring Batch 5.2의 기본적인 메타데이터 생성 격리 수준은 SERIALIZABLE이며, 필요한 경우 READ_COMMITTED 등으로 변경할 수 있다.
+
+Spring Boot 3.4.13에서는 다음 설정을 사용할 수 있다.
+
+```yaml
+spring:
+  batch:
+    jdbc:
+      isolation-level-for-create: READ_COMMITTED
+```
+
+또한 메타데이터 테이블의 Prefix도 변경할 수 있다.
+
+```yaml
+spring:
+  batch:
+    jdbc:
+      table-prefix: SYSTEM_
+```
+
+다만 Prefix만 변경한다고 해서 데이터베이스 테이블이 자동으로 변경되는 것은 아니다.
+
+실제 스키마도 새로운 Prefix에 맞춰 준비해야 한다.
+
+Spring Batch 5에서는 과거의 BasicBatchConfigurer 대신 DefaultBatchConfiguration이나 Spring Boot 자동 설정을 활용할 수 있다.
+
+따라서 사용하는 Spring Boot와 Spring Batch 버전에 맞는 설정 방법을 선택하는 것이 중요하다.
+
+실무에서는 JobRepository를 단순한 실행 로그 저장소로만 생각해서는 안 된다.
+
+JobRepository는 실행 이력, 상태 관리, 재시작, 중복 실행 제어 등의 기능과 연결된다.
+
+따라서 메타데이터의 영속성과 트랜잭션 정합성은 배치 시스템의 안정성에 직접적인 영향을 준다.
+
+결국 **JobRepository는 Spring Batch가 단순한 데이터 처리 프로그램을 넘어, 실패와 재시작을 관리할 수 있는 배치 처리 프레임워크로 동작하게 만드는 핵심 인프라 컴포넌트**다.
+
+#### 한 줄 요약
+
+> Spring Batch의 `JobRepository`는 JobInstance, JobExecution, StepExecution, ExecutionContext 등의 실행 메타데이터를 생성·조회·수정·저장하는 핵심 인터페이스다. JDBC 환경에서는 SimpleJobRepository와 DAO를 이용해 데이터베이스에 메타데이터를 영속화하며, 이를 기반으로 중복 실행 제어와 실패한 Job의 재시작을 지원한다. 또한 트랜잭션 격리 수준과 테이블 Prefix 등을 변경할 수 있으며, Spring Boot 3.4에서는 자동 설정을 통해 이러한 옵션을 간편하게 관리할 수 있다.
+
+
+
