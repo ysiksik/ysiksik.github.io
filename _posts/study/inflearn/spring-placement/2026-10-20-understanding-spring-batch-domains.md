@@ -20635,4 +20635,2989 @@ JobRepository는 실행 이력, 상태 관리, 재시작, 중복 실행 제어 �
 > Spring Batch의 `JobRepository`는 JobInstance, JobExecution, StepExecution, ExecutionContext 등의 실행 메타데이터를 생성·조회·수정·저장하는 핵심 인터페이스다. JDBC 환경에서는 SimpleJobRepository와 DAO를 이용해 데이터베이스에 메타데이터를 영속화하며, 이를 기반으로 중복 실행 제어와 실패한 Job의 재시작을 지원한다. 또한 트랜잭션 격리 수준과 테이블 Prefix 등을 변경할 수 있으며, Spring Boot 3.4에서는 자동 설정을 통해 이러한 옵션을 간편하게 관리할 수 있다.
 
 
+## JobLauncher
 
+### Spring Batch JobLauncher 이해: Job 실행 구조와 동기·비동기 처리 원리
+
+Spring Batch에서 `Job`은 하나의 배치 작업 전체를 정의하는 객체다.
+
+`Step`은 Job을 구성하는 개별 실행 단계이며, `JobRepository`는 배치 실행 과정에서 발생하는 메타데이터를 저장하고 관리한다.
+
+그렇다면 실제 Job의 실행은 누가 시작할까?
+
+예를 들어 다음과 같은 정산 배치가 있다고 생각해보자.
+
+```text
+dailySettlementJob
+       │
+       ├── settlementPrepareStep
+       │
+       ├── settlementCalculateStep
+       │
+       └── settlementSaveStep
+```
+
+Spring Batch 설정에서 Job을 정의했다고 해서 반드시 해당 작업이 즉시 실행되는 것은 아니다.
+
+Job은 어떤 작업을 수행할 것인지 정의한 객체다.
+
+실제로 Job을 실행하려면 실행 요청을 전달하는 별도의 컴포넌트가 필요하다.
+
+Spring Batch에서는 이러한 역할을 `JobLauncher`가 담당한다.
+
+JobLauncher는 실행할 Job과 JobParameters를 전달받아 배치 실행을 시작한다.
+
+그리고 실행 결과를 관리하는 `JobExecution` 객체를 반환한다.
+
+예를 들어 다음과 같이 사용할 수 있다.
+
+```java
+JobExecution jobExecution =
+        jobLauncher.run(
+                settlementJob,
+                jobParameters
+        );
+```
+
+이 코드는 Spring Batch에서 Job을 실행하는 가장 기본적인 방법이다.
+
+하지만 JobLauncher에는 중요한 특징이 하나 더 있다.
+
+**JobLauncher는 TaskExecutor 설정에 따라 Job을 동기적으로 실행할 수도 있고, 비동기적으로 실행할 수도 있다.**
+
+동기 실행에서는 Job이 완료된 이후 JobExecution을 반환한다.
+
+반면 비동기 실행에서는 Job이 완료되기 전에 JobExecution을 반환할 수 있다.
+
+이러한 차이는 스케줄러 기반 배치와 HTTP 요청 기반 배치를 설계할 때 중요하다.
+
+이번에는 JobLauncher의 기본 개념과 내부 구현 구조를 살펴보고, Spring Boot에서 자동으로 Job이 실행되는 원리부터 HTTP 요청을 이용한 동기·비동기 실행까지 자세히 알아보자.
+
+**개발 환경**
+
+| 구분           | 기술                      |
+| ------------ | ----------------------- |
+| Java         | Java 17                 |
+| Spring Boot  | 3.4.13                  |
+| Spring Batch | 5.2.4                   |
+| Build Tool   | Maven                   |
+| Database     | MySQL 8.4               |
+| Web          | Spring MVC              |
+| Job 실행       | TaskExecutorJobLauncher |
+
+---
+
+### JobLauncher란?
+
+`JobLauncher`는 Spring Batch에서 Job의 실행을 시작하기 위한 인터페이스다.
+
+가장 중요한 역할은 다음과 같다.
+
+**실행할 Job과 JobParameters를 전달받아 Job을 실행하고 JobExecution을 반환한다.**
+
+JobLauncher 인터페이스의 핵심 메서드는 다음과 같다.
+
+```java
+public interface JobLauncher {
+
+    JobExecution run(
+            Job job,
+            JobParameters jobParameters
+    ) throws JobExecutionException;
+}
+```
+
+위 코드는 핵심 메서드를 중심으로 표현한 것이다.
+
+여기서 두 개의 매개변수를 전달받는다.
+
+첫 번째는 `Job`이다.
+
+두 번째는 `JobParameters`다.
+
+그리고 반환 타입은 `JobExecution`이다.
+
+각 객체의 역할을 정리하면 다음과 같다.
+
+| 객체            | 역할                  |
+| ------------- | ------------------- |
+| Job           | 실행할 배치 작업의 정의       |
+| JobParameters | Job 실행에 사용할 입력값     |
+| JobLauncher   | Job 실행 요청 및 실행 시작   |
+| JobRepository | 실행 메타데이터 관리         |
+| JobExecution  | 개별 Job 실행 시도와 상태 관리 |
+
+JobLauncher는 Job을 실행하기 위해 JobRepository와 협력한다.
+
+실행 요청이 들어오면 JobRepository를 이용해 해당 JobInstance의 실행 가능 여부를 확인하고 JobExecution을 생성한다.
+
+이후 실제 Job 실행을 시작한다.
+
+전체적인 관계를 나타내면 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["Client"]
+    B["JobLauncher"]
+    C["JobRepository"]
+    D["JobExecution"]
+    E["Job"]
+    F["Step"]
+    G["Metadata Database"]
+
+    A -->|"run(Job, JobParameters)"| B
+
+    B --> C
+    C --> G
+    C -->|"생성"| D
+
+    B -->|"execute(JobExecution)"| E
+    E --> F
+
+    F -->|"실행 결과"| D
+```
+
+여기서 중요한 점은 JobLauncher가 Step 내부의 비즈니스 로직을 직접 실행하는 객체는 아니라는 사실이다.
+
+JobLauncher는 Job의 실행을 시작한다.
+
+그리고 실제 작업의 실행 흐름은 Job과 Step이 담당한다.
+
+따라서 각 컴포넌트의 책임을 다음과 같이 구분할 수 있다.
+
+* JobLauncher는 실행을 시작한다.
+* Job은 전체 실행 흐름을 관리한다.
+* Step은 개별 작업을 실행한다.
+* JobRepository는 실행 이력을 관리한다.
+
+이러한 역할 분리를 통해 Spring Batch는 실행 요청과 실제 데이터 처리 로직을 독립적으로 구성할 수 있다.
+
+---
+
+### JobLauncher를 사용하는 이유
+
+일반적인 Java 애플리케이션에서는 메서드를 직접 호출해 작업을 수행할 수 있다.
+
+예를 들어 다음과 같다.
+
+```java
+settlementService.processSettlement();
+```
+
+이 방식은 단순한 비즈니스 로직을 실행하는 데 문제가 없다.
+
+하지만 배치 작업에서는 몇 가지 추가적인 기능이 필요하다.
+
+예를 들어 다음과 같은 상황을 생각해보자.
+
+```text
+정산 Job 실행 요청
+       │
+       ▼
+동일한 작업이 이미 완료되었는가?
+       │
+       ▼
+실행 중인 동일 작업이 존재하는가?
+       │
+       ▼
+실패한 작업을 재시작하는가?
+       │
+       ▼
+새로운 실행 이력을 생성해야 하는가?
+       │
+       ▼
+실제 Job 실행
+```
+
+이러한 과정은 단순한 서비스 메서드 호출과 차이가 있다.
+
+Spring Batch는 JobLauncher와 JobRepository를 통해 배치 실행에 필요한 공통적인 처리를 수행한다.
+
+#### JobInstance 식별
+
+JobLauncher는 전달받은 Job 이름과 JobParameters를 이용해 기존 JobInstance를 확인하는 과정에 관여한다.
+
+예를 들어 다음과 같다.
+
+```text
+Job Name: settlementJob
+
+businessDate=2026-10-15
+```
+
+동일한 식별용 JobParameters를 이용해 이미 완료된 JobInstance가 존재한다면 일반적으로 재실행이 제한된다.
+
+#### JobExecution 생성
+
+새로운 실행이 허용되면 JobExecution이 생성된다.
+
+JobExecution은 해당 실행의 상태와 시작 시간, 종료 시간, 실패 정보 등을 관리한다.
+
+#### 재시작 가능 여부 확인
+
+이전 실행이 실패했다면 재시작이 가능한지 확인해야 한다.
+
+JobLauncher는 JobRepository와 협력해 이러한 실행 검증을 수행한다.
+
+#### 실행 방식 분리
+
+JobLauncher는 실제 Job을 실행할 때 TaskExecutor를 사용한다.
+
+따라서 실행 환경에 따라 동기 또는 비동기 방식으로 구성할 수 있다.
+
+이러한 구조 덕분에 동일한 Job을 스케줄러, CLI, HTTP API 등 서로 다른 실행 경로에서 사용할 수 있다.
+
+---
+
+### JobLauncher의 주요 구현체
+
+Spring Batch 5.2.4에서 대표적으로 사용하는 JobLauncher 구현체는 `TaskExecutorJobLauncher`다.
+
+JobLauncher는 인터페이스이므로 직접 생성할 수 없다.
+
+실제로 Job을 실행하려면 구현체가 필요하다.
+
+Spring Batch에서는 이를 위해 TaskExecutorJobLauncher를 제공한다.
+
+```mermaid
+classDiagram
+    class JobLauncher {
+        <<interface>>
+        +run(Job, JobParameters) JobExecution
+    }
+
+    class TaskExecutorJobLauncher {
+        -JobRepository jobRepository
+        -TaskExecutor taskExecutor
+
+        +run(Job, JobParameters) JobExecution
+        +setJobRepository(JobRepository) void
+        +setTaskExecutor(TaskExecutor) void
+        +afterPropertiesSet() void
+    }
+
+    class TaskExecutor {
+        <<interface>>
+        +execute(Runnable) void
+    }
+
+    JobLauncher <|.. TaskExecutorJobLauncher
+    TaskExecutorJobLauncher --> TaskExecutor
+```
+
+여기서 중요한 속성은 두 가지다.
+
+```java
+JobRepository jobRepository;
+```
+
+```java
+TaskExecutor taskExecutor;
+```
+
+JobRepository는 실행 메타데이터를 관리한다.
+
+TaskExecutor는 실제 Job 실행 작업을 수행한다.
+
+즉 TaskExecutorJobLauncher는 **JobRepository를 이용해 실행 정보를 생성하고, TaskExecutor에 실제 Job 실행을 위임하는 구조**다.
+
+#### Spring Batch 4와 5의 차이
+
+과거 Spring Batch에서는 다음 구현체가 사용되었다.
+
+```java
+SimpleJobLauncher
+```
+
+하지만 Spring Batch 5.2.4에서는 다음 구현체를 기준으로 이해해야 한다.
+
+```java
+TaskExecutorJobLauncher
+```
+
+두 클래스는 JobLauncher 인터페이스를 구현하여 Job을 실행한다는 공통점이 있다.
+
+하지만 실제 프로젝트에서 구현체의 타입을 직접 참조해야 한다면 사용하는 Spring Batch 버전을 확인해야 한다.
+
+특히 이전 버전의 코드를 그대로 복사해 `SimpleJobLauncher`로 형변환하거나 설정하려고 하면 현재 버전에서 문제가 발생할 수 있다.
+
+---
+
+### TaskExecutorJobLauncher의 내부 구조
+
+TaskExecutorJobLauncher는 크게 두 가지 컴포넌트와 협력한다.
+
+첫 번째는 JobRepository다.
+
+두 번째는 TaskExecutor다.
+
+```text
+TaskExecutorJobLauncher
+        │
+        ├── JobRepository
+        │       │
+        │       ├── JobInstance 조회
+        │       ├── JobExecution 생성
+        │       └── 실행 메타데이터 관리
+        │
+        └── TaskExecutor
+                │
+                └── Job.execute()
+```
+
+여기서 TaskExecutor의 종류가 중요하다.
+
+TaskExecutor에 따라 실제 Job 실행 방식이 달라지기 때문이다.
+
+대표적인 구현체는 다음과 같다.
+
+| TaskExecutor            | 실행 방식 | 특징                      |
+| ----------------------- | ----- | ----------------------- |
+| SyncTaskExecutor        | 동기    | 호출 스레드에서 즉시 실행          |
+| SimpleAsyncTaskExecutor | 비동기   | 작업마다 별도 실행 스레드를 사용하는 방식 |
+| ThreadPoolTaskExecutor  | 비동기   | 스레드 풀을 이용해 작업 실행        |
+
+Spring Batch의 기본 TaskExecutorJobLauncher는 별도의 TaskExecutor를 설정하지 않으면 SyncTaskExecutor를 사용한다.
+
+따라서 기본적으로 동기 실행 방식으로 동작한다.
+
+반면 비동기 TaskExecutor를 설정하면 Job을 다른 스레드에서 실행하도록 구성할 수 있다.
+
+---
+
+### JobLauncher의 실제 실행 흐름
+
+JobLauncher가 Job을 실행하는 과정을 살펴보자.
+
+개발자가 다음 코드를 호출했다고 생각해보자.
+
+```java
+JobExecution execution =
+        jobLauncher.run(
+                settlementJob,
+                jobParameters
+        );
+```
+
+TaskExecutorJobLauncher는 먼저 실행에 필요한 정보를 확인한다.
+
+이후 JobRepository를 이용해 JobExecution을 생성한다.
+
+그리고 TaskExecutor에 실제 Job 실행 작업을 전달한다.
+
+핵심 흐름을 단순화하면 다음과 같다.
+
+```java
+public JobExecution run(
+        Job job,
+        JobParameters jobParameters
+) throws JobExecutionException {
+
+    JobExecution jobExecution =
+            jobRepository.createJobExecution(
+                    job.getName(),
+                    jobParameters
+            );
+
+    taskExecutor.execute(() -> {
+
+        job.execute(jobExecution);
+
+    });
+
+    return jobExecution;
+}
+```
+
+위 코드는 내부 실행 구조를 이해하기 위한 단순화된 예제다.
+
+실제 구현에서는 이전 실행 상태 검증, JobParameters 검증, 예외 처리, 실행 메트릭 수집 등의 로직도 수행한다.
+
+이 코드에서 가장 중요한 부분은 다음이다.
+
+```java
+taskExecutor.execute(() -> {
+
+    job.execute(jobExecution);
+
+});
+```
+
+JobLauncher가 Job의 `execute()` 메서드를 직접 호출하는 대신 TaskExecutor를 통해 호출한다는 것이다.
+
+따라서 TaskExecutor가 어떤 방식으로 작업을 수행하는지에 따라 JobLauncher의 실행 방식이 달라진다.
+
+---
+
+### JobLauncher와 JobRepository의 관계
+
+JobLauncher는 Job을 실행하기 전에 JobRepository를 사용한다.
+
+그 이유는 JobExecution을 생성해야 하기 때문이다.
+
+예를 들어 다음과 같은 Job 실행 요청이 있다고 생각해보자.
+
+```text
+Job: settlementJob
+
+JobParameters:
+businessDate=2026-10-15
+```
+
+JobLauncher는 JobRepository를 통해 기존 실행 정보를 확인한다.
+
+새로운 실행이 허용된다면 JobExecution을 생성한다.
+
+```text
+JobLauncher
+      │
+      ▼
+JobRepository
+      │
+      ├── 기존 JobInstance 조회
+      │
+      ├── 마지막 JobExecution 확인
+      │
+      └── 새로운 JobExecution 생성
+```
+
+이후 JobLauncher는 JobExecution을 Job에 전달한다.
+
+```java
+job.execute(jobExecution);
+```
+
+Job은 전달받은 JobExecution을 이용해 자신에게 등록된 Step들을 실행한다.
+
+여기서 중요한 사실은 **실제 Job 실행에 앞서 JobExecution의 생성과 실행 가능 여부 검증이 이루어진다는 점**이다.
+
+즉 JobLauncher는 단순히 Job의 메서드를 호출하는 객체가 아니라 Spring Batch의 실행 관리 구조와 연결된 진입점이다.
+
+---
+
+### JobLauncher가 발생시킬 수 있는 예외
+
+JobLauncher는 실행 요청이 들어왔다고 해서 모든 Job을 무조건 실행하지 않는다.
+
+이전 실행 상태에 따라 예외가 발생할 수 있다.
+
+대표적인 예외는 다음과 같다.
+
+| 예외                                  | 발생 상황                      |
+| ----------------------------------- | -------------------------- |
+| JobExecutionAlreadyRunningException | 동일한 JobInstance가 이미 실행 중   |
+| JobInstanceAlreadyCompleteException | 동일한 JobInstance가 이미 완료됨    |
+| JobRestartException                 | Job 재시작이 허용되지 않음           |
+| JobParametersInvalidException       | 전달한 JobParameters가 유효하지 않음 |
+
+예를 들어 다음 Job이 이미 완료되었다고 생각해보자.
+
+```text
+settlementJob
+
+businessDate=2026-10-15
+
+Status=COMPLETED
+```
+
+동일한 식별용 파라미터로 다시 실행하면 다음 예외가 발생할 수 있다.
+
+```text
+JobInstanceAlreadyCompleteException
+```
+
+이 경우 새로운 JobExecution이 생성되지 않는다.
+
+반면 Job이 실제로 시작된 이후 Step에서 오류가 발생한 경우에는 JobExecution이 `FAILED` 상태로 종료될 수 있다.
+
+동기 실행에서는 `run()`이 예외를 던지는 대신 실패 상태의 JobExecution을 반환할 수도 있다.
+
+따라서 직접 JobLauncher를 호출한다면 반환된 JobExecution의 상태도 확인해야 한다.
+
+---
+
+### Spring Boot에서 JobLauncher는 어떻게 생성될까?
+
+Spring Boot와 Spring Batch를 함께 사용하면 일반적으로 JobLauncher를 직접 생성할 필요가 없다.
+
+Spring Boot는 Batch 자동 설정을 통해 필요한 인프라 Bean을 구성한다.
+
+대표적으로 다음과 같은 Bean이 생성된다.
+
+```text
+JobRepository
+
+JobExplorer
+
+JobLauncher
+
+JobOperator
+```
+
+따라서 개발자는 JobLauncher를 의존성 주입받아 사용할 수 있다.
+
+```java
+@Service
+public class SettlementBatchService {
+
+    private final JobLauncher jobLauncher;
+
+    public SettlementBatchService(
+            JobLauncher jobLauncher
+    ) {
+        this.jobLauncher = jobLauncher;
+    }
+}
+```
+
+이 코드는 JobLauncher를 직접 생성하지 않는다.
+
+Spring이 관리하는 JobLauncher Bean을 주입받는다.
+
+이후 다음과 같이 사용할 수 있다.
+
+```java
+jobLauncher.run(
+        settlementJob,
+        jobParameters
+);
+```
+
+다만 Spring Boot의 자동 설정이 적용되려면 관련 의존성과 DataSource 등 필요한 조건을 충족해야 한다.
+
+또한 `@EnableBatchProcessing`이나 `DefaultBatchConfiguration`을 직접 이용해 인프라를 구성한 경우에는 Spring Boot 자동 설정과 동작 방식이 달라질 수 있다.
+
+일반적인 Spring Boot 3.4 프로젝트에서는 우선 자동 설정을 활용하는 것이 편리하다.
+
+---
+
+### Job을 직접 실행하지 않았는데 자동으로 실행되는 이유
+
+Spring Boot 기반의 Spring Batch 프로젝트를 실행하다 보면 다음과 같은 상황을 경험할 수 있다.
+
+```java
+@SpringBootApplication
+public class BatchApplication {
+
+    public static void main(String[] args) {
+
+        SpringApplication.run(
+                BatchApplication.class,
+                args
+        );
+    }
+}
+```
+
+개발자는 단순히 Spring Boot 애플리케이션을 실행했다.
+
+그런데 등록된 Job이 자동으로 실행된다.
+
+별도로 다음 코드를 호출하지 않았는데도 실행되는 것이다.
+
+```java
+jobLauncher.run(job, jobParameters);
+```
+
+왜 이런 일이 발생할까?
+
+그 이유는 Spring Boot가 제공하는 `JobLauncherApplicationRunner` 때문이다.
+
+---
+
+### JobLauncherApplicationRunner란?
+
+`JobLauncherApplicationRunner`는 Spring Boot에서 제공하는 ApplicationRunner 구현체다.
+
+ApplicationRunner는 Spring Boot 애플리케이션의 초기화 과정이 진행된 이후 실행할 로직을 정의하는 인터페이스다.
+
+핵심 메서드는 다음과 같다.
+
+```java
+void run(
+        ApplicationArguments args
+) throws Exception;
+```
+
+Spring Boot는 ApplicationRunner Bean이 등록되어 있으면 애플리케이션 시작 과정에서 해당 Bean의 `run()` 메서드를 호출한다.
+
+JobLauncherApplicationRunner도 이 인터페이스를 구현한다.
+
+```mermaid
+classDiagram
+    class ApplicationRunner {
+        <<interface>>
+        +run(ApplicationArguments) void
+    }
+
+    class JobLauncherApplicationRunner {
+        -JobLauncher jobLauncher
+        -JobExplorer jobExplorer
+        -JobRepository jobRepository
+
+        +run(ApplicationArguments) void
+    }
+
+    ApplicationRunner <|.. JobLauncherApplicationRunner
+```
+
+JobLauncherApplicationRunner는 내부적으로 JobLauncher를 이용해 등록된 Job을 실행한다.
+
+따라서 개발자가 직접 JobLauncher를 호출하지 않아도 Job이 실행될 수 있다.
+
+#### Spring Boot 자동 실행 흐름
+
+전체 흐름은 다음과 같다.
+
+```mermaid
+sequenceDiagram
+    participant Boot as Spring Boot
+    participant Auto as BatchAutoConfiguration
+    participant Runner as JobLauncherApplicationRunner
+    participant Launcher as JobLauncher
+    participant Job as Job
+
+    Boot->>Auto: Batch 자동 설정
+
+    Auto->>Runner: Runner Bean 구성
+
+    Boot->>Runner: run(ApplicationArguments)
+
+    Runner->>Runner: 실행 대상 Job 선택
+
+    Runner->>Launcher: run(Job, JobParameters)
+
+    Launcher->>Job: execute(JobExecution)
+
+    Job-->>Launcher: Job 실행 결과
+
+    Launcher-->>Runner: JobExecution
+```
+
+이처럼 Spring Boot는 JobLauncherApplicationRunner를 통해 Job 실행을 자동화한다.
+
+실제 JobLauncherApplicationRunner는 JobLauncher 외에도 JobExplorer, JobRepository 등의 컴포넌트와 협력한다.
+
+이를 통해 실행할 Job과 실행 파라미터를 관리한다.
+
+---
+
+### Job 자동 실행을 비활성화하는 방법
+
+일반적인 배치 애플리케이션에서는 Spring Boot 시작 시 Job을 자동 실행하는 것이 편리할 수 있다.
+
+하지만 HTTP 요청을 통해 원하는 시점에 Job을 실행하려면 자동 실행을 비활성화해야 할 수 있다.
+
+예를 들어 다음과 같은 상황이다.
+
+```text
+Spring Boot 실행
+       │
+       ▼
+웹 서버 시작
+       │
+       ▼
+HTTP 요청 대기
+       │
+       ▼
+사용자 요청 발생
+       │
+       ▼
+Job 실행
+```
+
+이 경우 애플리케이션이 시작되자마자 Job이 실행되면 안 된다.
+
+Spring Boot에서는 다음 설정을 제공한다.
+
+```yaml
+spring:
+  batch:
+    job:
+      enabled: false
+```
+
+이 설정은 Spring Boot의 Job 자동 실행 기능을 비활성화한다.
+
+중요한 점은 **JobLauncher 자체를 비활성화하는 설정이 아니라는 사실**이다.
+
+JobLauncher Bean은 계속 사용할 수 있다.
+
+따라서 개발자는 직접 JobLauncher를 호출해 Job을 실행할 수 있다.
+
+```java
+jobLauncher.run(
+        job,
+        jobParameters
+);
+```
+
+실무에서는 실행 방식에 따라 다음과 같이 구분할 수 있다.
+
+| 실행 방식                     | 자동 실행 설정            |
+| ------------------------- | ------------------- |
+| 애플리케이션 시작 시 Job 실행        | enabled=true        |
+| HTTP API로 Job 실행          | enabled=false       |
+| 별도 스케줄러에서 직접 실행           | 실행 구조에 따라 선택        |
+| ApplicationRunner에서 직접 실행 | 일반적으로 enabled=false |
+
+이러한 설정을 통해 Job 실행 시점을 제어할 수 있다.
+
+---
+
+### JobLauncher의 동기 실행 방식
+
+JobLauncher의 실행 방식은 TaskExecutor 설정에 따라 달라진다.
+
+먼저 동기 실행을 살펴보자.
+
+동기 실행에서는 JobLauncher를 호출한 스레드가 실제 Job 실행을 수행한다.
+
+따라서 Job이 완료될 때까지 호출한 쪽에서 기다리게 된다.
+
+대표적으로 `SyncTaskExecutor`를 사용한다.
+
+```java
+new SyncTaskExecutor();
+```
+
+SyncTaskExecutor는 전달받은 작업을 호출한 스레드에서 직접 실행한다.
+
+따라서 별도의 실행 스레드를 생성하지 않는다.
+
+#### 동기 실행 흐름
+
+다음과 같은 상황을 생각해보자.
+
+```text
+Client
+   │
+   ▼
+JobLauncher.run()
+   │
+   ▼
+JobRepository
+   │
+   └── JobExecution 생성
+   │
+   ▼
+Job.execute()
+   │
+   ▼
+Step 1 실행
+   │
+   ▼
+Step 2 실행
+   │
+   ▼
+Job 완료
+   │
+   ▼
+JobExecution 반환
+   │
+   ▼
+Client
+```
+
+이 구조에서는 Job이 완료되어야 JobLauncher의 `run()` 메서드가 반환된다.
+
+이를 시퀀스 다이어그램으로 표현하면 다음과 같다.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Launcher as JobLauncher
+    participant Repository as JobRepository
+    participant Job
+    participant Step
+
+    Client->>Launcher: run(Job, JobParameters)
+
+    Launcher->>Repository: createJobExecution()
+    Repository-->>Launcher: JobExecution
+
+    Launcher->>Job: execute(JobExecution)
+
+    Job->>Step: Step 실행
+
+    Step-->>Job: 실행 완료
+
+    Job-->>Launcher: JobExecution 상태 갱신
+
+    Launcher-->>Client: 최종 JobExecution 반환
+```
+
+동기 실행에서는 Job이 정상적으로 완료되었다면 반환 시점에 다음과 같은 상태를 확인할 수 있다.
+
+```text
+BatchStatus = COMPLETED
+
+ExitStatus = COMPLETED
+```
+
+반면 실행 도중 실패했다면 다음과 같을 수 있다.
+
+```text
+BatchStatus = FAILED
+
+ExitStatus = FAILED
+```
+
+따라서 동기 실행에서는 `run()`이 반환된 후 최종 실행 상태를 확인할 수 있다.
+
+---
+
+### 동기 실행이 적합한 상황
+
+동기 실행은 배치가 완료될 때까지 호출한 스레드가 기다려도 되는 환경에 적합하다.
+
+대표적인 사례는 다음과 같다.
+
+#### 스케줄러 기반 배치
+
+매일 새벽 2시에 실행되는 정산 Job을 생각해보자.
+
+```text
+02:00 정산 Job 실행
+       │
+       ▼
+정산 데이터 처리
+       │
+       ▼
+02:10 정산 Job 완료
+```
+
+스케줄러는 Job이 완료된 후 결과를 확인할 수 있다.
+
+이러한 환경에서는 동기 실행이 직관적이다.
+
+#### 순차적으로 실행해야 하는 외부 작업
+
+외부 시스템에서 배치를 실행한 뒤 결과에 따라 후속 작업을 수행해야 한다면 동기 실행을 고려할 수 있다.
+
+```text
+Job A 실행
+    │
+    ▼
+Job A 완료 확인
+    │
+    ▼
+후속 작업 수행
+```
+
+다만 실행 시간이 매우 긴 작업이라면 호출 스레드를 오래 점유한다는 점을 고려해야 한다.
+
+특히 HTTP 요청에서 동기 실행을 사용하면 응답 시간이 길어질 수 있다.
+
+---
+
+### JobLauncher의 비동기 실행 방식
+
+비동기 실행은 JobLauncher를 호출한 스레드와 실제 Job을 실행하는 스레드를 분리하는 방식이다.
+
+JobLauncher는 먼저 JobRepository를 이용해 JobExecution을 생성한다.
+
+그다음 TaskExecutor에 실제 Job 실행을 위임한다.
+
+이때 비동기 TaskExecutor를 사용하면 Job이 완료되기 전에 JobExecution을 반환할 수 있다.
+
+전체 흐름은 다음과 같다.
+
+```text
+Client
+   │
+   ▼
+JobLauncher.run()
+   │
+   ▼
+JobRepository
+   │
+   └── JobExecution 생성
+   │
+   ▼
+비동기 실행 작업 등록
+   │
+   ├──────────────────────┐
+   │                      │
+   ▼                      ▼
+JobExecution 반환       Worker Thread
+   │                      │
+   ▼                      ▼
+Client 응답             Job.execute()
+                          │
+                          ▼
+                       Step 실행
+                          │
+                          ▼
+                       Job 완료
+```
+
+핵심은 **클라이언트에 응답하는 시점과 실제 Job이 완료되는 시점이 다르다는 것**이다.
+
+#### 비동기 실행의 시퀀스
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Launcher as JobLauncher
+    participant Repository as JobRepository
+    participant Executor as AsyncTaskExecutor
+    participant Job
+
+    Client->>Launcher: run(Job, JobParameters)
+
+    Launcher->>Repository: createJobExecution()
+    Repository-->>Launcher: JobExecution
+
+    Launcher->>Executor: execute(Job 실행 작업)
+
+    Executor-->>Launcher: 작업 접수
+
+    Launcher-->>Client: JobExecution 반환
+
+    Executor->>Job: execute(JobExecution)
+
+    Job->>Job: Step 실행 및 상태 갱신
+
+    Job->>Repository: 최종 JobExecution 저장
+```
+
+비동기 실행에서는 JobLauncher가 반환한 뒤에도 Job은 계속 실행될 수 있다.
+
+따라서 반환된 JobExecution의 상태가 최종 결과라고 보장할 수 없다.
+
+---
+
+### 비동기 실행에서 JobExecution의 상태
+
+비동기 실행에서 주의해야 하는 부분이다.
+
+JobExecution이 생성되었다고 해서 Job이 이미 완료된 것은 아니다.
+
+Spring Batch 5.2.4의 JobExecution은 초기 상태로 다음 값을 가진다.
+
+```java
+BatchStatus.STARTING
+```
+
+초기 ExitStatus는 다음과 같다.
+
+```java
+ExitStatus.UNKNOWN
+```
+
+이후 실제 Job이 시작되면 BatchStatus가 STARTED로 변경될 수 있다.
+
+정상적으로 완료되면 COMPLETED가 된다.
+
+```text
+STARTING
+    │
+    ▼
+STARTED
+    │
+    ▼
+COMPLETED
+```
+
+실행 도중 오류가 발생하면 다음과 같이 변경될 수 있다.
+
+```text
+STARTING
+    │
+    ▼
+STARTED
+    │
+    ▼
+FAILED
+```
+
+비동기 JobLauncher가 JobExecution을 반환한 시점에는 다음과 같은 상태일 수 있다.
+
+```text
+JobExecution ID = 100
+
+BatchStatus = STARTING
+
+ExitStatus = UNKNOWN
+```
+
+또는 실제 Worker 스레드가 이미 실행을 시작했다면 다음과 같을 수 있다.
+
+```text
+JobExecution ID = 100
+
+BatchStatus = STARTED
+
+ExitStatus = EXECUTING
+```
+
+정확한 반환 상태는 스레드 스케줄링과 Job 실행 시점에 따라 달라질 수 있다.
+
+작업이 매우 빠르게 완료된다면 반환 시점에 이미 COMPLETED 상태일 수도 있다.
+
+따라서 비동기 실행에서는 **반환된 JobExecution을 최종 결과가 아니라 실행 추적에 필요한 식별 정보로 사용하는 것이 안전하다.**
+
+---
+
+### 동기 실행과 비동기 실행 비교
+
+두 실행 방식을 비교하면 다음과 같다.
+
+| 구분             | 동기 실행               | 비동기 실행                                            |
+| -------------- | ------------------- | ------------------------------------------------- |
+| TaskExecutor   | SyncTaskExecutor    | SimpleAsyncTaskExecutor, ThreadPoolTaskExecutor 등 |
+| 실행 스레드         | 호출 스레드              | 별도의 Worker 스레드                                    |
+| JobLauncher 반환 | Job 실행이 종료된 후       | Job 실행이 완료되기 전 가능                                 |
+| 반환 시점의 상태      | 일반적으로 최종 상태         | STARTING, STARTED 등 가능                            |
+| 호출 스레드 대기      | Job 완료까지 대기         | 작업 제출 후 반환 가능                                     |
+| 대표 활용          | 스케줄러, 순차 작업         | HTTP API, 장시간 실행 Job                              |
+| 최종 결과 확인       | 반환된 JobExecution 확인 | 별도의 상태 조회 필요                                      |
+
+여기서 중요한 사실은 동기와 비동기의 차이가 Job 자체의 구조에서 발생하는 것이 아니라는 점이다.
+
+**동일한 Job이라도 어떤 TaskExecutor를 사용하는 JobLauncher로 실행하는지에 따라 동기 또는 비동기로 실행할 수 있다.**
+
+---
+
+### TaskExecutor의 종류와 선택 기준
+
+비동기 실행을 구성할 때는 어떤 TaskExecutor를 사용할지 결정해야 한다.
+
+대표적으로 세 가지 구현체를 살펴보자.
+
+#### SyncTaskExecutor
+
+```java
+SyncTaskExecutor taskExecutor =
+        new SyncTaskExecutor();
+```
+
+SyncTaskExecutor는 호출한 스레드에서 작업을 직접 실행한다.
+
+따라서 Job이 완료될 때까지 호출 스레드가 반환되지 않는다.
+
+동기 실행을 명확하게 구성하고 싶을 때 사용할 수 있다.
+
+#### SimpleAsyncTaskExecutor
+
+```java
+SimpleAsyncTaskExecutor taskExecutor =
+        new SimpleAsyncTaskExecutor();
+```
+
+SimpleAsyncTaskExecutor는 작업을 비동기적으로 실행한다.
+
+별도의 스레드에서 Job을 실행하기 때문에 JobLauncher가 빠르게 반환할 수 있다.
+
+다만 일반적인 스레드 풀처럼 스레드를 재사용하는 구조는 아니다.
+
+따라서 실행 요청이 많이 발생할 수 있는 운영 환경에서는 동시 실행 개수와 자원 사용량을 고려해야 한다.
+
+#### ThreadPoolTaskExecutor
+
+```java
+ThreadPoolTaskExecutor executor =
+        new ThreadPoolTaskExecutor();
+
+executor.setCorePoolSize(2);
+executor.setMaxPoolSize(4);
+executor.setQueueCapacity(20);
+executor.setThreadNamePrefix("batch-");
+
+executor.initialize();
+```
+
+ThreadPoolTaskExecutor는 스레드 풀을 이용해 작업을 실행한다.
+
+대표적인 설정은 다음과 같다.
+
+| 설정               | 의미              |
+| ---------------- | --------------- |
+| corePoolSize     | 기본적으로 유지할 스레드 수 |
+| maxPoolSize      | 최대 스레드 수        |
+| queueCapacity    | 대기 작업을 저장할 큐 크기 |
+| threadNamePrefix | 작업 스레드 이름의 접두사  |
+
+예를 들어 다음과 같이 설정했다면
+
+```text
+corePoolSize = 2
+
+maxPoolSize = 4
+
+queueCapacity = 20
+```
+
+기본적으로 두 개의 스레드를 이용해 작업을 처리할 수 있다.
+
+작업 요청이 증가하면 대기 큐를 활용한다.
+
+큐가 가득 찬 경우에는 설정에 따라 최대 스레드 수까지 확장될 수 있다.
+
+다만 작업이 계속 증가해 처리 가능한 범위를 초과하면 작업 제출이 거부될 수 있다.
+
+이러한 상황에서는 JobLauncher가 제출 실패를 어떻게 처리하는지도 확인해야 한다.
+
+운영 환경에서는 SimpleAsyncTaskExecutor보다 동시 실행 수와 대기 작업 수를 통제할 수 있는 ThreadPoolTaskExecutor를 고려할 수 있다.
+
+---
+
+### 실제 JobLauncher 동기·비동기 실행 구현하기
+
+이제 실제 Spring Boot 프로젝트를 구성해보자.
+
+이번에는 동일한 Job을 두 가지 방식으로 실행한다.
+
+첫 번째는 동기 실행이다.
+
+두 번째는 비동기 실행이다.
+
+HTTP API를 통해 실행 요청을 전달하고 응답 시간의 차이를 확인한다.
+
+전체 구조는 다음과 같다.
+
+```text
+HTTP Client
+      │
+      ▼
+BatchLaunchController
+      │
+      ▼
+BatchLaunchService
+      │
+      ├── 기본 JobLauncher
+      │       │
+      │       └── 동기 실행
+      │
+      └── 비동기 TaskExecutorJobLauncher
+              │
+              └── ThreadPoolTaskExecutor
+                      │
+                      ▼
+                  launcherDemoJob
+                      │
+                      ├── launcherStep1
+                      │
+                      └── launcherStep2
+```
+
+Job은 하나다.
+
+하지만 실행에 사용하는 JobLauncher 구성이 다르다.
+
+따라서 동일한 작업을 동기 또는 비동기로 실행할 수 있다.
+
+이번 예제에서는 Step 1에 3초의 지연 시간을 설정한다.
+
+이를 통해 HTTP 요청의 응답 시간 차이를 비교한다.
+
+---
+
+### Maven 의존성 설정
+
+먼저 필요한 의존성을 추가한다.
+
+기존 Spring Batch 프로젝트가 있다면 Spring Web 의존성만 추가해도 된다.
+
+전체적인 Maven 설정은 다음과 같다.
+
+`pom.xml`
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="
+             http://maven.apache.org/POM/4.0.0
+             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.4.13</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.example</groupId>
+    <artifactId>spring-batch-demo</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+
+    <name>spring-batch-demo</name>
+
+    <properties>
+        <java.version>17</java.version>
+        <spring-batch.version>5.2.4</spring-batch.version>
+    </properties>
+
+    <dependencies>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-batch</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.mysql</groupId>
+            <artifactId>mysql-connector-j</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+    </dependencies>
+
+    <build>
+        <plugins>
+
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+
+        </plugins>
+    </build>
+
+</project>
+```
+
+이번 예제에서 중요한 의존성은 다음과 같다.
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-web</artifactId>
+</dependency>
+```
+
+이 의존성을 추가하면 Spring MVC를 이용해 HTTP 요청을 받을 수 있다.
+
+따라서 REST API를 통해 Job을 실행하는 구조를 구성할 수 있다.
+
+---
+
+### Spring Boot 설정
+
+이번에는 애플리케이션 시작 시 Job이 자동 실행되지 않도록 설정한다.
+
+`application.yml`
+
+```yaml
+spring:
+  application:
+    name: spring-batch-demo
+
+  datasource:
+    url: jdbc:mysql://localhost:3307/batch_db
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    username: ${BATCH_DB_USERNAME:batch_user}
+    password: ${BATCH_DB_PASSWORD:localpass}
+
+  batch:
+    job:
+      enabled: false
+
+    jdbc:
+      initialize-schema: never
+
+server:
+  port: 8080
+```
+
+여기서 가장 중요한 설정은 다음과 같다.
+
+```yaml
+spring:
+  batch:
+    job:
+      enabled: false
+```
+
+이 설정을 사용하면 Spring Boot의 Job 자동 실행을 비활성화한다.
+
+따라서 애플리케이션이 시작되어도 등록된 Job이 자동으로 실행되지 않는다.
+
+이제 HTTP 요청을 통해 원하는 시점에 Job을 실행할 수 있다.
+
+MySQL에는 Spring Batch 5.2.4에 맞는 메타데이터 테이블이 이미 생성되어 있다고 가정한다.
+
+---
+
+### Job과 Step 구성하기
+
+먼저 실행할 Job을 생성한다.
+
+이번에는 두 개의 Step으로 구성한다.
+
+```text
+launcherDemoJob
+       │
+       ├── launcherStep1
+       │       │
+       │       └── 3초 대기
+       │
+       └── launcherStep2
+               │
+               └── 작업 완료
+```
+
+`JobLauncherConfiguration.java`
+
+```java
+package com.example.batch;
+
+import java.util.concurrent.TimeUnit;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.Step;
+
+import org.springframework.batch.core.job.builder.JobBuilder;
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.step.builder.StepBuilder;
+
+import org.springframework.batch.repeat.RepeatStatus;
+
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import org.springframework.transaction.PlatformTransactionManager;
+
+@Configuration
+public class JobLauncherConfiguration {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(
+                    JobLauncherConfiguration.class
+            );
+
+    @Bean
+    public Job launcherDemoJob(
+            JobRepository jobRepository,
+            @Qualifier("launcherStep1") Step step1,
+            @Qualifier("launcherStep2") Step step2
+    ) {
+        return new JobBuilder(
+                "launcherDemoJob",
+                jobRepository
+        )
+                .start(step1)
+                .next(step2)
+                .build();
+    }
+
+    @Bean
+    public Step launcherStep1(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+        return new StepBuilder(
+                "launcherStep1",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    log.info(
+                            "Step 1 시작 - Thread: {}",
+                            Thread.currentThread().getName()
+                    );
+
+                    TimeUnit.SECONDS.sleep(3);
+
+                    log.info("Step 1 완료");
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+
+    @Bean
+    public Step launcherStep2(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+        return new StepBuilder(
+                "launcherStep2",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    log.info(
+                            "Step 2 실행 - Thread: {}",
+                            Thread.currentThread().getName()
+                    );
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+}
+```
+
+이 코드는 하나의 Job과 두 개의 Step을 정의한다.
+
+Step 1에서는 다음 코드를 실행한다.
+
+```java
+TimeUnit.SECONDS.sleep(3);
+```
+
+이 코드는 현재 스레드를 3초 동안 대기시킨다.
+
+따라서 전체 Job을 실행하면 최소 3초 정도의 시간이 소요된다.
+
+이번에는 동기·비동기 응답 시간의 차이를 확인하기 위한 목적으로 사용한다.
+
+실제 운영 환경에서는 트랜잭션 안에서 불필요하게 Thread.sleep을 사용하는 방식을 피해야 한다.
+
+---
+
+### 비동기 TaskExecutor 구성하기
+
+이제 비동기 실행을 위한 TaskExecutor를 구성한다.
+
+이번에는 ThreadPoolTaskExecutor를 사용한다.
+
+`BatchExecutorConfiguration.java`
+
+```java
+package com.example.batch;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+
+@Configuration
+public class BatchExecutorConfiguration {
+
+    @Bean("batchAsyncExecutor")
+    public ThreadPoolTaskExecutor batchAsyncExecutor() {
+
+        ThreadPoolTaskExecutor executor =
+                new ThreadPoolTaskExecutor();
+
+        executor.setCorePoolSize(2);
+
+        executor.setMaxPoolSize(4);
+
+        executor.setQueueCapacity(20);
+
+        executor.setThreadNamePrefix(
+                "batch-worker-"
+        );
+
+        executor.setWaitForTasksToCompleteOnShutdown(true);
+
+        executor.setAwaitTerminationSeconds(30);
+
+        executor.initialize();
+
+        return executor;
+    }
+}
+```
+
+이 설정은 비동기 배치를 실행하기 위한 스레드 풀을 생성한다.
+
+```text
+batchAsyncExecutor
+       │
+       ├── Core Pool Size = 2
+       │
+       ├── Max Pool Size = 4
+       │
+       ├── Queue Capacity = 20
+       │
+       └── Thread Prefix = batch-worker-
+```
+
+이제 JobLauncher에 해당 TaskExecutor를 연결하면 비동기 Job 실행이 가능하다.
+
+---
+
+### 동기·비동기 JobLauncher 구성하기
+
+Spring Boot에서 기본으로 제공하는 JobLauncher는 일반적인 설정에서 동기 실행 방식으로 사용할 수 있다.
+
+이번에는 이 JobLauncher를 그대로 사용한다.
+
+그리고 비동기 실행을 위한 TaskExecutorJobLauncher를 별도로 구성한다.
+
+여기서 한 가지 설계상의 주의점이 있다.
+
+이미 Spring Boot가 JobLauncher Bean을 관리하고 있으므로 단순히 같은 Bean을 형변환한 뒤 TaskExecutor를 변경하는 것은 피하는 것이 좋다.
+
+기본 JobLauncher를 사용하는 다른 컴포넌트에도 영향을 줄 수 있기 때문이다.
+
+이번 예제에서는 별도의 TaskExecutorJobLauncher 인스턴스를 생성해 사용한다.
+
+또한 JobLauncher 타입의 Bean을 추가로 등록해 발생할 수 있는 의존성 주입 충돌을 피하기 위해 실행 서비스 내부에서 비동기 Launcher를 구성한다.
+
+`BatchLaunchService.java`
+
+```java
+package com.example.batch;
+
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobParameters;
+import org.springframework.batch.core.JobParametersBuilder;
+
+import org.springframework.batch.core.explore.JobExplorer;
+import org.springframework.batch.core.launch.JobLauncher;
+import org.springframework.batch.core.launch.support.TaskExecutorJobLauncher;
+import org.springframework.batch.core.repository.JobRepository;
+
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.core.task.TaskExecutor;
+import org.springframework.stereotype.Service;
+
+@Service
+public class BatchLaunchService {
+
+    private final Job job;
+
+    private final JobLauncher syncJobLauncher;
+
+    private final JobLauncher asyncJobLauncher;
+
+    private final JobExplorer jobExplorer;
+
+    public BatchLaunchService(
+            @Qualifier("launcherDemoJob") Job job,
+            @Qualifier("jobLauncher") JobLauncher syncJobLauncher,
+            JobRepository jobRepository,
+            @Qualifier("batchAsyncExecutor") TaskExecutor executor,
+            JobExplorer jobExplorer
+    ) throws Exception {
+
+        this.job = job;
+
+        this.syncJobLauncher = syncJobLauncher;
+
+        this.jobExplorer = jobExplorer;
+
+        TaskExecutorJobLauncher asyncLauncher =
+                new TaskExecutorJobLauncher();
+
+        asyncLauncher.setJobRepository(jobRepository);
+
+        asyncLauncher.setTaskExecutor(executor);
+
+        asyncLauncher.afterPropertiesSet();
+
+        this.asyncJobLauncher = asyncLauncher;
+    }
+
+    public JobExecution launch(
+            LaunchRequest request,
+            boolean asynchronous
+    ) throws Exception {
+
+        if (request == null
+                || request.memberId() == null
+                || request.memberId().isBlank()
+                || request.requestId() == null
+                || request.requestId().isBlank()) {
+
+            throw new IllegalArgumentException(
+                    "memberId와 requestId는 필수입니다."
+            );
+        }
+
+        JobParameters parameters =
+                new JobParametersBuilder()
+                        .addString(
+                                "memberId",
+                                request.memberId(),
+                                true
+                        )
+                        .addString(
+                                "requestId",
+                                request.requestId(),
+                                true
+                        )
+                        .toJobParameters();
+
+        JobLauncher launcher =
+                asynchronous
+                        ? asyncJobLauncher
+                        : syncJobLauncher;
+
+        return launcher.run(
+                job,
+                parameters
+        );
+    }
+
+    public JobExecution findExecution(Long executionId) {
+
+        return jobExplorer.getJobExecution(
+                executionId
+        );
+    }
+}
+```
+
+여기서는 동기 JobLauncher와 비동기 JobLauncher를 모두 관리한다.
+
+```java
+private final JobLauncher syncJobLauncher;
+
+private final JobLauncher asyncJobLauncher;
+```
+
+동기 JobLauncher는 Spring Boot가 제공하는 기본 Bean을 사용한다.
+
+```java
+@Qualifier("jobLauncher") JobLauncher syncJobLauncher
+```
+
+반면 비동기 JobLauncher는 다음과 같이 직접 구성한다.
+
+```java
+TaskExecutorJobLauncher asyncLauncher =
+        new TaskExecutorJobLauncher();
+
+asyncLauncher.setJobRepository(jobRepository);
+
+asyncLauncher.setTaskExecutor(executor);
+
+asyncLauncher.afterPropertiesSet();
+```
+
+여기서 핵심은 다음 메서드다.
+
+```java
+asyncLauncher.setTaskExecutor(executor);
+```
+
+비동기 TaskExecutor를 설정했기 때문에 Job이 Worker 스레드에서 실행될 수 있다.
+
+#### JobParameters 구성
+
+이번에는 두 개의 파라미터를 사용한다.
+
+```java
+JobParameters parameters =
+        new JobParametersBuilder()
+                .addString(
+                        "memberId",
+                        request.memberId(),
+                        true
+                )
+                .addString(
+                        "requestId",
+                        request.requestId(),
+                        true
+                )
+                .toJobParameters();
+```
+
+두 값 모두 식별용 파라미터다.
+
+| 파라미터      | 역할          |
+| --------- | ----------- |
+| memberId  | 작업 대상 회원    |
+| requestId | 개별 작업 요청 식별 |
+
+실행 방식을 비교할 때는 서로 다른 requestId를 사용한다.
+
+같은 Job 이름과 동일한 식별용 JobParameters로 이미 완료된 Job을 다시 실행하면 중복 실행이 제한되기 때문이다.
+
+실제 업무에서는 requestId를 매번 무작위로 생성하기보다 업무상 중복 요청을 구분할 수 있는 안정적인 식별값으로 사용하는 것이 적절하다.
+
+---
+
+### HTTP 요청 DTO 구성하기
+
+HTTP 요청으로 전달할 데이터를 정의한다.
+
+Java 17의 Record를 이용하면 간단하게 구성할 수 있다.
+
+`LaunchRequest.java`
+
+```java
+package com.example.batch;
+
+public record LaunchRequest(
+        String memberId,
+        String requestId
+) {
+}
+```
+
+클라이언트는 다음과 같은 JSON을 전달한다.
+
+```json
+{
+  "memberId": "member-100",
+  "requestId": "request-001"
+}
+```
+
+Spring MVC는 JSON 요청을 LaunchRequest 객체로 변환한다.
+
+그리고 해당 값을 JobParameters에 저장해 JobLauncher에 전달한다.
+
+---
+
+### Job 실행 결과 DTO 구성하기
+
+JobLauncher는 JobExecution을 반환한다.
+
+하지만 HTTP 응답에서 JobExecution 객체 전체를 그대로 반환하는 것은 권장하지 않는다.
+
+JobExecution에는 여러 도메인 객체와 실행 메타데이터가 연결되어 있기 때문이다.
+
+따라서 HTTP 응답에 필요한 필드만 별도의 DTO로 구성하는 것이 좋다.
+
+`JobStatusResponse.java`
+
+```java
+package com.example.batch;
+
+import java.time.LocalDateTime;
+
+import org.springframework.batch.core.JobExecution;
+
+public record JobStatusResponse(
+        Long executionId,
+        String jobName,
+        String batchStatus,
+        String exitStatus,
+        LocalDateTime startTime,
+        LocalDateTime endTime
+) {
+
+    public static JobStatusResponse from(
+            JobExecution execution
+    ) {
+        return new JobStatusResponse(
+                execution.getId(),
+                execution.getJobInstance().getJobName(),
+                execution.getStatus().name(),
+                execution.getExitStatus().getExitCode(),
+                execution.getStartTime(),
+                execution.getEndTime()
+        );
+    }
+}
+```
+
+이 DTO는 다음 정보를 반환한다.
+
+| 필드          | 의미              |
+| ----------- | --------------- |
+| executionId | JobExecution ID |
+| jobName     | Job 이름          |
+| batchStatus | 현재 실행 상태        |
+| exitStatus  | 현재 종료 코드        |
+| startTime   | 실행 시작 시간        |
+| endTime     | 실행 종료 시간        |
+
+비동기 실행에서는 startTime이나 endTime이 아직 존재하지 않을 수 있다.
+
+따라서 null이 반환되는 것은 정상적인 상황일 수 있다.
+
+---
+
+### BatchLaunchController 구현하기
+
+이제 HTTP API를 구성한다.
+
+동기 실행과 비동기 실행을 비교하기 위해 두 개의 POST API를 제공한다.
+
+또한 비동기 Job의 실행 상태를 조회하기 위한 GET API도 제공한다.
+
+`BatchLaunchController.java`
+
+```java
+package com.example.batch;
+
+import org.springframework.batch.core.JobExecution;
+
+import org.springframework.http.ResponseEntity;
+
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequestMapping("/batch")
+public class BatchLaunchController {
+
+    private final BatchLaunchService batchLaunchService;
+
+    public BatchLaunchController(
+            BatchLaunchService batchLaunchService
+    ) {
+        this.batchLaunchService = batchLaunchService;
+    }
+
+    @PostMapping("/sync")
+    public ResponseEntity<JobStatusResponse> launchSync(
+            @RequestBody LaunchRequest request
+    ) throws Exception {
+
+        JobExecution execution =
+                batchLaunchService.launch(
+                        request,
+                        false
+                );
+
+        return ResponseEntity.ok(
+                JobStatusResponse.from(execution)
+        );
+    }
+
+    @PostMapping("/async")
+    public ResponseEntity<JobStatusResponse> launchAsync(
+            @RequestBody LaunchRequest request
+    ) throws Exception {
+
+        JobExecution execution =
+                batchLaunchService.launch(
+                        request,
+                        true
+                );
+
+        return ResponseEntity.accepted().body(
+                JobStatusResponse.from(execution)
+        );
+    }
+
+    @GetMapping("/executions/{executionId}")
+    public ResponseEntity<JobStatusResponse> getExecution(
+            @PathVariable Long executionId
+    ) {
+
+        JobExecution execution =
+                batchLaunchService.findExecution(
+                        executionId
+                );
+
+        if (execution == null) {
+
+            return ResponseEntity.notFound().build();
+        }
+
+        return ResponseEntity.ok(
+                JobStatusResponse.from(execution)
+        );
+    }
+}
+```
+
+이 Controller는 세 가지 기능을 제공한다.
+
+| HTTP 메서드 | URL                             | 역할           |
+| -------- | ------------------------------- | ------------ |
+| POST     | /batch/sync                     | 동기 Job 실행    |
+| POST     | /batch/async                    | 비동기 Job 실행   |
+| GET      | /batch/executions/{executionId} | Job 실행 상태 조회 |
+
+여기서 중요한 부분은 다음이다.
+
+```java
+batchLaunchService.launch(
+        request,
+        false
+);
+```
+
+`false`는 동기 실행을 의미한다.
+
+반면 다음 코드는
+
+```java
+batchLaunchService.launch(
+        request,
+        true
+);
+```
+
+비동기 실행을 의미한다.
+
+즉 동일한 Job을 서로 다른 JobLauncher로 실행하는 구조다.
+
+실제 운영 API라면 중복 실행과 잘못된 파라미터에 대한 예외를 HTTP 409, 400 등으로 명확하게 변환하는 처리가 추가되어야 한다.
+
+이번 예제는 실행 방식의 차이를 확인하기 위한 구성이다.
+
+---
+
+### 동기 실행 확인하기
+
+이제 실제 HTTP 요청을 전달해보자.
+
+먼저 애플리케이션을 실행한다.
+
+```bash
+./mvnw spring-boot:run
+```
+
+정상적으로 실행되면 8080 포트에서 HTTP 요청을 받을 수 있다.
+
+다음 명령어로 동기 Job 실행을 요청한다.
+
+```bash
+curl -i \
+  -X POST http://localhost:8080/batch/sync \
+  -H "Content-Type: application/json" \
+  -d '{
+    "memberId": "member-100",
+    "requestId": "sync-001"
+  }'
+```
+
+이 요청은 다음 API를 호출한다.
+
+```text
+POST /batch/sync
+```
+
+Controller는 동기 JobLauncher를 이용해 Job을 실행한다.
+
+#### 동기 실행 흐름
+
+```text
+HTTP 요청
+    │
+    ▼
+BatchLaunchController
+    │
+    ▼
+기본 JobLauncher
+    │
+    ▼
+launcherDemoJob
+    │
+    ▼
+launcherStep1
+    │
+    └── 3초 대기
+    │
+    ▼
+launcherStep2
+    │
+    ▼
+JobExecution COMPLETED
+    │
+    ▼
+HTTP 응답
+```
+
+Step 1에서 3초 동안 대기한다.
+
+따라서 HTTP 응답도 Job이 완료된 이후 반환된다.
+
+#### 동기 실행 응답
+
+정상적으로 완료되었다면 다음과 유사한 결과를 확인할 수 있다.
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+```
+
+```json
+{
+  "executionId": 1,
+  "jobName": "launcherDemoJob",
+  "batchStatus": "COMPLETED",
+  "exitStatus": "COMPLETED",
+  "startTime": "2026-10-29T10:00:00",
+  "endTime": "2026-10-29T10:00:03"
+}
+```
+
+위 실행 ID와 시간은 예시다.
+
+여기서 중요한 점은 반환 시점에 Job이 완료되었다는 것이다.
+
+따라서 다음 상태를 확인할 수 있다.
+
+```text
+BatchStatus = COMPLETED
+
+ExitStatus = COMPLETED
+```
+
+다만 Job이 실행 도중 실패했다면 FAILED 상태가 반환될 수도 있다.
+
+예제에서는 HTTP 200과 BatchStatus를 구분해서 사용하므로, 실제 배치 성공 여부는 응답의 batchStatus를 확인해야 한다.
+
+---
+
+### 비동기 실행 확인하기
+
+이번에는 비동기 JobLauncher를 이용해 같은 Job을 실행해보자.
+
+단, 이미 완료된 JobInstance와 충돌하지 않도록 requestId를 변경한다.
+
+```bash
+curl -i \
+  -X POST http://localhost:8080/batch/async \
+  -H "Content-Type: application/json" \
+  -d '{
+    "memberId": "member-100",
+    "requestId": "async-001"
+  }'
+```
+
+이번에는 다음 API를 호출한다.
+
+```text
+POST /batch/async
+```
+
+Controller는 비동기 JobLauncher를 사용한다.
+
+```java
+batchLaunchService.launch(
+        request,
+        true
+);
+```
+
+비동기 JobLauncher는 JobExecution을 생성한 뒤 실제 Job 실행을 Worker 스레드에 위임한다.
+
+따라서 Job이 완료되기 전에 HTTP 응답을 반환할 수 있다.
+
+#### 비동기 실행 흐름
+
+```text
+HTTP 요청
+    │
+    ▼
+BatchLaunchController
+    │
+    ▼
+비동기 JobLauncher
+    │
+    ▼
+JobExecution 생성
+    │
+    ▼
+Worker 스레드에 실행 위임
+    │
+    ├─────────────────────────┐
+    │                         │
+    ▼                         ▼
+HTTP 응답 반환             Job 실행
+                              │
+                              ▼
+                         Step 1 실행
+                              │
+                              └── 3초 대기
+                              │
+                              ▼
+                         Step 2 실행
+                              │
+                              ▼
+                         COMPLETED
+```
+
+이 구조에서는 HTTP 응답이 반환된 후에도 Job이 실행 중일 수 있다.
+
+#### 비동기 실행 응답
+
+다음과 유사한 응답을 확인할 수 있다.
+
+```http
+HTTP/1.1 202 Accepted
+Content-Type: application/json
+```
+
+```json
+{
+  "executionId": 2,
+  "jobName": "launcherDemoJob",
+  "batchStatus": "STARTING",
+  "exitStatus": "UNKNOWN",
+  "startTime": null,
+  "endTime": null
+}
+```
+
+여기서 중요한 것은 HTTP 상태 코드가 202라는 점이다.
+
+`202 Accepted`는 요청이 접수되었지만 실제 작업이 아직 완료되지 않았을 수 있다는 의미를 표현하는 데 적합하다.
+
+다만 Spring Batch의 내부 상태는 실행 타이밍에 따라 달라질 수 있다.
+
+예를 들어 응답 시점에 이미 STARTED일 수도 있다.
+
+또한 작업 제출이 실패하면 JobExecution이 FAILED 상태로 기록될 수 있으므로 단순히 `run()`이 반환되었다는 이유만으로 항상 작업 접수에 성공했다고 단정해서는 안 된다.
+
+실제 서비스에서는 작업 제출 결과를 확인한 뒤 적절한 HTTP 상태를 반환하도록 구성해야 한다.
+
+---
+
+### 비동기 Job의 최종 실행 결과 확인하기
+
+비동기 실행에서는 HTTP 응답을 반환한 시점에 Job이 완료되지 않았을 수 있다.
+
+따라서 별도로 실행 상태를 조회해야 한다.
+
+이번 예제에서는 JobExplorer를 사용한다.
+
+JobExplorer는 Spring Batch의 실행 메타데이터를 조회하기 위한 컴포넌트다.
+
+다음 메서드를 제공한다.
+
+```java
+JobExecution getJobExecution(
+        Long executionId
+);
+```
+
+JobExecution ID를 전달하면 해당 실행 정보를 조회할 수 있다.
+
+앞에서 비동기 실행을 요청했을 때 다음 ID를 받았다고 생각해보자.
+
+```text
+executionId = 2
+```
+
+이제 다음 API를 호출한다.
+
+```bash
+curl -i \
+  http://localhost:8080/batch/executions/2
+```
+
+Job이 아직 실행 중이라면 다음과 같은 결과를 확인할 수 있다.
+
+```json
+{
+  "executionId": 2,
+  "jobName": "launcherDemoJob",
+  "batchStatus": "STARTED",
+  "exitStatus": "EXECUTING",
+  "startTime": "2026-10-29T10:00:00",
+  "endTime": null
+}
+```
+
+이후 Job이 정상적으로 완료되면 다음과 같은 상태가 된다.
+
+```json
+{
+  "executionId": 2,
+  "jobName": "launcherDemoJob",
+  "batchStatus": "COMPLETED",
+  "exitStatus": "COMPLETED",
+  "startTime": "2026-10-29T10:00:00",
+  "endTime": "2026-10-29T10:00:03"
+}
+```
+
+따라서 비동기 실행에서는 다음 두 단계를 분리해야 한다.
+
+첫 번째는 Job 실행 요청이다.
+
+두 번째는 Job 실행 결과 확인이다.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API
+    participant Launcher as Async JobLauncher
+    participant Worker
+    participant Explorer as JobExplorer
+
+    Client->>API: POST /batch/async
+
+    API->>Launcher: run(Job, JobParameters)
+
+    Launcher->>Worker: Job 실행 위임
+
+    Launcher-->>API: JobExecution
+
+    API-->>Client: 202 Accepted + executionId
+
+    Worker->>Worker: Job 실행
+
+    Client->>API: GET /batch/executions/{id}
+
+    API->>Explorer: getJobExecution(id)
+
+    Explorer-->>API: JobExecution
+
+    API-->>Client: STARTED 또는 COMPLETED
+```
+
+이 구조는 실제 운영 환경에서도 활용할 수 있는 기본적인 비동기 배치 실행 패턴이다.
+
+---
+
+### 동기와 비동기의 응답 시간 비교
+
+앞에서 Step 1에 다음 코드를 작성했다.
+
+```java
+TimeUnit.SECONDS.sleep(3);
+```
+
+따라서 Job 실행에는 최소 3초 정도가 필요하다.
+
+이제 두 실행 방식의 응답 시간을 비교해보자.
+
+| 구분          | 동기 실행            | 비동기 실행            |
+| ----------- | ---------------- | ----------------- |
+| HTTP 요청     | POST /batch/sync | POST /batch/async |
+| Job 실행 시간   | 약 3초 이상          | 약 3초 이상           |
+| HTTP 응답 시간  | Job 완료까지 대기      | 작업 제출 후 반환 가능     |
+| 응답 시 Job 상태 | 일반적으로 최종 상태      | 실행 중일 수 있음        |
+| 실행 스레드      | HTTP 요청 스레드      | Worker 스레드        |
+
+여기서 중요한 점이 있다.
+
+**비동기 실행이라고 해서 Job 자체의 처리 시간이 줄어드는 것은 아니다.**
+
+동기 실행에서도 Step 1은 3초 동안 대기한다.
+
+비동기 실행에서도 Step 1은 동일하게 3초 동안 대기한다.
+
+차이는 HTTP 요청 스레드가 해당 작업의 완료를 기다리는지 여부다.
+
+즉 비동기 실행의 목적은 실제 작업 시간을 반드시 단축하는 것이 아니라 **호출 스레드와 작업 실행 스레드의 생명주기를 분리하는 것**이다.
+
+---
+
+### 비동기 실행은 항상 더 좋은 방법일까?
+
+비동기 실행은 HTTP 요청을 빠르게 반환할 수 있다는 장점이 있다.
+
+하지만 모든 환경에서 비동기 실행이 더 적합한 것은 아니다.
+
+동기 실행은 작업 완료 결과를 즉시 확인할 수 있다.
+
+반면 비동기 실행은 별도의 상태 조회가 필요하다.
+
+또한 비동기 실행에서는 동시 실행 수와 스레드 풀을 관리해야 한다.
+
+예를 들어 다음과 같은 상황을 생각해보자.
+
+```text
+사용자 A → 정산 Job 요청
+
+사용자 B → 정산 Job 요청
+
+사용자 C → 정산 Job 요청
+
+사용자 D → 정산 Job 요청
+```
+
+여러 사용자가 동시에 Job을 실행하면 비동기 Worker 스레드에서 여러 Job이 병렬로 실행될 수 있다.
+
+이때 각 Job이 대량의 데이터베이스 쿼리를 수행한다면 DB Connection Pool에 부담이 발생할 수 있다.
+
+또한 동일한 비즈니스 데이터를 처리하는 Job이 동시에 실행될 수 있다.
+
+따라서 비동기 실행을 선택할 때는 다음 요소를 함께 고려해야 한다.
+
+| 고려 사항    | 설명                                 |
+| -------- | ---------------------------------- |
+| 동시 실행 수  | 동시에 몇 개의 Job을 허용할 것인가              |
+| 스레드 풀 크기 | Job 실행에 사용할 Worker 수               |
+| 대기 큐     | 작업이 몰릴 때 대기할 수 있는 요청 수             |
+| 중복 실행    | 동일한 업무 데이터를 중복 처리하지 않는가            |
+| 상태 조회    | 실행 중인 Job의 진행 상태를 어떻게 확인할 것인가      |
+| 장애 복구    | 서버가 종료되면 실행 중이던 Job을 어떻게 처리할 것인가   |
+| 종료 처리    | 애플리케이션 종료 시 실행 중인 Job을 어떻게 관리할 것인가 |
+
+따라서 비동기 JobLauncher는 단순히 TaskExecutor만 변경하는 것으로 끝나는 문제가 아니다.
+
+실제 운영 환경에서는 실행 요청과 작업 자원을 관리하는 별도의 정책이 필요하다.
+
+---
+
+### JobLauncher를 직접 형변환하면 안 되는 이유
+
+Spring Batch의 JobLauncher는 인터페이스다.
+
+따라서 일반적인 코드는 다음과 같이 작성한다.
+
+```java
+private final JobLauncher jobLauncher;
+```
+
+그런데 TaskExecutor를 변경하기 위해 다음과 같이 구현체로 형변환하려고 할 수 있다.
+
+```java
+TaskExecutorJobLauncher launcher =
+        (TaskExecutorJobLauncher) jobLauncher;
+```
+
+이 코드가 모든 환경에서 안전하게 동작하는 것은 아니다.
+
+Spring Bean에는 AOP 프록시가 적용될 수 있기 때문이다.
+
+특히 JDK 동적 프록시가 사용되는 경우 실제 주입된 객체는 JobLauncher 인터페이스를 구현한 프록시일 수 있다.
+
+이러한 객체를 구체 구현체로 형변환하면 ClassCastException이 발생할 수 있다.
+
+예를 들어 다음과 같은 구조다.
+
+```text
+JobLauncher 인터페이스
+       │
+       ▼
+JDK Dynamic Proxy
+       │
+       ▼
+TaskExecutorJobLauncher
+```
+
+클라이언트가 참조하는 객체가 실제 구현체가 아니라 프록시라면 구체 구현체로 직접 형변환할 수 없을 수 있다.
+
+다만 모든 JobLauncher Bean이 반드시 JDK 프록시로 생성된다는 의미는 아니다.
+
+실제 프록시 여부는 Spring 설정과 적용된 인프라 구성에 따라 달라진다.
+
+#### 권장하는 방식
+
+JobLauncher를 사용하는 일반적인 비즈니스 코드에서는 인터페이스를 주입받는다.
+
+```java
+private final JobLauncher jobLauncher;
+```
+
+반면 실행 방식을 변경해야 한다면 TaskExecutorJobLauncher를 별도로 구성하는 편이 명확하다.
+
+```java
+TaskExecutorJobLauncher launcher =
+        new TaskExecutorJobLauncher();
+
+launcher.setJobRepository(jobRepository);
+
+launcher.setTaskExecutor(taskExecutor);
+
+launcher.afterPropertiesSet();
+```
+
+이렇게 하면 기존 JobLauncher Bean의 설정을 실행 중에 변경하지 않아도 된다.
+
+또한 동기 실행과 비동기 실행을 서로 다른 구성으로 유지할 수 있다.
+
+---
+
+### JobLauncher와 TaskExecutor의 관계에서 주의할 점
+
+TaskExecutorJobLauncher는 JobExecution을 생성한 뒤 TaskExecutor에 실행 작업을 제출한다.
+
+하지만 작업 제출이 항상 성공한다는 보장은 없다.
+
+예를 들어 ThreadPoolTaskExecutor의 모든 스레드와 대기 큐가 사용 중이라고 생각해보자.
+
+```text
+Thread Pool
+    │
+    ├── Worker 1: 실행 중
+    ├── Worker 2: 실행 중
+    ├── Worker 3: 실행 중
+    ├── Worker 4: 실행 중
+    │
+    └── Queue: 가득 참
+```
+
+이 상태에서 새로운 Job 실행 요청이 들어오면 TaskExecutor가 작업을 거부할 수 있다.
+
+Spring Batch 5.2.4의 TaskExecutorJobLauncher는 이러한 작업 제출 거부 상황을 처리하는 로직을 포함하고 있다.
+
+작업 제출이 거부되면 해당 JobExecution을 FAILED 상태로 변경하고 JobRepository에 반영할 수 있다.
+
+따라서 다음 코드를 실행했다고 해서
+
+```java
+JobExecution execution =
+        jobLauncher.run(job, parameters);
+```
+
+항상 실제 Worker가 정상적으로 작업을 시작했다고 단정해서는 안 된다.
+
+특히 비동기 실행 API에서는 작업 제출 결과와 실제 Job의 최종 실행 결과를 구분해야 한다.
+
+---
+
+### JobLauncher와 HTTP API를 연결할 때 고려할 설계 원칙
+
+실무에서는 HTTP API를 통해 배치를 실행해야 하는 상황이 있다.
+
+예를 들어 관리자가 특정 날짜의 정산 작업을 다시 실행하는 기능이다.
+
+```text
+관리자 화면
+      │
+      ▼
+정산 실행 요청
+      │
+      ▼
+Backend API
+      │
+      ▼
+JobLauncher
+      │
+      ▼
+Settlement Job
+```
+
+이러한 구조에서는 단순히 JobLauncher.run()을 호출하는 것 외에도 몇 가지 사항을 고려해야 한다.
+
+#### 실행 요청 API와 상태 조회 API를 분리한다
+
+비동기 배치를 실행한다면 Job 실행 요청과 결과 확인을 분리하는 것이 적절하다.
+
+예를 들어 다음과 같다.
+
+```text
+POST /batch/async
+
+GET /batch/executions/{executionId}
+```
+
+첫 번째 API는 작업 실행을 요청한다.
+
+두 번째 API는 실행 상태를 조회한다.
+
+이 구조는 HTTP 요청을 오래 유지하지 않고도 장시간 실행되는 배치를 관리할 수 있도록 한다.
+
+#### 실행 요청에 대한 식별자를 제공한다
+
+클라이언트는 JobExecution ID를 이용해 실행 상태를 조회할 수 있다.
+
+```json
+{
+  "executionId": 100
+}
+```
+
+하지만 JobExecution ID는 개별 실행 시도를 식별하는 값이다.
+
+같은 JobInstance를 재시작하면 새로운 JobExecution ID가 생성된다.
+
+따라서 업무상 동일한 작업을 추적해야 한다면 JobInstance와 식별용 JobParameters를 함께 관리하는 것이 좋다.
+
+#### 중복 요청을 방지한다
+
+HTTP 요청은 네트워크 오류나 클라이언트 재시도로 인해 여러 번 발생할 수 있다.
+
+예를 들어 다음과 같다.
+
+```text
+첫 번째 요청
+      │
+      ▼
+Job 실행 요청 성공
+      │
+      ▼
+HTTP 응답 유실
+      │
+      ▼
+클라이언트 재시도
+```
+
+이때 두 번째 요청이 새로운 JobInstance를 생성한다면 동일한 비즈니스 작업이 중복 실행될 수 있다.
+
+따라서 비즈니스 기준으로 동일한 작업을 구분할 수 있도록 JobParameters를 설계해야 한다.
+
+단순히 실행 시각을 식별용 파라미터로 사용하는 방식은 이러한 요구사항에 적합하지 않을 수 있다.
+
+#### 실행 권한을 제한한다
+
+HTTP API를 통해 배치를 실행할 수 있다면 외부 요청만으로 대량의 데이터베이스 작업을 시작할 수 있다는 의미다.
+
+따라서 운영 환경에서는 인증과 권한 검증이 필요하다.
+
+특히 정산이나 결제 관련 배치는 일반 사용자에게 실행 권한을 제공해서는 안 된다.
+
+실행 요청에 대한 감사 로그도 함께 관리하는 것이 좋다.
+
+#### 동시 실행 수를 제한한다
+
+비동기 JobLauncher를 사용하면 여러 Job이 동시에 실행될 수 있다.
+
+이때 ThreadPoolTaskExecutor의 동시 실행 수뿐 아니라 데이터베이스와 외부 시스템의 처리 용량도 고려해야 한다.
+
+예를 들어 정산 Job이 동시에 10개 실행되는 상황이 허용되는지 확인해야 한다.
+
+JobParameters가 서로 다르면 Spring Batch는 서로 다른 JobInstance로 구분할 수 있다.
+
+하지만 서로 다른 JobInstance가 동일한 데이터베이스 테이블을 대량으로 갱신할 수도 있다.
+
+따라서 JobInstance 식별과 비즈니스 자원에 대한 동시성 제어는 별도로 고려해야 한다.
+
+---
+
+### 비동기 Job의 상태를 데이터베이스에서 확인하기
+
+비동기 Job의 실행 상태는 JobRepository에 저장된다.
+
+따라서 MySQL에서 직접 조회할 수도 있다.
+
+먼저 JobExecution을 조회해보자.
+
+```sql
+SELECT
+    je.JOB_EXECUTION_ID,
+    ji.JOB_NAME,
+    je.STATUS,
+    je.EXIT_CODE,
+    je.START_TIME,
+    je.END_TIME,
+    je.LAST_UPDATED
+
+FROM BATCH_JOB_EXECUTION je
+
+JOIN BATCH_JOB_INSTANCE ji
+    ON je.JOB_INSTANCE_ID = ji.JOB_INSTANCE_ID
+
+WHERE ji.JOB_NAME = 'launcherDemoJob'
+
+ORDER BY je.JOB_EXECUTION_ID DESC;
+```
+
+이 쿼리는 해당 Job의 실행 이력을 조회한다.
+
+예를 들어 다음과 같은 결과가 저장될 수 있다.
+
+| JOB_EXECUTION_ID | STATUS    | EXIT_CODE |
+| ---------------- | --------- | --------- |
+| 1                | COMPLETED | COMPLETED |
+| 2                | STARTED   | EXECUTING |
+
+두 번째 JobExecution은 아직 실행 중인 상태다.
+
+작업이 정상적으로 완료되면 다음과 같이 변경될 수 있다.
+
+| JOB_EXECUTION_ID | STATUS    | EXIT_CODE |
+| ---------------- | --------- | --------- |
+| 1                | COMPLETED | COMPLETED |
+| 2                | COMPLETED | COMPLETED |
+
+이러한 데이터는 JobRepository가 실행 과정에서 갱신한다.
+
+따라서 JobExplorer를 이용한 API 조회와 데이터베이스 조회는 같은 실행 메타데이터를 기반으로 한다.
+
+---
+
+### 비동기 Job 실행과 서버 장애
+
+비동기 실행에서 특히 중요한 상황이 있다.
+
+바로 Job이 실행 중일 때 애플리케이션 서버가 종료되는 경우다.
+
+예를 들어 다음과 같은 상황을 생각해보자.
+
+```text
+HTTP 요청
+    │
+    ▼
+JobExecution 생성
+    │
+    ▼
+HTTP 202 응답
+    │
+    ▼
+Worker 스레드에서 Job 실행
+    │
+    ▼
+서버 강제 종료
+```
+
+클라이언트는 이미 HTTP 응답을 받았다.
+
+하지만 실제 Job은 완료되지 않았다.
+
+이 경우 JobRepository에는 다음과 같은 상태가 남아 있을 수 있다.
+
+```text
+BatchStatus = STARTED
+
+EndTime = NULL
+```
+
+실제 프로세스는 종료되었지만 메타데이터에는 실행 중인 것으로 기록되어 있을 수 있는 것이다.
+
+이러한 상황에서 무조건 동일한 Job을 재실행하는 것은 위험하다.
+
+이미 일부 비즈니스 데이터가 저장되었을 수 있기 때문이다.
+
+따라서 다음 사항을 확인해야 한다.
+
+| 확인 항목            | 설명                     |
+| ---------------- | ---------------------- |
+| 실행 프로세스 상태       | 실제 JVM과 Worker가 종료되었는가 |
+| JobExecution 상태  | 마지막으로 저장된 실행 상태는 무엇인가  |
+| StepExecution 상태 | 어떤 Step까지 완료되었는가       |
+| ExecutionContext | 마지막으로 저장된 처리 위치는 어디인가  |
+| 비즈니스 데이터         | 실제로 어디까지 처리되었는가        |
+| 외부 시스템           | 이미 처리된 요청이 존재하는가       |
+
+여기서 중요한 점은 비동기 JobLauncher 자체가 장애 복구 기능을 완전히 제공하는 것은 아니라는 사실이다.
+
+JobLauncher는 Job 실행을 시작하는 역할을 담당한다.
+
+재시작과 상태 복원은 JobRepository, ExecutionContext, Step의 재시작 설정 등이 함께 담당한다.
+
+또한 실제 비즈니스 데이터의 멱등성은 별도로 설계해야 한다.
+
+---
+
+### Spring Batch의 비동기 실행과 분산 처리는 다르다
+
+비동기 실행을 사용할 때 혼동하기 쉬운 부분이 있다.
+
+바로 비동기 실행과 분산 처리의 차이다.
+
+ThreadPoolTaskExecutor를 사용해 Job을 비동기 실행하면 별도의 Worker 스레드에서 Job이 실행된다.
+
+하지만 해당 Worker 스레드는 일반적으로 같은 애플리케이션 프로세스에 속한다.
+
+즉 다음과 같은 구조다.
+
+```text
+Spring Boot Application
+        │
+        ├── HTTP Thread
+        │
+        └── Worker Thread
+                │
+                ▼
+            Batch Job
+```
+
+이 구조는 비동기 실행이다.
+
+하지만 서로 다른 서버에 작업을 분산하는 구조는 아니다.
+
+반면 분산 배치에서는 다음과 같은 구조를 사용할 수 있다.
+
+```text
+Batch API Server
+       │
+       ▼
+Message Queue
+       │
+       ├── Batch Worker A
+       │
+       ├── Batch Worker B
+       │
+       └── Batch Worker C
+```
+
+이 경우 Job 실행 요청과 실제 작업 실행이 서로 다른 프로세스나 서버에 존재할 수 있다.
+
+따라서 비동기 JobLauncher와 분산 배치 아키텍처는 구분해야 한다.
+
+Spring Batch의 Partitioning이나 Remote Chunking은 이러한 확장 구조를 구현할 때 고려할 수 있는 별도의 기능이다.
+
+---
+
+### 실무에서 JobLauncher를 설계할 때 중요한 10가지 관점
+
+JobLauncher는 단순한 인터페이스지만 실제 운영 시스템에서는 여러 설계 요소와 연결된다.
+
+특히 장시간 실행되는 배치와 HTTP API를 연동할 때는 다음 사항을 고려하는 것이 좋다.
+
+#### 1. Job의 실행 방식은 호출 환경에 따라 선택한다
+
+동기 실행과 비동기 실행은 우열의 관계가 아니다.
+
+스케줄러가 Job 완료를 기다릴 수 있다면 동기 실행이 간단하다.
+
+반면 HTTP 요청을 빠르게 반환해야 한다면 비동기 실행이 적합할 수 있다.
+
+중요한 것은 실행 환경이 어떤 응답 특성을 요구하는지 판단하는 것이다.
+
+#### 2. 비동기 실행에서는 최종 결과를 별도로 조회한다
+
+비동기 JobLauncher가 반환한 JobExecution은 실행 중 상태일 수 있다.
+
+따라서 반환 시점에 COMPLETED인지 확인하는 것만으로 작업 성공 여부를 판단해서는 안 된다.
+
+JobExecution ID를 저장하고 JobExplorer를 통해 상태를 다시 조회하도록 구성하는 것이 적절하다.
+
+#### 3. JobParameters는 비즈니스 기준으로 설계한다
+
+JobParameters는 JobInstance 식별에 사용된다.
+
+따라서 실행할 때마다 현재 시간을 식별용 파라미터로 전달하면 같은 업무가 여러 JobInstance로 구분될 수 있다.
+
+정산 기준일, 가맹점 ID, 처리 대상 ID 등 업무상 작업을 구분할 수 있는 값을 기준으로 설계해야 한다.
+
+#### 4. HTTP 실행 API에는 중복 요청 방지 정책이 필요하다
+
+클라이언트가 네트워크 오류로 요청을 재시도할 수 있다.
+
+따라서 동일한 요청을 다시 전달했을 때 어떤 동작을 수행할지 정의해야 한다.
+
+이미 실행 중인 작업이라면 기존 실행 정보를 반환하거나 충돌 응답을 제공할 수 있다.
+
+이미 완료된 작업이라면 중복 실행을 거부할 수 있다.
+
+이러한 정책은 단순한 UUID 생성보다 업무상 멱등성 기준을 중심으로 설계하는 것이 좋다.
+
+#### 5. 동시 실행 수는 데이터베이스 처리 용량을 기준으로 결정한다
+
+ThreadPoolTaskExecutor의 스레드 수를 늘린다고 항상 처리량이 증가하는 것은 아니다.
+
+각 Job이 데이터베이스에서 대량의 데이터를 조회하고 저장한다면 DB Connection Pool이나 잠금 경합이 병목이 될 수 있다.
+
+따라서 Worker 수와 데이터베이스 연결 수, 쿼리 처리 시간 등을 함께 고려해야 한다.
+
+#### 6. 작업 제출 실패와 Job 실행 실패를 구분한다
+
+비동기 실행에서는 TaskExecutor에 작업을 제출하는 과정에서 실패할 수 있다.
+
+반면 작업 제출에는 성공했지만 실제 Step에서 예외가 발생할 수도 있다.
+
+두 상황은 서로 다르다.
+
+따라서 운영 로그와 모니터링에서는 작업 제출 실패와 실제 비즈니스 로직 실패를 구분하는 것이 좋다.
+
+#### 7. 실행 결과를 HTTP 상태 코드만으로 판단하지 않는다
+
+HTTP 202는 작업 실행 요청이 접수되었다는 의미를 나타낼 수 있다.
+
+하지만 실제 Job이 성공했다는 의미는 아니다.
+
+또한 동기 실행 API가 HTTP 200을 반환하더라도 BatchStatus가 FAILED일 수 있다.
+
+따라서 HTTP 요청 처리 결과와 배치 실행 결과를 분리해서 관리해야 한다.
+
+#### 8. 실행 이력은 JobRepository에 유지한다
+
+장시간 실행되는 배치에서는 실행 메타데이터의 영속성이 중요하다.
+
+특히 서버 장애가 발생한 뒤 Job의 실행 상태를 확인하려면 JobRepository의 데이터가 유지되어야 한다.
+
+실제 운영에서는 영속성 있는 JDBC 기반 JobRepository를 사용하는 것이 적절하다.
+
+#### 9. 서버 종료 시 실행 중인 Job을 고려한다
+
+비동기 실행에서는 Worker 스레드가 Job을 실행하는 동안 애플리케이션이 종료될 수 있다.
+
+따라서 종료 정책과 대기 시간을 구성하고, 실행 중인 Job의 상태를 확인할 수 있어야 한다.
+
+다만 애플리케이션 종료 대기 시간을 설정했다고 해서 모든 장애 상황에서 Job이 안전하게 완료된다는 보장은 없다.
+
+강제 종료와 서버 장애를 고려한 재시작 전략이 별도로 필요하다.
+
+#### 10. JobLauncher와 비즈니스 로직의 책임을 분리한다
+
+JobLauncher는 실행을 시작하는 컴포넌트다.
+
+실제 정산이나 결제 데이터 처리 로직까지 JobLauncher 주변에 구현하는 것은 적절하지 않다.
+
+JobLauncher를 호출하는 서비스는 실행 요청과 파라미터 구성에 집중하는 것이 좋다.
+
+반면 실제 비즈니스 처리는 Step과 Tasklet, Reader, Processor, Writer 등이 담당하도록 구성한다.
+
+이렇게 역할을 분리하면 같은 Job을 스케줄러, HTTP API, CLI 등 다양한 방식으로 재사용할 수 있다.
+
+---
+
+### JobLauncher의 전체 실행 구조
+
+지금까지 살펴본 내용을 하나의 흐름으로 정리해보자.
+
+```mermaid
+flowchart TD
+    A["Job 실행 요청"]
+
+    B["JobLauncher.run()"]
+
+    C["JobRepository"]
+    D["JobExecution 생성"]
+
+    E["TaskExecutor"]
+
+    F{"TaskExecutor 종류"}
+
+    G["SyncTaskExecutor"]
+    H["AsyncTaskExecutor"]
+
+    I["호출 스레드에서 Job 실행"]
+    J["Worker 스레드에서 Job 실행"]
+
+    K["Job.execute()"]
+
+    L["Step 실행"]
+
+    M["JobExecution 상태 갱신"]
+
+    N["JobRepository에 결과 저장"]
+
+    O["JobExecution 반환"]
+
+    A --> B
+
+    B --> C
+    C --> D
+
+    D --> E
+    E --> F
+
+    F -->|"동기"| G
+    F -->|"비동기"| H
+
+    G --> I
+    H --> J
+
+    I --> K
+    J --> K
+
+    K --> L
+    L --> M
+    M --> N
+
+    G -.->|"Job 종료 후"| O
+    H -.->|"작업 제출 후"| O
+```
+
+이 구조에서 중요한 것은 TaskExecutor가 실제 Job 실행 시점을 결정한다는 점이다.
+
+동기 실행에서는 호출한 스레드에서 Job을 실행한다.
+
+따라서 Job이 완료된 이후 JobExecution을 반환한다.
+
+비동기 실행에서는 Worker 스레드에 Job 실행을 위임한다.
+
+따라서 실제 Job이 완료되기 전에 JobExecution을 반환할 수 있다.
+
+하지만 두 방식 모두 JobRepository를 이용해 실행 메타데이터를 관리한다.
+
+또한 실제 Job과 Step의 비즈니스 로직은 동일하다.
+
+즉 실행 방식이 변경되더라도 Job의 정의 자체를 변경할 필요는 없다.
+
+---
+
+### 정리
+
+Spring Batch의 `JobLauncher`는 Job의 실행을 시작하는 핵심 인터페이스다.
+
+가장 기본적인 메서드는 다음과 같다.
+
+```java
+JobExecution run(
+        Job job,
+        JobParameters jobParameters
+);
+```
+
+이 메서드는 실행할 Job과 JobParameters를 전달받아 Job 실행을 시작한다.
+
+그리고 해당 실행을 나타내는 JobExecution 객체를 반환한다.
+
+Spring Batch 5.2.4에서는 TaskExecutorJobLauncher를 대표적인 구현체로 사용한다.
+
+TaskExecutorJobLauncher는 JobRepository와 TaskExecutor를 이용해 Job을 실행한다.
+
+JobRepository는 JobInstance와 JobExecution 등의 실행 메타데이터를 관리한다.
+
+TaskExecutor는 실제 Job 실행 작업을 수행한다.
+
+여기서 중요한 것은 TaskExecutor의 종류에 따라 실행 방식이 달라진다는 사실이다.
+
+| TaskExecutor            | 실행 방식 |
+| ----------------------- | ----- |
+| SyncTaskExecutor        | 동기    |
+| SimpleAsyncTaskExecutor | 비동기   |
+| ThreadPoolTaskExecutor  | 비동기   |
+
+동기 실행에서는 Job이 완료된 이후 JobExecution을 반환한다.
+
+반면 비동기 실행에서는 실제 Job이 완료되기 전에 JobExecution을 반환할 수 있다.
+
+따라서 다음과 같은 차이가 발생한다.
+
+```text
+동기 실행
+
+Client
+   │
+   ▼
+JobLauncher
+   │
+   ▼
+Job 실행
+   │
+   ▼
+Job 완료
+   │
+   ▼
+JobExecution 반환
+```
+
+```text
+비동기 실행
+
+Client
+   │
+   ▼
+JobLauncher
+   │
+   ▼
+JobExecution 생성
+   │
+   ├── Client에게 반환
+   │
+   └── Worker에서 Job 실행
+             │
+             ▼
+          Job 완료
+```
+
+이러한 차이로 인해 동기 실행은 스케줄러 기반 작업에 적합할 수 있다.
+
+반면 비동기 실행은 HTTP 요청처럼 응답을 빠르게 반환해야 하는 환경에 적합할 수 있다.
+
+Spring Boot에서는 JobLauncherApplicationRunner를 이용해 등록된 Job을 자동으로 실행하는 기능도 제공한다.
+
+애플리케이션 시작 시 Job을 실행하고 싶지 않다면 다음 설정을 사용한다.
+
+```yaml
+spring:
+  batch:
+    job:
+      enabled: false
+```
+
+이 설정은 자동 실행을 비활성화하지만 JobLauncher 자체를 비활성화하지는 않는다.
+
+따라서 HTTP API나 별도의 서비스에서 JobLauncher를 직접 호출할 수 있다.
+
+또한 비동기 Job 실행에서는 JobExecution의 상태를 별도로 확인하는 것이 중요하다.
+
+JobLauncher가 반환한 시점에는 STARTING 또는 STARTED 상태일 수 있기 때문이다.
+
+이러한 경우 JobExplorer를 이용해 JobExecution ID로 실행 상태를 조회할 수 있다.
+
+실무에서는 단순히 비동기 JobLauncher를 설정하는 것뿐 아니라 동시 실행 수, 중복 요청 방지, JobParameters 식별 정책, 실행 상태 조회, 서버 장애 복구 등을 함께 고려해야 한다.
+
+특히 JobLauncher는 실행 요청을 담당하고 Job은 전체 실행 흐름을 관리하며 Step은 실제 비즈니스 로직을 실행한다는 역할 분리를 유지하는 것이 중요하다.
+
+결국 **JobLauncher는 Spring Batch에서 Job 실행을 시작하는 진입점이며, TaskExecutor를 이용해 동기·비동기 실행 방식을 선택할 수 있도록 지원하는 핵심 컴포넌트**다.
+
+#### 한 줄 요약
+
+> Spring Batch의 `JobLauncher`는 `Job`과 `JobParameters`를 전달받아 배치 실행을 시작하고 `JobExecution`을 반환하는 인터페이스다. Spring Batch 5.2에서는 `TaskExecutorJobLauncher`를 사용하며, `SyncTaskExecutor`를 설정하면 동기적으로, `ThreadPoolTaskExecutor` 등 비동기 TaskExecutor를 설정하면 별도 스레드에서 Job을 실행할 수 있다. 특히 비동기 실행에서는 JobExecution 반환 시점과 실제 Job 완료 시점이 다를 수 있으므로, 실행 상태 조회와 중복 실행 제어 및 장애 복구 전략을 함께 설계해야 한다.
