@@ -3,3 +3,12 @@
 .sidebar a {
   text-shadow: rgba(0, 0, 0, 0.25) 0.1rem 0.1rem 0.15rem;
 }
+
+// The mobile drawer should be completely off screen when closed, including before JS loads.
+@media screen and (max-width: 63.99em) {
+  #_drawer {
+    --hy-drawer-peek-width: 0px;
+    --hy-drawer-box-shadow: none;
+  }
+  body::before { display: none; }
+}

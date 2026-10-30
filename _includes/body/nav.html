@@ -8,12 +8,14 @@
     <!-- 메뉴 각각을 식별하기위한 인덱스 -->
     {% assign count = count | plus: 1 %}
     <li>
-        <div class="menu-wrapper" onmouseover="javascript:spread({{count}})" onmouseout="javascript:spread({{count}})">
+        <div class="menu-wrapper" onmouseenter="showSubmenu({{count}}, true, true)" onmouseleave="showSubmenu({{count}}, false, true)">
             <!-- submenu 변수는 _config.yml 에서 추가합니다 -->
             {% if node.submenu %}
             <!-- spread 함수는 js 파일로 작성하고 my-head.html에 추가합니다 -->
             <!-- spread-btn class는 my-style.scss에 추가합니다. -->
-            <button class="spread-btn">
+            <button class="spread-btn" type="button" onclick="spread({{count}})"
+                    aria-label="{{ node.name | default:node.title | escape }} 하위 메뉴"
+                    aria-controls="submenu-{{count}}" aria-expanded="false">
                 <!-- marterial stylesheet를 my-head.html에 추가합니다 -->
                 <span id="spread-icon-{{count}}" class="material-icons">arrow_right</span>
             </button>
