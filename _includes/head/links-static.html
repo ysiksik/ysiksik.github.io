@@ -1,9 +1,11 @@
 {% if plugins contains 'jekyll-feed' %}{% include head/feed-tag.html %}{% endif %}
 
-<link rel="shortcut icon"    href="{{ '/assets/icons/favicon.ico'      | relative_url }}">
-<link rel="apple-touch-icon" href="{{ '/assets/icons/apple-icon.png' | relative_url }}">
+<link rel="icon" href="{{ '/assets/icons/favicon.ico' | relative_url }}?v=siksik-v1" sizes="16x16 32x32 48x48 64x64 256x256" type="image/x-icon">
+<link rel="icon" href="{{ '/assets/icons/favicon-32x32.png' | relative_url }}?v=siksik-v1" sizes="32x32" type="image/png">
+<link rel="icon" href="{{ '/assets/icons/favicon-16x16.png' | relative_url }}?v=siksik-v1" sizes="16x16" type="image/png">
+<link rel="apple-touch-icon" href="{{ '/assets/icons/apple-icon-180x180.png' | relative_url }}?v=siksik-v1" sizes="180x180">
 
-<link rel="manifest" href="{{ '/assets/site.webmanifest' | relative_url }}">
+<link rel="manifest" href="{{ '/assets/site.webmanifest' | relative_url }}?v=siksik-v1">
 
 {% if site.google_fonts %}
   <link rel="dns-prefetch" href="https://fonts.googleapis.com">

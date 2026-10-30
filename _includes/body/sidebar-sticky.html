@@ -1,19 +1,15 @@
 <div class="sidebar-sticky">
-  <div class="sidebar-about"style="margin-bottom: 10px;">
-    <!--블로그타이틀-->
-    <div class="sidebartitle" style="margin-bottom: 45px;">
-    <a class="sidebar-title" href="{{ '/' | relative_url }}"><h2 class="h1">{{ site.short_title | default:site.title }}</h2></a>
-    </div>
-    <!--블로그로고-->
+  <div class="sidebar-about sidebar-brand">
     {% if site.logo %}
-      <a class="no-hover" style="margin-bottom: 50px;" href="{{ '/' | relative_url }}" tabindex="-1">
-        <img src="{% include_cached smart-url url=site.logo %}" class="avatar" alt="{{ site.short_title | default:site.title }}" width="130" height="130" loading="lazy" />
+      <a class="no-hover sidebar-brand-home" href="{{ '/' | relative_url }}" aria-label="{{ site.short_title | default:site.title | escape }} 홈">
+        <img src="{% include_cached smart-url url=site.logo %}" class="sidebar-brand-logo" alt="{{ site.short_title | default:site.title | escape }}" width="148" height="148" />
       </a>
     {% endif %}
-    <!--블로그 간단한 설명-->
+    <p class="sidebar-brand-role">BACKEND DEVELOPER</p>
+    <a class="sidebar-title" href="{{ '/' | relative_url }}"><h2 class="h1">{{ site.short_title | default:site.title }}</h2></a>
     {% assign text = site.tagline | default:site.description %}
     {% if text %}
-      <p class="{% if text.size > 100 %}fine{% endif %}">
+      <p class="sidebar-brand-tagline {% if text.size > 100 %}fine{% endif %}">
         {{ text | markdownify | replace:'<p>','' | replace:'</p>','' }}
       </p>
     {% endif %}

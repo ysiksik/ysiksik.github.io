@@ -5,10 +5,12 @@
 <meta name="mobile-web-app-capable" content="yes">
 
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="{{ site.title }}">
+<meta name="apple-mobile-web-app-title" content="{{ site.short_title | default:site.title | escape }}">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 
-<meta name="application-name" content="{{ site.title }}">
+<meta name="application-name" content="{{ site.short_title | default:site.title | escape }}">
+<meta name="msapplication-config" content="{{ '/assets/icons/browserconfig.xml' | relative_url }}?v=siksik-v1">
+<meta name="msapplication-TileColor" content="#0b1726">
 
 {% unless site.hydejack.no_theme_color %}
   <meta name="theme-color" content="{{ theme_color | default:'rgb(8,46,57)' }}">

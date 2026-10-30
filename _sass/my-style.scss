@@ -498,3 +498,169 @@ u{
 @media print {
   .sidebar-panel-toggle { display: none; }
 }
+
+// SIKSIK branding. Keep the existing drawer and navigation behavior.
+.sidebar-brand {
+  margin-bottom: 1.75rem;
+  .sidebar-brand-home { display: inline-block; margin: 0 0 .65rem; border: 0; }
+  .sidebar-brand-logo { display: block; width: 148px; height: 148px; object-fit: contain; }
+  .sidebar-brand-role {
+    margin: 0 0 .4rem;
+    color: #a5d5ce;
+    font-size: .62rem;
+    font-weight: 600;
+    letter-spacing: .2em;
+    text-shadow: none;
+  }
+  .sidebar-title .h1 { margin: 0 0 .75rem; font-size: 1.9rem; letter-spacing: .12em; }
+  .sidebar-brand-tagline { margin: 0; color: #e1e9ed; font-size: .78rem; line-height: 1.8; }
+}
+
+.author-profile {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  .author-profile-logo { flex: 0 0 auto; width: 112px; height: 112px; object-fit: contain; }
+  .author-profile-copy { min-width: 0; }
+  .author-profile-name { font-size: 1.2rem; letter-spacing: .08em; }
+  .author-profile-role { margin: .2rem 0 .65rem; font-size: .7rem; opacity: .7; }
+  p { margin: 0; line-height: 1.8; font-size: .88rem; }
+}
+.author-profile-section { margin: 2rem 0; }
+.author-profile-social { margin: 1rem 0 0; }
+
+.about-page {
+  --brand-ink: var(--body-color, #263444);
+  --brand-line: var(--border-color, #e1e7e9);
+  --brand-accent: var(--accent-color, #3d847c);
+  color: var(--brand-ink);
+  .about-hero {
+    display: flex;
+    align-items: center;
+    gap: 1.75rem;
+    padding: 1rem 0 1.5rem;
+  }
+  .about-hero-copy { flex: 1; min-width: 0; }
+  .about-eyebrow {
+    margin: 0 0 1.25rem;
+    color: var(--brand-accent);
+    font-size: .65rem;
+    font-weight: 700;
+    letter-spacing: .14em;
+    line-height: 1.7;
+  }
+  .about-hero h1 {
+    width: auto;
+    margin: 0 0 1.25rem;
+    // The site's article heading rule uses !important; scope this override to About.
+    font-size: var(--about-title-size, clamp(1.55rem, 2.15vw, 2.05rem)) !important;
+    font-weight: 700;
+    letter-spacing: -.055em;
+    line-height: 1.55;
+    word-break: keep-all;
+  }
+  .about-hero-description { margin: 0; font-size: .9rem; line-height: 1.95; opacity: .8; word-break: keep-all; }
+  .about-hero-logo { flex: 0 0 auto; width: 140px; height: 140px; object-fit: contain; }
+  .about-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem 1.4rem;
+    padding: .9rem 0 1.5rem;
+    border-bottom: 1px solid var(--brand-line);
+    font-size: .8rem;
+    font-weight: 600;
+    a { border-bottom: 0; padding: .25rem 0; }
+    span { margin-left: .3rem; color: var(--brand-accent); }
+  }
+  .markdown-body > h2 { margin-top: 3rem; font-size: 1.35rem; letter-spacing: -.035em; }
+  .markdown-body > p { line-height: 1.95; font-size: .93rem; }
+  .about-skill-groups {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.75rem;
+    margin: 1.5rem 0;
+    h3 { margin: 0 0 .75rem; font-size: 1rem; }
+    p { margin: 0 0 1rem; font-size: .85rem; line-height: 1.9; opacity: .8; }
+  }
+  .about-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .4rem;
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    li {
+      margin: 0;
+      padding: .18rem .6rem;
+      border: 1px solid var(--brand-line);
+      border-radius: .3rem;
+      font-size: .7rem;
+      line-height: 1.8;
+    }
+  }
+  .about-project {
+    display: flex;
+    gap: 1.25rem;
+    padding: 1.5rem 0;
+    border-bottom: 1px solid var(--brand-line);
+    > div { flex: 1; min-width: 0; }
+    &:last-child { border-bottom: 0; }
+    .about-project-number { padding-top: .1rem; color: var(--brand-accent); font-size: .75rem; font-variant-numeric: tabular-nums; }
+    .about-project-domain { margin: 0 0 .3rem; font-size: .6rem; font-weight: 600; letter-spacing: .12em; opacity: .7; }
+    h3 { margin: 0 0 .6rem; font-size: 1.08rem; line-height: 1.7; letter-spacing: -.025em; }
+    h3 a { border-bottom: 0; }
+    h3 span { font-size: .85rem; color: var(--brand-accent); }
+    p { margin: 0; font-size: .88rem; line-height: 1.95; }
+  }
+  .about-project-details {
+    display: grid;
+    grid-template-columns: 5.5rem minmax(0, 1fr);
+    gap: 1rem;
+    margin: 1.25rem 0 0;
+    dt { margin: 0; font-size: .73rem; font-weight: 600; line-height: 1.9; color: var(--brand-accent); }
+    dd { margin: 0; font-size: .85rem; line-height: 1.95; }
+    ul { margin: 0; padding-left: 1.1rem; }
+    li { margin: 0 0 .5rem; }
+    li:last-child { margin-bottom: 0; }
+  }
+  .about-record {
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--brand-line);
+    summary {
+      cursor: pointer;
+      font-size: .9rem;
+      font-weight: 600;
+      line-height: 1.8;
+      span { margin-left: .7rem; font-size: .7rem; font-weight: 400; opacity: .65; }
+      &:focus-visible { outline: 2px solid var(--brand-accent); outline-offset: .3rem; }
+    }
+    ul { margin: 1rem 0 .25rem; padding-left: 1.3rem; font-size: .85rem; line-height: 1.9; }
+    li { margin: .3rem 0; }
+  }
+  .about-closing {
+    margin: 3rem 0 1rem;
+    padding-top: 1.5rem;
+    .about-eyebrow { margin-bottom: .75rem; }
+    p:last-child { font-size: .88rem; line-height: 1.95; opacity: .8; }
+  }
+}
+
+@media (max-width: 47.99em) {
+  .about-page {
+    .about-hero { align-items: flex-start; flex-direction: column-reverse; gap: 1rem; padding-top: 0; }
+    .about-hero-logo { width: 100px; height: 100px; }
+    .about-hero { --about-title-size: 1.3rem; }
+    .about-hero-description br { display: none; }
+    .about-eyebrow { font-size: .6rem; letter-spacing: .1em; margin-bottom: .85rem; }
+    .about-skill-groups { grid-template-columns: 1fr; gap: 1.5rem; }
+    .about-project { gap: .8rem; }
+    .about-project-details {
+      grid-template-columns: minmax(0, 1fr);
+      gap: .35rem;
+      dd + dt { margin-top: .6rem; }
+    }
+    .about-record summary span { display: block; margin-left: 1.1rem; }
+  }
+  .author-profile { align-items: flex-start; gap: .85rem; }
+  .author-profile .author-profile-logo { width: 76px; height: 76px; }
+}

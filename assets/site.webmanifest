@@ -1,0 +1,4 @@
+---
+layout: null
+---
+{% include head/app-manifest.json %}

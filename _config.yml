@@ -18,18 +18,18 @@ url:                   https://ysiksik.github.io
 lang:                  ko-KR, en-US
 
 # The title of your blog. Used in the sidebar and the browser tab.
-title:                 SIKSIK 의 개발 여행
+title:                 SIKSIK · 백엔드 개발 기록
+short_title:           SIKSIK
 
 # A short description (~150 chars) of the page used for the meta description tag.
 # Can use markdown, but no more than one paragraph (enforced by `>`)
 description:           >
-    SIKSIK 의 개발 여행 기록
+    Java와 Spring으로 서비스를 만들며 배운 것들을 기록합니다. API 설계, 배치와 데이터 처리, 서비스 운영과 클라우드에 대한 SIKSIK의 개발 노트입니다.
 
 
 # A shorter description for the sidebar.
-tagline:               "
-    지속적인 학습을 통해, 최적화된 백엔드 시스템을 구축하는 것을 목표로 하는 개발자입니다
-		"
+tagline:               >-
+    기록하고, 연결하고, 개선합니다.
 
 # A list of keywords for your blog
 keywords:              [JAVA, Spring, Spring boot, javascript, reactJs, jquery, Thymeleaf, JSP , backend, frontend , git, gitblog]
@@ -37,7 +37,7 @@ keywords:              [JAVA, Spring, Spring boot, javascript, reactJs, jquery, 
 # A (square) logo for your site.
 # If provided, it will be shown at the top of the sidebar.
 # It also used by the `jekyll-seo-tag` plugin.
-logo:              /assets/img/logo.png
+logo:              /assets/img/brand/siksik-logo.webp
 
 
 # This should be the same author as first entry in `_data/authors.yml`.
@@ -250,13 +250,13 @@ remote_theme: hydecorp/hydejack@v9.0.5
 # ----------------------------------------------------------------------------------------
 
 # Sidebar image and theme color of the site.
-accent_image:          /assets/img/sidebar-bg.png
-accent_color:          rgb(79,177,186)
+accent_image:          /assets/img/brand/siksik-sidebar.webp
+accent_color:          rgb(61,132,124)
 
 # This is used for the `theme-color` meta tag,
 # which changes the background color of the browser UI in certain browsers.
 # Defaults to `accent_color`.
-theme_color:           rgb(25,55,71)
+theme_color:           rgb(11,23,38)
 
 # The string encoding which fonts to fetch from Google Fonts.
 # See: <https://hydejack.com/docs/configuration/>

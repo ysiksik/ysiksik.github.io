@@ -1,0 +1,11 @@
+{% assign profile = include.author %}
+<div class="author-profile">
+  {% if profile.picture %}
+    <img class="author-profile-logo" src="{% include_cached smart-url url=profile.picture.path %}" alt="{{ profile.name | escape }} 로고" width="112" height="112" loading="lazy" />
+  {% endif %}
+  <div class="author-profile-copy">
+    <strong class="author-profile-name">{{ profile.name }}</strong>
+    {% if profile.role %}<p class="author-profile-role">{{ profile.role }}</p>{% endif %}
+    {{ profile.about | markdownify }}
+  </div>
+</div>

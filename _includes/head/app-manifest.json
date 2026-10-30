@@ -1,0 +1,24 @@
+{
+  "name": {{ site.title | jsonify }},
+  "short_name": {{ site.short_title | default:site.title | jsonify }},
+  "id": {{ '/' | relative_url | jsonify }},
+  "start_url": {{ '/' | relative_url | jsonify }},
+  "scope": {{ '/' | relative_url | jsonify }},
+  "display": "standalone",
+  "background_color": "#0b1726",
+  "theme_color": "#0b1726",
+  "icons": [
+    {
+      "src": {{ '/assets/icons/android-icon-192x192.png?v=siksik-v1' | relative_url | jsonify }},
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": {{ '/assets/icons/android-icon-512x512.png?v=siksik-v1' | relative_url | jsonify }},
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

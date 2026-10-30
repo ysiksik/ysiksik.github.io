@@ -3,12 +3,14 @@
 # Change `author1` to your shortname.
 author1:
   name:              SIKSIK
+  role:              Backend Developer
   email:             appie6069@naver.com
 
   # Used at the bottom of each page and at the top of the `about` layout
   # Markdown enabled, can use multiple paragraphs (enabled by `|`)
   about:             |
-    안녕하세요, SIKSIK 개발자입니다. 백엔드 개발자로서 꾸준히 배우고 성장하며, 개발 경험과 기술을 공유하는 공간을 만들고자 합니다. 함께 발전해 나가요!
+    Java와 Spring을 중심으로 API, 배치, 데이터 처리 시스템을 개발합니다.
+    서비스가 동작하는 흐름을 이해하고, 문제를 확인하며 배운 것을 기록합니다.
 #    Please check my [Portfolio]
   #  Please check my [Portfolio](https://choyunsik.github.io/)
 
@@ -17,11 +19,11 @@ author1:
 
   # This photo will be used in the about section
   picture:
-    path:            /assets/img/me/me.png
+    path:            /assets/img/brand/siksik-logo.webp
     # srcset is optional, but can be used to provide higher res versions for retina displays
     srcset:
-      1x:            /assets/img/me/me.png
-      2x:            /assets/img/me/me.png
+      1x:            /assets/img/brand/siksik-logo.webp
+      2x:            /assets/img/brand/siksik-logo.webp
 
   # Social media icons in sidebar
   # Comment/uncommet to show/hide
