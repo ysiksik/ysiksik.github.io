@@ -157,6 +157,8 @@ menu:
             url: /kubernetes-development-strategy-for-beginners/
           - title: 처음 배우는 카프카(개발부터 운영까지)
             url: /kafka-development-strategy-for-beginners/
+          - title: 누구나 쉽게 배우는 NoSQL-MongoDB
+            url: /nosql-mongodb-easy-for-anyone-to-learn/
 #      - title:    페이먼츠
 #        url:    /payments/
         #          - title:  실무 적용 SQL 성능 튜닝
