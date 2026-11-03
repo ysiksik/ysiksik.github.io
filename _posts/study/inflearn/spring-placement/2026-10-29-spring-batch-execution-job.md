@@ -8448,3 +8448,5655 @@ ExitStatus는 종료 결과를 나타낸다.
 #### 한 줄 요약
 
 > Spring Batch의 `SimpleJob`은 등록된 Step을 순차적으로 실행하는 기본 Job 구현체다. `SimpleJobBuilder`가 Step 목록과 공통 설정을 관리한 후 `build()`를 통해 SimpleJob을 생성한다. 실제 실행 시에는 `SimpleJob.doExecute()`가 각 Step을 순서대로 실행하며, 이전 Step이 COMPLETED가 아니면 후속 실행을 중단한다. Job의 최종 상태는 마지막으로 처리한 StepExecution의 BatchStatus와 ExitStatus를 기반으로 결정된다.
+
+## SimpleJob - start() / next()
+
+### Spring Batch start()와 next() API 이해: SimpleJob의 Step 순차 실행 원리
+
+Spring Batch에서 Job은 하나의 배치 작업 전체를 정의하는 최상위 도메인 객체다.
+
+하나의 Job은 여러 Step으로 구성할 수 있으며, 각 Step은 실제 비즈니스 로직을 수행하는 실행 단위다.
+
+예를 들어 다음과 같은 정산 배치가 있다고 생각해보자.
+
+```text
+dailySettlementJob
+       │
+       ├── Step 1. 정산 대상 데이터 조회
+       │
+       ├── Step 2. 정산 금액 계산
+       │
+       └── Step 3. 정산 결과 저장
+```
+
+이 작업에서는 반드시 정해진 순서에 따라 Step을 실행해야 한다.
+
+정산 대상 데이터가 준비되지 않았다면 정산 금액을 계산할 수 없다.
+
+정산 금액 계산이 완료되지 않았다면 최종 정산 결과를 저장해서는 안 된다.
+
+따라서 다음과 같은 실행 흐름이 필요하다.
+
+```text
+정산 대상 조회
+      │
+      ▼
+정산 금액 계산
+      │
+      ▼
+정산 결과 저장
+      │
+      ▼
+배치 작업 완료
+```
+
+Spring Batch에서는 이러한 순차 실행을 구성하기 위해 `start()`와 `next()` API를 제공한다.
+
+가장 기본적인 사용 방법은 다음과 같다.
+
+```java
+@Bean
+public Job settlementJob(
+        JobRepository jobRepository,
+        Step step1,
+        Step step2,
+        Step step3
+) {
+    return new JobBuilder("settlementJob", jobRepository)
+            .start(step1)
+            .next(step2)
+            .next(step3)
+            .build();
+}
+```
+
+이 코드는 다음과 같은 의미를 가진다.
+
+`start(step1)`은 가장 먼저 실행할 Step을 설정한다.
+
+`next(step2)`는 첫 번째 Step이 정상적으로 완료된 이후 실행할 Step을 설정한다.
+
+`next(step3)`는 두 번째 Step이 정상적으로 완료된 이후 실행할 Step을 설정한다.
+
+마지막으로 `build()`를 호출하면 Job 객체가 생성된다.
+
+여기까지만 보면 단순히 Step을 순서대로 연결하는 API처럼 보일 수 있다.
+
+하지만 Spring Batch 내부에서는 다음과 같은 과정이 발생한다.
+
+```text
+JobBuilder 생성
+       │
+       ▼
+start(step1)
+       │
+       ▼
+SimpleJobBuilder 생성
+       │
+       ▼
+next(step2)
+       │
+       ▼
+Step 목록에 step2 추가
+       │
+       ▼
+next(step3)
+       │
+       ▼
+Step 목록에 step3 추가
+       │
+       ▼
+build()
+       │
+       ▼
+SimpleJob 생성
+       │
+       ▼
+JobLauncher를 통한 실행
+       │
+       ▼
+등록된 Step 순차 실행
+```
+
+즉, `start()`와 `next()`는 단순히 Step 실행 순서를 지정하는 것 이상의 의미를 가진다.
+
+**어떤 Job 구현체를 생성할 것인지 결정하고, 해당 Job이 실제 실행 과정에서 사용할 Step 목록을 구성하는 역할**도 담당한다.
+
+이번에는 `start()`와 `next()`의 기본 개념부터 Builder의 반환 타입, SimpleJob의 생성 과정, Step의 실행 순서와 실패 처리까지 자세히 살펴보자.
+
+---
+
+### start()와 next()의 개념
+
+Spring Batch에서 `start()`와 `next()`는 Job의 실행 순서를 구성하는 API다.
+
+두 메서드 모두 Step 객체를 전달받을 수 있지만 역할은 서로 다르다.
+
+| 구분         | start(Step)       | next(Step)            |
+| ---------- | ----------------- | --------------------- |
+| 목적         | 최초 실행할 Step 지정    | 다음 실행할 Step 지정        |
+| 매개변수       | Step              | Step                  |
+| 일반적인 호출 횟수 | 한 번               | 여러 번                  |
+| 반환 타입      | SimpleJobBuilder  | SimpleJobBuilder      |
+| 내부 동작      | 첫 번째 Step 설정      | Step 목록에 후속 Step 추가   |
+| 실행 시점      | Job 실행 시 첫 번째로 수행 | 이전 Step이 정상 완료된 이후 수행 |
+
+두 API의 가장 큰 차이는 **실행 순서를 정의하는 위치**다.
+
+`start()`는 Job 실행의 시작점을 설정한다.
+
+반면 `next()`는 시작점 이후에 이어질 실행 단계를 설정한다.
+
+#### start(Step)
+
+`start()`는 Job에서 최초로 실행할 Step을 지정한다.
+
+```java
+new JobBuilder("batchJob", jobRepository)
+        .start(step1)
+        .build();
+```
+
+이 코드에서는 `step1`이 첫 번째 실행 단계가 된다.
+
+실행 구조는 다음과 같다.
+
+```text
+batchJob
+    │
+    ▼
+  step1
+    │
+    ▼
+COMPLETED
+```
+
+여기서 중요한 부분은 `start()`의 반환 타입이다.
+
+Spring Batch 5.2에서는 `JobBuilder`의 다음 메서드가 사용된다.
+
+```java
+public SimpleJobBuilder start(Step step)
+```
+
+즉, `start()`에 Step을 전달하면 `SimpleJobBuilder`가 반환된다.
+
+이후에는 SimpleJobBuilder가 제공하는 API를 이용해 후속 Step을 추가하거나 Job을 생성할 수 있다.
+
+#### next(Step)
+
+`next()`는 다음에 실행할 Step을 지정한다.
+
+```java
+new JobBuilder("batchJob", jobRepository)
+        .start(step1)
+        .next(step2)
+        .build();
+```
+
+이 코드는 다음 실행 순서를 정의한다.
+
+```text
+batchJob
+    │
+    ▼
+  step1
+    │
+    ▼
+  step2
+    │
+    ▼
+COMPLETED
+```
+
+`next()`는 여러 번 호출할 수 있다.
+
+```java
+new JobBuilder("batchJob", jobRepository)
+        .start(step1)
+        .next(step2)
+        .next(step3)
+        .next(step4)
+        .build();
+```
+
+이처럼 Step을 계속 추가할 수 있다.
+
+다만 API에서 등록할 수 있는 Step 개수에 작은 고정 제한이 없다는 의미이지, 무제한으로 Step을 구성하는 것이 권장된다는 뜻은 아니다.
+
+실제 운영에서는 Job의 복잡성과 실행 이력 관리 비용을 고려해 적절한 개수로 구성해야 한다.
+
+---
+
+### 왜 start()와 next()를 사용하는가?
+
+`start()`와 `next()`를 사용하는 가장 큰 이유는 여러 Step의 실행 순서를 선언적으로 구성하기 위해서다.
+
+일반적인 Java 코드에서는 다음과 같이 메서드를 직접 호출할 수 있다.
+
+```java
+public void executeSettlement() {
+
+    prepareSettlement();
+
+    calculateSettlement();
+
+    saveSettlement();
+}
+```
+
+이 코드는 세 개의 메서드를 순서대로 실행한다.
+
+하지만 실제 배치 시스템에서는 단순한 메서드 호출보다 복잡한 실행 관리가 필요하다.
+
+예를 들어 정산 금액 계산 과정에서 오류가 발생했다고 생각해보자.
+
+이때 다음과 같은 요구사항이 발생할 수 있다.
+
+첫째, 어떤 단계에서 오류가 발생했는지 기록해야 한다.
+
+둘째, 오류가 발생한 이후의 작업을 실행하지 않아야 한다.
+
+셋째, 이전에 완료한 작업의 실행 이력을 유지해야 한다.
+
+넷째, 장애가 해결된 이후 실패한 작업을 재시작할 수 있어야 한다.
+
+Spring Batch는 이러한 기능을 JobRepository와 StepExecution 등의 도메인 객체를 통해 제공한다.
+
+`start()`와 `next()`는 이러한 실행 관리 구조 안에서 각 Step을 어떤 순서로 실행할지 정의한다.
+
+#### 일반적인 메서드 호출과 Spring Batch의 차이
+
+| 구분    | 일반적인 메서드 호출 | Spring Batch의 Step 실행  |
+| ----- | ----------- | ---------------------- |
+| 실행 순서 | 메서드 호출 순서   | Job에 등록된 Step 순서       |
+| 실행 상태 | 직접 관리       | StepExecution으로 관리     |
+| 실패 처리 | 직접 구현       | 실행 상태에 따라 후속 Step 중단   |
+| 실행 이력 | 직접 저장       | JobRepository 활용       |
+| 재시작   | 직접 구현       | Spring Batch 재시작 기능 활용 |
+| 처리 통계 | 직접 수집       | StepExecution에 저장 가능   |
+
+따라서 `start()`와 `next()`는 단순히 메서드를 연결하는 문법이 아니라, **Spring Batch의 실행 관리 체계 안에서 Step의 실행 순서를 정의하기 위한 API**라고 이해할 수 있다.
+
+---
+
+### start()와 next()의 주요 특징
+
+#### start()는 Job의 시작점을 정의한다
+
+Job을 구성할 때는 처음 실행할 Step을 지정해야 한다.
+
+```java
+.start(step1)
+```
+
+이 코드는 step1을 시작 단계로 설정한다.
+
+일반적인 Job 구성에서는 `start()`를 한 번 호출한 뒤 `next()`로 후속 Step을 연결한다.
+
+다만 SimpleJobBuilder의 내부 구현에는 `start()`를 다시 호출할 경우 첫 번째 Step을 교체하는 동작이 존재한다.
+
+따라서 기술적으로는 다시 호출할 수 있지만, 일반적인 배치 설정에서는 최초 한 번만 호출하는 편이 실행 흐름을 이해하기 쉽다.
+
+#### next()는 여러 개의 Step을 순차적으로 연결한다
+
+`next()`는 다음에 실행할 Step을 추가한다.
+
+```java
+.next(step2)
+.next(step3)
+.next(step4)
+```
+
+이 API는 호출할 때마다 후속 Step을 추가한다.
+
+따라서 다음과 같은 실행 흐름을 정의할 수 있다.
+
+```text
+Step 1
+   │
+   ▼
+Step 2
+   │
+   ▼
+Step 3
+   │
+   ▼
+Step 4
+```
+
+여기서 중요한 것은 실제 실행 순서가 `next()` 메서드의 호출 순서와 연결된다는 사실이다.
+
+#### 모든 Step이 정상적으로 완료되어야 Job이 성공한다
+
+SimpleJob은 등록된 Step을 순차적으로 실행한다.
+
+이때 이전 Step의 실행 상태가 `COMPLETED`여야 다음 Step을 실행한다.
+
+예를 들어 다음과 같은 Job이 있다고 생각해보자.
+
+```java
+new JobBuilder("batchJob", jobRepository)
+        .start(step1)
+        .next(step2)
+        .next(step3)
+        .build();
+```
+
+Step 1이 성공하면 Step 2를 실행한다.
+
+Step 2가 성공하면 Step 3을 실행한다.
+
+Step 3까지 정상적으로 완료되면 Job이 성공적으로 종료된다.
+
+반면 Step 2가 실패하면 Step 3은 실행되지 않는다.
+
+```mermaid
+flowchart TD
+    A["Job 실행"]
+    B["Step 1"]
+    C{"COMPLETED?"}
+    D["Step 2"]
+    E{"COMPLETED?"}
+    F["Step 3"]
+    G{"COMPLETED?"}
+    H["Job COMPLETED"]
+    I["후속 Step 실행 중단"]
+
+    A --> B
+    B --> C
+
+    C -->|Yes| D
+    C -->|No| I
+
+    D --> E
+    E -->|Yes| F
+    E -->|No| I
+
+    F --> G
+    G -->|Yes| H
+    G -->|No| I
+```
+
+이러한 동작은 SimpleJob의 순차 실행 구조에서 제공하는 기본적인 특징이다.
+
+---
+
+### start()와 next()의 내부 구조
+
+이번에는 API 호출이 실제로 어떤 객체를 생성하는지 살펴보자.
+
+다음 코드를 기준으로 설명한다.
+
+```java
+Job job = new JobBuilder("batchJob", jobRepository)
+        .start(step1)
+        .next(step2)
+        .next(step3)
+        .build();
+```
+
+이 코드에서는 네 가지 주요 과정이 발생한다.
+
+첫 번째는 JobBuilder 생성이다.
+
+두 번째는 SimpleJobBuilder 생성이다.
+
+세 번째는 Step 목록 구성이다.
+
+네 번째는 SimpleJob 생성이다.
+
+각 과정을 순서대로 살펴보자.
+
+---
+
+### 첫 번째: JobBuilder 생성
+
+먼저 다음 코드가 실행된다.
+
+```java
+new JobBuilder("batchJob", jobRepository)
+```
+
+이 코드는 JobBuilder 객체를 생성한다.
+
+여기서 두 개의 인자를 전달한다.
+
+첫 번째는 Job 이름이다.
+
+```java
+"batchJob"
+```
+
+두 번째는 JobRepository다.
+
+```java
+jobRepository
+```
+
+Spring Batch 5.2에서는 다음 생성자를 사용한다.
+
+```java
+public JobBuilder(
+        String name,
+        JobRepository jobRepository
+)
+```
+
+JobBuilder는 Job 이름과 JobRepository를 저장하고, 이후 Job을 생성하는 데 필요한 설정을 관리한다.
+
+여기서 중요한 점은 아직 SimpleJob이 생성되지 않았다는 것이다.
+
+현재는 Job을 만들기 위한 Builder만 생성된 상태다.
+
+---
+
+### 두 번째: start(Step)으로 SimpleJobBuilder 생성
+
+다음 코드가 실행된다.
+
+```java
+.start(step1)
+```
+
+이때 호출되는 메서드는 JobBuilder의 `start(Step)`이다.
+
+핵심 구현은 다음과 같다.
+
+```java
+public SimpleJobBuilder start(Step step) {
+
+    return new SimpleJobBuilder(this)
+            .start(step);
+}
+```
+
+이 메서드에서 가장 중요한 부분은 다음이다.
+
+```java
+new SimpleJobBuilder(this)
+```
+
+새로운 SimpleJobBuilder를 생성한다.
+
+여기서 전달하는 `this`는 현재 JobBuilder 객체를 의미한다.
+
+SimpleJobBuilder는 전달받은 JobBuilder의 공통 설정을 기반으로 초기화된다.
+
+이후 다음 메서드를 호출한다.
+
+```java
+.start(step)
+```
+
+이를 통해 최초 Step을 등록한다.
+
+전체 구조는 다음과 같다.
+
+```text
+JobBuilder
+    │
+    │ start(step1)
+    ▼
+SimpleJobBuilder 생성
+    │
+    ▼
+step1 등록
+```
+
+따라서 `start(Step)`을 호출하면 JobBuilder에서 SimpleJobBuilder로 설정을 이어가는 구조가 만들어진다.
+
+---
+
+### 세 번째: SimpleJobBuilder의 Step 목록 구성
+
+SimpleJobBuilder는 내부적으로 Step 목록을 관리한다.
+
+Spring Batch 5.2.4의 주요 필드는 다음과 같다.
+
+```java
+private final List<Step> steps = new ArrayList<>();
+```
+
+이 List는 실제 Job에 등록할 Step 객체를 저장한다.
+
+먼저 `start(step1)`이 호출된다.
+
+SimpleJobBuilder의 핵심 구현은 다음과 같다.
+
+```java
+public SimpleJobBuilder start(Step step) {
+
+    if (steps.isEmpty()) {
+        steps.add(step);
+    } else {
+        steps.set(0, step);
+    }
+
+    return this;
+}
+```
+
+이 메서드는 Step 목록이 비어 있다면 새로운 Step을 추가한다.
+
+따라서 처음 호출했을 때는 다음과 같은 상태가 된다.
+
+```text
+steps
+  │
+  └── step1
+```
+
+이후 `next(step2)`가 호출된다.
+
+SimpleJobBuilder의 `next(Step)` 구현은 다음과 같다.
+
+```java
+public SimpleJobBuilder next(Step step) {
+
+    steps.add(step);
+
+    return this;
+}
+```
+
+이 메서드는 전달받은 Step을 List에 추가한다.
+
+따라서 다음과 같은 상태가 된다.
+
+```text
+steps
+  │
+  ├── step1
+  └── step2
+```
+
+마지막으로 `next(step3)`이 호출된다.
+
+```java
+.next(step3)
+```
+
+Step 목록에는 세 개의 Step이 저장된다.
+
+```text
+steps
+  │
+  ├── step1
+  ├── step2
+  └── step3
+```
+
+이를 인덱스로 표현하면 다음과 같다.
+
+| Index | Step  |
+| ----- | ----- |
+| 0     | step1 |
+| 1     | step2 |
+| 2     | step3 |
+
+이 목록의 순서가 SimpleJob의 기본 실행 순서가 된다.
+
+중요한 것은 `next()`가 호출되는 시점에 Step이 실제로 실행되는 것이 아니라는 점이다.
+
+**`next()`는 Step을 실행하는 메서드가 아니라 실행할 Step을 등록하는 메서드다.**
+
+실제 Step 실행은 JobLauncher가 Job을 실행한 이후에 이루어진다.
+
+---
+
+### 네 번째: build()로 SimpleJob 생성
+
+모든 Step을 등록했다면 마지막으로 `build()`를 호출한다.
+
+```java
+.build();
+```
+
+SimpleJobBuilder는 내부 설정을 기반으로 실제 SimpleJob 객체를 생성한다.
+
+Spring Batch 5.2.4의 핵심 구현을 살펴보면 다음과 같다.
+
+```java
+public Job build() {
+
+    if (builder != null) {
+        return builder.end().build();
+    }
+
+    SimpleJob job = new SimpleJob(getName());
+
+    super.enhance(job);
+
+    job.setSteps(steps);
+
+    try {
+        job.afterPropertiesSet();
+    } catch (Exception e) {
+        throw new JobBuilderException(e);
+    }
+
+    return job;
+}
+```
+
+이 코드에서는 여러 작업이 수행된다.
+
+먼저 SimpleJob을 생성한다.
+
+```java
+SimpleJob job = new SimpleJob(getName());
+```
+
+이때 Job 이름을 설정한다.
+
+다음으로 공통 설정을 적용한다.
+
+```java
+super.enhance(job);
+```
+
+JobRepository, Listener, Validator 등 Job 생성에 필요한 공통 속성이 여기에 포함된다.
+
+마지막으로 Step 목록을 적용한다.
+
+```java
+job.setSteps(steps);
+```
+
+앞에서 SimpleJobBuilder가 관리하던 세 개의 Step이 SimpleJob에 전달된다.
+
+최종적으로 다음과 같은 객체가 생성된다.
+
+```text
+SimpleJob
+    │
+    ├── name = batchJob
+    │
+    ├── jobRepository
+    │
+    ├── restartable
+    │
+    ├── jobParametersValidator
+    │
+    ├── jobExecutionListener
+    │
+    └── steps
+           │
+           ├── step1
+           ├── step2
+           └── step3
+```
+
+이 과정을 통해 SimpleJob은 실행에 필요한 Step 목록과 공통 설정값을 가지게 된다.
+
+Spring Batch 5.2.4의 실제 구현에서도 `SimpleJobBuilder`가 Step 목록을 구성한 뒤 `SimpleJob`에 전달하는 구조를 확인할 수 있다.
+
+---
+
+### JobBuilder부터 SimpleJob 생성까지의 전체 흐름
+
+지금까지의 내용을 시퀀스 다이어그램으로 정리해보자.
+
+```mermaid
+sequenceDiagram
+    participant Config as BatchConfiguration
+    participant JB as JobBuilder
+    participant SJB as SimpleJobBuilder
+    participant SJ as SimpleJob
+
+    Config->>JB: new JobBuilder(name, repository)
+
+    Config->>JB: start(step1)
+
+    JB->>SJB: new SimpleJobBuilder(this)
+
+    SJB->>SJB: steps.add(step1)
+
+    Config->>SJB: next(step2)
+
+    SJB->>SJB: steps.add(step2)
+
+    Config->>SJB: next(step3)
+
+    SJB->>SJB: steps.add(step3)
+
+    Config->>SJB: build()
+
+    SJB->>SJ: new SimpleJob(name)
+
+    SJB->>SJ: 공통 속성 적용
+
+    SJB->>SJ: setSteps(steps)
+
+    SJ-->>Config: SimpleJob 반환
+```
+
+이 구조에서 중요한 부분은 다음과 같다.
+
+JobBuilder는 Job 생성의 시작점이다.
+
+SimpleJobBuilder는 Step 목록을 구성한다.
+
+SimpleJob은 최종적으로 생성되는 Job 구현체다.
+
+그리고 실제 실행은 별도의 과정에서 수행된다.
+
+---
+
+### SimpleJob이 생성되었다고 바로 실행되는 것은 아니다
+
+Job을 생성하는 과정과 Job을 실행하는 과정은 반드시 구분해야 한다.
+
+예를 들어 다음 코드가 있다고 생각해보자.
+
+```java
+@Bean
+public Job batchJob(
+        JobRepository jobRepository,
+        Step step1,
+        Step step2
+) {
+    return new JobBuilder("batchJob", jobRepository)
+            .start(step1)
+            .next(step2)
+            .build();
+}
+```
+
+이 코드는 Job을 정의하는 설정이다.
+
+Spring Container가 해당 Bean을 생성하면 SimpleJob 객체가 만들어진다.
+
+하지만 이것만으로 실제 배치 작업이 실행되었다는 의미는 아니다.
+
+실제로 Job을 실행하려면 다음과 같은 호출이 필요하다.
+
+```java
+jobLauncher.run(job, jobParameters);
+```
+
+Spring Boot에서는 자동 실행 설정에 따라 `JobLauncherApplicationRunner`가 이 호출을 대신 수행할 수 있다.
+
+전체 흐름을 구분하면 다음과 같다.
+
+| 구분              | Job 생성                       | Job 실행                 |
+| --------------- | ---------------------------- | ---------------------- |
+| 주요 컴포넌트         | JobBuilder, SimpleJobBuilder | JobLauncher, SimpleJob |
+| 목적              | 실행 구조 정의                     | 실제 배치 처리               |
+| start()         | Step 등록                      | 호출하지 않음                |
+| next()          | 후속 Step 등록                   | 호출하지 않음                |
+| build()         | SimpleJob 생성                 | 호출하지 않음                |
+| Step 실행         | 수행하지 않음                      | 실제 실행                  |
+| JobExecution 생성 | 생성하지 않음                      | 생성                     |
+| 실행 이력 저장        | 없음                           | JobRepository에 저장      |
+
+따라서 `start()`와 `next()`는 Job 실행을 위한 설정 API이고, 실제 Step 실행은 SimpleJob이 담당한다고 이해해야 한다.
+
+---
+
+### SimpleJob은 등록된 Step을 어떻게 실행할까?
+
+SimpleJob이 생성된 이후 실제 실행 요청이 들어오면 다음과 같은 과정이 발생한다.
+
+```text
+JobLauncher
+     │
+     ▼
+JobExecution 생성
+     │
+     ▼
+SimpleJob.execute()
+     │
+     ▼
+AbstractJob.execute()
+     │
+     ▼
+SimpleJob.doExecute()
+     │
+     ▼
+Step 목록 순회
+     │
+     ├── step1
+     ├── step2
+     └── step3
+```
+
+여기서 중요한 메서드는 `SimpleJob.doExecute()`다.
+
+SimpleJob은 내부에 저장된 Step 목록을 순차적으로 실행한다.
+
+Spring Batch 5.2.4의 핵심 구현은 다음과 같다.
+
+```java
+StepExecution stepExecution = null;
+
+for (Step step : steps) {
+
+    stepExecution = handleStep(step, execution);
+
+    if (stepExecution.getStatus() != BatchStatus.COMPLETED) {
+        break;
+    }
+}
+```
+
+이 코드가 SimpleJob의 순차 실행 원리를 보여준다.
+
+먼저 다음 구문을 살펴보자.
+
+```java
+for (Step step : steps)
+```
+
+SimpleJob에 등록된 Step 목록을 순서대로 순회한다.
+
+앞에서 구성한 Step 목록은 다음과 같다.
+
+```text
+steps[0] = step1
+
+steps[1] = step2
+
+steps[2] = step3
+```
+
+따라서 실행 순서는 다음과 같다.
+
+```text
+step1 → step2 → step3
+```
+
+이후 다음 메서드가 호출된다.
+
+```java
+stepExecution = handleStep(step, execution);
+```
+
+`handleStep()`은 현재 Step을 실행하고 해당 실행을 나타내는 StepExecution을 반환한다.
+
+Step 실행이 끝나면 상태를 확인한다.
+
+```java
+if (stepExecution.getStatus() != BatchStatus.COMPLETED) {
+    break;
+}
+```
+
+이 코드는 현재 Step의 BatchStatus가 COMPLETED가 아니라면 반복문을 중단한다는 의미다.
+
+따라서 다음과 같은 실행 결과가 발생한다.
+
+#### 모든 Step이 성공한 경우
+
+```text
+Step 1 → COMPLETED
+
+Step 2 → COMPLETED
+
+Step 3 → COMPLETED
+
+Job → COMPLETED
+```
+
+#### 두 번째 Step에서 실패한 경우
+
+```text
+Step 1 → COMPLETED
+
+Step 2 → FAILED
+
+Step 3 → 실행되지 않음
+
+Job → FAILED
+```
+
+여기서 중요한 사실은 **SimpleJob이 Step의 최종 BatchStatus를 기준으로 다음 Step의 실행 여부를 결정한다는 점**이다.
+
+단순히 Tasklet이 `RepeatStatus.FINISHED`를 반환했는지만 확인하는 것이 아니다.
+
+실제 StepExecution의 최종 실행 상태를 기준으로 판단한다.
+
+---
+
+### Step 내부에서는 어떤 일이 발생할까?
+
+앞에서 SimpleJob이 Step을 실행한다고 설명했다.
+
+그런데 Step도 실제 비즈니스 로직을 직접 수행하는 객체와 연결되어 있다.
+
+Tasklet 기반 Step의 경우 다음과 같은 관계가 만들어진다.
+
+```text
+SimpleJob
+    │
+    ▼
+TaskletStep
+    │
+    ▼
+Tasklet
+    │
+    ▼
+비즈니스 로직
+```
+
+예를 들어 다음과 같은 Step이 있다고 생각해보자.
+
+```java
+@Bean
+public Step step1(
+        JobRepository jobRepository,
+        PlatformTransactionManager transactionManager
+) {
+    return new StepBuilder("step1", jobRepository)
+            .tasklet((contribution, chunkContext) -> {
+
+                System.out.println("Step 1 실행");
+
+                return RepeatStatus.FINISHED;
+
+            }, transactionManager)
+            .build();
+}
+```
+
+이 코드는 Tasklet 기반 Step을 생성한다.
+
+SimpleJob이 step1을 실행하면 TaskletStep의 실행 로직이 수행된다.
+
+그리고 TaskletStep은 등록된 Tasklet을 호출한다.
+
+Tasklet 내부에서는 다음 코드가 실행된다.
+
+```java
+System.out.println("Step 1 실행");
+```
+
+이후 다음 값을 반환한다.
+
+```java
+return RepeatStatus.FINISHED;
+```
+
+이 값은 현재 Tasklet의 반복 처리가 종료될 수 있음을 나타낸다.
+
+TaskletStep은 필요한 종료 처리를 거쳐 StepExecution의 최종 상태를 결정한다.
+
+그 결과가 COMPLETED라면 SimpleJob은 다음 Step을 실행한다.
+
+따라서 전체 구조는 다음과 같이 연결된다.
+
+```mermaid
+flowchart TD
+    A["SimpleJob"]
+    B["Step 1"]
+    C["Tasklet 1"]
+    D["StepExecution 1"]
+    E["Step 2"]
+    F["Tasklet 2"]
+    G["StepExecution 2"]
+    H["Step 3"]
+    I["Tasklet 3"]
+    J["StepExecution 3"]
+
+    A --> B
+    B --> C
+    C --> D
+
+    D -->|"COMPLETED"| E
+
+    E --> F
+    F --> G
+
+    G -->|"COMPLETED"| H
+
+    H --> I
+    I --> J
+
+    J -->|"COMPLETED"| A
+```
+
+이 구조를 이해하면 start()와 next()가 등록한 Step이 실제로 어떤 과정을 거쳐 실행되는지 연결해서 볼 수 있다.
+
+---
+
+### 실제 start()와 next() API 구현하기
+
+이번에는 실제 Spring Batch 프로젝트에서 세 개의 Step을 구성하고 실행 순서를 확인해보자.
+
+다음과 같은 Job을 생성한다.
+
+```text
+startNextJob
+     │
+     ├── startNextStep1
+     │
+     ├── startNextStep2
+     │
+     └── startNextStep3
+```
+
+이번 예제에서는 두 가지 상황을 확인한다.
+
+첫 번째는 모든 Step이 성공적으로 완료되는 상황이다.
+
+두 번째는 두 번째 Step에서 의도적으로 예외가 발생하는 상황이다.
+
+이를 통해 SimpleJob이 실제로 Step을 어떤 순서로 실행하고, 실패가 발생했을 때 후속 Step을 중단하는지 확인할 수 있다.
+
+**개발 환경**
+
+| 항목           | 기술          |
+| ------------ | ----------- |
+| Java         | Java 17     |
+| Spring Boot  | 3.4.13      |
+| Spring Batch | 5.2.4       |
+| Build Tool   | Maven       |
+| Database     | H2          |
+| Step 구성      | TaskletStep |
+
+---
+
+### Maven 의존성 설정
+
+먼저 Spring Batch와 H2 데이터베이스 의존성을 추가한다.
+
+`pom.xml`
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="
+             http://maven.apache.org/POM/4.0.0
+             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.4.13</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.example</groupId>
+    <artifactId>spring-batch-demo</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+
+    <properties>
+        <java.version>17</java.version>
+        <spring-batch.version>5.2.4</spring-batch.version>
+    </properties>
+
+    <dependencies>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-batch</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>
+```
+
+여기서는 Spring Boot와 Spring Batch의 버전을 명시했다.
+
+또한 별도의 MySQL 서버 없이 실행할 수 있도록 H2 데이터베이스를 사용한다.
+
+Spring Boot Starter Test도 추가했다.
+
+이를 통해 Job의 실행 결과와 Step 실행 개수를 검증하는 통합 테스트를 작성할 수 있다.
+
+---
+
+### application.yml 설정
+
+이번에는 애플리케이션 실행 시 `startNextJob`이 자동 실행되도록 설정한다.
+
+`application.yml`
+
+```yaml
+spring:
+  application:
+    name: spring-batch-demo
+
+  main:
+    web-application-type: none
+
+  datasource:
+    url: jdbc:h2:mem:batchdb;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+  batch:
+    job:
+      enabled: true
+      name: startNextJob
+
+    jdbc:
+      initialize-schema: embedded
+
+logging:
+  level:
+    org.springframework.batch: INFO
+    com.example.batch: INFO
+```
+
+여기서 중요한 설정은 다음과 같다.
+
+```yaml
+spring:
+  batch:
+    job:
+      name: startNextJob
+```
+
+Spring Boot는 등록된 Job 중 이름이 startNextJob인 Job을 실행 대상으로 선택한다.
+
+또한 다음 설정을 사용했다.
+
+```yaml
+spring:
+  batch:
+    jdbc:
+      initialize-schema: embedded
+```
+
+H2 인메모리 데이터베이스에서 Spring Batch의 메타데이터 테이블을 초기화하도록 구성했다.
+
+이 예제에서는 애플리케이션을 종료하면 인메모리 데이터베이스의 실행 이력이 유지되지 않는다.
+
+따라서 영속적인 재시작 동작까지 확인하려면 파일 기반 H2 또는 MySQL 등의 데이터베이스를 사용하는 것이 적절하다.
+
+---
+
+### Spring Boot 애플리케이션 구성
+
+먼저 애플리케이션 진입점을 작성한다.
+
+`BatchApplication.java`
+
+```java
+package com.example.batch;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class BatchApplication {
+
+    public static void main(String[] args) {
+
+        SpringApplication.run(
+                BatchApplication.class,
+                args
+        );
+    }
+}
+```
+
+이 코드는 일반적인 Spring Boot 애플리케이션의 시작점이다.
+
+Spring Boot는 애플리케이션을 시작하면서 등록된 Configuration과 Bean을 초기화한다.
+
+이후 Batch 자동 실행 설정이 활성화되어 있다면 JobLauncherApplicationRunner를 통해 Job을 실행한다.
+
+---
+
+### StartNextJobConfiguration 전체 코드
+
+이제 실제 Job과 Step을 구성한다.
+
+`StartNextJobConfiguration.java`
+
+```java
+package com.example.batch;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobExecutionListener;
+import org.springframework.batch.core.Step;
+import org.springframework.batch.core.StepExecution;
+
+import org.springframework.batch.core.job.builder.JobBuilder;
+import org.springframework.batch.core.job.builder.SimpleJobBuilder;
+
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.step.builder.StepBuilder;
+
+import org.springframework.batch.repeat.RepeatStatus;
+
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import org.springframework.transaction.PlatformTransactionManager;
+
+@Configuration
+public class StartNextJobConfiguration {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(
+                    StartNextJobConfiguration.class
+            );
+
+    @Bean
+    public Job startNextJob(
+            JobRepository jobRepository,
+            @Qualifier("startNextStep1") Step step1,
+            @Qualifier("startNextStep2") Step step2,
+            @Qualifier("startNextStep3") Step step3
+    ) {
+
+        JobBuilder jobBuilder =
+                new JobBuilder(
+                        "startNextJob",
+                        jobRepository
+                );
+
+        SimpleJobBuilder simpleJobBuilder =
+                jobBuilder.start(step1);
+
+        log.info(
+                "start() 반환 타입: {}",
+                simpleJobBuilder
+                        .getClass()
+                        .getSimpleName()
+        );
+
+        simpleJobBuilder
+                .next(step2)
+                .next(step3);
+
+        Job job = simpleJobBuilder
+                .listener(jobExecutionListener())
+                .build();
+
+        log.info(
+                "생성된 Job 구현체: {}",
+                job.getClass().getSimpleName()
+        );
+
+        log.info(
+                "Job 이름: {}",
+                job.getName()
+        );
+
+        return job;
+    }
+
+    @Bean
+    public Step startNextStep1(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+
+        return new StepBuilder(
+                "startNextStep1",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    log.info(
+                            "Step 1 실행: 정산 대상 조회"
+                    );
+
+                    log.info(
+                            "현재 Thread: {}",
+                            Thread.currentThread().getName()
+                    );
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+
+    @Bean
+    public Step startNextStep2(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+
+        return new StepBuilder(
+                "startNextStep2",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    StepExecution stepExecution =
+                            contribution.getStepExecution();
+
+                    String failStep =
+                            stepExecution
+                                    .getJobParameters()
+                                    .getString("failStep");
+
+                    log.info(
+                            "Step 2 실행: 정산 금액 계산"
+                    );
+
+                    if ("step2".equals(failStep)) {
+
+                        log.error(
+                                "Step 2 의도적인 예외 발생"
+                        );
+
+                        throw new IllegalStateException(
+                                "Step 2 실행 실패"
+                        );
+                    }
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+
+    @Bean
+    public Step startNextStep3(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+
+        return new StepBuilder(
+                "startNextStep3",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    log.info(
+                            "Step 3 실행: 정산 결과 저장"
+                    );
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+
+    @Bean
+    public JobExecutionListener jobExecutionListener() {
+
+        return new JobExecutionListener() {
+
+            @Override
+            public void beforeJob(JobExecution jobExecution) {
+
+                log.info(
+                        "Job 실행 시작: {}",
+                        jobExecution
+                                .getJobInstance()
+                                .getJobName()
+                );
+            }
+
+            @Override
+            public void afterJob(JobExecution jobExecution) {
+
+                log.info(
+                        "Job 실행 종료: {}",
+                        jobExecution.getStatus()
+                );
+
+                for (StepExecution stepExecution
+                        : jobExecution.getStepExecutions()) {
+
+                    log.info(
+                            "Step 결과: name={}, status={}",
+                            stepExecution.getStepName(),
+                            stepExecution.getStatus()
+                    );
+                }
+            }
+        };
+    }
+}
+```
+
+이 코드에서는 하나의 Job과 세 개의 Step을 생성했다.
+
+그리고 Job 생성 과정을 명확하게 확인할 수 있도록 JobBuilder와 SimpleJobBuilder를 분리해서 작성했다.
+
+실제 프로젝트에서는 다음과 같이 간단하게 작성해도 동일한 순차 실행 구조를 만들 수 있다.
+
+```java
+@Bean
+public Job startNextJob(
+        JobRepository jobRepository,
+        Step step1,
+        Step step2,
+        Step step3
+) {
+    return new JobBuilder("startNextJob", jobRepository)
+            .start(step1)
+            .next(step2)
+            .next(step3)
+            .build();
+}
+```
+
+다만 이번에는 내부 Builder의 타입을 확인하기 위해 객체를 나누어 작성했다.
+
+---
+
+### 코드 분석: start()가 반환하는 객체
+
+먼저 다음 코드를 살펴보자.
+
+```java
+JobBuilder jobBuilder =
+        new JobBuilder(
+                "startNextJob",
+                jobRepository
+        );
+```
+
+이 코드는 JobBuilder를 생성한다.
+
+이후 다음 메서드를 호출한다.
+
+```java
+SimpleJobBuilder simpleJobBuilder =
+        jobBuilder.start(step1);
+```
+
+여기서 `start()`는 SimpleJobBuilder를 반환한다.
+
+따라서 다음 코드를 실행하면
+
+```java
+simpleJobBuilder
+        .getClass()
+        .getSimpleName();
+```
+
+다음과 같은 결과를 확인할 수 있다.
+
+```text
+SimpleJobBuilder
+```
+
+이 결과가 의미하는 것은 무엇일까?
+
+현재는 JobBuilder가 아니라 SimpleJobBuilder를 이용해 Job을 구성하고 있다는 것이다.
+
+이후 `next()`를 호출한다.
+
+```java
+simpleJobBuilder
+        .next(step2)
+        .next(step3);
+```
+
+SimpleJobBuilder는 내부 Step 목록에 두 개의 Step을 추가한다.
+
+따라서 최종적으로 다음과 같은 목록을 가지게 된다.
+
+```text
+SimpleJobBuilder
+       │
+       └── steps
+              │
+              ├── startNextStep1
+              ├── startNextStep2
+              └── startNextStep3
+```
+
+마지막으로 `build()`를 호출한다.
+
+```java
+Job job = simpleJobBuilder.build();
+```
+
+그러면 SimpleJob이 생성된다.
+
+실제 클래스를 출력하면 다음과 같다.
+
+```text
+SimpleJob
+```
+
+따라서 `start(Step)`과 `next(Step)`으로 구성한 기본적인 순차 실행 Job의 구현체가 SimpleJob이라는 사실을 확인할 수 있다.
+
+---
+
+### 첫 번째 실행: 모든 Step이 성공하는 경우
+
+먼저 프로젝트를 빌드한다.
+
+```bash
+./mvnw clean package
+```
+
+빌드가 정상적으로 완료되면 다음과 같은 결과를 확인할 수 있다.
+
+```text
+BUILD SUCCESS
+```
+
+이제 Job을 실행해보자.
+
+```bash
+java -jar target/spring-batch-demo-0.0.1-SNAPSHOT.jar \
+  businessDate=2026-11-03 \
+  failStep=none
+```
+
+이 명령어는 두 개의 JobParameters를 전달한다.
+
+```text
+businessDate = 2026-11-03
+
+failStep = none
+```
+
+이번에는 failStep이 none이므로 Step 2에서 예외가 발생하지 않는다.
+
+따라서 세 개의 Step이 모두 실행된다.
+
+#### 실행 흐름
+
+```mermaid
+flowchart TD
+    A["startNextJob"]
+    B["startNextStep1"]
+    C["COMPLETED"]
+    D["startNextStep2"]
+    E["COMPLETED"]
+    F["startNextStep3"]
+    G["COMPLETED"]
+    H["Job COMPLETED"]
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+    F --> G
+    G --> H
+```
+
+#### 실행 결과
+
+정상적으로 실행되면 다음과 유사한 로그를 확인할 수 있다.
+
+```text
+start() 반환 타입: SimpleJobBuilder
+
+생성된 Job 구현체: SimpleJob
+
+Job 이름: startNextJob
+
+Job 실행 시작: startNextJob
+
+Step 1 실행: 정산 대상 조회
+
+Step 2 실행: 정산 금액 계산
+
+Step 3 실행: 정산 결과 저장
+
+Job 실행 종료: COMPLETED
+```
+
+여기서 가장 중요한 부분은 Step의 실행 순서다.
+
+```text
+Step 1
+
+Step 2
+
+Step 3
+```
+
+JobBuilder에서 설정한 순서와 동일하게 실행되었다.
+
+그리고 모든 Step이 정상적으로 완료되었으므로 Job의 최종 상태도 COMPLETED가 된다.
+
+각 Step의 실행 상태를 정리하면 다음과 같다.
+
+| Step           | BatchStatus |
+| -------------- | ----------- |
+| startNextStep1 | COMPLETED   |
+| startNextStep2 | COMPLETED   |
+| startNextStep3 | COMPLETED   |
+| Job            | COMPLETED   |
+
+이것이 start()와 next()로 구성한 SimpleJob의 기본 실행 방식이다.
+
+---
+
+### 두 번째 실행: 중간 Step에서 실패하는 경우
+
+이번에는 Step 2에서 의도적으로 예외를 발생시켜보자.
+
+다음 명령어를 실행한다.
+
+```bash
+java -jar target/spring-batch-demo-0.0.1-SNAPSHOT.jar \
+  businessDate=2026-11-04 \
+  failStep=step2
+```
+
+이번에는 다음 값을 전달했다.
+
+```text
+failStep = step2
+```
+
+따라서 Step 2에서 다음 코드가 실행된다.
+
+```java
+if ("step2".equals(failStep)) {
+
+    throw new IllegalStateException(
+            "Step 2 실행 실패"
+    );
+}
+```
+
+예외가 발생하면 Step 2는 FAILED 상태로 종료된다.
+
+SimpleJob은 해당 StepExecution의 상태를 확인한다.
+
+FAILED는 COMPLETED가 아니므로 다음 Step을 실행하지 않는다.
+
+#### 실행 흐름
+
+```mermaid
+flowchart TD
+    A["startNextJob"]
+    B["startNextStep1"]
+    C["COMPLETED"]
+    D["startNextStep2"]
+    E["예외 발생"]
+    F["FAILED"]
+    G["startNextStep3 실행되지 않음"]
+    H["Job FAILED"]
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+    F --> G
+    G --> H
+```
+
+#### 실행 결과
+
+다음과 유사한 로그를 확인할 수 있다.
+
+```text
+Job 실행 시작: startNextJob
+
+Step 1 실행: 정산 대상 조회
+
+Step 2 실행: 정산 금액 계산
+
+Step 2 의도적인 예외 발생
+
+java.lang.IllegalStateException:
+Step 2 실행 실패
+
+Job 실행 종료: FAILED
+```
+
+여기서 중요한 점은 Step 3의 실행 로그가 출력되지 않는다는 사실이다.
+
+```text
+Step 3 실행: 정산 결과 저장
+```
+
+이 로그는 나타나지 않는다.
+
+왜 그럴까?
+
+SimpleJob이 Step 2의 실행 상태를 확인한 뒤 실행을 중단했기 때문이다.
+
+따라서 최종 결과는 다음과 같다.
+
+| Step           | BatchStatus |
+| -------------- | ----------- |
+| startNextStep1 | COMPLETED   |
+| startNextStep2 | FAILED      |
+| startNextStep3 | 실행되지 않음     |
+| Job            | FAILED      |
+
+이 결과를 통해 **`next()`로 연결한 Step은 이전 Step이 정상적으로 완료된 경우에만 실행된다**는 것을 확인할 수 있다.
+
+---
+
+### JobExecution과 StepExecution으로 실행 결과 확인하기
+
+Spring Batch는 실제 실행 결과를 JobExecution과 StepExecution에 저장한다.
+
+JobExecution은 Job 전체의 실행 상태를 관리한다.
+
+StepExecution은 각 Step의 실행 상태를 관리한다.
+
+예를 들어 정상 실행에서는 다음과 같은 구조가 생성된다.
+
+```text
+JobExecution
+    │
+    ├── StepExecution 1
+    │       └── COMPLETED
+    │
+    ├── StepExecution 2
+    │       └── COMPLETED
+    │
+    └── StepExecution 3
+            └── COMPLETED
+```
+
+반면 실패한 실행에서는 다음과 같은 구조가 만들어진다.
+
+```text
+JobExecution
+    │
+    ├── StepExecution 1
+    │       └── COMPLETED
+    │
+    └── StepExecution 2
+            └── FAILED
+```
+
+Step 3은 실행되지 않았으므로 해당 JobExecution에 연결된 StepExecution이 생성되지 않는다.
+
+이를 데이터베이스에서 확인할 수도 있다.
+
+#### JobExecution 조회
+
+```sql
+SELECT
+    ji.JOB_NAME,
+    je.JOB_EXECUTION_ID,
+    je.STATUS,
+    je.EXIT_CODE
+
+FROM BATCH_JOB_INSTANCE ji
+
+JOIN BATCH_JOB_EXECUTION je
+    ON ji.JOB_INSTANCE_ID = je.JOB_INSTANCE_ID
+
+WHERE ji.JOB_NAME = 'startNextJob'
+
+ORDER BY je.JOB_EXECUTION_ID;
+```
+
+이 쿼리는 Job의 실행 이력을 조회한다.
+
+정상 실행과 실패 실행을 같은 영속성 데이터베이스에 저장했다면 다음과 같은 결과를 확인할 수 있다.
+
+| JOB_EXECUTION_ID | STATUS    | EXIT_CODE |
+| ---------------- | --------- | --------- |
+| 1                | COMPLETED | COMPLETED |
+| 2                | FAILED    | FAILED    |
+
+#### StepExecution 조회
+
+```sql
+SELECT
+    se.JOB_EXECUTION_ID,
+    se.STEP_NAME,
+    se.STATUS,
+    se.EXIT_CODE
+
+FROM BATCH_STEP_EXECUTION se
+
+JOIN BATCH_JOB_EXECUTION je
+    ON se.JOB_EXECUTION_ID = je.JOB_EXECUTION_ID
+
+JOIN BATCH_JOB_INSTANCE ji
+    ON je.JOB_INSTANCE_ID = ji.JOB_INSTANCE_ID
+
+WHERE ji.JOB_NAME = 'startNextJob'
+
+ORDER BY
+    se.JOB_EXECUTION_ID,
+    se.STEP_EXECUTION_ID;
+```
+
+이 쿼리는 각 Step의 실행 상태를 조회한다.
+
+정상 실행에서는 세 개의 StepExecution이 생성된다.
+
+반면 두 번째 Step에서 실패한 실행에서는 두 개의 StepExecution만 생성된다.
+
+이처럼 Spring Batch는 Job과 Step의 실행 이력을 구분해서 관리한다.
+
+---
+
+### start()와 next()의 실행 순서를 테스트 코드로 검증하기
+
+이번에는 실제 테스트 코드를 통해 실행 결과를 확인해보자.
+
+Spring Batch는 JobExecution을 통해 실행된 Step 목록을 조회할 수 있다.
+
+따라서 모든 Step이 실행되었는지, 실패한 Step 이후에 다른 Step이 실행되지 않았는지 검증할 수 있다.
+
+`StartNextJobTest.java`
+
+```java
+package com.example.batch;
+
+import java.util.Set;
+import java.util.stream.Collectors;
+
+import org.junit.jupiter.api.Test;
+
+import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobParameters;
+import org.springframework.batch.core.JobParametersBuilder;
+import org.springframework.batch.core.StepExecution;
+
+import org.springframework.batch.core.launch.JobLauncher;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+
+import org.springframework.boot.test.context.SpringBootTest;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+@SpringBootTest(
+        properties = "spring.batch.job.enabled=false"
+)
+class StartNextJobTest {
+
+    @Autowired
+    private JobLauncher jobLauncher;
+
+    @Autowired
+    @Qualifier("startNextJob")
+    private Job startNextJob;
+
+    @Test
+    void 모든_Step이_정상적으로_완료된다() throws Exception {
+
+        JobParameters parameters =
+                new JobParametersBuilder()
+                        .addString(
+                                "businessDate",
+                                "2026-11-03"
+                        )
+                        .addString(
+                                "failStep",
+                                "none"
+                        )
+                        .toJobParameters();
+
+        JobExecution execution =
+                jobLauncher.run(
+                        startNextJob,
+                        parameters
+                );
+
+        assertEquals(
+                BatchStatus.COMPLETED,
+                execution.getStatus()
+        );
+
+        assertEquals(
+                3,
+                execution.getStepExecutions().size()
+        );
+    }
+
+    @Test
+    void Step2가_실패하면_Step3은_실행되지_않는다() throws Exception {
+
+        JobParameters parameters =
+                new JobParametersBuilder()
+                        .addString(
+                                "businessDate",
+                                "2026-11-04"
+                        )
+                        .addString(
+                                "failStep",
+                                "step2"
+                        )
+                        .toJobParameters();
+
+        JobExecution execution =
+                jobLauncher.run(
+                        startNextJob,
+                        parameters
+                );
+
+        assertEquals(
+                BatchStatus.FAILED,
+                execution.getStatus()
+        );
+
+        assertEquals(
+                2,
+                execution.getStepExecutions().size()
+        );
+
+        Set<String> executedStepNames =
+                execution.getStepExecutions()
+                        .stream()
+                        .map(StepExecution::getStepName)
+                        .collect(Collectors.toSet());
+
+        assertTrue(
+                executedStepNames.contains("startNextStep1")
+        );
+
+        assertTrue(
+                executedStepNames.contains("startNextStep2")
+        );
+
+        assertFalse(
+                executedStepNames.contains("startNextStep3")
+        );
+    }
+}
+```
+
+이 테스트에서는 두 가지 상황을 검증한다.
+
+#### 첫 번째 테스트
+
+모든 Step이 정상적으로 완료되는지 확인한다.
+
+```java
+assertEquals(
+        BatchStatus.COMPLETED,
+        execution.getStatus()
+);
+```
+
+Job의 최종 상태가 COMPLETED인지 검증한다.
+
+그리고 다음 코드로 실행된 Step 개수를 확인한다.
+
+```java
+assertEquals(
+        3,
+        execution.getStepExecutions().size()
+);
+```
+
+총 세 개의 Step이 실행되어야 한다.
+
+#### 두 번째 테스트
+
+Step 2에서 실패했을 때 Step 3이 실행되지 않는지 확인한다.
+
+```java
+assertEquals(
+        BatchStatus.FAILED,
+        execution.getStatus()
+);
+```
+
+Job의 최종 상태는 FAILED여야 한다.
+
+그리고 실행된 Step은 두 개여야 한다.
+
+```java
+assertEquals(
+        2,
+        execution.getStepExecutions().size()
+);
+```
+
+마지막으로 Step 3의 실행 이력이 존재하지 않는지 확인한다.
+
+```java
+assertFalse(
+        executedStepNames.contains("startNextStep3")
+);
+```
+
+이를 통해 SimpleJob의 중단 조건을 실제 실행 결과로 검증할 수 있다.
+
+테스트는 다음 명령어로 실행할 수 있다.
+
+```bash
+./mvnw test
+```
+
+정상적으로 실행되면 테스트가 성공한다.
+
+```text
+Tests run: 2
+Failures: 0
+Errors: 0
+```
+
+실제 테스트 실행 건수는 프로젝트에 포함된 다른 테스트에 따라 달라질 수 있다.
+
+---
+
+### start(Step)과 start(Flow)의 차이
+
+`start()`는 매개변수의 타입에 따라 서로 다른 Builder를 반환한다.
+
+이 부분은 SimpleJob과 FlowJob을 구분하는 데 중요하다.
+
+Spring Batch의 JobBuilder는 여러 종류의 `start()` 메서드를 제공한다.
+
+대표적인 반환 타입은 다음과 같다.
+
+| API                          | 매개변수                | 반환 타입            | 실행 구조       |
+| ---------------------------- | ------------------- | ---------------- | ----------- |
+| `start(Step)`                | Step                | SimpleJobBuilder | Step 순차 실행  |
+| `start(Flow)`                | Flow                | JobFlowBuilder   | Flow 기반 실행  |
+| `start(JobExecutionDecider)` | JobExecutionDecider | JobFlowBuilder   | 조건 판단 기반 실행 |
+
+여기서 중요한 것은 다음 코드다.
+
+```java
+.start(step1)
+```
+
+전달하는 객체가 Step이므로 SimpleJobBuilder가 반환된다.
+
+반면 다음 코드는 다르다.
+
+```java
+.start(flow)
+```
+
+전달하는 객체가 Flow이므로 JobFlowBuilder가 반환된다.
+
+따라서 최종적으로 생성되는 Job 구현체도 달라질 수 있다.
+
+#### start(Step)을 사용하는 경우
+
+```java
+new JobBuilder("simpleJob", jobRepository)
+        .start(step1)
+        .next(step2)
+        .build();
+```
+
+이 코드는 기본적으로 SimpleJob을 생성한다.
+
+#### start(Flow)를 사용하는 경우
+
+```java
+new JobBuilder("flowJob", jobRepository)
+        .start(flow)
+        .next(step3)
+        .end()
+        .build();
+```
+
+이 코드는 Flow 기반 Job을 생성한다.
+
+최종 구현체는 FlowJob이다.
+
+두 방식의 가장 큰 차이는 실행 구조다.
+
+SimpleJob은 Step 목록을 기반으로 실행한다.
+
+FlowJob은 Flow의 상태 전이를 기반으로 실행한다.
+
+---
+
+### next(Step)과 next(JobExecutionDecider)의 차이
+
+`next()`도 매개변수의 타입에 따라 동작이 달라진다.
+
+SimpleJobBuilder는 다음 메서드를 제공한다.
+
+```java
+public SimpleJobBuilder next(Step step)
+```
+
+이 메서드는 후속 Step을 추가한다.
+
+따라서 SimpleJobBuilder를 계속 사용할 수 있다.
+
+반면 JobExecutionDecider를 전달하는 메서드도 존재한다.
+
+```java
+public JobFlowBuilder next(
+        JobExecutionDecider decider
+)
+```
+
+이 메서드는 JobFlowBuilder를 반환한다.
+
+즉, 다음과 같이 구분할 수 있다.
+
+| API                         | 반환 타입            | 역할                 |
+| --------------------------- | ---------------- | ------------------ |
+| `next(Step)`                | SimpleJobBuilder | 후속 Step 추가         |
+| `next(JobExecutionDecider)` | JobFlowBuilder   | 조건 판단을 포함한 Flow 구성 |
+
+JobExecutionDecider는 실행 조건에 따라 다음 경로를 결정하는 데 사용하는 컴포넌트다.
+
+따라서 단순한 Step 순차 실행이 아니라 조건부 실행이 필요해질 때 사용한다.
+
+#### start(Step) 이후에도 FlowJob이 만들어질 수 있다
+
+여기서 한 가지 더 알아야 할 부분이 있다.
+
+처음에 `start(Step)`을 호출했다고 해서 반드시 최종 Job이 SimpleJob이 되는 것은 아니다.
+
+예를 들어 다음 코드를 살펴보자.
+
+```java
+new JobBuilder("conditionalJob", jobRepository)
+        .start(step1)
+            .on("COMPLETED").to(step2)
+        .from(step1)
+            .on("FAILED").to(step3)
+        .end()
+        .build();
+```
+
+이 코드는 처음에 Step을 전달한다.
+
+하지만 이후 `on()`과 `from()`을 이용해 조건부 실행 흐름을 정의한다.
+
+따라서 최종적으로 FlowJob이 생성된다.
+
+그 이유는 SimpleJobBuilder가 Flow 관련 API를 호출하면서 내부 실행 구조를 Flow 기반으로 전환하기 때문이다.
+
+Spring Batch 5.2의 SimpleJobBuilder 구현에서도 조건부 전이를 구성하는 `on()`이 호출되면 Flow 기반 Builder를 생성하는 동작을 확인할 수 있다.
+
+따라서 다음과 같이 구분해야 한다.
+
+**`start(Step)`은 SimpleJobBuilder를 반환하지만, 이후 어떤 API를 사용하느냐에 따라 최종 Job 구현체가 달라질 수 있다.**
+
+---
+
+### start()와 next()는 동시에 Step을 실행할까?
+
+그렇지 않다.
+
+다음 코드를 살펴보자.
+
+```java
+new JobBuilder("batchJob", jobRepository)
+        .start(step1)
+        .next(step2)
+        .next(step3)
+        .build();
+```
+
+이 코드는 세 개의 Step을 순차적으로 실행하도록 구성한다.
+
+따라서 다음과 같은 병렬 실행 구조가 아니다.
+
+```text
+        ┌── Step 1
+Job ────┼── Step 2
+        └── Step 3
+```
+
+실제 구조는 다음과 같다.
+
+```text
+Job
+ │
+ ▼
+Step 1
+ │
+ ▼
+Step 2
+ │
+ ▼
+Step 3
+```
+
+SimpleJob은 Step 목록을 순회하며 이전 Step이 완료된 후 다음 Step을 실행한다.
+
+따라서 Job 수준에서 Step을 순차적으로 실행한다.
+
+다만 여기서 구분해야 할 부분이 있다.
+
+**Step 간 순차 실행과 Step 내부의 병렬 처리는 서로 다른 개념이다.**
+
+예를 들어 하나의 Step 내부에서 여러 스레드를 이용해 데이터를 처리하도록 구성할 수 있다.
+
+```text
+SimpleJob
+    │
+    ▼
+Step 1
+    │
+    ├── Worker Thread 1
+    ├── Worker Thread 2
+    └── Worker Thread 3
+    │
+    ▼
+Step 2
+```
+
+이 경우 Step 1 내부의 데이터 처리는 병렬로 수행될 수 있다.
+
+하지만 SimpleJob은 Step 1의 실행이 완료된 후 Step 2로 진행한다.
+
+따라서 SimpleJob이 순차 실행 구조라고 해서 Step 내부에서도 모든 작업을 반드시 단일 스레드로 처리해야 한다는 뜻은 아니다.
+
+---
+
+### start()와 next()는 하나의 트랜잭션으로 실행될까?
+
+이 부분은 실제 배치 시스템에서 중요하다.
+
+다음과 같은 Job이 있다고 생각해보자.
+
+```text
+Step 1 → Step 2 → Step 3
+```
+
+Step 1에서는 정산 대상 데이터를 저장한다.
+
+Step 2에서는 정산 금액을 계산한다.
+
+Step 3에서는 최종 정산 결과를 저장한다.
+
+그렇다면 Step 3에서 실패하면 Step 1과 Step 2의 데이터베이스 작업도 모두 롤백될까?
+
+**일반적으로 그렇지 않다.**
+
+`start()`와 `next()`는 Step의 실행 순서를 정의할 뿐, 모든 Step을 하나의 데이터베이스 트랜잭션으로 묶지 않는다.
+
+Tasklet 기반 Step에서는 각 Step이 자신의 트랜잭션 설정에 따라 작업을 수행한다.
+
+Chunk 기반 Step에서는 Chunk 단위로 트랜잭션이 관리될 수 있다.
+
+따라서 다음과 같은 상황이 발생할 수 있다.
+
+```text
+Step 1
+    │
+    ├── 데이터 저장
+    └── COMMIT
+    │
+    ▼
+Step 2
+    │
+    ├── 데이터 수정
+    └── COMMIT
+    │
+    ▼
+Step 3
+    │
+    ├── 데이터 저장 시도
+    └── ROLLBACK
+```
+
+Step 3의 트랜잭션이 롤백되더라도 이전 Step에서 이미 커밋된 데이터가 자동으로 롤백되는 것은 아니다.
+
+따라서 여러 Step이 하나의 업무 프로세스를 구성하는 경우에는 트랜잭션 경계를 고려해야 한다.
+
+특히 정산이나 결제 관련 시스템에서는 다음과 같은 설계가 중요하다.
+
+| 고려 사항      | 설명                            |
+| ---------- | ----------------------------- |
+| Step별 트랜잭션 | 각 Step의 커밋 시점 정의              |
+| 데이터 정합성    | 이전 Step이 저장한 데이터와 후속 Step의 관계 |
+| 재시작 정책     | 실패한 Step을 다시 실행할 때 처리 방식      |
+| 멱등성        | 동일한 데이터가 중복 처리되지 않도록 보장       |
+| 보상 처리      | 이전 작업을 취소해야 하는 상황의 처리 방식      |
+
+따라서 start()와 next()를 이용해 순서를 구성하는 것과 전체 비즈니스 트랜잭션의 정합성을 보장하는 것은 별도의 문제다.
+
+---
+
+### start()와 next()를 이용한 Job 재시작
+
+Spring Batch의 SimpleJob은 기본적으로 재시작을 지원한다.
+
+예를 들어 다음과 같은 실행 결과가 있다고 생각해보자.
+
+```text
+첫 번째 실행
+
+Step 1 → COMPLETED
+
+Step 2 → FAILED
+
+Step 3 → 실행되지 않음
+```
+
+이 Job을 같은 JobInstance로 재시작하면 Spring Batch는 이전 실행 이력을 확인한다.
+
+기본적인 설정에서는 이미 완료된 Step을 다시 실행하지 않는다.
+
+따라서 다음과 같은 실행 흐름이 만들어질 수 있다.
+
+```text
+두 번째 실행
+
+Step 1 → 실행 생략
+
+Step 2 → 재실행
+
+Step 3 → 실행
+```
+
+여기서 중요한 점은 Step을 건너뛰는 것이 `next()` API 자체의 기능은 아니라는 사실이다.
+
+Spring Batch의 재시작 기능은 JobRepository에 저장된 실행 이력과 StepExecution의 상태를 활용한다.
+
+SimpleJob은 등록된 Step 순서를 유지하면서 각 Step의 실행 가능 여부를 확인하는 구조와 협력한다.
+
+따라서 SimpleJob에서는 다음 두 가지 기능이 연결된다.
+
+첫 번째는 Step의 순차 실행이다.
+
+두 번째는 재시작 시 이전 실행 상태를 고려한 Step 실행이다.
+
+이러한 구조 덕분에 대량의 데이터를 처리하는 배치에서 이미 완료된 작업을 불필요하게 다시 실행하지 않도록 설계할 수 있다.
+
+단, 실제 재시작 동작은 Step의 설정과 실행 이력에 따라 달라질 수 있다.
+
+---
+
+### 실무에서 start()와 next()를 활용할 때 고려할 10가지 사항
+
+start()와 next()는 사용법이 단순하지만 실제 운영에서는 다양한 설계 요소와 연결된다.
+
+특히 여러 Step으로 구성된 Job에서는 실행 순서와 장애 복구 정책을 함께 고려하는 것이 중요하다.
+
+#### 1. Step의 실행 순서를 비즈니스 의존성에 맞게 구성한다
+
+Step의 순서는 임의로 정해서는 안 된다.
+
+예를 들어 정산 시스템에서는 다음과 같은 순서가 필요할 수 있다.
+
+```text
+정산 대상 확정
+      │
+      ▼
+정산 금액 계산
+      │
+      ▼
+정산 결과 검증
+      │
+      ▼
+정산 데이터 저장
+```
+
+이때 검증 작업이 완료되기 전에 정산 데이터를 저장하면 잘못된 데이터가 생성될 수 있다.
+
+따라서 Job의 실행 순서는 비즈니스 데이터의 의존 관계를 기준으로 설계해야 한다.
+
+#### 2. 하나의 Step에는 명확한 책임을 부여한다
+
+하나의 Step에서 여러 종류의 작업을 모두 수행하면 장애 원인을 구분하기 어렵다.
+
+예를 들어 정산 데이터 조회, 계산, 저장, 알림 전송을 모두 하나의 Step에서 처리한다고 생각해보자.
+
+이 경우 어느 작업에서 실패했는지 분석하기 어려울 수 있다.
+
+따라서 서로 다른 비즈니스 책임을 가진 작업은 별도의 Step으로 분리하는 것이 좋다.
+
+다만 Step을 지나치게 세분화하면 실행 이력과 설정의 복잡성이 증가할 수 있으므로 적절한 단위로 분리해야 한다.
+
+#### 3. Step 이름을 비즈니스 의미에 맞게 작성한다
+
+다음과 같은 Step 이름은 의미가 모호하다.
+
+```text
+step1
+
+step2
+
+step3
+```
+
+반면 다음과 같은 이름은 역할을 이해하기 쉽다.
+
+```text
+loadSettlementTargetsStep
+
+calculateSettlementAmountStep
+
+saveSettlementResultStep
+```
+
+Spring Batch는 Step 이름을 실행 메타데이터에 저장한다.
+
+따라서 Step 이름은 단순한 코드 식별자가 아니라 운영 환경에서 실행 이력을 확인하는 기준이 된다.
+
+특히 재시작 기능을 사용하는 경우에는 Step 이름을 안정적으로 유지하는 것이 중요하다.
+
+#### 4. 실패한 Step 이후에는 불필요한 작업이 실행되지 않도록 한다
+
+SimpleJob은 Step의 BatchStatus가 COMPLETED가 아닌 경우 후속 실행을 중단한다.
+
+따라서 실패를 정확하게 나타내는 것이 중요하다.
+
+예를 들어 정산 금액 계산 과정에서 예외가 발생했는데 이를 모두 무시하고 정상 완료로 처리한다면 후속 Step이 실행될 수 있다.
+
+따라서 예외 처리 시에는 실제 비즈니스 작업의 성공 여부와 StepExecution의 상태가 일치하도록 설계해야 한다.
+
+#### 5. Step 사이의 데이터 전달 방식도 함께 설계한다
+
+Step 1의 실행 결과를 Step 2에서 사용해야 하는 경우가 있다.
+
+예를 들어 Step 1에서 처리 대상 건수를 계산했다고 생각해보자.
+
+```text
+Step 1
+    │
+    └── 대상 데이터 10,000건 확인
+```
+
+Step 2에서는 이 건수를 이용해 작업을 수행해야 할 수 있다.
+
+이 경우 JobExecutionContext를 이용해 필요한 데이터를 공유할 수 있다.
+
+다만 대용량 데이터 전체를 ExecutionContext에 저장하기보다는 식별자나 처리 결과 요약을 저장하는 편이 적절하다.
+
+#### 6. 각 Step의 트랜잭션 경계를 명확하게 정의한다
+
+start()와 next()는 모든 Step을 하나의 트랜잭션으로 묶지 않는다.
+
+따라서 Step 3에서 실패하더라도 Step 1과 Step 2에서 커밋한 데이터가 남아 있을 수 있다.
+
+이러한 상황에서는 재시작 시 기존 데이터를 어떻게 처리할지 결정해야 한다.
+
+특히 결제나 정산처럼 데이터 정합성이 중요한 업무에서는 Step별 트랜잭션 정책을 명확하게 구성해야 한다.
+
+#### 7. 재시작을 고려해 Step을 멱등하게 설계한다
+
+배치가 실패하면 일부 Step을 다시 실행할 수 있다.
+
+이때 동일한 데이터가 중복 처리되지 않도록 설계하는 것이 중요하다.
+
+예를 들어 정산 결과 저장 Step이 재실행될 때 같은 정산 데이터가 두 번 생성되어서는 안 된다.
+
+따라서 비즈니스 키 기반의 중복 검증이나 유니크 제약조건 등을 고려할 수 있다.
+
+Spring Batch의 재시작 기능과 비즈니스 멱등성은 서로 다른 문제라는 점을 기억해야 한다.
+
+#### 8. 조건부 실행이 필요하면 FlowJob을 고려한다
+
+start()와 next()로 구성한 SimpleJob은 기본적으로 순차 실행을 담당한다.
+
+그런데 다음과 같은 요구사항이 있다고 생각해보자.
+
+```text
+데이터 검증
+    │
+    ├── 성공 → 정산 처리
+    │
+    └── 실패 → 오류 데이터 저장
+```
+
+이 경우 단순한 순차 실행만으로는 요구사항을 표현하기 어렵다.
+
+따라서 `on()`, `from()` 등의 API를 이용한 Flow 기반 실행을 고려할 수 있다.
+
+중요한 것은 복잡한 조건부 분기를 SimpleJob의 Step 내부에 모두 구현하기보다 실행 구조 자체를 명확하게 정의하는 것이다.
+
+#### 9. Job 생성 시점과 실행 시점을 구분한다
+
+start()와 next()는 Job 생성 과정에서 호출된다.
+
+반면 실제 Step 실행은 JobLauncher가 Job을 실행할 때 발생한다.
+
+따라서 Spring Bean 초기화 과정에서 실행해야 할 비즈니스 로직을 수행하도록 구성하는 것은 피하는 것이 좋다.
+
+Job 설정은 실행 구조를 정의하는 데 집중하고 실제 처리는 Tasklet 또는 Reader, Processor, Writer 등에서 수행하도록 분리해야 한다.
+
+#### 10. 운영 중 Step 순서를 변경할 때 기존 실행 이력을 검토한다
+
+실제 서비스에서는 배치 Job의 실행 구조가 변경될 수 있다.
+
+예를 들어 기존 Job이 다음과 같다고 생각해보자.
+
+```text
+Step 1 → Step 2 → Step 3
+```
+
+그런데 새로운 요구사항에 따라 다음과 같이 변경되었다.
+
+```text
+Step 1 → Step 2 → Step 4 → Step 3
+```
+
+이 경우 기존에 실패한 JobInstance가 존재한다면 새로운 구조로 재시작했을 때 예상하지 못한 결과가 발생할 수 있다.
+
+특히 이미 완료된 Step과 새롭게 추가된 Step의 관계를 확인해야 한다.
+
+따라서 운영 중인 배치의 Step 구조를 변경할 때는 기존 JobInstance의 실행 이력과 재시작 정책을 함께 검토하는 것이 좋다.
+
+---
+
+### start()와 next()에서 자주 혼동하는 부분
+
+두 API를 사용할 때는 다음 개념을 구분해야 한다.
+
+| 혼동하기 쉬운 내용                             | 정확한 이해                                        |
+| -------------------------------------- | --------------------------------------------- |
+| start()는 Step을 즉시 실행한다                 | start()는 최초 Step을 등록한다                        |
+| next()는 다음 Step을 즉시 실행한다               | next()는 후속 Step을 등록한다                         |
+| start()와 next()를 호출하면 Job이 완료된다        | 실제 실행은 JobLauncher가 시작한다                      |
+| start(Step)은 무조건 SimpleJob을 생성한다       | 이후 Flow API를 사용하면 FlowJob으로 전환될 수 있다          |
+| next()는 모든 종류의 인자에 대해 같은 Builder를 반환한다 | 매개변수 타입에 따라 반환 Builder가 달라진다                  |
+| 모든 Step이 항상 실행된다                       | 이전 Step이 COMPLETED가 아니면 후속 실행을 중단한다           |
+| 여러 Step은 하나의 트랜잭션으로 실행된다               | 일반적으로 Step 또는 Chunk 단위의 트랜잭션이 사용된다            |
+| Step을 건너뛰는 것은 next()의 기능이다             | 재시작 시 실행 이력과 Step 설정에 따라 결정된다                 |
+| SimpleJob은 병렬 처리를 전혀 사용할 수 없다          | Step 간 실행은 순차적이지만 Step 내부 병렬 처리는 별도로 구성할 수 있다 |
+| Step 이름은 언제든지 변경해도 된다                  | 기존 실행 이력과 재시작에 영향을 줄 수 있다                     |
+
+특히 중요한 부분은 다음 두 가지다.
+
+**첫째, start()와 next()는 실행 순서를 정의하는 설정 API다.**
+
+**둘째, 실제 실행 순서를 처리하는 주체는 SimpleJob이다.**
+
+이 두 개념을 구분하면 Spring Batch의 Job 생성 과정과 실행 과정을 정확하게 이해할 수 있다.
+
+---
+
+### start()와 next()의 전체 동작 구조
+
+지금까지 살펴본 내용을 하나의 구조로 정리해보자.
+
+```mermaid
+flowchart TD
+    A["Spring Configuration"]
+    B["JobBuilder"]
+    C["start(step1)"]
+    D["SimpleJobBuilder"]
+    E["next(step2)"]
+    F["next(step3)"]
+    G["Step List"]
+    H["build()"]
+    I["SimpleJob"]
+    J["JobLauncher"]
+    K["JobExecution"]
+    L["SimpleJob.doExecute()"]
+    M["Step 1"]
+    N["Step 2"]
+    O["Step 3"]
+    P["JobRepository"]
+    Q["Metadata Database"]
+
+    A --> B
+    B --> C
+    C --> D
+
+    D --> E
+    E --> F
+    F --> G
+
+    G --> H
+    H --> I
+
+    J --> K
+    K -->|"execute()"| I
+
+    I --> L
+    L --> M
+    M -->|"COMPLETED"| N
+    N -->|"COMPLETED"| O
+
+    O -->|"실행 결과 반영"| K
+    K --> P
+    P --> Q
+```
+
+이 구조를 두 부분으로 나누어 이해할 수 있다.
+
+#### Job 생성 과정
+
+```text
+JobBuilder
+    │
+    ▼
+start(step1)
+    │
+    ▼
+SimpleJobBuilder
+    │
+    ▼
+next(step2)
+    │
+    ▼
+next(step3)
+    │
+    ▼
+build()
+    │
+    ▼
+SimpleJob
+```
+
+이 단계에서는 Job의 실행 구조를 정의한다.
+
+아직 실제 비즈니스 작업은 수행되지 않는다.
+
+#### Job 실행 과정
+
+```text
+JobLauncher
+    │
+    ▼
+JobExecution 생성
+    │
+    ▼
+SimpleJob.execute()
+    │
+    ▼
+SimpleJob.doExecute()
+    │
+    ├── Step 1 실행
+    │
+    ├── Step 2 실행
+    │
+    └── Step 3 실행
+    │
+    ▼
+JobExecution 상태 갱신
+    │
+    ▼
+JobRepository 저장
+```
+
+이 단계에서는 앞에서 구성한 Step들이 실제로 실행된다.
+
+SimpleJob은 Step 목록을 순서대로 순회하고, 각 Step의 상태를 확인한 뒤 다음 Step의 실행 여부를 결정한다.
+
+따라서 Job 설정과 실행 과정이 서로 연결되지만 각각의 책임은 분리되어 있다.
+
+---
+
+### 정리
+
+Spring Batch에서 `start()`와 `next()`는 Job의 Step 실행 순서를 정의하기 위한 기본적인 API다.
+
+`start()`는 최초 실행할 Step을 지정한다.
+
+`next()`는 이후 실행할 Step을 순차적으로 추가한다.
+
+가장 기본적인 사용 방법은 다음과 같다.
+
+```java
+new JobBuilder("batchJob", jobRepository)
+        .start(step1)
+        .next(step2)
+        .next(step3)
+        .build();
+```
+
+이 코드에서는 세 개의 Step이 등록된다.
+
+실제 실행 순서는 다음과 같다.
+
+```text
+Step 1 → Step 2 → Step 3
+```
+
+여기서 중요한 점은 API가 호출되는 과정에서 어떤 객체들이 생성되는지 이해하는 것이다.
+
+`JobBuilder`의 `start(Step)`을 호출하면 SimpleJobBuilder가 생성된다.
+
+SimpleJobBuilder는 내부적으로 Step List를 관리한다.
+
+이후 `next(Step)`이 호출될 때마다 해당 List에 Step을 추가한다.
+
+그리고 `build()`를 호출하면 설정된 Step 목록을 가진 SimpleJob 객체가 생성된다.
+
+이 과정에서 생성되는 주요 객체를 정리하면 다음과 같다.
+
+| 단계 | 객체               | 역할               |
+| -- | ---------------- | ---------------- |
+| 1  | JobBuilder       | Job 생성 시작        |
+| 2  | SimpleJobBuilder | Step 등록 및 설정 관리  |
+| 3  | List<Step>       | 실행할 Step 목록 관리   |
+| 4  | SimpleJob        | Step의 순차 실행 담당   |
+| 5  | JobLauncher      | Job 실행 시작        |
+| 6  | JobExecution     | Job 실행 상태 관리     |
+| 7  | StepExecution    | 개별 Step 실행 상태 관리 |
+
+이후 JobLauncher가 Job을 실행하면 SimpleJob의 `doExecute()`가 호출된다.
+
+SimpleJob은 내부에 저장된 Step 목록을 순회하면서 각 Step을 실행한다.
+
+그리고 StepExecution의 BatchStatus를 확인한다.
+
+이전 Step이 COMPLETED라면 다음 Step을 실행한다.
+
+반면 COMPLETED가 아닌 상태라면 후속 Step을 실행하지 않고 Job의 실행을 마무리한다.
+
+따라서 다음과 같은 실행 결과가 발생할 수 있다.
+
+**정상 실행**
+
+```text
+Step 1 → COMPLETED
+
+Step 2 → COMPLETED
+
+Step 3 → COMPLETED
+
+Job → COMPLETED
+```
+
+**실패 실행**
+
+```text
+Step 1 → COMPLETED
+
+Step 2 → FAILED
+
+Step 3 → 실행되지 않음
+
+Job → FAILED
+```
+
+또한 `start()`와 `next()`는 매개변수 타입에 따라 반환하는 Builder가 달라질 수 있다.
+
+대표적으로 `start(Step)`과 `next(Step)`은 SimpleJobBuilder를 사용한다.
+
+반면 Flow나 JobExecutionDecider를 이용하면 Flow 기반 Builder로 이어질 수 있다.
+
+따라서 어떤 매개변수를 전달하고 이후 어떤 API를 사용하는지에 따라 최종적으로 SimpleJob 또는 FlowJob이 생성된다.
+
+마지막으로 실무에서는 Step의 실행 순서만 고려해서는 안 된다.
+
+각 Step의 트랜잭션 경계와 데이터 정합성, 실패 시 재시작 전략, 멱등성 등을 함께 설계해야 한다.
+
+특히 `start()`와 `next()`로 연결된 여러 Step은 일반적으로 하나의 트랜잭션으로 묶이지 않는다.
+
+따라서 이전 Step에서 커밋한 데이터가 후속 Step의 실패로 자동 롤백되지 않는다는 점을 이해해야 한다.
+
+이러한 내부 구조와 실행 특성을 이해하면 단순히 JobBuilder API를 작성하는 수준을 넘어 Spring Batch가 Step의 실행 흐름을 어떻게 구성하고 제어하는지 정확하게 파악할 수 있다.
+
+결국 **start()와 next()는 SimpleJob의 실행 순서를 정의하는 핵심 API이며, SimpleJobBuilder가 이 설정을 Step 목록으로 구성하고 SimpleJob이 실제 실행 과정에서 해당 순서를 처리하는 구조**다.
+
+#### 한 줄 요약
+
+> Spring Batch의 `start(Step)`은 최초 실행할 Step을 지정하면서 `SimpleJobBuilder`를 생성하고, `next(Step)`은 이후 실행할 Step을 순차적으로 추가한다. `build()`를 호출하면 등록된 Step 목록을 가진 `SimpleJob`이 생성된다. 실제 실행 시에는 `SimpleJob.doExecute()`가 Step 목록을 순서대로 실행하며, 이전 Step이 `COMPLETED` 상태로 종료된 경우에만 다음 Step을 실행한다.
+
+## SimpleJob - validator()
+
+### Spring Batch validator() API 이해: JobParameters 검증과 DefaultJobParametersValidator 및 사용자 정의 검증 구현
+
+Spring Batch에서 Job은 하나의 배치 작업을 정의하는 최상위 도메인 객체다.
+
+Job을 실행할 때는 실행할 작업뿐 아니라 해당 작업을 수행하는 데 필요한 입력값도 전달할 수 있다.
+
+이러한 입력값을 관리하는 객체가 `JobParameters`다.
+
+예를 들어 다음과 같은 정산 Job이 있다고 생각해보자.
+
+```text
+dailySettlementJob
+       │
+       ├── Step 1. 정산 대상 조회
+       │
+       ├── Step 2. 정산 금액 계산
+       │
+       └── Step 3. 정산 결과 저장
+```
+
+이 Job을 실행하기 위해서는 정산 기준일과 처리 대상에 대한 정보가 필요할 수 있다.
+
+```text
+Job Name = dailySettlementJob
+
+JobParameters
+    ├── businessDate = 2026-11-03
+    ├── merchantId = 1001
+    └── retryCount = 3
+```
+
+여기서 `businessDate`는 정산 기준일이다.
+
+`merchantId`는 정산 대상 가맹점을 식별한다.
+
+`retryCount`는 특정 작업에서 사용할 재시도 횟수를 나타낼 수 있다.
+
+그런데 실행 요청에 다음과 같은 값이 전달되었다면 어떻게 될까?
+
+```text
+JobParameters
+    ├── merchantId = 1001
+    └── retryCount = 3
+```
+
+필수 파라미터인 `businessDate`가 존재하지 않는다.
+
+이 상태에서 Job을 실행하면 정산 기준일을 조회하는 과정에서 오류가 발생하거나, 의도하지 않은 데이터를 처리할 수 있다.
+
+또한 다음과 같은 입력값도 문제가 될 수 있다.
+
+```text
+JobParameters
+    ├── businessDate = invalid-date
+    ├── merchantId = -1
+    └── retryCount = -10
+```
+
+파라미터의 키는 존재하지만 값이 올바르지 않다.
+
+따라서 배치 작업을 실행하기 전에 입력값이 유효한지 확인하는 과정이 필요하다.
+
+Spring Batch에서는 이러한 요구사항을 처리하기 위해 **`JobParametersValidator` 인터페이스와 `validator()` API**를 제공한다.
+
+대표적인 사용 방법은 다음과 같다.
+
+```java
+@Bean
+public Job settlementJob(
+        JobRepository jobRepository,
+        Step settlementStep,
+        JobParametersValidator jobParametersValidator
+) {
+    return new JobBuilder(
+            "settlementJob",
+            jobRepository
+    )
+            .validator(jobParametersValidator)
+            .start(settlementStep)
+            .build();
+}
+```
+
+여기서 중요한 부분은 다음 코드다.
+
+```java
+.validator(jobParametersValidator)
+```
+
+이 API는 Job 실행 시 전달되는 JobParameters를 검증하기 위한 Validator를 등록한다.
+
+이후 Job이 실행되면 Spring Batch는 설정된 Validator를 이용해 파라미터를 검증한다.
+
+검증에 성공하면 Job 실행이 진행된다.
+
+반면 검증에 실패하면 `JobParametersInvalidException`이 발생하며 정상적인 Step 실행으로 진행하지 않는다.
+
+이번에는 Validator API의 기본 개념과 내부 구조를 살펴보고, Spring Batch가 제공하는 기본 Validator와 사용자 정의 Validator를 비교한 뒤 실제 실행 과정을 확인해보자.
+
+**개발 환경**
+
+| 구분           | 기술                     |
+| ------------ | ---------------------- |
+| Java         | Java 17                |
+| Spring Boot  | 3.4.13                 |
+| Spring Batch | 5.2.4                  |
+| Build Tool   | Maven                  |
+| Database     | H2                     |
+| Job 구성       | SimpleJob              |
+| 파라미터 검증      | JobParametersValidator |
+
+---
+
+### JobParametersValidator란?
+
+`JobParametersValidator`는 Job 실행에 필요한 JobParameters의 유효성을 검사하기 위한 인터페이스다.
+
+Spring Batch는 Job을 실행할 때 JobParameters를 전달받는다.
+
+JobParameters는 다음과 같은 키와 값으로 구성된다.
+
+```text
+JobParameters
+       │
+       ├── name = user1
+       │
+       ├── date = 2026-11-03
+       │
+       └── count = 10
+```
+
+각 파라미터는 이름과 값뿐 아니라 값의 타입, JobInstance 식별 여부 등의 정보도 가지고 있다.
+
+Validator는 이러한 데이터를 검사해 Job 실행에 적합한 입력인지 판단한다.
+
+예를 들어 다음과 같은 조건을 정의할 수 있다.
+
+| 검증 조건         | 설명                               |
+| ------------- | -------------------------------- |
+| 필수 파라미터 존재 여부 | name이 반드시 존재해야 한다                |
+| 값의 유효성        | name이 빈 문자열이어서는 안 된다             |
+| 날짜 형식         | date가 올바른 날짜여야 한다                |
+| 숫자 범위         | count는 0보다 커야 한다                 |
+| 파라미터 간 관계     | 시작일이 종료일보다 늦어서는 안 된다             |
+| 허용값 제한        | status는 ACTIVE 또는 INACTIVE만 가능하다 |
+
+이러한 조건을 검증하는 컴포넌트가 JobParametersValidator다.
+
+Spring Batch에서는 Validator를 두 가지 방식으로 사용할 수 있다.
+
+첫 번째는 Spring Batch가 제공하는 기본 구현체를 사용하는 방식이다.
+
+두 번째는 JobParametersValidator 인터페이스를 직접 구현하는 방식이다.
+
+| 구분           | 기본 Validator                  | 사용자 정의 Validator |
+| ------------ | ----------------------------- | ---------------- |
+| 구현체          | DefaultJobParametersValidator | 직접 구현            |
+| 필수 키 검증      | 지원                            | 지원               |
+| 선택 키 검증      | 지원                            | 지원               |
+| 값의 형식 검증     | 직접 지원하지 않음                    | 구현 가능            |
+| 숫자 범위 검증     | 직접 지원하지 않음                    | 구현 가능            |
+| 파라미터 간 관계 검증 | 직접 지원하지 않음                    | 구현 가능            |
+| 적합한 상황       | 단순한 키 존재 여부 확인                | 복잡한 비즈니스 제약조건 확인 |
+
+중요한 것은 모든 검증을 직접 구현할 필요는 없다는 점이다.
+
+단순히 필수 파라미터가 전달되었는지만 확인하면 된다면 기본 구현체를 사용해도 충분하다.
+
+반면 날짜 형식이나 숫자 범위처럼 실제 값을 검사해야 한다면 사용자 정의 Validator가 필요하다.
+
+---
+
+### JobParametersValidator의 인터페이스 구조
+
+Spring Batch 5.2.4에서 JobParametersValidator는 다음 패키지에 존재한다.
+
+```java
+org.springframework.batch.core.JobParametersValidator
+```
+
+핵심 구조는 다음과 같다.
+
+```java
+@FunctionalInterface
+public interface JobParametersValidator {
+
+    void validate(
+            JobParameters parameters
+    ) throws JobParametersInvalidException;
+}
+```
+
+핵심 메서드는 하나다.
+
+```java
+void validate(JobParameters parameters);
+```
+
+이 메서드는 검증할 JobParameters를 전달받는다.
+
+그리고 전달된 파라미터가 올바른지 확인한다.
+
+여기서 중요한 특징이 있다.
+
+**validate()는 boolean 값을 반환하지 않는다.**
+
+검증에 성공하면 정상적으로 메서드를 종료한다.
+
+반면 검증에 실패하면 예외를 발생시킨다.
+
+예를 들어 다음과 같은 구조다.
+
+```java
+@Override
+public void validate(
+        JobParameters parameters
+) throws JobParametersInvalidException {
+
+    String name = parameters.getString("name");
+
+    if (name == null) {
+        throw new JobParametersInvalidException(
+                "name 파라미터가 존재하지 않습니다."
+        );
+    }
+}
+```
+
+이 코드에서는 name 파라미터가 존재하는지 확인한다.
+
+name이 null이라면 JobParametersInvalidException을 발생시킨다.
+
+반면 name이 존재한다면 아무런 예외 없이 메서드가 종료된다.
+
+따라서 호출하는 쪽에서는 예외 발생 여부로 검증 결과를 판단한다.
+
+#### validate()의 동작 구조
+
+```mermaid
+flowchart TD
+    A["Job 실행 요청"]
+    B["JobParameters 전달"]
+    C["JobParametersValidator"]
+    D["validate() 호출"]
+    E{"파라미터 유효성 검사"}
+    F["검증 성공"]
+    G["Job 실행 진행"]
+    H["JobParametersInvalidException"]
+    I["Job 실행 거부"]
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+
+    E -->|유효함| F
+    F --> G
+
+    E -->|유효하지 않음| H
+    H --> I
+```
+
+이 구조에서 Validator는 실제 비즈니스 데이터를 처리하지 않는다.
+
+Job이 실행되기 전에 입력값이 올바른지 확인하는 역할을 담당한다.
+
+---
+
+### validator() API의 역할
+
+JobParametersValidator를 구현했다고 해서 자동으로 특정 Job에 적용되는 것은 아니다.
+
+Job에서 사용할 Validator를 등록해야 한다.
+
+이때 사용하는 API가 `validator()`다.
+
+다음 코드를 살펴보자.
+
+```java
+new JobBuilder("batchJob", jobRepository)
+        .validator(jobParametersValidator)
+        .start(step1)
+        .next(step2)
+        .build();
+```
+
+여기서 다음 코드가 핵심이다.
+
+```java
+.validator(jobParametersValidator)
+```
+
+이 API는 JobParametersValidator 타입의 객체를 전달받는다.
+
+이후 해당 객체가 Job의 공통 설정에 저장된다.
+
+그리고 최종적으로 생성되는 Job에 적용된다.
+
+개념적인 흐름은 다음과 같다.
+
+```text
+JobBuilder
+    │
+    ▼
+validator(jobParametersValidator)
+    │
+    ▼
+JobBuilderHelper
+    │
+    ▼
+CommonJobProperties
+    │
+    ▼
+SimpleJobBuilder
+    │
+    ▼
+build()
+    │
+    ▼
+SimpleJob
+    │
+    ▼
+AbstractJob
+    │
+    └── jobParametersValidator
+```
+
+이 구조를 조금 더 자세히 살펴보자.
+
+---
+
+### validator()가 SimpleJob에 적용되는 과정
+
+Spring Batch에서 JobBuilder는 JobBuilderHelper를 상속한다.
+
+JobBuilderHelper는 Job 생성에 필요한 공통 설정을 관리한다.
+
+대표적인 설정은 다음과 같다.
+
+```text
+JobBuilderHelper
+       │
+       └── CommonJobProperties
+               │
+               ├── Job 이름
+               ├── JobRepository
+               ├── JobParametersValidator
+               ├── JobParametersIncrementer
+               ├── JobExecutionListener
+               └── 재시작 설정
+```
+
+여기서 validator()를 호출하면 전달받은 Validator가 공통 설정에 등록된다.
+
+이후 SimpleJobBuilder의 build()가 호출되면 실제 SimpleJob이 생성된다.
+
+```java
+Job job = new JobBuilder(
+        "batchJob",
+        jobRepository
+)
+        .validator(jobParametersValidator)
+        .start(step1)
+        .build();
+```
+
+이 과정에서 JobBuilderHelper에 저장된 공통 설정이 SimpleJob에 적용된다.
+
+SimpleJob은 AbstractJob을 상속한다.
+
+그리고 AbstractJob은 다음과 같은 속성을 가지고 있다.
+
+```java
+private JobParametersValidator jobParametersValidator;
+```
+
+실제 AbstractJob에는 기본 Validator가 초기화되어 있으며, Builder에서 별도의 Validator를 등록하면 해당 객체로 교체된다.
+
+개념적으로 다음과 같다.
+
+```java
+job.setJobParametersValidator(
+        jobParametersValidator
+);
+```
+
+결과적으로 Job이 실행될 때 AbstractJob은 등록된 Validator를 사용할 수 있게 된다.
+
+```mermaid
+sequenceDiagram
+    participant Config as JobConfiguration
+    participant Builder as JobBuilder
+    participant Helper as JobBuilderHelper
+    participant SimpleBuilder as SimpleJobBuilder
+    participant Job as SimpleJob
+
+    Config->>Builder: new JobBuilder()
+    Config->>Builder: validator(customValidator)
+
+    Builder->>Helper: Validator 설정 저장
+
+    Config->>Builder: start(step1)
+    Builder->>SimpleBuilder: SimpleJobBuilder 생성
+
+    Config->>SimpleBuilder: build()
+
+    SimpleBuilder->>Job: SimpleJob 생성
+    SimpleBuilder->>Job: setJobParametersValidator()
+
+    Job-->>Config: Job 반환
+```
+
+여기서 중요한 것은 **Validator 등록 시점과 검증 실행 시점이 서로 다르다는 사실**이다.
+
+validator() API를 호출하는 시점에는 실제 파라미터 검증이 수행되지 않는다.
+
+이 단계에서는 사용할 Validator 객체를 등록한다.
+
+실제 검증은 Job 실행 요청이 들어왔을 때 수행된다.
+
+---
+
+### DefaultJobParametersValidator란?
+
+Spring Batch는 JobParametersValidator의 기본 구현체로 `DefaultJobParametersValidator`를 제공한다.
+
+이 클래스는 JobParameters에 필수 키가 존재하는지 확인하는 기능을 제공한다.
+
+Spring Batch 5.2.4에서는 다음 패키지에 존재한다.
+
+```java
+org.springframework.batch.core.job.DefaultJobParametersValidator
+```
+
+DefaultJobParametersValidator는 크게 두 가지 설정을 가지고 있다.
+
+첫 번째는 `requiredKeys`다.
+
+두 번째는 `optionalKeys`다.
+
+```text
+DefaultJobParametersValidator
+       │
+       ├── requiredKeys
+       │      ├── name
+       │      └── date
+       │
+       └── optionalKeys
+              └── count
+```
+
+각 속성의 의미는 다음과 같다.
+
+| 속성           | 역할                     |
+| ------------ | ---------------------- |
+| requiredKeys | Job 실행에 반드시 필요한 파라미터 키 |
+| optionalKeys | 전달해도 되고 생략해도 되는 파라미터 키 |
+
+예를 들어 다음과 같이 설정할 수 있다.
+
+```java
+DefaultJobParametersValidator validator =
+        new DefaultJobParametersValidator(
+                new String[]{"name", "date"},
+                new String[]{"count"}
+        );
+```
+
+이 코드에서는 name과 date를 필수 키로 지정했다.
+
+반면 count는 선택 키로 지정했다.
+
+따라서 다음과 같은 입력값을 검증할 수 있다.
+
+```text
+name = user1
+
+date = 2026-11-03
+
+count = 10
+```
+
+여기서는 필수 키가 모두 존재한다.
+
+따라서 검증에 성공한다.
+
+반면 다음과 같은 입력값은 어떨까?
+
+```text
+name = user1
+
+count = 10
+```
+
+필수 키 중 하나인 date가 존재하지 않는다.
+
+따라서 검증에 실패한다.
+
+이러한 방식으로 DefaultJobParametersValidator는 JobParameters의 키 존재 여부를 검사한다.
+
+---
+
+### DefaultJobParametersValidator의 내부 구조
+
+DefaultJobParametersValidator는 다음과 같은 주요 속성을 가지고 있다.
+
+```java
+private Collection<String> requiredKeys;
+
+private Collection<String> optionalKeys;
+```
+
+requiredKeys는 필수 키 목록을 관리한다.
+
+optionalKeys는 선택 키 목록을 관리한다.
+
+생성자는 다음과 같은 형태로 제공된다.
+
+```java
+public DefaultJobParametersValidator(
+        String[] requiredKeys,
+        String[] optionalKeys
+)
+```
+
+따라서 다음과 같이 사용할 수 있다.
+
+```java
+new DefaultJobParametersValidator(
+        new String[]{"name", "date"},
+        new String[]{"count"}
+);
+```
+
+전달받은 배열은 내부에서 Set 기반 컬렉션으로 관리된다.
+
+이렇게 관리하면 특정 키가 필수 키 또는 선택 키에 포함되어 있는지 확인할 수 있다.
+
+#### DefaultJobParametersValidator의 기본 생성자
+
+DefaultJobParametersValidator는 매개변수가 없는 생성자도 제공한다.
+
+```java
+new DefaultJobParametersValidator();
+```
+
+이 방식은 필수 키와 선택 키를 별도로 지정하지 않는다.
+
+따라서 기본적으로 필수 파라미터의 존재 여부를 강제하지 않는다.
+
+Spring Batch 5.2.4의 AbstractJob 역시 별도의 Validator가 등록되지 않으면 이러한 기본 Validator를 사용한다.
+
+즉, Job에 validator() API를 설정하지 않았다고 해서 JobParameters의 필수 항목을 자동으로 검증하는 것은 아니다.
+
+필수 파라미터가 존재한다면 해당 조건을 명시적으로 등록해야 한다.
+
+---
+
+### DefaultJobParametersValidator의 검증 원리
+
+DefaultJobParametersValidator의 검증 로직은 크게 두 부분으로 나눌 수 있다.
+
+첫 번째는 전달된 파라미터의 키가 설정된 키 목록에 포함되어 있는지 확인하는 과정이다.
+
+두 번째는 모든 필수 키가 존재하는지 확인하는 과정이다.
+
+이번에는 다음 조건을 기준으로 살펴보자.
+
+```text
+requiredKeys
+    ├── name
+    └── date
+
+optionalKeys
+    └── count
+```
+
+#### 첫 번째: 전달된 키 확인
+
+다음과 같은 JobParameters가 전달되었다고 생각해보자.
+
+```text
+JobParameters
+    ├── name = user1
+    └── count = 10
+```
+
+DefaultJobParametersValidator는 JobParameters에 포함된 키 목록을 가져온다.
+
+```java
+Set<String> keys =
+        parameters.getParameters().keySet();
+```
+
+이 경우 keys에는 다음 값이 포함된다.
+
+```text
+name
+
+count
+```
+
+그리고 requiredKeys와 optionalKeys에 설정된 목록을 확인한다.
+
+```text
+requiredKeys = [name, date]
+
+optionalKeys = [count]
+```
+
+name은 requiredKeys에 포함되어 있다.
+
+count는 optionalKeys에 포함되어 있다.
+
+따라서 두 키 모두 미리 선언한 목록에 존재한다.
+
+하지만 이것만으로 검증이 완료되는 것은 아니다.
+
+필수 키가 모두 존재하는지도 확인해야 하기 때문이다.
+
+#### 두 번째: 필수 키 존재 여부 확인
+
+이제 requiredKeys를 기준으로 검증한다.
+
+```text
+requiredKeys
+    ├── name
+    └── date
+```
+
+전달된 JobParameters는 다음과 같다.
+
+```text
+JobParameters
+    ├── name
+    └── count
+```
+
+name은 존재한다.
+
+하지만 date는 존재하지 않는다.
+
+따라서 검증에 실패한다.
+
+Spring Batch는 다음 예외를 발생시킨다.
+
+```java
+JobParametersInvalidException
+```
+
+예외 메시지는 다음과 유사하다.
+
+```text
+The JobParameters do not contain required keys: [date]
+```
+
+여기서 중요한 점은 선택 키인 count가 존재한다고 해서 누락된 필수 키를 대신할 수 없다는 사실이다.
+
+**requiredKeys에 설정된 모든 키가 존재해야 검증에 성공한다.**
+
+---
+
+### DefaultJobParametersValidator 검증 흐름
+
+전체적인 검증 흐름을 정리하면 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["JobParameters 전달"]
+    B["DefaultJobParametersValidator"]
+    C["전달된 키 목록 추출"]
+    D{"optionalKeys 설정 여부"}
+    E["선언되지 않은 키 검사"]
+    F["requiredKeys 검사"]
+    G{"필수 키 모두 존재?"}
+    H["검증 성공"]
+    I["JobParametersInvalidException"]
+
+    A --> B
+    B --> C
+    C --> D
+
+    D -->|설정됨| E
+    E --> F
+
+    D -->|설정되지 않음| F
+
+    F --> G
+
+    G -->|Yes| H
+    G -->|No| I
+```
+
+여기서 한 가지 세부 동작을 알아둘 필요가 있다.
+
+**Spring Batch 5.2.4의 실제 구현에서는 requiredKeys와 optionalKeys 어디에도 속하지 않는 추가 키가 전달되면 경고 로그를 남기지만, 그 이유만으로 JobParametersInvalidException을 발생시키지는 않는다.**
+
+예를 들어 다음과 같은 파라미터가 전달되었다고 생각해보자.
+
+```text
+name = user1
+
+date = 2026-11-03
+
+count = 10
+
+unexpected = value
+```
+
+requiredKeys와 optionalKeys에는 unexpected가 등록되어 있지 않다.
+
+이 경우 Spring Batch 5.2.4에서는 선언되지 않은 키에 대한 경고가 기록될 수 있다.
+
+하지만 필수 키인 name과 date가 모두 존재하므로 검증 자체는 통과할 수 있다.
+
+이는 API 설명만 보고 추가 파라미터가 무조건 거부된다고 이해하기 쉬운 부분이다.
+
+정확히 구분하면 다음과 같다.
+
+| 검증 항목         | Spring Batch 5.2.4 실제 동작    |
+| ------------- | --------------------------- |
+| 필수 키 누락       | 예외 발생                       |
+| 선택 키 누락       | 허용                          |
+| 선언되지 않은 추가 키  | 경고 로그 기록, 해당 이유만으로는 실패하지 않음 |
+| 필수 키의 빈 문자열 값 | 기본 Validator만으로는 거부하지 않음    |
+| 필수 키의 값 형식 오류 | 기본 Validator만으로는 거부하지 않음    |
+
+따라서 추가 키까지 엄격하게 제한해야 한다면 사용자 정의 Validator를 함께 적용하는 것이 적절하다.
+
+---
+
+### DefaultJobParametersValidator 검증 결과 비교
+
+다음과 같은 설정이 있다고 생각해보자.
+
+```java
+DefaultJobParametersValidator validator =
+        new DefaultJobParametersValidator(
+                new String[]{"name", "date"},
+                new String[]{"count"}
+        );
+```
+
+각 파라미터 조합에 따른 결과는 다음과 같다.
+
+| 전달된 JobParameters | 검증 결과 | 이유                    |
+| ----------------- | ----- | --------------------- |
+| name              | 실패    | date 누락               |
+| date              | 실패    | name 누락               |
+| count             | 실패    | name, date 누락         |
+| name, count       | 실패    | date 누락               |
+| date, count       | 실패    | name 누락               |
+| name, date        | 성공    | 모든 필수 키 존재            |
+| name, date, count | 성공    | 필수 키 존재, 선택 키 추가      |
+| name, date, extra | 성공 가능 | 필수 키 존재, extra는 경고 대상 |
+| name="", date=""  | 성공 가능 | 키는 존재하며 값 검증은 별도 필요   |
+
+여기서 특히 중요한 것은 마지막 사례다.
+
+다음과 같은 JobParameters가 있다고 생각해보자.
+
+```text
+name = ""
+
+date = ""
+```
+
+name과 date 키는 존재한다.
+
+따라서 기본 Validator의 필수 키 존재 여부 검사에서는 통과할 수 있다.
+
+하지만 실제 값은 비어 있다.
+
+이 상태에서 Step이 날짜를 파싱하거나 이름을 사용하려고 하면 오류가 발생할 수 있다.
+
+즉 **DefaultJobParametersValidator는 필수 키의 존재를 보장할 수 있지만, 그 값이 비어 있지 않거나 비즈니스적으로 유효하다는 사실까지 보장하지는 않는다.**
+
+이러한 경우 사용자 정의 Validator가 필요하다.
+
+---
+
+### 사용자 정의 JobParametersValidator 구현하기
+
+이번에는 JobParametersValidator 인터페이스를 직접 구현해보자.
+
+요구사항은 간단하다.
+
+JobParameters에 name이라는 키가 반드시 존재해야 한다.
+
+그리고 name의 값이 null이거나 빈 문자열이어서는 안 된다.
+
+먼저 다음 클래스를 생성한다.
+
+`CustomJobParametersValidator.java`
+
+```java
+package com.example.batch.validator;
+
+import org.springframework.batch.core.JobParameters;
+import org.springframework.batch.core.JobParametersInvalidException;
+import org.springframework.batch.core.JobParametersValidator;
+
+public class CustomJobParametersValidator
+        implements JobParametersValidator {
+
+    @Override
+    public void validate(
+            JobParameters parameters
+    ) throws JobParametersInvalidException {
+
+        String name =
+                parameters.getString("name");
+
+        if (name == null || name.isBlank()) {
+
+            throw new JobParametersInvalidException(
+                    "name parameter is not found or empty"
+            );
+        }
+    }
+}
+```
+
+이 코드는 JobParametersValidator 인터페이스를 구현한다.
+
+그리고 validate() 메서드를 재정의한다.
+
+가장 중요한 부분은 다음과 같다.
+
+```java
+String name =
+        parameters.getString("name");
+```
+
+JobParameters에서 name 값을 가져온다.
+
+그리고 다음 조건을 검사한다.
+
+```java
+if (name == null || name.isBlank()) {
+```
+
+name 값이 존재하지 않거나 공백 문자열이라면 검증에 실패한다.
+
+따라서 다음과 같은 예외가 발생한다.
+
+```java
+throw new JobParametersInvalidException(
+        "name parameter is not found or empty"
+);
+```
+
+반면 name 값이 올바르게 전달되었다면 아무런 예외 없이 validate() 메서드가 종료된다.
+
+#### 검증에 성공하는 경우
+
+```text
+JobParameters
+    │
+    └── name = user1
+```
+
+결과는 다음과 같다.
+
+```text
+name != null
+
+name.isBlank() == false
+
+검증 성공
+```
+
+#### 검증에 실패하는 경우
+
+```text
+JobParameters
+    │
+    └── name2 = user1
+```
+
+이 경우 name이라는 키는 존재하지 않는다.
+
+따라서 다음 코드의 결과는 null이다.
+
+```java
+parameters.getString("name");
+```
+
+검증 과정에서 JobParametersInvalidException이 발생한다.
+
+---
+
+### 사용자 정의 Validator가 필요한 이유
+
+DefaultJobParametersValidator는 단순한 필수 키 검증에 적합하다.
+
+하지만 실제 운영 환경에서는 더 복잡한 검증 조건이 필요할 수 있다.
+
+예를 들어 다음과 같은 정산 JobParameters가 있다고 생각해보자.
+
+```text
+businessDate = 2026-11-03
+
+merchantId = 1001
+
+retryCount = 3
+```
+
+이 파라미터에 다음 조건을 적용해야 한다고 가정해보자.
+
+첫 번째로 businessDate는 필수다.
+
+두 번째로 businessDate는 올바른 날짜 형식이어야 한다.
+
+세 번째로 merchantId는 0보다 커야 한다.
+
+네 번째로 retryCount는 0 이상 5 이하여야 한다.
+
+이러한 조건은 단순한 키 존재 여부 검사만으로 처리하기 어렵다.
+
+따라서 사용자 정의 Validator에서 실제 값을 확인해야 한다.
+
+예를 들어 다음과 같이 구현할 수 있다.
+
+```java
+@Override
+public void validate(
+        JobParameters parameters
+) throws JobParametersInvalidException {
+
+    String businessDate =
+            parameters.getString("businessDate");
+
+    Long merchantId =
+            parameters.getLong("merchantId");
+
+    Long retryCount =
+            parameters.getLong("retryCount");
+
+    if (businessDate == null || businessDate.isBlank()) {
+        throw new JobParametersInvalidException(
+                "businessDate는 필수입니다."
+        );
+    }
+
+    try {
+        LocalDate.parse(businessDate);
+    } catch (DateTimeParseException e) {
+        throw new JobParametersInvalidException(
+                "businessDate는 yyyy-MM-dd 형식이어야 합니다."
+        );
+    }
+
+    if (merchantId == null || merchantId <= 0) {
+        throw new JobParametersInvalidException(
+                "merchantId는 0보다 커야 합니다."
+        );
+    }
+
+    if (retryCount != null
+            && (retryCount < 0 || retryCount > 5)) {
+
+        throw new JobParametersInvalidException(
+                "retryCount는 0 이상 5 이하여야 합니다."
+        );
+    }
+}
+```
+
+위 코드는 `LocalDate`, `DateTimeParseException` 등의 import를 포함한다는 전제의 메서드 예시다.
+
+여기서는 파라미터의 존재 여부뿐 아니라 실제 값도 검사한다.
+
+다만 `getLong()`은 해당 파라미터가 Long 타입으로 저장되어 있어야 사용할 수 있다.
+
+따라서 외부에서 문자열로 전달된 값을 그대로 처리하는 경우에는 타입 변환 방식도 함께 고려해야 한다.
+
+---
+
+### Spring Batch에서 Validator는 언제 실행될까?
+
+Validator API의 가장 중요한 특징 중 하나는 검증이 실행되는 시점이다.
+
+일반적인 Spring Batch 5.2.4의 JobLauncher 실행 경로에서는 설정된 Validator가 두 지점에서 호출될 수 있다.
+
+첫 번째는 JobLauncher가 JobExecution을 생성하기 전이다.
+
+두 번째는 AbstractJob이 실제 Job 실행을 시작하기 전이다.
+
+여기서 중요한 것은 첫 번째 검증과 두 번째 검증의 목적이 서로 연결되어 있다는 점이다.
+
+#### 첫 번째 검증: JobLauncher
+
+Spring Batch 5.2.4에서는 일반적으로 `TaskExecutorJobLauncher`를 사용한다.
+
+이 클래스는 Job 실행 요청을 받으면 먼저 기존 JobExecution 정보를 확인한다.
+
+이후 다음 메서드를 호출한다.
+
+```java
+job.getJobParametersValidator()
+        .validate(jobParameters);
+```
+
+이 검증에 성공하면 새로운 JobExecution 생성으로 진행한다.
+
+```java
+jobRepository.createJobExecution(
+        job.getName(),
+        jobParameters
+);
+```
+
+따라서 다음과 같은 순서가 된다.
+
+```text
+JobLauncher.run()
+       │
+       ▼
+기존 JobExecution 확인
+       │
+       ▼
+JobParametersValidator.validate()
+       │
+       ▼
+검증 성공
+       │
+       ▼
+JobRepository.createJobExecution()
+       │
+       ▼
+JobExecution 생성
+```
+
+여기서 중요한 부분은 **JobExecution을 생성하기 전에 파라미터 검증을 수행한다는 것**이다.
+
+따라서 이 지점에서 검증에 실패하면 새로운 JobExecution을 생성하지 않는다.
+
+다만 검증 전에 기존 JobExecution을 조회하는 과정이 있으므로, JobRepository에 대한 모든 접근보다 검증이 먼저 이루어진다고 이해해서는 안 된다.
+
+---
+
+### 두 번째 검증: AbstractJob
+
+첫 번째 검증에 성공하면 JobLauncher는 JobExecution을 생성한다.
+
+그리고 실제 Job 실행을 시작한다.
+
+```java
+job.execute(jobExecution);
+```
+
+SimpleJob은 AbstractJob을 상속하므로 AbstractJob의 공통 실행 처리를 거친다.
+
+이 과정에서도 다음 검증이 수행된다.
+
+```java
+jobParametersValidator.validate(
+        execution.getJobParameters()
+);
+```
+
+따라서 실제 Step 실행 전에 한 번 더 파라미터를 확인한다.
+
+실행 흐름을 정리하면 다음과 같다.
+
+```text
+AbstractJob.execute()
+       │
+       ▼
+JobParametersValidator.validate()
+       │
+       ▼
+검증 성공
+       │
+       ▼
+JobExecution 시작 상태 설정
+       │
+       ▼
+beforeJob()
+       │
+       ▼
+SimpleJob.doExecute()
+       │
+       ▼
+Step 실행
+```
+
+이 두 번째 검증은 실제 Job의 실행 처리 과정에서 수행된다.
+
+따라서 Validator는 JobLauncher를 통한 사전 검증뿐 아니라 AbstractJob의 실행 진입점에서도 사용된다.
+
+---
+
+### Validator의 두 가지 검증 시점 비교
+
+두 검증 시점을 비교하면 다음과 같다.
+
+| 구분                 | 첫 번째 검증                          | 두 번째 검증                |
+| ------------------ | -------------------------------- | ---------------------- |
+| 호출 주체              | TaskExecutorJobLauncher          | AbstractJob            |
+| 주요 목적              | JobExecution 생성 전 입력값 검증         | 실제 Job 실행 전 입력값 검증     |
+| JobExecution 생성 여부 | 아직 생성 전                          | 이미 생성된 상태              |
+| 실패 시 결과            | JobParametersInvalidException 전파 | Job 실행 실패 상태로 처리될 수 있음 |
+| Step 실행            | 수행하지 않음                          | 수행하지 않음                |
+| 검증 메서드             | validate()                       | validate()             |
+
+전체 흐름은 다음과 같다.
+
+```mermaid
+sequenceDiagram
+    participant Client as 실행 요청
+    participant Launcher as TaskExecutorJobLauncher
+    participant Validator as JobParametersValidator
+    participant Repository as JobRepository
+    participant Job as AbstractJob
+    participant Step as Step
+
+    Client->>Launcher: run(Job, JobParameters)
+
+    Launcher->>Repository: 이전 실행 조회
+
+    Launcher->>Validator: validate(JobParameters)
+
+    alt 첫 번째 검증 실패
+        Validator-->>Launcher: JobParametersInvalidException
+        Launcher-->>Client: 실행 요청 실패
+    else 첫 번째 검증 성공
+        Validator-->>Launcher: 정상 반환
+
+        Launcher->>Repository: createJobExecution()
+        Repository-->>Launcher: JobExecution
+
+        Launcher->>Job: execute(JobExecution)
+
+        Job->>Validator: validate(JobParameters)
+
+        alt 두 번째 검증 실패
+            Validator-->>Job: JobParametersInvalidException
+            Job->>Repository: 실패 상태 갱신
+        else 두 번째 검증 성공
+            Validator-->>Job: 정상 반환
+            Job->>Step: Step 실행
+        end
+    end
+```
+
+여기서 한 가지 주의해야 한다.
+
+**모든 실행 경로에서 Validator가 반드시 정확히 두 번 호출된다고 일반화해서는 안 된다.**
+
+표준 TaskExecutorJobLauncher를 통해 정상적으로 실행되는 경우에는 두 검증 지점을 거치지만, 첫 번째 검증이 실패하면 두 번째 검증까지 진행하지 않는다.
+
+또한 직접 구성한 실행 경로나 재시작 처리 과정에 따라 호출 횟수는 달라질 수 있다.
+
+따라서 사용자 정의 Validator는 여러 번 호출되더라도 동일한 결과를 반환할 수 있도록 만드는 것이 좋다.
+
+---
+
+### 검증 실패 시 JobExecution은 생성될까?
+
+이 부분은 Spring Batch의 실행 메타데이터를 이해하는 데 중요하다.
+
+다음과 같은 파라미터가 전달되었다고 생각해보자.
+
+```text
+Job Name = customValidationJob
+
+JobParameters
+    └── name2 = user1
+```
+
+CustomJobParametersValidator는 name 키를 검사한다.
+
+하지만 현재 전달된 파라미터에는 name2만 존재한다.
+
+따라서 다음 결과가 발생한다.
+
+```text
+name = null
+```
+
+Validator는 예외를 발생시킨다.
+
+```java
+throw new JobParametersInvalidException(
+        "name parameter is not found or empty"
+);
+```
+
+표준 TaskExecutorJobLauncher에서는 JobExecution을 생성하기 전에 해당 예외가 발생한다.
+
+따라서 다음 메서드까지 진행하지 않는다.
+
+```java
+jobRepository.createJobExecution(
+        job.getName(),
+        jobParameters
+);
+```
+
+결과적으로 이번 실행 요청에 대한 JobExecution이 생성되지 않는다.
+
+새로운 JobInstance 역시 생성되지 않는다.
+
+```mermaid
+flowchart TD
+    A["JobLauncher.run()"]
+    B["JobParameters 검증"]
+    C{"name 존재?"}
+    D["JobExecution 생성"]
+    E["Job 실행"]
+    F["JobParametersInvalidException"]
+    G["새로운 실행 메타데이터 생성 안 함"]
+
+    A --> B
+    B --> C
+
+    C -->|Yes| D
+    D --> E
+
+    C -->|No| F
+    F --> G
+```
+
+따라서 다음 두 상황은 구분해야 한다.
+
+| 상황                               | 결과                                     |
+| -------------------------------- | -------------------------------------- |
+| JobLauncher의 사전 검증 실패            | 새로운 JobExecution 생성 전 예외               |
+| JobExecution 생성 후 Job 내부에서 검증 실패 | JobExecution이 FAILED로 기록될 수 있음         |
+| Step 실행 중 예외 발생                  | StepExecution 및 JobExecution에 실패 정보 기록 |
+
+즉, **Job 실행 요청 자체가 거부되는 것과 JobExecution이 생성된 이후 FAILED 상태로 종료되는 것은 서로 다른 상황**이다.
+
+---
+
+### 실제 Validator API 구현하기
+
+이번에는 두 가지 Validator를 이용해 실제 Job을 구성해보자.
+
+첫 번째 Job은 사용자 정의 Validator를 사용한다.
+
+두 번째 Job은 DefaultJobParametersValidator를 사용한다.
+
+전체적인 구조는 다음과 같다.
+
+```text
+Spring Batch Application
+       │
+       ├── customValidationJob
+       │       │
+       │       ├── CustomJobParametersValidator
+       │       │
+       │       ├── validationStep1
+       │       ├── validationStep2
+       │       └── validationStep3
+       │
+       └── defaultValidationJob
+               │
+               ├── DefaultJobParametersValidator
+               │
+               ├── validationStep1
+               ├── validationStep2
+               └── validationStep3
+```
+
+두 Job은 동일한 Step 정의를 사용한다.
+
+하지만 서로 다른 Validator가 적용된다.
+
+따라서 같은 파라미터를 전달하더라도 각 Job의 검증 정책에 따라 실행 결과가 달라질 수 있다.
+
+---
+
+### Maven 의존성 설정
+
+먼저 Spring Batch와 H2 데이터베이스 의존성을 추가한다.
+
+`pom.xml`
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="
+             http://maven.apache.org/POM/4.0.0
+             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.4.13</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.example</groupId>
+    <artifactId>spring-batch-validator-demo</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+
+    <properties>
+        <java.version>17</java.version>
+        <spring-batch.version>5.2.4</spring-batch.version>
+    </properties>
+
+    <dependencies>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-batch</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>
+```
+
+이번 예제에서는 H2 인메모리 데이터베이스를 사용한다.
+
+따라서 별도의 데이터베이스 서버를 구성하지 않고도 Job을 실행할 수 있다.
+
+다만 H2 인메모리 데이터베이스는 애플리케이션이 종료되면 실행 이력이 유지되지 않는다.
+
+따라서 이전 실행 이력을 확인하거나 재시작을 검증하려면 영속성 있는 데이터베이스를 사용하는 것이 적절하다.
+
+---
+
+### application.yml 설정
+
+이번에는 두 개의 Job이 등록되므로 실행할 Job을 선택할 수 있도록 설정한다.
+
+`application.yml`
+
+```yaml
+spring:
+  application:
+    name: spring-batch-validator-demo
+
+  main:
+    web-application-type: none
+
+  datasource:
+    url: jdbc:h2:mem:batchdb;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+  batch:
+    job:
+      enabled: true
+      name: ${demo.job.name:customValidationJob}
+
+    jdbc:
+      initialize-schema: embedded
+
+logging:
+  level:
+    org.springframework.batch: INFO
+    com.example.batch: INFO
+```
+
+여기서 중요한 설정은 다음과 같다.
+
+```yaml
+spring:
+  batch:
+    job:
+      name: ${demo.job.name:customValidationJob}
+```
+
+별도로 Job 이름을 지정하지 않으면 customValidationJob이 실행된다.
+
+반면 다음과 같은 실행 인자를 전달하면 다른 Job을 선택할 수 있다.
+
+```text
+--demo.job.name=defaultValidationJob
+```
+
+이 경우 defaultValidationJob이 실행된다.
+
+이렇게 하면 동일한 프로젝트에서 서로 다른 Validator의 동작을 비교할 수 있다.
+
+---
+
+### CustomJobParametersValidator 전체 코드
+
+먼저 사용자 정의 Validator를 작성한다.
+
+`CustomJobParametersValidator.java`
+
+```java
+package com.example.batch.validator;
+
+import org.springframework.batch.core.JobParameters;
+import org.springframework.batch.core.JobParametersInvalidException;
+import org.springframework.batch.core.JobParametersValidator;
+
+public class CustomJobParametersValidator
+        implements JobParametersValidator {
+
+    @Override
+    public void validate(
+            JobParameters parameters
+    ) throws JobParametersInvalidException {
+
+        String name =
+                parameters.getString("name");
+
+        if (name == null || name.isBlank()) {
+
+            throw new JobParametersInvalidException(
+                    "name parameter is not found or empty"
+            );
+        }
+    }
+}
+```
+
+이 Validator는 name의 존재 여부와 빈 문자열 여부를 확인한다.
+
+다음 파라미터는 검증에 성공한다.
+
+```text
+name = user1
+```
+
+반면 다음 파라미터는 검증에 실패한다.
+
+```text
+name2 = user1
+```
+
+그 이유는 name이라는 키가 존재하지 않기 때문이다.
+
+---
+
+### ValidatorJobConfiguration 전체 코드
+
+이번에는 두 개의 Job을 생성한다.
+
+각 Job에 서로 다른 Validator를 등록한다.
+
+`ValidatorJobConfiguration.java`
+
+```java
+package com.example.batch;
+
+import com.example.batch.validator.CustomJobParametersValidator;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobParametersValidator;
+import org.springframework.batch.core.Step;
+
+import org.springframework.batch.core.job.DefaultJobParametersValidator;
+import org.springframework.batch.core.job.builder.JobBuilder;
+
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.step.builder.StepBuilder;
+
+import org.springframework.batch.repeat.RepeatStatus;
+
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import org.springframework.transaction.PlatformTransactionManager;
+
+@Configuration
+public class ValidatorJobConfiguration {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(
+                    ValidatorJobConfiguration.class
+            );
+
+    @Bean
+    public JobParametersValidator customValidator() {
+
+        return new CustomJobParametersValidator();
+    }
+
+    @Bean
+    public DefaultJobParametersValidator defaultValidator() {
+
+        return new DefaultJobParametersValidator(
+                new String[]{"name", "date"},
+                new String[]{"count"}
+        );
+    }
+
+    @Bean
+    public Job customValidationJob(
+            JobRepository jobRepository,
+            @Qualifier("validationStep1") Step step1,
+            @Qualifier("validationStep2") Step step2,
+            @Qualifier("validationStep3") Step step3,
+            @Qualifier("customValidator")
+            JobParametersValidator validator
+    ) {
+
+        return new JobBuilder(
+                "customValidationJob",
+                jobRepository
+        )
+                .validator(validator)
+                .start(step1)
+                .next(step2)
+                .next(step3)
+                .build();
+    }
+
+    @Bean
+    public Job defaultValidationJob(
+            JobRepository jobRepository,
+            @Qualifier("validationStep1") Step step1,
+            @Qualifier("validationStep2") Step step2,
+            @Qualifier("validationStep3") Step step3,
+            @Qualifier("defaultValidator")
+            JobParametersValidator validator
+    ) {
+
+        return new JobBuilder(
+                "defaultValidationJob",
+                jobRepository
+        )
+                .validator(validator)
+                .start(step1)
+                .next(step2)
+                .next(step3)
+                .build();
+    }
+
+    @Bean
+    public Step validationStep1(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+
+        return new StepBuilder(
+                "validationStep1",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    log.info("Step 1 실행");
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+
+    @Bean
+    public Step validationStep2(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+
+        return new StepBuilder(
+                "validationStep2",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    log.info("Step 2 실행");
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+
+    @Bean
+    public Step validationStep3(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+
+        return new StepBuilder(
+                "validationStep3",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    log.info("Step 3 실행");
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+}
+```
+
+이 설정에서는 두 개의 Job을 생성한다.
+
+첫 번째 Job은 다음과 같다.
+
+```java
+new JobBuilder(
+        "customValidationJob",
+        jobRepository
+)
+        .validator(validator)
+        .start(step1)
+        .next(step2)
+        .next(step3)
+        .build();
+```
+
+이 Job에서는 CustomJobParametersValidator를 사용한다.
+
+두 번째 Job은 다음과 같다.
+
+```java
+new JobBuilder(
+        "defaultValidationJob",
+        jobRepository
+)
+        .validator(validator)
+        .start(step1)
+        .next(step2)
+        .next(step3)
+        .build();
+```
+
+이 Job에서는 DefaultJobParametersValidator를 사용한다.
+
+두 Job 모두 세 개의 Step을 순차적으로 실행하도록 구성했다.
+
+하지만 파라미터 검증 정책이 서로 다르다.
+
+---
+
+### 첫 번째 실행: 사용자 정의 Validator 검증 성공
+
+먼저 프로젝트를 빌드한다.
+
+```bash
+./mvnw clean package
+```
+
+정상적으로 빌드되면 다음과 같은 결과를 확인할 수 있다.
+
+```text
+BUILD SUCCESS
+```
+
+이제 다음 명령어를 실행한다.
+
+```bash
+java -jar target/spring-batch-validator-demo-0.0.1-SNAPSHOT.jar \
+  --demo.job.name=customValidationJob \
+  name=user1
+```
+
+이 명령어에서는 customValidationJob을 실행한다.
+
+그리고 JobParameters로 다음 값을 전달한다.
+
+```text
+name = user1
+```
+
+CustomJobParametersValidator는 name 값을 조회한다.
+
+```java
+String name =
+        parameters.getString("name");
+```
+
+조회 결과는 다음과 같다.
+
+```text
+user1
+```
+
+null이 아니고 빈 문자열도 아니다.
+
+따라서 검증에 성공한다.
+
+#### 실행 흐름
+
+```mermaid
+flowchart TD
+    A["Job 실행 요청"]
+    B["name=user1"]
+    C["CustomJobParametersValidator"]
+    D["검증 성공"]
+    E["Step 1"]
+    F["Step 2"]
+    G["Step 3"]
+    H["Job COMPLETED"]
+
+    A --> B
+    B --> C
+    C --> D
+
+    D --> E
+    E --> F
+    F --> G
+    G --> H
+```
+
+#### 실행 결과
+
+다음과 유사한 로그를 확인할 수 있다.
+
+```text
+Job: customValidationJob
+
+Step 1 실행
+
+Step 2 실행
+
+Step 3 실행
+
+Job completed with status: COMPLETED
+```
+
+여기서 중요한 것은 검증에 성공했기 때문에 실제 Step 실행이 진행되었다는 것이다.
+
+---
+
+### 두 번째 실행: 사용자 정의 Validator 검증 실패
+
+이번에는 name 대신 name2라는 키를 전달한다.
+
+```bash
+java -jar target/spring-batch-validator-demo-0.0.1-SNAPSHOT.jar \
+  --demo.job.name=customValidationJob \
+  name2=user1
+```
+
+전달되는 JobParameters는 다음과 같다.
+
+```text
+name2 = user1
+```
+
+하지만 Validator는 다음 코드를 실행한다.
+
+```java
+String name =
+        parameters.getString("name");
+```
+
+name이라는 키가 존재하지 않으므로 null이 반환된다.
+
+따라서 다음 조건에 해당한다.
+
+```java
+if (name == null || name.isBlank()) {
+```
+
+이후 JobParametersInvalidException이 발생한다.
+
+#### 실행 흐름
+
+```mermaid
+flowchart TD
+    A["Job 실행 요청"]
+    B["name2=user1"]
+    C["CustomJobParametersValidator"]
+    D["name 조회"]
+    E["null 반환"]
+    F["JobParametersInvalidException"]
+    G["JobExecution 생성 안 함"]
+    H["Step 실행 안 함"]
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+    F --> G
+    G --> H
+```
+
+#### 실행 결과
+
+다음과 유사한 예외 메시지를 확인할 수 있다.
+
+```text
+JobParametersInvalidException:
+name parameter is not found or empty
+```
+
+이번에는 Step 실행 로그가 나타나지 않는다.
+
+```text
+Step 1 실행
+Step 2 실행
+Step 3 실행
+```
+
+검증에 실패했으므로 실제 Step 실행까지 진행하지 않았기 때문이다.
+
+또한 표준 JobLauncher의 사전 검증 단계에서 실패했다면 이번 실행에 대한 새로운 JobExecution이 생성되지 않는다.
+
+---
+
+### 세 번째 실행: 기본 Validator 검증 실패
+
+이번에는 DefaultJobParametersValidator를 사용한다.
+
+설정은 다음과 같다.
+
+```java
+new DefaultJobParametersValidator(
+        new String[]{"name", "date"},
+        new String[]{"count"}
+);
+```
+
+필수 키는 name과 date다.
+
+선택 키는 count다.
+
+이번에는 name과 count만 전달한다.
+
+```bash
+java -jar target/spring-batch-validator-demo-0.0.1-SNAPSHOT.jar \
+  --demo.job.name=defaultValidationJob \
+  name=user1 \
+  count=10
+```
+
+JobParameters에는 다음 두 개의 키가 저장된다.
+
+```text
+name = user1
+
+count = 10
+```
+
+DefaultJobParametersValidator는 필수 키를 검사한다.
+
+```text
+requiredKeys
+    ├── name
+    └── date
+```
+
+전달된 파라미터에는 name이 존재한다.
+
+하지만 date가 존재하지 않는다.
+
+따라서 검증에 실패한다.
+
+#### 실행 결과
+
+다음과 유사한 예외가 발생한다.
+
+```text
+JobParametersInvalidException:
+The JobParameters do not contain required keys: [date]
+```
+
+이 경우에도 새로운 JobExecution 생성 전에 검증이 실패하므로 실제 Step은 실행되지 않는다.
+
+---
+
+### 네 번째 실행: 기본 Validator 검증 성공
+
+이번에는 필수 키를 모두 전달한다.
+
+```bash
+java -jar target/spring-batch-validator-demo-0.0.1-SNAPSHOT.jar \
+  --demo.job.name=defaultValidationJob \
+  name=user1 \
+  date=2026-11-03
+```
+
+JobParameters는 다음과 같다.
+
+```text
+name = user1
+
+date = 2026-11-03
+```
+
+필수 키인 name과 date가 모두 존재한다.
+
+선택 키인 count는 전달하지 않았다.
+
+하지만 count는 필수 항목이 아니므로 검증에 실패하지 않는다.
+
+#### 실행 결과
+
+정상적으로 실행되면 다음과 유사한 로그를 확인할 수 있다.
+
+```text
+Job: defaultValidationJob
+
+Step 1 실행
+
+Step 2 실행
+
+Step 3 실행
+
+Job completed with status: COMPLETED
+```
+
+이 결과를 통해 다음 사실을 확인할 수 있다.
+
+**DefaultJobParametersValidator는 requiredKeys에 지정된 필수 키가 모두 존재한다면 optionalKeys에 지정된 선택 키가 없어도 검증에 성공한다.**
+
+---
+
+### 다섯 번째 실행: 기본 Validator에 선택 키 추가
+
+이번에는 필수 키와 선택 키를 모두 전달한다.
+
+```bash
+java -jar target/spring-batch-validator-demo-0.0.1-SNAPSHOT.jar \
+  --demo.job.name=defaultValidationJob \
+  name=user1 \
+  date=2026-11-03 \
+  count=10
+```
+
+JobParameters는 다음과 같다.
+
+```text
+name = user1
+
+date = 2026-11-03
+
+count = 10
+```
+
+필수 키가 모두 존재한다.
+
+그리고 선택 키도 허용된 항목이다.
+
+따라서 검증에 성공한다.
+
+여기서 한 가지를 구분해야 한다.
+
+앞선 실행과 이번 실행은 식별용 JobParameters가 다르다.
+
+따라서 영속성 있는 동일 데이터베이스에서 실행한다면 서로 다른 JobInstance로 구분될 수 있다.
+
+하지만 Validator 자체가 JobInstance를 생성하거나 구분하는 것은 아니다.
+
+Validator는 전달된 파라미터의 유효성을 검사할 뿐이다.
+
+JobInstance 식별은 Job 이름과 식별용 JobParameters를 기준으로 이루어진다.
+
+---
+
+### DefaultJobParametersValidator는 값의 타입도 검증할까?
+
+이 부분은 실무에서 중요한 차이다.
+
+예를 들어 다음과 같은 파라미터를 전달했다고 생각해보자.
+
+```text
+name = user1
+
+date = invalid-date
+```
+
+DefaultJobParametersValidator의 필수 키는 다음과 같다.
+
+```text
+name
+
+date
+```
+
+현재 두 키는 모두 존재한다.
+
+따라서 기본적인 필수 키 존재 여부 검증에서는 통과할 수 있다.
+
+하지만 date 값은 올바른 날짜가 아니다.
+
+따라서 실제 Step에서 다음 코드를 실행하면 문제가 발생할 수 있다.
+
+```java
+LocalDate.parse(
+        jobParameters.getString("date")
+);
+```
+
+이 경우 날짜 파싱 과정에서 예외가 발생한다.
+
+즉, 기본 Validator는 다음 두 조건을 구분하지 않는다.
+
+```text
+date 키가 존재하는가?
+```
+
+```text
+date 값이 올바른 날짜인가?
+```
+
+첫 번째는 DefaultJobParametersValidator로 검증할 수 있다.
+
+두 번째는 사용자 정의 Validator에서 검증해야 한다.
+
+따라서 파라미터 검증을 설계할 때는 **키 존재 여부 검증과 값 유효성 검증을 별도의 책임으로 구분하는 것이 좋다.**
+
+---
+
+### CompositeJobParametersValidator를 이용한 검증 조합
+
+Spring Batch에서는 여러 Validator를 조합하기 위한 구현체도 제공한다.
+
+바로 `CompositeJobParametersValidator`다.
+
+이 클래스는 여러 JobParametersValidator를 순서대로 실행한다.
+
+예를 들어 다음과 같은 검증 구조를 만들 수 있다.
+
+```text
+JobParameters
+       │
+       ▼
+DefaultJobParametersValidator
+       │
+       └── 필수 키 존재 여부 확인
+       │
+       ▼
+CustomJobParametersValidator
+       │
+       └── 실제 값 유효성 검사
+       │
+       ▼
+검증 성공
+       │
+       ▼
+Job 실행
+```
+
+이렇게 하면 기본 Validator와 사용자 정의 Validator의 장점을 함께 활용할 수 있다.
+
+#### CompositeJobParametersValidator 구성
+
+다음과 같이 Bean을 생성할 수 있다.
+
+```java
+@Bean
+public CompositeJobParametersValidator compositeValidator(
+        @Qualifier("defaultValidator")
+        JobParametersValidator defaultValidator,
+        @Qualifier("customValidator")
+        JobParametersValidator customValidator
+) {
+
+    CompositeJobParametersValidator validator =
+            new CompositeJobParametersValidator();
+
+    validator.setValidators(
+            List.of(
+                    defaultValidator,
+                    customValidator
+            )
+    );
+
+    return validator;
+}
+```
+
+이 코드에서는 두 개의 Validator를 등록한다.
+
+첫 번째는 DefaultJobParametersValidator다.
+
+두 번째는 CustomJobParametersValidator다.
+
+이후 JobBuilder에 등록할 수 있다.
+
+```java
+new JobBuilder("batchJob", jobRepository)
+        .validator(compositeValidator)
+        .start(step1)
+        .build();
+```
+
+검증 순서는 등록한 순서를 따른다.
+
+첫 번째 Validator에서 예외가 발생하면 두 번째 Validator는 실행되지 않는다.
+
+반면 첫 번째 Validator가 정상적으로 종료되면 두 번째 Validator가 실행된다.
+
+이러한 구조는 검증 책임을 분리할 때 유용하다.
+
+---
+
+### Validator의 실행 결과를 테스트 코드로 검증하기
+
+이번에는 JUnit을 이용해 검증 결과를 확인해보자.
+
+테스트에서는 JobLauncher를 직접 호출한다.
+
+따라서 JobParameters를 명시적으로 생성할 수 있다.
+
+또한 검증에 실패했을 때 예외가 발생하는지 확인할 수 있다.
+
+`ValidatorJobTest.java`
+
+```java
+package com.example.batch;
+
+import org.junit.jupiter.api.Test;
+
+import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobParameters;
+import org.springframework.batch.core.JobParametersBuilder;
+import org.springframework.batch.core.JobParametersInvalidException;
+
+import org.springframework.batch.core.explore.JobExplorer;
+import org.springframework.batch.core.launch.JobLauncher;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+
+import org.springframework.boot.test.context.SpringBootTest;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+@SpringBootTest(
+        properties = "spring.batch.job.enabled=false"
+)
+class ValidatorJobTest {
+
+    @Autowired
+    private JobLauncher jobLauncher;
+
+    @Autowired
+    private JobExplorer jobExplorer;
+
+    @Autowired
+    @Qualifier("customValidationJob")
+    private Job customValidationJob;
+
+    @Autowired
+    @Qualifier("defaultValidationJob")
+    private Job defaultValidationJob;
+
+    @Test
+    void 사용자_정의_Validator_성공() throws Exception {
+
+        JobParameters parameters =
+                new JobParametersBuilder()
+                        .addString(
+                                "name",
+                                "user1"
+                        )
+                        .toJobParameters();
+
+        JobExecution execution =
+                jobLauncher.run(
+                        customValidationJob,
+                        parameters
+                );
+
+        assertEquals(
+                BatchStatus.COMPLETED,
+                execution.getStatus()
+        );
+
+        assertEquals(
+                3,
+                execution.getStepExecutions().size()
+        );
+    }
+
+    @Test
+    void 사용자_정의_Validator_실패() {
+
+        JobParameters parameters =
+                new JobParametersBuilder()
+                        .addString(
+                                "name2",
+                                "user1"
+                        )
+                        .toJobParameters();
+
+        assertThrows(
+                JobParametersInvalidException.class,
+                () -> jobLauncher.run(
+                        customValidationJob,
+                        parameters
+                )
+        );
+
+        assertNull(
+                jobExplorer.getJobInstance(
+                        customValidationJob.getName(),
+                        parameters
+                )
+        );
+    }
+
+    @Test
+    void 기본_Validator_필수키_누락() {
+
+        JobParameters parameters =
+                new JobParametersBuilder()
+                        .addString(
+                                "name",
+                                "user1"
+                        )
+                        .addString(
+                                "count",
+                                "10"
+                        )
+                        .toJobParameters();
+
+        assertThrows(
+                JobParametersInvalidException.class,
+                () -> jobLauncher.run(
+                        defaultValidationJob,
+                        parameters
+                )
+        );
+    }
+
+    @Test
+    void 기본_Validator_필수키_모두_전달() throws Exception {
+
+        JobParameters parameters =
+                new JobParametersBuilder()
+                        .addString(
+                                "name",
+                                "user1"
+                        )
+                        .addString(
+                                "date",
+                                "2026-11-03"
+                        )
+                        .toJobParameters();
+
+        JobExecution execution =
+                jobLauncher.run(
+                        defaultValidationJob,
+                        parameters
+                );
+
+        assertEquals(
+                BatchStatus.COMPLETED,
+                execution.getStatus()
+        );
+    }
+}
+```
+
+이 테스트는 네 가지 상황을 확인한다.
+
+첫 번째는 사용자 정의 Validator의 정상 검증이다.
+
+두 번째는 사용자 정의 Validator의 검증 실패다.
+
+세 번째는 기본 Validator의 필수 키 누락이다.
+
+네 번째는 기본 Validator의 정상 검증이다.
+
+특히 다음 코드에 주목할 필요가 있다.
+
+```java
+assertNull(
+        jobExplorer.getJobInstance(
+                customValidationJob.getName(),
+                parameters
+        )
+);
+```
+
+이 코드는 해당 Job 이름과 파라미터에 대응하는 JobInstance가 존재하지 않는지 확인한다.
+
+표준 JobLauncher의 사전 검증에서 실패했다면 새로운 JobInstance가 생성되지 않아야 한다.
+
+따라서 검증 실패가 단순한 Step 실패와 다르다는 점을 확인할 수 있다.
+
+#### 테스트 실행
+
+다음 명령어로 테스트를 실행한다.
+
+```bash
+./mvnw test
+```
+
+정상적으로 실행되면 다음과 유사한 결과를 확인할 수 있다.
+
+```text
+Tests run: 4
+
+Failures: 0
+
+Errors: 0
+
+BUILD SUCCESS
+```
+
+이 결과는 네 개의 검증 시나리오가 예상한 대로 동작했다는 의미다.
+
+---
+
+### Validator는 JobParameters의 identifying 여부도 검사할까?
+
+JobParameters에는 JobInstance를 식별하는 데 사용할지 결정하는 identifying 속성이 있다.
+
+예를 들어 다음과 같이 설정할 수 있다.
+
+```java
+JobParameters parameters =
+        new JobParametersBuilder()
+                .addString(
+                        "businessDate",
+                        "2026-11-03",
+                        true
+                )
+                .addString(
+                        "retryCount",
+                        "3",
+                        false
+                )
+                .toJobParameters();
+```
+
+businessDate는 식별용 파라미터다.
+
+반면 retryCount는 비식별용 파라미터다.
+
+이때 기본 Validator는 requiredKeys에 지정된 키가 존재하는지 확인한다.
+
+따라서 특정 파라미터가 identifying인지 아닌지를 자동으로 검증하는 것은 아니다.
+
+예를 들어 비즈니스 요구사항이 다음과 같다고 생각해보자.
+
+```text
+businessDate는 반드시 identifying=true여야 한다.
+```
+
+이러한 제약조건이 필요하다면 사용자 정의 Validator에서 별도로 확인해야 한다.
+
+따라서 다음 두 가지는 서로 다른 목적을 가진다.
+
+| 구분                     | 역할                      |
+| ---------------------- | ----------------------- |
+| JobParametersValidator | 파라미터의 유효성 검증            |
+| identifying            | JobInstance 식별에 사용할지 결정 |
+
+실무에서는 필수 파라미터라고 해서 반드시 identifying이어야 하는 것은 아니다.
+
+예를 들어 로그 출력 수준이나 재시도 횟수처럼 필수로 전달해야 하지만 JobInstance 식별에는 사용하지 않는 값이 존재할 수 있다.
+
+---
+
+### 실무에서 JobParametersValidator를 활용하는 10가지 방법
+
+JobParametersValidator는 단순한 입력값 검증 인터페이스지만 실제 운영에서는 다양한 목적으로 활용할 수 있다.
+
+특히 정산, 결제, 데이터 집계, 외부 시스템 연동과 같은 배치에서는 사전 검증이 중요하다.
+
+#### 1. 필수 파라미터의 존재 여부를 검증한다
+
+가장 기본적인 사용 방법이다.
+
+예를 들어 정산 Job에서는 businessDate가 반드시 필요하다.
+
+따라서 다음과 같은 입력을 차단해야 한다.
+
+```text
+settlementJob
+
+businessDate = null
+```
+
+이 경우 DefaultJobParametersValidator를 이용해 필수 키 존재 여부를 검사할 수 있다.
+
+#### 2. 날짜 형식을 검증한다
+
+정산 기준일이나 통계 집계일은 일반적으로 정해진 날짜 형식을 따른다.
+
+예를 들어 다음과 같다.
+
+```text
+businessDate = 2026-11-03
+```
+
+하지만 다음 값은 잘못된 날짜다.
+
+```text
+businessDate = 2026-13-40
+```
+
+이러한 값은 LocalDate.parse() 등을 이용해 검증할 수 있다.
+
+실제 데이터베이스 쿼리를 수행하기 전에 날짜 형식을 검증하면 불필요한 실행 실패를 줄일 수 있다.
+
+#### 3. 파라미터의 숫자 범위를 검증한다
+
+배치에서는 처리 건수나 재시도 횟수를 파라미터로 전달할 수 있다.
+
+예를 들어 다음과 같다.
+
+```text
+retryCount = 3
+```
+
+그런데 다음 값이 전달되었다면 문제가 될 수 있다.
+
+```text
+retryCount = -1
+```
+
+따라서 허용 가능한 범위를 검증해야 한다.
+
+```text
+0 <= retryCount <= 5
+```
+
+이러한 제약조건은 사용자 정의 Validator로 구현할 수 있다.
+
+#### 4. 시작일과 종료일의 관계를 검증한다
+
+특정 기간의 데이터를 집계하는 Job이 있다고 생각해보자.
+
+```text
+startDate = 2026-11-01
+
+endDate = 2026-11-03
+```
+
+이 경우 시작일은 종료일보다 늦어서는 안 된다.
+
+따라서 다음 조건을 검사해야 한다.
+
+```java
+if (startDate.isAfter(endDate)) {
+    throw new JobParametersInvalidException(
+            "시작일은 종료일보다 늦을 수 없습니다."
+    );
+}
+```
+
+이러한 검증은 단순히 각 파라미터를 개별적으로 확인하는 것이 아니라 파라미터 간 관계를 검사한다는 특징이 있다.
+
+#### 5. 허용되지 않은 실행 모드를 차단한다
+
+배치 실행 시 처리 모드를 전달할 수 있다.
+
+```text
+mode = NORMAL
+```
+
+또는 다음과 같은 값도 사용할 수 있다.
+
+```text
+mode = RETRY
+```
+
+그런데 정의되지 않은 값이 전달되었다면 실행을 거부해야 한다.
+
+```text
+mode = UNKNOWN_MODE
+```
+
+이 경우 Enum 또는 허용값 목록을 이용해 검증할 수 있다.
+
+#### 6. 처리 대상 식별자의 형식을 검증한다
+
+정산이나 결제 배치에서는 가맹점 ID, 주문 ID 등의 식별자가 필요할 수 있다.
+
+예를 들어 다음과 같다.
+
+```text
+merchantId = 1001
+```
+
+이 값이 숫자 형식이어야 한다면 해당 조건을 검증한다.
+
+또한 0보다 큰 값이어야 한다면 범위 조건도 추가할 수 있다.
+
+다만 실제로 해당 가맹점이 데이터베이스에 존재하는지 확인하는 작업은 입력 형식 검증과 구분해 설계할 수 있다.
+
+#### 7. 기본 Validator와 사용자 정의 Validator를 조합한다
+
+필수 키 검증과 실제 값 검증을 하나의 클래스에서 모두 처리할 필요는 없다.
+
+CompositeJobParametersValidator를 이용하면 여러 Validator를 조합할 수 있다.
+
+예를 들어 다음과 같은 구조다.
+
+```text
+DefaultJobParametersValidator
+       │
+       ▼
+필수 키 검증
+       │
+       ▼
+CustomJobParametersValidator
+       │
+       ▼
+비즈니스 값 검증
+```
+
+이러한 구조는 검증 책임을 분리하고 테스트하기 쉽게 만든다.
+
+#### 8. Validator는 여러 번 호출되어도 안전하게 구현한다
+
+표준 JobLauncher 실행 경로에서는 Validator가 여러 지점에서 호출될 수 있다.
+
+따라서 validate() 내부에서 데이터베이스를 수정하거나 외부 API를 호출하는 등의 부수 효과가 발생하지 않도록 하는 것이 좋다.
+
+가능하면 다음 구조를 유지한다.
+
+```text
+입력값 확인
+    │
+    ▼
+유효성 판단
+    │
+    ▼
+예외 발생 또는 정상 반환
+```
+
+즉, 동일한 JobParameters를 여러 번 검증하더라도 동일한 결과가 나오는 것이 바람직하다.
+
+#### 9. 검증 실패와 실제 Job 실행 실패를 구분한다
+
+입력 파라미터가 잘못되어 Job 실행 자체가 거부되는 상황과 Step 실행 도중 실패하는 상황은 다르다.
+
+예를 들어 다음과 같다.
+
+```text
+파라미터 누락
+    │
+    ▼
+JobParametersInvalidException
+```
+
+반면 다음과 같은 상황도 있다.
+
+```text
+정상 파라미터
+    │
+    ▼
+Job 실행
+    │
+    ▼
+Step 실행
+    │
+    ▼
+데이터베이스 오류
+    │
+    ▼
+Job FAILED
+```
+
+두 상황을 구분하면 운영 로그와 모니터링을 더 정확하게 구성할 수 있다.
+
+#### 10. JobParameters의 식별 정책과 검증 정책을 함께 설계한다
+
+JobParameters는 JobInstance를 구분하는 데 사용된다.
+
+따라서 어떤 파라미터가 필수인지뿐 아니라 어떤 파라미터를 식별용으로 사용할지도 결정해야 한다.
+
+예를 들어 다음과 같다.
+
+```text
+businessDate = 2026-11-03
+identifying = true
+```
+
+반면 다음과 같은 값은 비식별용으로 사용할 수 있다.
+
+```text
+retryCount = 3
+identifying = false
+```
+
+이러한 구조에서는 필수 여부와 식별 여부가 서로 다를 수 있다.
+
+따라서 두 정책을 독립적으로 설계하는 것이 중요하다.
+
+---
+
+### JobParametersValidator에서 자주 혼동하는 부분
+
+Validator API를 사용할 때는 몇 가지 개념을 구분해야 한다.
+
+| 혼동하기 쉬운 내용                                | 정확한 이해                                      |
+| ----------------------------------------- | ------------------------------------------- |
+| validator()를 호출하면 즉시 검증한다                 | validator()는 Validator를 등록한다                |
+| DefaultJobParametersValidator는 모든 값을 검증한다 | 기본적으로 필수 키 존재 여부를 검사한다                      |
+| optionalKeys는 반드시 전달해야 한다                 | 선택 키이므로 없어도 된다                              |
+| requiredKeys 중 하나만 존재하면 된다                | 모든 필수 키가 존재해야 한다                            |
+| 키가 존재하면 값도 유효하다                           | 빈 문자열이나 잘못된 형식일 수 있다                        |
+| Validator는 반드시 한 번만 호출된다                  | 표준 실행 경로에서 여러 번 호출될 수 있다                    |
+| 검증 실패는 항상 JobExecution FAILED로 기록된다       | JobExecution 생성 전에 검증 실패할 수 있다              |
+| 검증 실패와 Step 실패는 같다                        | 발생 시점과 실행 메타데이터가 다르다                        |
+| requiredKeys는 identifying 파라미터만 검사한다      | 기본 Validator는 identifying 여부를 기준으로 검사하지 않는다 |
+| 사용자 정의 Validator는 모든 검증을 직접 구현해야 한다       | 기본 Validator와 조합할 수 있다                      |
+
+이 중에서 가장 중요한 것은 검증 시점이다.
+
+Validator가 JobExecution 생성 전에 실패하면 새로운 JobExecution 자체가 생성되지 않을 수 있다.
+
+반면 실제 Job 실행 과정에서 검증에 실패하면 이미 생성된 JobExecution이 실패 상태로 관리될 수 있다.
+
+따라서 Validator의 실행 위치를 이해하는 것이 중요하다.
+
+---
+
+### JobParametersValidator의 전체 구조
+
+지금까지 살펴본 내용을 하나의 구조로 정리해보자.
+
+```mermaid
+flowchart TD
+    A["Spring Configuration"]
+    B["JobBuilder"]
+    C["validator()"]
+    D["JobBuilderHelper"]
+    E["SimpleJobBuilder"]
+    F["SimpleJob"]
+    G["AbstractJob"]
+    H["JobParametersValidator"]
+
+    I["JobLauncher.run()"]
+    J["첫 번째 validate()"]
+    K{"검증 성공?"}
+    L["JobExecution 생성"]
+    M["AbstractJob.execute()"]
+    N["두 번째 validate()"]
+    O{"검증 성공?"}
+    P["Step 실행"]
+    Q["Job 완료"]
+
+    R["JobParametersInvalidException"]
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+
+    F --> G
+    G --> H
+
+    I --> J
+    J --> H
+    J --> K
+
+    K -->|No| R
+    K -->|Yes| L
+
+    L --> M
+    M --> N
+    N --> H
+    N --> O
+
+    O -->|No| R
+    O -->|Yes| P
+
+    P --> Q
+```
+
+이 구조는 크게 두 단계로 나눌 수 있다.
+
+#### 첫 번째: Validator 등록
+
+```text
+JobBuilder
+    │
+    ▼
+validator()
+    │
+    ▼
+JobBuilderHelper
+    │
+    ▼
+SimpleJobBuilder
+    │
+    ▼
+SimpleJob
+    │
+    ▼
+AbstractJob
+    │
+    └── JobParametersValidator
+```
+
+이 단계에서는 사용할 Validator 객체를 등록한다.
+
+아직 실제 파라미터 검증은 수행되지 않는다.
+
+#### 두 번째: Validator 실행
+
+```text
+JobLauncher
+    │
+    ▼
+JobParametersValidator.validate()
+    │
+    ▼
+JobExecution 생성
+    │
+    ▼
+AbstractJob.execute()
+    │
+    ▼
+JobParametersValidator.validate()
+    │
+    ▼
+Step 실행
+```
+
+이 단계에서는 실제 JobParameters를 이용해 검증을 수행한다.
+
+검증에 실패하면 정상적인 Step 실행으로 진행하지 않는다.
+
+반면 검증에 성공하면 Job에 등록된 Step들이 실행된다.
+
+---
+
+### 정리
+
+Spring Batch의 `validator()` API는 Job 실행에 필요한 JobParameters의 유효성을 검증하기 위한 설정 기능이다.
+
+JobParametersValidator 인터페이스는 다음 메서드를 제공한다.
+
+```java
+void validate(
+        JobParameters parameters
+) throws JobParametersInvalidException;
+```
+
+이 메서드는 JobParameters를 전달받아 검증한다.
+
+검증에 성공하면 정상적으로 종료한다.
+
+반면 검증에 실패하면 JobParametersInvalidException을 발생시킨다.
+
+Spring Batch는 기본적으로 `DefaultJobParametersValidator`를 제공한다.
+
+이 클래스는 requiredKeys와 optionalKeys를 이용해 파라미터의 키 존재 여부를 검사한다.
+
+```java
+new DefaultJobParametersValidator(
+        new String[]{"name", "date"},
+        new String[]{"count"}
+);
+```
+
+여기서 name과 date는 필수 키다.
+
+count는 선택 키다.
+
+따라서 필수 키가 모두 존재하면 선택 키가 없어도 검증에 성공한다.
+
+반면 필수 키가 하나라도 누락되면 예외가 발생한다.
+
+다만 DefaultJobParametersValidator는 실제 값의 형식이나 범위까지 검증하지 않는다.
+
+따라서 날짜 형식, 숫자 범위, 파라미터 간 관계 등을 검사해야 한다면 사용자 정의 Validator를 구현해야 한다.
+
+사용자 정의 Validator는 JobParametersValidator 인터페이스를 구현해 생성할 수 있다.
+
+```java
+public class CustomJobParametersValidator
+        implements JobParametersValidator {
+
+    @Override
+    public void validate(
+            JobParameters parameters
+    ) throws JobParametersInvalidException {
+
+        String name =
+                parameters.getString("name");
+
+        if (name == null || name.isBlank()) {
+
+            throw new JobParametersInvalidException(
+                    "name parameter is not found or empty"
+            );
+        }
+    }
+}
+```
+
+이후 JobBuilder에 등록한다.
+
+```java
+new JobBuilder("batchJob", jobRepository)
+        .validator(customValidator)
+        .start(step1)
+        .next(step2)
+        .build();
+```
+
+여기서 validator()는 검증을 즉시 수행하는 메서드가 아니다.
+
+Job 실행 과정에서 사용할 Validator를 등록하는 API다.
+
+실제 검증은 Job 실행 시점에 이루어진다.
+
+Spring Batch 5.2.4의 표준 JobLauncher 실행 경로에서는 크게 두 지점에서 검증이 수행될 수 있다.
+
+첫 번째는 TaskExecutorJobLauncher가 JobExecution을 생성하기 전이다.
+
+두 번째는 AbstractJob이 실제 Job 실행을 시작하기 전이다.
+
+따라서 첫 번째 검증에서 실패하면 JobExecution을 생성하지 않고 실행 요청이 거부된다.
+
+반면 JobExecution이 생성된 이후 AbstractJob에서 검증에 실패하면 해당 JobExecution이 실패 상태로 기록될 수 있다.
+
+또한 여러 Validator를 함께 사용해야 한다면 CompositeJobParametersValidator를 활용할 수 있다.
+
+이렇게 하면 필수 키 검증과 값 유효성 검증을 분리하면서도 하나의 Job에 적용할 수 있다.
+
+실무에서는 Validator를 단순한 입력값 검사 도구로만 생각하지 않는 것이 좋다.
+
+잘못된 파라미터로 인해 대량의 데이터베이스 작업이 수행되거나 외부 시스템에 잘못된 요청이 전달되는 상황을 방지하기 위한 중요한 실행 전 검증 단계이기 때문이다.
+
+특히 정산, 결제, 통계 집계, 외부 API 연동과 같은 배치에서는 파라미터의 존재 여부뿐 아니라 실제 값과 비즈니스 제약조건까지 확인하는 것이 중요하다.
+
+결국 **JobParametersValidator는 Spring Batch의 실행 진입점에서 잘못된 입력을 차단하고, Job이 유효한 파라미터를 기준으로 실행되도록 보장하는 핵심 검증 인터페이스**다.
+
+#### 한 줄 요약
+
+> Spring Batch의 `validator()` API는 JobParametersValidator를 Job에 등록하는 기능이다. `DefaultJobParametersValidator`는 requiredKeys와 optionalKeys를 이용해 필수 파라미터의 존재 여부를 확인하고, 사용자 정의 Validator는 날짜 형식이나 숫자 범위 등의 비즈니스 제약조건을 검증할 수 있다. Spring Batch 5.2에서는 표준 JobLauncher의 JobExecution 생성 전과 AbstractJob의 실행 시작 전에 검증이 수행될 수 있으며, 검증에 실패하면 정상적인 Step 실행으로 진행하지 않는다.
