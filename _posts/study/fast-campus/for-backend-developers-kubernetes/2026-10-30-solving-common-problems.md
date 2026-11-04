@@ -277,3 +277,80 @@ Readiness가 잠깐 성공한 뒤 잘못된 Liveness 때문에 종료되는 Pod�
 
 ### 정리
 반복 재시작은 종료 원인을, Ready 미도달은 준비 상태를 중심으로 조사한다. 이전 컨테이너 로그와 종료 상태, Probe 이벤트를 함께 읽고 **Readiness는 트래픽 제어, Liveness는 내부 장애 감지, Startup은 기동 보호**라는 역할을 구분해야 한다. 재시작을 반복하는 대신 애플리케이션 설정과 검사 경로, 기동 시간에 맞는 조건을 바로잡는 것이 해결의 핵심이다.
+
+
+## 04. Container Resource가 부족할 경우 생기는 문제 
+
+### CPU와 메모리 부족으로 발생하는 컨테이너 장애 진단하기
+
+애플리케이션의 자원이 부족하다고 해서 항상 명확한 오류가 남는 것은 아니다. 메모리 부족으로 컨테이너가 종료되기도 하지만, 실행은 유지한 채 응답만 느려지거나 Probe 실패가 반복되기도 한다. 특히 자원 부족이 Probe 실패로 이어지면 이벤트에는 종료의 직접적인 계기만 기록되므로, **종료 상태와 로그, 장애 직전의 자원 지표를 함께 확인해야 한다.**
+
+#### requests와 limits는 최소·최대 사용량이 아니다
+`requests`는 스케줄링과 자원 경합 시의 배분 등에 사용하는 요청량이지, 애플리케이션이 항상 그만큼 사용한다는 의미가 아니다. `limits`는 실행 중 사용을 제한하는 기준이다. Linux 환경에서는 CPU 제한이 주로 throttling으로 적용되고, 메모리 제한은 메모리 회수가 불가능한 상황에서 OOM 종료로 이어질 수 있다. CPU와 메모리는 제한에 도달했을 때의 동작이 다르다. [컨테이너 자원 관리](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/)
+다음은 기존 Deployment의 `spec.template.spec.containers` 아래 해당 컨테이너에 넣는 설정 예시다. 독립적으로 적용하는 리소스 파일은 아니며, 실제 수치는 부하 측정에 따라 결정해야 한다.
+```yaml
+resources:
+  requests:
+    cpu: "250m"
+    memory: "512Mi"
+  limits:
+    cpu: "1"
+    memory: "1Gi"
+```
+`requests.cpu`와 `requests.memory`는 배치 시 고려할 요청량이며, `limits.cpu`와 `limits.memory`는 실행 중 제한 기준이다. 위 설정에서 CPU 요청량은 `0.25` CPU이고 제한은 `1` CPU다. 여유가 있다면 요청량을 넘어 사용할 수 있지만, 제한량까지의 물리 자원이 항상 별도로 예약되는 것은 아니다. 메모리도 `512Mi`를 요청했다고 그 이하로 사용량이 내려가지 않는 것은 아니다.
+
+#### 재시작 원인은 Events와 Last State를 함께 확인한다
+다음 명령은 PowerShell 기준이다. Pod 이름과 컨테이너 이름은 실제 환경에 맞춘다.
+```powershell
+kubectl get pods -n sns -o wide
+$POD = "확인할-Pod-이름"
+$CONTAINER = "feed-server"
+kubectl describe pod $POD -n sns
+kubectl logs $POD -n sns -c $CONTAINER --previous --tail=200 --timestamps
+kubectl top pods -n sns --containers
+kubectl top nodes
+```
+`describe`의 `Events`에는 재시작이나 Probe 실패가 기록돼도 메모리 부족의 단서가 충분하지 않을 수 있다. 컨테이너 항목의 **`Last State`, `Reason`, `Exit Code`, 종료 시각**까지 확인한다. 예를 들어 `Last State: Terminated`, `Reason: OOMKilled`, `Exit Code: 137`이 함께 나타나면 OOM 종료를 중심으로 조사한다. 과거 `FailedScheduling` 이후 배치에 성공했다면 그 이벤트를 현재 재시작의 원인으로 곧바로 연결하지 말고 발생 순서를 구분한다.
+
+#### OOMKilled는 컨테이너 제한과 Node 상황을 구분한다
+Linux에서 메모리 부족에 따른 프로세스 종료는 커널의 OOM 처리와 관련된다. 컨테이너의 메모리 제한 범위에서 할당을 충족하지 못한 경우뿐 아니라 Node 전체의 메모리가 부족한 경우도 조사해야 한다. `OOMKilled`가 보인다는 이유만으로 “컨테이너 limits가 너무 작다”는 결론부터 내리지 않는다. 해당 컨테이너의 제한량, 종료 직전 사용량, Node 상태와 커널 기록을 함께 확인한다.
+Node 압력으로 kubelet이 Pod를 퇴거시키는 **Eviction은 컨테이너 OOM 종료와 다른 동작**이다. OOM으로 종료된 컨테이너는 같은 Pod 안에서 재시작할 수 있지만, 퇴거된 Pod는 일반적으로 `Failed`와 `Evicted`로 남고 Deployment 등의 컨트롤러가 대체 Pod를 생성한다. [Node 메모리 압력과 OOM 처리](https://kubernetes.io/docs/concepts/scheduling-eviction/node-pressure-eviction/)
+종료 코드 `137`은 통상 `128 + 9`, 즉 `SIGKILL`과 연결되지만 이것만으로 OOM을 확정할 수는 없다. 종료 유예 시간 초과 등 다른 강제 종료 경로도 있기 때문이다. 또한 `SIGKILL`을 받은 프로세스는 정상적인 종료 처리를 수행할 기회가 없으므로, 로그가 기동 도중 갑자기 끊기고 예외나 종료 메시지가 남지 않을 수 있다. **로그에 오류가 없다는 사실은 정상 종료의 증거가 아니다.** [OOM 이벤트 진단](https://docs.cloud.google.com/kubernetes-engine/docs/troubleshooting/oom-events)
+
+#### JVM Heap과 컨테이너 메모리는 서로 다르다
+Java 애플리케이션의 메모리는 Heap만으로 구성되지 않는다. Metaspace, Code Cache, 스레드 스택, Direct Buffer, 네이티브 라이브러리 등도 메모리를 사용한다. 컨테이너 메모리 제한이 `1Gi`인데 최대 Heap을 그와 동일하게 잡으면 다른 영역이 사용할 여유가 부족해질 수 있다. `-Xmx`나 `-XX:MaxRAMPercentage`는 전체 컨테이너 메모리 제한과 구분해 결정해야 한다. [Java 컨테이너의 메모리 설정](https://learn.microsoft.com/en-us/azure/developer/java/containers/overview)
+**JVM의 `OutOfMemoryError`와 Kubernetes에서 관찰하는 `OOMKilled`도 구분해야 한다.** `Java heap space`는 Heap 할당 실패를, `Metaspace`는 클래스 메타데이터 영역의 문제를 가리킬 수 있다. JVM 내부에서 오류가 발생하더라도 반드시 즉시 전체 프로세스가 종료되는 것은 아니며, 오류가 발생한 스레드와 실행 옵션 등에 따라 결과가 달라진다. 반대로 커널이 프로세스를 종료하면 Java 예외가 남지 않을 수 있다. [JVM 메모리 부족 진단](https://docs.oracle.com/en/java/javase/25/troubleshoot/troubleshooting-memory-leaks.html)
+GC가 있다는 이유로 컨테이너 OOM이 잘 발생하지 않는다고 가정해서도 안 된다. GC는 참조가 유지되는 객체를 마음대로 제거할 수 없고 모든 네이티브 메모리를 관리하지도 않는다. Heap이 빠듯하면 GC 빈도와 소요 시간이 늘어 CPU를 소비하고 응답 지연을 만들 수 있다. 사용량이 낮아지는지만 볼 것이 아니라, **GC 이후 남는 메모리와 GC에 소비한 시간, 객체 할당 속도**까지 확인해야 한다.
+
+#### CPU 부족은 종료보다 지연으로 먼저 나타날 수 있다
+CPU가 부족하면 일반적으로 처리량이 줄고 요청 대기 시간이 늘어난다. CPU 제한에 도달했다는 이유만으로 메모리 OOM처럼 바로 컨테이너가 종료되는 것은 아니다. 다만 제한된 CPU 시간 때문에 상태 확인 요청에도 제때 응답하지 못하면, 결과적으로 Liveness나 Startup 실패가 컨테이너 재시작을 유발할 수 있다.
+`100m`는 `0.1` CPU를 뜻한다. 그러나 **`requests.cpu: 100m`와 `limits.cpu: 100m`는 다르다.** 요청량만 `100m`라면 여유 자원을 더 사용할 수 있지만, 제한이 `100m`라면 CPU 사용 시간이 강하게 제한될 수 있다. 이는 특정 물리 코어의 성능을 10%로 낮춘다는 의미도, 반드시 물리 코어 하나에 고정한다는 의미도 아니다.
+```mermaid
+flowchart TD
+    A["CPU 경합 또는 CPU 제한"] --> B["기동과 요청 처리 지연"]
+    B --> C["Probe 응답 시간 초과"]
+    C --> D["Liveness 또는 Startup 연속 실패"]
+    D --> E["컨테이너 재시작과 초기화 반복"]
+```
+
+#### 기동 중 CPU 부족과 실행 중 과부하를 나눠 본다
+Spring Boot는 기동하면서 클래스 로딩, Bean 생성, JIT 컴파일, 연결 초기화 등을 수행한다. 충분한 CPU에서는 15초에 끝나던 초기화가 제한된 환경에서는 훨씬 오래 걸릴 수 있다. 이때 기존 `initialDelaySeconds: 30`이 더 이상 충분하지 않으면 기동을 끝내기도 전에 종료와 재시작을 반복할 수 있다. 경계에 걸린 설정에서는 어떤 실행은 성공하고 다른 실행은 실패해 간헐적인 문제처럼 보이기도 한다.
+느린 기동은 Startup Probe로 보호하되, 대기 시간만 계속 늘리는 것으로 해결하지 않는다. 기동 시간 분포와 CPU 제한을 함께 측정하고, 초기화 작업 최적화와 적정 자원 확보를 검토한다. 수 분의 기동 시간이 필요한 서비스도 있으므로 긴 설정 자체가 잘못은 아니지만, **의도한 초기화 시간인지 자원 부족으로 불필요하게 늘어난 시간인지**는 구분해야 한다.
+실행 중에는 트래픽 증가, CPU 경합, GC 증가, 스레드 풀이나 커넥션 풀 대기가 Probe 지연을 만들 수 있다. 이때 이벤트에는 Liveness 실패만 남아도 실제 원인은 과부하일 수 있다. 반대로 스레드 풀이 DB 응답을 기다리며 소진된 경우에는 CPU 사용량이 높지 않을 수도 있다. CPU 집약적 작업과 I/O 대기 작업을 같은 지표 패턴으로 판단하지 않는다.
+
+#### Readiness를 먼저 실패하게 만드는 전략에도 한계가 있다
+Readiness를 Liveness보다 빠르게 실패하도록 설계하면, 재시작 전에 일반적인 Service 트래픽 대상에서 제외해 일시적인 부하 완화를 기대할 수 있다. 예를 들어 Readiness의 검사 주기나 연속 실패 임계값을 더 짧게 설정하는 방식이다. 단, Readiness 실패 자체는 컨테이너를 재시작하지 않으며 이미 진행 중인 요청이나 별도 경로의 트래픽까지 모두 중단하는 것도 아니다.
+남은 Pod에 트래픽이 몰리면 다른 Pod도 연쇄적으로 준비 상태를 잃을 수 있다. 짧은 과부하마다 Liveness로 재시작하면 가용 용량과 캐시까지 줄어 상황이 악화될 수 있으므로, Liveness는 단순한 부하 감지기가 아니라 **재시작이 필요한 내부 장애를 판단하는 검사**로 설계한다. Readiness 조정은 확장·요청 제한·백프레셔를 대체하지 않는다. [Probe 오설정과 연쇄 장애](https://kubernetes.io/docs/concepts/workloads/pods/probes/)
+
+#### 재시작 직전의 지표를 같은 시간축에서 확인한다
+`kubectl top`은 현재 사용량을 확인하는 출발점이지만 장애 직전의 순간 최대값을 복원하지는 못한다. 재시작한 컨테이너의 메모리가 낮아졌다고 메모리 부족을 배제할 수 없다. Metrics Server가 없거나 데이터가 아직 준비되지 않았다면 조회가 실패할 수도 있다. 과거 분석에는 Prometheus와 Grafana 같은 지속 수집 체계가 필요하다. [kubectl top의 용도](https://kubernetes.io/docs/reference/kubectl/generated/kubectl_top/)
+장애 시각을 기준으로 요청량·오류율·응답 시간의 p95/p99, 컨테이너 CPU와 메모리, JVM Heap과 GC 시간, 작업 스레드와 커넥션 풀 대기, Probe 실패와 재시작을 함께 비교한다. Pod 합계만 보면 특정 컨테이너의 제한 도달을 놓칠 수 있으므로 컨테이너 단위로도 분리한다. 메모리 Working Set과 실제 메모리 제한 판정에 사용되는 값도 완전히 같다고 가정하지 않는다.
+CPU 제한이 의심된다면 사용량 외에 `container_cpu_cfs_throttled_periods_total`과 `container_cpu_cfs_periods_total` 등의 증가율도 살펴본다. 두 값으로 계산한 비율은 **제한 주기 중 throttling이 발생한 주기의 비율**이지, 그대로 CPU 사용률이나 성능 손실률을 의미하지 않는다. 지표 제공 여부는 수집 환경에 따라 다르며, 지연과 같은 시점에 증가했는지 확인해야 한다. [cAdvisor의 CPU 지표](https://github.com/google/cadvisor/blob/master/docs/storage/prometheus.md)
+
+#### 자원 증설과 코드 개선을 함께 검증한다
+메모리 제한이 정상적인 최대 사용량보다 작다면 여유를 확보하되, 누수가 의심되면 Heap·네이티브 메모리 분석을 병행한다. Heap Dump는 JVM OOM과 커널 OOM에서 생성 조건이 다르고 디스크 용량과 민감 정보 문제도 있으므로 사전에 수집 정책을 준비한다. CPU는 과도한 제한, Node 경합, 비효율적인 연산, GC 비용을 구분해 조정한다. 무한히 커지는 큐나 캐시를 자원 증설만으로 해결하려고 해서는 안 된다.
+여러 인스턴스로 분산 가능한 부하라면 레플리카 증가나 HPA도 검토한다. 다만 HPA는 Node 용량을 직접 늘리지 않으며, CPU 사용률 기반 설정은 requests를 기준으로 계산하므로 요청량 변경이 확장 판단에도 영향을 준다. 자원 증설 뒤 새 Pod가 `Pending`에 머무르지 않는지까지 확인한다. [HPA의 동작](https://kubernetes.io/docs/concepts/workloads/autoscaling/horizontal-pod-autoscale/)
+변경은 Deployment YAML이나 Helm values 등 관리 원본에 반영한다. 이후 기동 시간, Ready 안정성, 재시작 횟수뿐 아니라 동일한 부하에서의 지연·오류율·throttling·GC를 비교한다. **현재 한 번 실행됐다는 사실보다, 기동과 예상 부하 구간에서 충분한 여유를 유지하는지**가 개선 여부를 판단하는 기준이다.
+
+### 정리
+자원 부족은 OOM 종료, 느린 기동, 응답 지연, Probe 실패처럼 서로 다른 모습으로 나타난다. `OOMKilled`와 JVM `OutOfMemoryError`, CPU 사용량과 throttling, 컨테이너 재시작과 Pod 퇴거를 구분하고 장애 직전의 지표를 함께 확인해야 한다. Probe 시간을 늘리거나 자원만 추가하는 데서 멈추지 않고, 실제 병목과 정상적인 자원 수요를 측정하는 것이 안정적인 운영의 출발점이다.
