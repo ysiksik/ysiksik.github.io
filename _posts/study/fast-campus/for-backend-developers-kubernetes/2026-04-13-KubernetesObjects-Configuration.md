@@ -222,7 +222,7 @@ env:
 
 예:
 
-```
+```text
 KUBERNETES_SERVICE_HOST
 KUBERNETES_SERVICE_PORT
 HOSTNAME
@@ -508,7 +508,7 @@ spec:
 
 컨테이너 내부:
 
-```
+```text
 /config-files/welcome.sh
 ```
 

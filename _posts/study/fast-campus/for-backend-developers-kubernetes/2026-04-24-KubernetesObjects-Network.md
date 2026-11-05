@@ -495,9 +495,9 @@ graph LR
 
 ```mermaid
 graph TD
-    PodInternal[Pod 내부 localhost 통신]
-    Service[Service 통한 Pod 간 통신]
-    Ingress[Ingress 통한 외부 접근]
+    PodInternal["Pod 내부 localhost 통신"]
+    Service["Service 통한 Pod 간 통신"]
+    Ingress["Ingress 통한 외부 접근"]
 
     PodInternal --> Service
     Service --> Ingress

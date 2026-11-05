@@ -59,11 +59,11 @@ comments: true
 
 ```mermaid
 graph LR
-    A[Codebase] --> B[Config]
-    B --> C[Build Release Run]
-    C --> D[Processes]
-    D --> E[Concurrency]
-    E --> F[Logs]
+    A["Codebase"] --> B["Config"]
+    B --> C["Build Release Run"]
+    C --> D["Processes"]
+    D --> E["Concurrency"]
+    E --> F["Logs"]
 ```
 
 ---
@@ -298,8 +298,8 @@ graph LR
 
 ```mermaid
 graph LR
-    A[Build] --> B[Release]
-    B --> C[Run]
+    A["Build"] --> B["Release"]
+    B --> C["Run"]
 ```
 
 ---
@@ -750,10 +750,10 @@ MSA(Microservice Architecture)를 안정적으로 운영하기 위한 다양한 
 
 ```mermaid
 graph TD
-    A[Build Deploy]
-    B[Scalability]
-    C[Service Discovery]
-    D[Management]
+    A["Build Deploy"]
+    B["Scalability"]
+    C["Service Discovery"]
+    D["Management"]
 
     A --> B
     B --> C
@@ -796,11 +796,11 @@ Kubernetes는 이 구조를 굉장히 잘 지원한다.
 
 ```mermaid
 graph LR
-    A[Source Code]
-    B[Container Image]
-    C[ConfigMap Secret]
-    D[Namespace]
-    E[Deployment]
+    A["Source Code"]
+    B["Container Image"]
+    C["ConfigMap Secret"]
+    D["Namespace"]
+    E["Deployment"]
 
     A --> B
     C --> E
@@ -1034,9 +1034,9 @@ Kubernetes는 Stateless 기반 수평 확장 구조를 매우 잘 지원한다.
 
 ```mermaid
 graph TD
-    A[Pod]
-    A --> B[Container]
-    A --> C[Container]
+    A["Pod"]
+    A --> B["Container"]
+    A --> C["Container"]
 ```
 
 ---

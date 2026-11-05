@@ -57,20 +57,20 @@ Namespace는
 
 ```mermaid
 graph TD
-    Cluster[Kubernetes Cluster]
+    Cluster["Kubernetes Cluster"]
 
-    Cluster --> Dev[dev Namespace]
-    Cluster --> Stage[stage Namespace]
-    Cluster --> Prod[production Namespace]
+    Cluster --> Dev["dev Namespace"]
+    Cluster --> Stage["stage Namespace"]
+    Cluster --> Prod["production Namespace"]
 
-    Dev --> DevPod[Pod]
-    Dev --> DevSvc[Service]
+    Dev --> DevPod["Pod"]
+    Dev --> DevSvc["Service"]
 
-    Stage --> StagePod[Pod]
-    Stage --> StageSvc[Service]
+    Stage --> StagePod["Pod"]
+    Stage --> StageSvc["Service"]
 
-    Prod --> ProdPod[Pod]
-    Prod --> ProdSvc[Service]
+    Prod --> ProdPod["Pod"]
+    Prod --> ProdSvc["Service"]
 ```
 
 ---
@@ -117,12 +117,12 @@ Namespace는 논리적 분리일 뿐
 
 ```mermaid
 graph TD
-    Node1[node-01]
-    Node2[node-02]
-    Node3[node-03]
+    Node1["node-01"]
+    Node2["node-02"]
+    Node3["node-03"]
 
-    Dev[dev Namespace]
-    Prod[production Namespace]
+    Dev["dev Namespace"]
+    Prod["production Namespace"]
 
     Dev -. 사용 가능 .-> Node1
     Dev -. 사용 가능 .-> Node2
@@ -326,8 +326,8 @@ curl http://my-service.production.svc.cluster.local:8080
 
 ```mermaid
 graph LR
-    DevPod[Pod in dev Namespace]
-    ProdService[Service in production Namespace]
+    DevPod["Pod in dev Namespace"]
+    ProdService["Service in production Namespace"]
 
     DevPod --> ProdService
 ```
@@ -402,14 +402,14 @@ my-service.production.svc.cluster.local
 
 ```mermaid
 graph TD
-    Cluster[Kubernetes Cluster]
+    Cluster["Kubernetes Cluster"]
 
-    Cluster --> Dev[dev]
-    Cluster --> Stage[stage]
-    Cluster --> Prod[production]
+    Cluster --> Dev["dev"]
+    Cluster --> Stage["stage"]
+    Cluster --> Prod["production"]
 
-    Dev --> DevPod[Pod]
-    Prod --> ProdSvc[Service]
+    Dev --> DevPod["Pod"]
+    Prod --> ProdSvc["Service"]
 
     DevPod --> ProdSvc
 ```
@@ -480,9 +480,9 @@ NetworkPolicy는
 
 ```mermaid
 graph LR
-    DevPod[Pod in dev]
-    GatewayPod[Gateway Pod]
-    AppPod[app=my-app]
+    DevPod["Pod in dev"]
+    GatewayPod["Gateway Pod"]
+    AppPod["app=my-app"]
 
     DevPod --> AppPod
     GatewayPod --> AppPod
@@ -525,10 +525,10 @@ spec:
 
 ```mermaid
 graph LR
-    DevPod[dev Namespace Pod]
-    GatewayPod[role=gateway]
-    FrontPod[role=front]
-    AppPod[app=my-app]
+    DevPod["dev Namespace Pod"]
+    GatewayPod["role=gateway"]
+    FrontPod["role=front"]
+    AppPod["app=my-app"]
 
     DevPod -->|허용| AppPod
     GatewayPod -->|허용| AppPod
@@ -760,11 +760,11 @@ spec:
 
 ```mermaid
 graph LR
-    AppPod[app=my-app]
+    AppPod["app=my-app"]
 
-    ProdFront[production + role=front]
-    DevPod[dev Pod]
-    Gateway[role=gateway]
+    ProdFront["production + role=front"]
+    DevPod["dev Pod"]
+    Gateway["role=gateway"]
 
     AppPod -->|허용| ProdFront
     AppPod -. 차단 .-> DevPod
@@ -919,7 +919,7 @@ ServiceAccount는:
 ```mermaid
 graph LR
     Pod --> ServiceAccount
-    ServiceAccount --> KubernetesAPI[Kubernetes API]
+    ServiceAccount --> KubernetesAPI["Kubernetes API"]
 ```
 
 ---
@@ -1049,9 +1049,9 @@ rules:
 
 ```mermaid
 graph LR
-    SA[ServiceAccount]
-    Role[Role]
-    Pod[Pods]
+    SA["ServiceAccount"]
+    Role["Role"]
+    Pod["Pods"]
 
     SA --> Role
     Role -->|get/list/watch| Pod
@@ -1201,10 +1201,10 @@ roleRef:
 
 ```mermaid
 graph LR
-    SA[my-service-account]
-    RB[RoleBinding]
-    Role[pod-reader]
-    Pod[pods]
+    SA["my-service-account"]
+    RB["RoleBinding"]
+    Role["pod-reader"]
+    Pod["pods"]
 
     SA --> RB
     RB --> Role

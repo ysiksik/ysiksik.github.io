@@ -55,6 +55,32 @@ kubectl get events -n sns --field-selector "involvedObject.kind=Pod,involvedObje
 ```
 `$POD`에는 실제 이름을 넣는다. `describe`에서 `Node`, `Conditions`의 `PodScheduled`, 마지막 `Events`를 확인한다. `PodScheduled=False`와 `FailedScheduling`이 함께 나타나면 스케줄러가 실행할 Node를 찾지 못한 것이다. 반대로 Node가 배정됐다면 `FailedMount`, 이미지 다운로드 실패, Pod 네트워크 생성 실패 등을 조사해야 한다. 컨테이너가 아직 시작되지 않았다면 조회할 애플리케이션 로그가 없을 수도 있다.
 
+#### 예시 결과를 읽으며 스케줄링 실패를 좁혀 보기
+
+다음은 실제 클러스터 측정값이 아니라 결과 해석을 위한 예시다.
+
+```text
+NAME                    READY   STATUS    RESTARTS   NODE
+feed-server-old-a        1/1     Running   0          worker-a
+feed-server-old-b        1/1     Running   0          worker-b
+feed-server-old-c        1/1     Running   0          worker-c
+feed-server-new-d        0/1     Pending   0          <none>
+```
+
+기존 세 Pod는 실행 중이지만 새 Pod의 NODE는 비어 있다. 이때부터 애플리케이션 초기화 코드나 DB 비밀번호를 조사하면 아직 도달하지 않은 단계를 살펴보는 셈이다. 먼저 새 Pod의 `PodScheduled` 조건과 `FailedScheduling` 메시지를 읽어야 한다.
+
+예를 들어 각 Node의 CPU Allocatable이 `1900m`이고 이미 배치된 Pod들의 요청량 합계가 다음과 같다고 가정하자.
+
+| Node | Allocatable | 기존 CPU requests 합계 | 계산상 여유 |
+|---|---|---|---|
+| worker-a | 1900m | 1700m | 200m |
+| worker-b | 1900m | 1600m | 300m |
+| worker-c | 1900m | 1800m | 100m |
+
+새 Pod가 `500m`를 요청하면 전체 여유의 합은 `600m`여도 어느 Node에도 들어가지 못한다. 하나의 Pod를 여러 Node의 CPU 조각에 나누어 배치할 수 없기 때문이다. 여기에 메모리와 배치 조건까지 만족해야 한다.
+
+따라서 공간을 확보했다는 말도 “클러스터 합계가 늘었다”가 아니라 “배치 가능한 Node 하나가 해당 Pod의 모든 조건을 만족하게 됐다”는 의미여야 한다. CPU 부족 이벤트를 보고 메모리만 줄여도 문제가 해결되지 않는 이유가 여기에 있다.
+
 #### FailedScheduling 메시지에서 원인을 찾는다
 예를 들어 `0/3 nodes are available: 3 Insufficient cpu`는 평가한 3개 Node 모두 새 Pod의 CPU 요청량을 수용하지 못했다는 의미다. CPU 사용률이 100%라는 뜻은 아니다. `Insufficient memory`는 메모리 요청량 부족을, `untolerated taint`는 허용하지 않은 Taint를, `didn't match Pod's node affinity/selector`는 배치 조건 불일치를 가리킨다. 한 이벤트에 여러 원인이 함께 나타날 수 있으므로 전체 메시지를 읽어야 한다.
 
@@ -140,6 +166,24 @@ flowchart TD
 
 자동화된 환경에서도 빌드와 배포 파이프라인이 분리되어 있으면 같은 문제가 발생한다. 배포 단계가 이미지 업로드 완료를 확인하지 않고 먼저 실행되거나 서로 다른 태그 변수를 사용하기 때문이다. **빌드 → push 완료 확인 → 배포 이미지 참조 갱신 → 롤아웃 확인** 순서를 연결하고, 가능하면 빌드 결과의 digest까지 배포 정보로 전달해 어떤 이미지를 배포했는지 추적할 수 있게 한다.
 
+#### 이미지 오류 메시지와 수정 결과를 연결하기
+
+이미지 주소가 `registry.example.com/sns/feed-server:0.5`인데 저장소에는 `0.1.4`만 존재한다고 가정하자. 이벤트에서 다음과 같은 순서를 볼 수 있다. 상세 문구는 런타임과 레지스트리에 따라 달라진다.
+
+```text
+Pulling  Pulling image "registry.example.com/sns/feed-server:0.5"
+Failed   Failed to pull image: manifest unknown
+Failed   Error: ErrImagePull
+BackOff  Back-off pulling image
+Failed   Error: ImagePullBackOff
+```
+
+여기서 `BackOff`는 재시도 정책의 결과이고, 먼저 조사할 단서는 `manifest unknown`과 실제 이미지 참조다. 배포 대상이 원래 `0.1.4`였다면 원본 설정을 바로잡고, `0.5`를 배포하려던 것이 맞다면 그 빌드가 push까지 완료됐는지 확인한다. 두 상황은 서로 다른 수정이 필요하다.
+
+반대로 `unauthorized`가 보이면 태그를 임의로 바꾸기보다 인증 주체와 저장소 주소를 먼저 확인한다. 올바른 주소에 로그인했더라도 다른 계정이나 다른 리전의 저장소를 참조하면 같은 자격 증명으로 접근하지 못할 수 있다.
+
+수정 후 `Pulled`, `Created`, `Started`가 나타나면 이미지 준비와 프로세스 시작까지 진행된 것이다. 이 시점부터 DB 연결이나 Probe 실패가 드러날 수도 있다. 첫 오류가 사라졌다고 이후 단계까지 모두 정상이라고 판단하지 않고 실패 단계가 어디로 이동했는지를 확인한다.
+
 #### Private Registry라면 인증 정보도 확인한다
 `unauthorized`, `authentication required`, `denied`, `no basic auth credentials` 등이 보이면 인증과 권한을 조사한다. 자격 증명이 틀렸거나 만료됐을 수도 있고, 로그인은 가능하지만 해당 저장소의 pull 권한이 없을 수도 있다. 로컬 PC의 `docker login` 성공은 Node가 같은 자격 증명을 사용한다는 뜻이 아니다.
 
@@ -190,7 +234,7 @@ kubectl get pods -n sns -o wide
 ### 정리
 `ImagePullBackOff`는 원인 자체가 아니라 이미지 다운로드 실패 후 재시도를 기다리는 상태다. Pod 이벤트와 실제 이미지 주소를 확인하고, **이름·태그 오류인지, 업로드 누락인지, 인증·권한 문제인지**부터 구분한다. 원인을 바로잡은 뒤에는 이미지 다운로드 성공에서 멈추지 않고 컨테이너 실행, Ready 상태, 실제 요청 처리까지 확인해야 한다.
 
-## 03. Container Resource가 부족할 경우 생기는 문제
+## 03. 컨테이너 재시작과 Ready 상태 문제
 
 ### 컨테이너가 반복해서 재시작하거나 Ready 상태가 되지 않을 때
 
@@ -237,6 +281,29 @@ kubectl exec $POD -n sns -c $CONTAINER -- curl -i --connect-timeout 2 --max-time
 kubectl exec $POD -n sns -c $CONTAINER -- curl -i --connect-timeout 2 --max-time 5 http://127.0.0.1:8080/actuator/health/readiness
 ```
 여기서 중요한 점은 **컨테이너 내부의 localhost 호출이 kubelet의 HTTP Probe와 같은 경로는 아니라는 것**이다. kubelet은 기본적으로 Node에서 Pod IP의 지정 포트로 접근하며 Service나 Ingress를 거치지 않는다. localhost 호출이 성공해도 애플리케이션이 루프백 주소에만 바인딩돼 있거나 Node에서 Pod로 가는 경로에 문제가 있으면 Probe는 실패할 수 있다. 따라서 네트워크 문제를 처음부터 배제하지 않는다. [HTTP Probe의 동작](https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/)
+
+#### 실행 중인 프로세스와 준비된 서비스를 구분하는 예시
+
+다음은 두 상황을 비교하기 위한 예시다.
+
+```text
+상황 A: READY 0/1, STATUS Running, RESTARTS 0
+상황 B: READY 0/1, STATUS CrashLoopBackOff, RESTARTS 5
+```
+
+상황 A에서 이벤트가 `Readiness probe failed: HTTP probe failed with statuscode: 404`라면 프로세스는 유지되지만 검사 경로가 잘못됐을 가능성이 있다. 실제 등록된 경로가 `/actuator/health/readiness`인데 YAML에 `/actuator/health/ready`를 적었다면 기다리는 시간을 늘려도 해결되지 않는다.
+
+상황 B에서는 직전 컨테이너의 종료 원인을 확인해야 한다. 같은 404가 Liveness에서 발생하고 `Killing` 이벤트로 이어졌다면, 정상 서버를 잘못된 검사 경로 때문에 종료하고 있을 수 있다. 이 경우 애플리케이션의 일반 요청 로그에는 특별한 예외가 없어도 설명이 된다.
+
+검사는 다음 순서로 좁힌다.
+
+1. 실행 중인 이미지 버전과 실제 Probe의 경로·포트를 대조한다.
+2. localhost 요청으로 애플리케이션의 해당 경로가 제공되는지 확인한다.
+3. localhost는 성공하지만 Probe가 실패하면 Pod IP 접근과 바인딩·네트워크 조건을 확인한다.
+4. `401`이면 보안 설정을, `503`이면 상태 판정과 의존성을, timeout이면 처리 지연과 자원 상황을 조사한다.
+5. 수정한 이미지나 설정을 배포하고 재시작 횟수 증가가 멈추는지 관찰한다.
+
+이렇게 관찰 결과를 나누면 “재시작하니까 일단 Probe 시간을 늘린다”는 식의 임시 대응을 줄일 수 있다.
 
 #### Spring Boot의 상태 확인 엔드포인트를 맞춘다
 Actuator를 사용한다면 `spring-boot-starter-actuator` 의존성과 Health Probe 그룹 활성화 여부를 확인한다. 기본 경로는 `/actuator/health/liveness`와 `/actuator/health/readiness`이며, 필요하면 `management.endpoint.health.probes.enabled=true`로 명시적으로 활성화할 수 있다. 경로나 관리 포트를 변경했다면 Probe도 이에 맞춰야 한다.
@@ -338,6 +405,24 @@ Spring Boot는 기동하면서 클래스 로딩, Bean 생성, JIT 컴파일, 연
 느린 기동은 Startup Probe로 보호하되, 대기 시간만 계속 늘리는 것으로 해결하지 않는다. 기동 시간 분포와 CPU 제한을 함께 측정하고, 초기화 작업 최적화와 적정 자원 확보를 검토한다. 수 분의 기동 시간이 필요한 서비스도 있으므로 긴 설정 자체가 잘못은 아니지만, **의도한 초기화 시간인지 자원 부족으로 불필요하게 늘어난 시간인지**는 구분해야 한다.
 실행 중에는 트래픽 증가, CPU 경합, GC 증가, 스레드 풀이나 커넥션 풀 대기가 Probe 지연을 만들 수 있다. 이때 이벤트에는 Liveness 실패만 남아도 실제 원인은 과부하일 수 있다. 반대로 스레드 풀이 DB 응답을 기다리며 소진된 경우에는 CPU 사용량이 높지 않을 수도 있다. CPU 집약적 작업과 I/O 대기 작업을 같은 지표 패턴으로 판단하지 않는다.
 
+#### 메모리 증가와 CPU 제한을 지표로 비교하는 예시
+
+메모리 제한이 `1Gi`인 컨테이너가 재시작됐는데 현재 사용량은 `300Mi`라고 가정하자. 현재 값은 새 프로세스의 사용량일 수 있다. 종료 직전 `950Mi` 이상으로 증가한 그래프와 `OOMKilled` 기록이 함께 있다면 메모리 수요와 제한량을 조사할 근거가 된다. 다만 수집 간격 사이의 순간 증가를 놓칠 수 있으므로 그래프가 제한을 찍지 않았다고 OOM을 배제하지 않는다.
+
+JVM Heap 사용량이 낮았다는 사실도 컨테이너 전체 메모리가 낮았다는 뜻은 아니다. 스레드 수와 Direct Buffer, Metaspace 등 Heap 밖의 수요를 같이 확인한다. Heap을 늘리면 오히려 네이티브 영역의 여유를 줄일 수도 있다.
+
+CPU는 다른 방식으로 읽는다. `limits.cpu: 100m`에서 사용량이 `100m` 근처에 머물고 요청 지연과 throttling이 동시에 증가한다면 제한 때문에 대기하는 상황을 의심할 수 있다. 낮은 사용량 그래프만 보고 “CPU가 남는다”고 해석해서는 안 된다. 그래프의 단위와 비교 기준이 Node 전체인지 컨테이너 제한량인지 먼저 확인한다.
+
+다음 두 변경은 목적이 다르다.
+
+| 변경 | 기대 효과 | 함께 검증할 내용 |
+|---|---|---|
+| CPU requests 상향 | 배치와 경합 시 배분 기준 조정 | Node 여유, 스케줄링, HPA 판단 변화 |
+| CPU limits 상향 | CPU 시간 상한으로 인한 대기 완화 가능 | 실제 Node 용량, 지연, throttling |
+| 메모리 limits 상향 | 컨테이너 제한 범위의 여유 증가 | 전체 메모리, JVM 옵션, 누수, Node 압력 |
+
+변경 전후에는 같은 요청량과 데이터 규모를 사용한다. 부하를 줄인 뒤 자원만 늘려 응답이 빨라졌다면 어느 요인의 효과인지 분리할 수 없다.
+
 #### Readiness를 먼저 실패하게 만드는 전략에도 한계가 있다
 Readiness를 Liveness보다 빠르게 실패하도록 설계하면, 재시작 전에 일반적인 Service 트래픽 대상에서 제외해 일시적인 부하 완화를 기대할 수 있다. 예를 들어 Readiness의 검사 주기나 연속 실패 임계값을 더 짧게 설정하는 방식이다. 단, Readiness 실패 자체는 컨테이너를 재시작하지 않으며 이미 진행 중인 요청이나 별도 경로의 트래픽까지 모두 중단하는 것도 아니다.
 남은 Pod에 트래픽이 몰리면 다른 Pod도 연쇄적으로 준비 상태를 잃을 수 있다. 짧은 과부하마다 Liveness로 재시작하면 가용 용량과 캐시까지 줄어 상황이 악화될 수 있으므로, Liveness는 단순한 부하 감지기가 아니라 **재시작이 필요한 내부 장애를 판단하는 검사**로 설계한다. Readiness 조정은 확장·요청 제한·백프레셔를 대체하지 않는다. [Probe 오설정과 연쇄 장애](https://kubernetes.io/docs/concepts/workloads/pods/probes/)
@@ -354,3 +439,170 @@ CPU 제한이 의심된다면 사용량 외에 `container_cpu_cfs_throttled_peri
 
 ### 정리
 자원 부족은 OOM 종료, 느린 기동, 응답 지연, Probe 실패처럼 서로 다른 모습으로 나타난다. `OOMKilled`와 JVM `OutOfMemoryError`, CPU 사용량과 throttling, 컨테이너 재시작과 Pod 퇴거를 구분하고 장애 직전의 지표를 함께 확인해야 한다. Probe 시간을 늘리거나 자원만 추가하는 데서 멈추지 않고, 실제 병목과 정상적인 자원 수요를 측정하는 것이 안정적인 운영의 출발점이다.
+
+## 05. Pod의 네트워크 관련 문제
+
+### Pod는 정상인데 서비스 호출이 실패할 때 네트워크 문제 진단하기
+
+Pod가 `Running`이고 Ready 상태라고 해서 모든 통신이 정상이라는 뜻은 아니다. 피드 서버가 사용자 정보를 조회하는 것처럼 다른 서비스에 의존하는 기능은 DNS, Service 설정, 네트워크 정책, 대상 서버 상태에 따라 실패할 수 있다. 이때 Kubernetes 이벤트에는 별다른 문제가 없고 애플리케이션 로그에만 오류가 남기도 한다. **Pod의 정상 상태와 실제 요청 경로의 정상 여부를 구분하는 것**이 진단의 출발점이다.
+
+#### 오류가 발생한 계층부터 구분한다
+주소·포트·경로 같은 설정 문제와 CNI·라우팅·방화벽 같은 통신 경로 문제로 나누면 조사 방향을 잡기 쉽다. 다만 오류 메시지 하나로 원인을 확정해서는 안 된다. 시간 초과도 네트워크 차단뿐 아니라 대상 서버의 과부하나 커넥션 풀 대기 때문에 발생할 수 있다.
+| 관찰한 오류 | 우선 확인할 대상 | 해석할 때의 주의점 |
+|---|---|---|
+| `UnknownHostException`, `Could not resolve host` | 호스트 이름, Namespace, DNS | 주소 오타뿐 아니라 DNS 서버 접근 실패도 가능하다. |
+| `Connection refused` | 대상 포트, 서버 리스닝 상태, Service 백엔드 | 애플리케이션에 정상 연결됐다는 뜻은 아니다. |
+| 연결 시간 초과 | 라우팅, 방화벽, 정책, 대상 상태 | 응답 대기 시간 초과와 구분해야 한다. |
+| 응답 시간 초과 | 대상 처리 지연, 과부하, 중간 프록시 | 서버가 요청을 받았지만 처리하지 못했을 수도 있다. |
+| HTTP `404`, `401`, `403` | 경로, 라우팅, 인증·인가 | HTTP 응답을 받은 것이므로 단순 연결 실패와 다르다. |
+HTTP `404`는 애플리케이션이나 프록시 등 어떤 HTTP 처리 주체까지 요청이 도달했다는 단서다. 하지만 의도한 서버가 응답했다는 보장은 없다. 응답 본문·헤더와 서버 로그를 대조해 어디서 반환한 상태 코드인지 확인한다.
+
+#### 실제 요청을 처리한 Pod의 로그를 찾는다
+레플리카가 여러 개라면 오류가 특정 Pod에만 기록될 수 있다. 요청 시각과 추적 ID를 기준으로 로그를 찾고, 호출 대상 주소와 예외의 하위 원인을 확인한다. 다음은 `sns` Namespace와 `app=feed-server` 라벨을 사용하는 예시이며, 라벨과 컨테이너 이름은 실제 환경에 맞춘다.
+```powershell
+kubectl get pods -n sns -o wide --show-labels
+kubectl logs -n sns -l app=feed-server -c feed-server --since=10m --tail=200 --timestamps --prefix=true
+$POD = "문제가-발생한-피드-Pod-이름"
+kubectl describe pod $POD -n sns
+```
+환경 변수를 확인할 때는 주소 관련 항목만 선택한다. 예를 들어 실제 설정 키가 `USER_SERVICE_URL`이라면 `kubectl exec $POD -n sns -c feed-server -- printenv USER_SERVICE_URL`로 확인할 수 있다. 전체 환경 변수나 인증 헤더를 출력하지 않는다. 또한 환경 변수 값이 맞더라도 Profile, 명령행 인자, 코드의 기본값 때문에 다른 주소를 사용할 수 있으므로 최종 호출 대상과 대조한다.
+
+#### DNS 이름과 Service 이름을 맞춰 본다
+일반적인 Service DNS 이름은 `<service>.<namespace>.svc.<cluster-domain>`이다. 클러스터 도메인이 `cluster.local`이라면 사용자 Service는 `user-service.sns.svc.cluster.local`처럼 접근한다. 여기서 앞부분은 Deployment나 Pod 이름이 아니라 **Service의 `metadata.name`**이다. 같은 Namespace에서는 짧은 이름을 사용할 수 있지만, 다른 Namespace라면 그 Namespace까지 명시해야 한다. [Kubernetes DNS 진단](https://kubernetes.io/docs/tasks/administer-cluster/dns-debugging-resolution/)
+```powershell
+kubectl get services -n sns
+kubectl exec $POD -n sns -c feed-server -- nslookup user-service.sns.svc.cluster.local
+kubectl exec $POD -n sns -c feed-server -- curl -i --connect-timeout 3 --max-time 10 http://user-service.sns.svc.cluster.local:8080/actuator/health/readiness
+```
+이 예시는 Service 포트가 `8080`이고 해당 Health 엔드포인트가 제공되는 환경을 전제로 한다. `nslookup`이나 `curl`이 없으면 검토된 도구 이미지의 디버깅 컨테이너를 사용한다. Health API도 경로·보안·의존성 설정에 따라 실패하므로 “절대 실패하지 않는 URL”로 취급하지 않는다.
+Service 이름이 실제로는 다르게 만들어졌다면 호출 설정과 Service 정의 중 의도와 어긋난 쪽을 수정한다. 다른 Service는 조회되는데 이 이름만 실패한다면 이름·Namespace 불일치를 먼저 의심할 수 있다. 여러 정상 이름까지 실패한다면 Pod의 `/etc/resolv.conf`, `dnsPolicy`, CoreDNS와 DNS 접근 경로를 확인한다. 한 번의 DNS 실패만으로 전체 네트워크 장애를 단정하지 않는다.
+
+#### Service가 올바른 Pod를 가리키는지 확인한다
+DNS 조회에 성공해도 요청을 전달할 백엔드가 없거나 포트가 틀릴 수 있다. 일반적인 ClusterIP Service의 통신을 다음과 같이 나누어 점검한다. 아래 그림은 논리적 흐름이며 Service가 별도의 프록시 프로세스라는 뜻은 아니다.
+```mermaid
+flowchart LR
+    A["호출 Pod"] --> B["Service DNS 이름 해석"]
+    B --> C["ClusterIP와 Service port"]
+    C --> D["EndpointSlice의 대상 Pod IP와 포트"]
+    D --> E["애플리케이션 리스닝 소켓"]
+```
+```powershell
+kubectl describe service user-service -n sns
+kubectl get endpointslices -n sns -l kubernetes.io/service-name=user-service -o yaml
+kubectl get pods -n sns -o wide --show-labels
+```
+Service의 `selector`와 Pod 라벨을 비교하고, `port`와 `targetPort`를 구분한다. 호출자는 Service의 `port`로 접근하고 백엔드는 `targetPort`에 해당하는 포트에서 요청을 받아야 한다. `containerPort`를 선언하는 것만으로 서버가 그 포트에서 리스닝하지는 않는다. [Service 진단 절차](https://kubernetes.io/docs/tasks/debug/debug-application/debug-service/)
+EndpointSlice에서는 대상 주소·포트와 `conditions.ready` 등을 확인한다. 백엔드 주소가 없거나 준비된 대상이 없다면 Selector 불일치, Pod 미생성, Readiness 실패부터 조사한다. Service 하나에 EndpointSlice가 여러 개일 수 있으므로 전체를 확인해야 한다. [EndpointSlice 구조](https://kubernetes.io/docs/concepts/services-networking/endpoint-slices/)
+같은 호출 Pod에서 **DNS 이름 → ClusterIP → 개별 대상 Pod IP** 순서로 비교하면 범위를 좁힐 수 있다. ClusterIP는 성공하지만 이름만 실패하면 DNS를, 개별 Pod는 성공하지만 ClusterIP가 실패하면 Service 포트·트래픽 정책·Service 데이터 경로를 조사한다. 직접 Pod에 호출할 때는 Service 포트가 아니라 실제 대상 포트를 사용한다. HTTPS라면 IP 치환으로 Host·SNI 조건이 달라질 수 있으므로 단순 비교에 주의한다.
+
+#### 세 가지 주소로 같은 요청을 보내는 이유
+
+사용자 Service가 `port: 80`, `targetPort: 8080`으로 구성됐다고 가정하자. 앞의 8080 Service 예시와 다른 포트 구성을 일부러 사용해 두 포트의 역할을 구분한다. 다음 값은 설명용이며 실제 `get service`와 EndpointSlice 조회 결과로 바꿔야 한다.
+
+```text
+Service 이름: user-service.sns.svc.cluster.local
+ClusterIP:    10.96.20.30
+대상 Pod IP:  10.244.1.20
+Service port: 80
+대상 포트:    8080
+```
+
+세 호출은 업무 경로를 동일하게 유지한 채 접근 경로만 바꾸는 검사다. 여기서는 읽기 전용 Health 경로를 사용한다. 쓰기 API를 그대로 반복해 테스트 데이터를 중복 생성하지 않도록 한다.
+
+```powershell
+kubectl exec $POD -n sns -c feed-server -- curl -i --connect-timeout 3 --max-time 10 http://user-service.sns.svc.cluster.local:80/actuator/health/readiness
+kubectl exec $POD -n sns -c feed-server -- curl -i --connect-timeout 3 --max-time 10 http://10.96.20.30:80/actuator/health/readiness
+kubectl exec $POD -n sns -c feed-server -- curl -i --connect-timeout 3 --max-time 10 http://10.244.1.20:8080/actuator/health/readiness
+```
+
+첫 번째는 DNS 조회와 Service 경로를 모두 사용한다. 두 번째는 Service의 이름 해석을 건너뛰지만 ClusterIP 전달 경로는 사용한다. 세 번째는 DNS와 ClusterIP를 거치지 않고 지정한 Pod에 직접 접근한다.
+
+| DNS 이름 | ClusterIP | 대상 Pod IP | 다음 조사 방향 |
+|---|---|---|---|
+| 실패 | 성공 | 성공 | Service 이름, Namespace, DNS 설정과 캐시 |
+| 실패 | 실패 | 성공 | Service 포트, EndpointSlice, 정책, Service 데이터 경로 |
+| 실패 | 실패 | 실패 | 대상 리스닝, 직접 통신 경로, 정책, 대상 Pod 상태 |
+| 성공 | 성공 | 일부 Pod만 실패 | 해당 백엔드의 버전·설정·Node·준비 상태 차이 |
+
+이 표는 조사 우선순위이지 원인 확정표가 아니다. 한 Pod에 대한 직접 호출이 성공해도 다른 백엔드는 실패할 수 있고, Host 기반 처리나 Service Mesh에서는 IP 호출과 DNS 이름 호출의 의미가 다를 수 있다. 같은 시각과 동일한 조건에서 반복 확인하고 대상 서버의 수신 로그까지 맞춘다.
+
+#### Service의 Selector와 targetPort 오류를 수정하는 예시
+
+사용자 Pod의 라벨이 `app: user-server`이고 실제 서버가 8080에서 리스닝한다고 가정하자. Service의 Selector가 `app: users-server`이면 Pod가 존재해도 원하는 백엔드가 선택되지 않는다. 다음은 그 관계를 명시한 Service 전체 예시다.
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: user-service
+  namespace: sns
+spec:
+  type: ClusterIP
+  selector:
+    app: user-server
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 8080
+```
+
+`apiVersion`과 `kind`는 v1 Service를 정의한다. `metadata.name`은 DNS 이름의 앞부분이며 `namespace`는 이름이 속한 범위다. `selector`는 같은 Namespace에서 라벨이 일치하는 Pod를 선택하고, `ports`는 Service의 TCP 80번 요청을 대상 8080번으로 전달하도록 지정한다.
+
+이 YAML은 위의 포트 비교 예시에만 대응한다. 이미 서비스 중인 8080 Service를 무조건 80으로 바꾸라는 의미가 아니다. 실제 적용할 때는 기존 호출자와 Ingress가 기대하는 포트를 먼저 확인하고 원래 관리 파일의 잘못된 필드만 수정한다.
+
+수정 후에는 EndpointSlice에 대상 주소가 생겼는지, 준비된 대상인지, Service 주소의 읽기 요청이 성공하는지 확인한다. 그 다음 피드 API를 다시 호출해 사용자 정보가 정상적으로 결합되는지 검증한다. Health 요청의 성공과 업무 기능의 복구를 각각 확인해야 진단이 끝난다.
+
+#### 출발지와 목적지의 조합을 기록하기
+
+같은 Node와 다른 Node를 비교할 때도 결과를 구체적으로 남기는 것이 좋다.
+
+| 출발 Pod와 Node | 동일한 대상 Pod와 Node | 결과 예시 |
+|---|---|---|
+| feed-a / worker-a | user-a / worker-a | 성공 |
+| feed-b / worker-b | user-a / worker-a | timeout |
+| feed-c / worker-c | user-a / worker-a | 성공 |
+
+이 예시에서는 모든 Node 간 통신이 실패한다고 말할 수 없다. 우선 worker-b의 출발 경로, 해당 Pod에 적용되는 정책과 사이드카, 출발지 주소에 따른 대상 측 제한을 조사한다. 대상도 다른 Node의 Pod로 바꾸어 비교하면 특정 출발지 문제와 특정 목적지 문제를 더 좁힐 수 있다.
+
+#### 같은 Node와 다른 Node의 결과를 비교한다
+피드 Pod 두 개 중 하나만 사용자 서버 호출에 실패한다면 `kubectl get pods -n sns -o wide`로 출발지와 목적지의 Node를 확인한다. 같은 Node에서는 성공하고 다른 Node에서는 실패한다면 Node 간 경로를 의심할 근거가 된다. 다만 Service로 호출하면 매번 다른 백엔드가 선택될 수 있으므로, 비교할 때는 **동일한 대상 Pod IP·포트·요청 조건**으로 맞춘다.
+특정 출발 Node에서만 실패하는지, 특정 목적 Node로 향할 때만 실패하는지도 나누어 기록한다. CNI 상태, 라우팅, 보안 그룹·방화벽, MTU, conntrack 등의 조사 범위를 좁히는 데 도움이 된다. 같은 Node 통신도 가상 인터페이스와 네트워크 정책 등의 영향을 받으며, 관찰 결과만으로 물리 네트워크 장비의 장애를 확정할 수는 없다.
+별도 진단 Pod를 특정 Node에 배치하려면 실제 Node 라벨을 확인한 뒤 `nodeSelector`나 Node Affinity를 사용한다. `nodeName` 직접 지정은 스케줄러를 우회하므로 일반적인 배치 방식과 구분해야 한다. 진단 Pod는 원래 Pod와 라벨·ServiceAccount·사이드카·보안 조건이 다를 수 있으므로 성공했다고 원래 경로도 정상이라고 판단하지 않는다. [Pod의 Node 배치 조건](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/)
+
+#### NetworkPolicy는 출발지와 목적지를 모두 확인한다
+`kubectl get networkpolicy -A`로 정책 존재 여부를 확인하고 관련 Namespace의 정책을 상세 조회한다. 출발지 Pod가 Egress 격리 대상이면 나가는 통신이, 목적지 Pod가 Ingress 격리 대상이면 들어오는 통신이 허용돼야 한다. 정책은 선택된 Pod에 적용되고 허용 규칙은 합산되므로 파일 하나만 보고 결론 내리지 않는다.
+특히 Egress를 제한하면서 DNS 서버로 향하는 UDP·TCP 53번 통신을 빠뜨리면 서비스 이름부터 해석하지 못할 수 있다. 표준 NetworkPolicy의 실제 적용에는 이를 지원하는 네트워크 구현이 필요하며, CNI 고유 정책이나 클라우드 보안 설정도 별도로 존재할 수 있다. 진단을 위해 정책 전체를 삭제하기보다는 **필요한 출발지·목적지·프로토콜·포트**를 식별한다. [NetworkPolicy의 동작](https://kubernetes.io/docs/concepts/services-networking/network-policies/)
+
+#### NetworkPolicy를 발견했다면 무엇을 읽어야 할까?
+
+```powershell
+kubectl get networkpolicy -n sns
+$POLICY = "확인할-정책-이름"
+kubectl describe networkpolicy $POLICY -n sns
+kubectl get namespace sns --show-labels
+kubectl get pods -n sns --show-labels
+```
+
+정책의 `podSelector`가 어느 Pod를 선택하는지부터 확인한다. 그 다음 출발지의 Egress와 목적지의 Ingress에서 상대 Namespace·Pod 라벨과 대상 포트를 허용하는지 살핀다. Namespace 이름을 보고 사람이 구분한 환경과 `namespaceSelector`가 실제 선택하는 라벨이 다를 수도 있다.
+
+같은 `from` 항목 안의 `namespaceSelector`와 `podSelector`는 함께 만족해야 하는 조건이며, 서로 다른 목록 항목은 별개의 허용 조건이다. 들여쓰기를 바꾸는 것만으로 허용 범위가 달라질 수 있으므로 “정책이 있다”에서 끝내지 않고 선택 결과를 대조한다.
+
+정책 변경은 다른 서비스의 접근 범위에도 영향을 준다. 장애 해결을 위해 전체 허용으로 전환하기보다 필요한 경로만 최소 범위로 열고, 허용돼야 하는 요청과 차단돼야 하는 요청을 모두 검사한다.
+
+#### 클러스터 외부로 나가는 요청도 계층별로 확인한다
+외부 API나 데이터베이스 호출은 DNS, 연결, TLS, 인증, 실제 응답 순서로 나눈다. HTTP API는 시간 제한을 둔 `curl`로 비교하고, 데이터베이스는 해당 프로토콜의 클라이언트로 검사한다. TCP 연결 성공만으로 DB 로그인이나 쿼리 실행까지 검증된 것은 아니다.
+애플리케이션과 진단 도구가 모두 실패하면 Egress 정책, Node의 외부 경로, NAT 또는 VPC Endpoint, 방화벽, 목적지 접근 허용 조건 등을 조사한다. 반대로 `curl`만 성공한다면 JVM DNS 캐시, 프록시 설정, 인증서 TrustStore, 연결 풀, 클라이언트 타임아웃의 차이를 확인한다. 진단 컨테이너도 애플리케이션의 TLS·인증 설정까지 그대로 공유하는 것은 아니다.
+
+#### 외부 요청은 Ingress 설정과 실제 트래픽 경로를 구분한다
+외부에서만 실패한다면 도메인 DNS, TLS, Load Balancer 리스너와 대상 상태, Ingress 규칙, 백엔드 순서로 확인한다. 전체 API가 실패하는지 특정 Host·Path만 실패하는지도 중요한 단서다.
+```powershell
+kubectl get ingress -A
+kubectl get ingressclass
+kubectl describe ingress <실제-Ingress-이름> -n sns
+```
+Ingress에서는 Host, Path, `pathType`, 연결된 Service 이름과 포트를 대조한다. 일반적인 Ingress의 Service 백엔드는 같은 Namespace의 Service를 참조하며, 포트도 Service에 선언된 값과 맞아야 한다. 경로 일치와 경로 재작성은 별개의 설정이다. Controller의 설치 Namespace는 고정되어 있지 않으므로 먼저 실제 Deployment와 Pod 위치를 찾고 로그를 확인한다. [Ingress 구성](https://kubernetes.io/docs/concepts/services-networking/ingress/)
+AWS Load Balancer Controller는 ALB 등을 구성하는 제어 역할을 하며, HTTP 요청이 Controller Pod를 통과하는 구조는 아니다. ALB의 IP 대상 모드는 Pod IP로 직접 전달하고, Instance 대상 모드는 NodePort를 거친다. 따라서 Controller 로그가 깨끗해도 ALB 접근 로그·대상 Health Check·보안 그룹에서 문제가 발견될 수 있고, 내부 ClusterIP 호출 성공만으로 ALB에서 Pod까지의 경로가 검증되지는 않는다. [AWS Load Balancer Controller의 요청 경로](https://kubernetes-sigs.github.io/aws-load-balancer-controller/latest/how-it-works/)
+
+### 정리
+네트워크 진단에서는 “호출이 안 된다”를 DNS 실패, 연결 실패, TLS 실패, HTTP 오류, 응답 지연으로 나누는 것이 먼저다. 실제 오류가 발생한 Pod에서 Service 이름·포트·EndpointSlice를 확인하고, 동일 조건으로 경로를 비교한 뒤 정책과 Node·외부 인프라로 조사 범위를 넓힌다. 수정 후에는 진단 명령의 성공에 그치지 않고 **원래 실패했던 업무 요청을 같은 출발지와 조건에서 다시 확인해야 한다.**

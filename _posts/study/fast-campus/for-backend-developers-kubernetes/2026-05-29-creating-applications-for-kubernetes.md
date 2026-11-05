@@ -88,14 +88,14 @@ graph LR
 
 ```mermaid
 graph LR
-    A[Source Code]
-    --> B[Container Image]
+    A["Source Code"]
+    --> B["Container Image"]
 
-    B --> C[Deployment]
+    B --> C["Deployment"]
 
-    C --> D[Pod]
+    C --> D["Pod"]
 
-    D --> E[Service]
+    D --> E["Service"]
 ```
 
 1. 애플리케이션을 컨테이너 이미지로 생성
@@ -447,11 +447,11 @@ kubectl apply -f my-app.yaml
 
 ```mermaid
 graph LR
-    A[my-app.yaml]
-    --> B[kubectl apply]
-    --> C[Deployment]
-    --> D[ReplicaSet]
-    --> E[Pod]
+    A["my-app.yaml"]
+    --> B["kubectl apply"]
+    --> C["Deployment"]
+    --> D["ReplicaSet"]
+    --> E["Pod"]
 ```
 
 Deployment가 생성되면 내부적으로 ReplicaSet이 생성되고, ReplicaSet이 실제 Pod를 생성 및 관리하게 된다.
@@ -849,18 +849,18 @@ kubectl get deployment
 
 ```mermaid
 graph LR
-    A[Spring Application]
-    --> B[Gradle Build]
+    A["Spring Application"]
+    --> B["Gradle Build"]
 
-    B --> C[Jib]
+    B --> C["Jib"]
 
-    C --> D[Container Image]
+    C --> D["Container Image"]
 
-    D --> E[Docker Hub]
+    D --> E["Docker Hub"]
 
-    E --> F[Kubernetes Deployment]
+    E --> F["Kubernetes Deployment"]
 
-    F --> G[Pod]
+    F --> G["Pod"]
 ```
 
 ---
@@ -1258,7 +1258,7 @@ image: my-repo/my-app:latest
 
 #### 왜 문제가 될까?
 
-latest 태그는 항상 가장 최근 이미지를 의미한다.
+`latest`는 특별한 최신 버전 판별 기능이 아니라 일반적인 이미지 태그 이름이다. 빌드 파이프라인이 그 태그를 갱신해야 다른 이미지를 가리킨다. 같은 이름이 나중에 다른 이미지를 가리킬 수 있으므로 버전 추적과 재현 가능한 배포에 불리하다.
 
 따라서 다음과 같은 문제가 발생할 수 있다.
 
@@ -1334,14 +1334,14 @@ Deployment는 자동으로 Rolling Update를 수행한다.
 
 ```mermaid
 graph LR
-    A[my-app 0.0.1]
-    --> B[Image Push]
+    A["my-app 0.0.1"]
+    --> B["Image Push"]
 
-    B --> C[Deployment Update]
+    B --> C["Deployment Update"]
 
-    C --> D[Rolling Update]
+    C --> D["Rolling Update"]
 
-    D --> E[0.0.2 Pod]
+    D --> E["0.0.2 Pod"]
 ```
 
 ---

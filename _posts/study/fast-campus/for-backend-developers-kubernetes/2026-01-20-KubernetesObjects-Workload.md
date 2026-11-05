@@ -436,7 +436,7 @@ Pod가 새로 생성되거나, 재시작·재배치가 필요해지면 Kubernete
 
 즉,
 
-```
+```text
 불가능한 노드 제거 → 가능한 노드 점수 계산 → 최고 점수 노드 선택
 ```
 
@@ -624,7 +624,7 @@ spec:
 
 ##### YAML 구조 해설
 
-```
+```text
 nodeSelectorTerms  → OR
  └─ matchExpressions → AND
 ```
@@ -1096,7 +1096,7 @@ strategy:
 
 ##### 업데이트 중 Pod 개수 범위
 
-```
+```text
 replicas - maxUnavailable
 ~
 replicas + maxSurge

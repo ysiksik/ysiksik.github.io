@@ -887,14 +887,14 @@ server:
 
 ```mermaid
 flowchart TD
-    A[Pod 종료 요청] --> B[EndpointSlice 제거]
-    B --> C[Readiness 실패]
-    C --> D[신규 요청 차단]
-    D --> E[preStop 실행]
-    E --> F[SIGTERM 전송]
-    F --> G[Graceful Shutdown]
-    G --> H[모든 요청 처리 완료]
-    H --> I[컨테이너 종료]
+    A["Pod 종료 요청"] --> B["EndpointSlice 제거"]
+    B --> C["Readiness 실패"]
+    C --> D["신규 요청 차단"]
+    D --> E["preStop 실행"]
+    E --> F["SIGTERM 전송"]
+    F --> G["Graceful Shutdown"]
+    G --> H["모든 요청 처리 완료"]
+    H --> I["컨테이너 종료"]
 ```
 
 ---

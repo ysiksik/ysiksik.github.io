@@ -30,11 +30,11 @@ Kubernetes Storage는 크게 두 가지로 나눌 수 있다.
 
 ```mermaid
 flowchart LR
-    P1[Pod] --> EV[Ephemeral Volume]
-    P2[Pod] --> PV[Persistent Volume]
+    P1["Pod"] --> EV["Ephemeral Volume"]
+    P2["Pod"] --> PV["Persistent Volume"]
 
-    P1 -. Pod 종료 .-> D1[Volume 삭제]
-    P2 -. Pod 종료 .-> D2[Volume 유지]
+    P1 -. Pod 종료 .-> D1["Volume 삭제"]
+    P2 -. Pod 종료 .-> D2["Volume 유지"]
 ```
 
 #### 임시 볼륨
@@ -92,11 +92,11 @@ Pod 종료
 
 ```mermaid
 flowchart TD
-    A[사용자 이미지 업로드] --> B[임시 볼륨에 원본 저장]
-    B --> C[리사이징 / 압축]
-    C --> D[S3 또는 외부 스토리지 업로드]
-    D --> E[임시 파일 삭제]
-    E --> F[응답 반환]
+    A["사용자 이미지 업로드"] --> B["임시 볼륨에 원본 저장"]
+    B --> C["리사이징 / 압축"]
+    C --> D["S3 또는 외부 스토리지 업로드"]
+    D --> E["임시 파일 삭제"]
+    E --> F["응답 반환"]
 ```
 
 이 경우 파일은 요청 처리 과정에서만 필요하다. 최종 결과물이 외부 스토리지에 저장되면 Pod 내부의 임시 파일은 사라져도 문제가 없다.
@@ -156,13 +156,13 @@ volumeMounts:
 
 ```mermaid
 flowchart TD
-    A[Pod 생성] --> B[emptyDir 생성]
-    B --> C[Container A에서 사용]
-    B --> D[Container B에서 사용 가능]
-    C --> E[Pod 유지 중이면 데이터 유지]
+    A["Pod 생성"] --> B["emptyDir 생성"]
+    B --> C["Container A에서 사용"]
+    B --> D["Container B에서 사용 가능"]
+    C --> E["Pod 유지 중이면 데이터 유지"]
     D --> E
-    E --> F[Pod 삭제]
-    F --> G[emptyDir 삭제]
+    E --> F["Pod 삭제"]
+    F --> G["emptyDir 삭제"]
 ```
 
 `emptyDir`의 중요한 특징은 다음과 같다.
@@ -232,11 +232,11 @@ spec:
 
 ```mermaid
 flowchart TD
-    A[임시 파일 생성] --> B{처리 성공?}
-    B -->|성공| C[외부 저장소 업로드]
-    C --> D[임시 파일 삭제]
-    B -->|실패| E[실패 로그 기록]
-    E --> F[오래된 파일 정리 배치]
+    A["임시 파일 생성"] --> B{처리 성공?}
+    B -->|성공| C["외부 저장소 업로드"]
+    C --> D["임시 파일 삭제"]
+    B -->|실패| E["실패 로그 기록"]
+    E --> F["오래된 파일 정리 배치"]
 ```
 
 대용량 파일을 자주 생성한다면 다음 중 하나는 필요하다.
@@ -266,9 +266,9 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    A[Pod] --> B[PVC]
-    B --> C[PV]
-    C --> D[Storage]
+    A["Pod"] --> B["PVC"]
+    B --> C["PV"]
+    C --> D["Storage"]
 ```
 
 Pod가 직접 Storage를 고르는 것이 아니라, PVC를 통해 필요한 저장공간을 요청하고, Kubernetes가 조건에 맞는 PV를 연결한다.
@@ -292,11 +292,11 @@ AccessMode를 선택할 때는 “몇 개의 Pod가 동시에 접근해야 하�
 
 ```mermaid
 flowchart TD
-    A[스토리지 요구사항] --> B{여러 Pod가 동시에 써야 하는가?}
-    B -->|아니오| C[ReadWriteOnce]
+    A["스토리지 요구사항"] --> B{여러 Pod가 동시에 써야 하는가?}
+    B -->|아니오| C["ReadWriteOnce"]
     B -->|예| D{동시에 쓰기도 필요한가?}
-    D -->|읽기만| E[ReadOnlyMany]
-    D -->|읽기/쓰기| F[ReadWriteMany]
+    D -->|읽기만| E["ReadOnlyMany"]
+    D -->|읽기/쓰기| F["ReadWriteMany"]
 ```
 
 ---
@@ -307,10 +307,10 @@ StatefulSet은 Pod마다 고유한 스토리지를 할당할 수 있다. Pod-01�
 
 ```mermaid
 flowchart TD
-    P0[Pod-0] --> PV0[PV-0]
-    P1[Pod-1] --> PV1[PV-1]
-    P2[Pod-2] --> PV2[PV-2]
-    P3[Pod-3] --> PV3[PV-3]
+    P0["Pod-0"] --> PV0["PV-0"]
+    P1["Pod-1"] --> PV1["PV-1"]
+    P2["Pod-2"] --> PV2["PV-2"]
+    P3["Pod-3"] --> PV3["PV-3"]
 ```
 
 Deployment와 StatefulSet의 차이는 여기서 중요해진다.
@@ -394,10 +394,10 @@ Kubernetes는 다음 철학을 가진다.
 
 ```mermaid
 flowchart LR
-    A[장애 가능성 인정] --> B[빠른 복구]
-    B --> C[Pod 교체]
-    C --> D[지속적 배포]
-    D --> E[Stateless 애플리케이션 선호]
+    A["장애 가능성 인정"] --> B["빠른 복구"]
+    B --> C["Pod 교체"]
+    C --> D["지속적 배포"]
+    D --> E["Stateless 애플리케이션 선호"]
 ```
 
 Pod는 영구적인 서버 인스턴스가 아니다.
@@ -432,11 +432,11 @@ Pod는 영구적인 서버 인스턴스가 아니다.
 
 ```mermaid
 flowchart TD
-    A[Backend Pod] --> B[임시 볼륨]
-    B --> C[파일 가공]
-    C --> D[Object Storage]
-    D --> E[파일 URL / Key 저장]
-    E --> F[Database]
+    A["Backend Pod"] --> B["임시 볼륨"]
+    B --> C["파일 가공"]
+    C --> D["Object Storage"]
+    D --> E["파일 URL / Key 저장"]
+    E --> F["Database"]
 ```
 
 이 방식의 장점은 다음과 같다.
@@ -461,11 +461,11 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A[일반 Backend API Pod] --> B[Storage API Server]
-    B --> C[StatefulSet]
-    C --> D[PVC]
-    D --> E[PV]
-    E --> F[Internal Storage]
+    A["일반 Backend API Pod"] --> B["Storage API Server"]
+    B --> C["StatefulSet"]
+    C --> D["PVC"]
+    D --> E["PV"]
+    E --> F["Internal Storage"]
 ```
 
 즉 일반 백엔드 애플리케이션은 파일 시스템을 직접 만지지 않고, Storage API Server를 통해 파일을 저장하거나 조회한다.
@@ -493,10 +493,10 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A[서비스 장시간 실행] --> B[임시 파일 누적]
-    B --> C[노드 디스크 사용량 증가]
-    C --> D[Disk Pressure]
-    D --> E[Pod Eviction 가능]
+    A["서비스 장시간 실행"] --> B["임시 파일 누적"]
+    B --> C["노드 디스크 사용량 증가"]
+    C --> D["Disk Pressure"]
+    D --> E["Pod Eviction 가능"]
 ```
 
 따라서 다음 전략을 고려해야 한다.
@@ -554,13 +554,13 @@ Files.write(
 
 ```mermaid
 flowchart TD
-    A[파일 저장 필요] --> B{다른 컨테이너와 공유 필요?}
-    B -->|예| C[emptyDir 사용]
+    A["파일 저장 필요"] --> B{다른 컨테이너와 공유 필요?}
+    B -->|예| C["emptyDir 사용"]
     B -->|아니오| D{Pod 재시작 중 유지 필요?}
     D -->|예| C
     D -->|아니오| E{파일 크기가 큰가?}
     E -->|예| C
-    E -->|아니오| F[컨테이너 내부 저장 고려]
+    E -->|아니오| F["컨테이너 내부 저장 고려"]
 ```
 
 간단히 정리하면 다음과 같다.
@@ -579,18 +579,18 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A[파일이 필요한가?] -->|아니오| B[Stateless 유지]
+    A["파일이 필요한가?"] -->|아니오| B["Stateless 유지"]
     A -->|예| C{파일을 오래 보관해야 하는가?}
 
     C -->|아니오| D{요청 처리 중에만 필요한가?}
-    D -->|예| E[emptyDir 또는 컨테이너 내부 저장]
-    D -->|아니오| F[TTL 기반 임시 저장 전략]
+    D -->|예| E["emptyDir 또는 컨테이너 내부 저장"]
+    D -->|아니오| F["TTL 기반 임시 저장 전략"]
 
     C -->|예| G{Pod마다 고유 데이터인가?}
-    G -->|아니오| H[Object Storage 사용]
+    G -->|아니오| H["Object Storage 사용"]
     G -->|예| I{Pod 정체성이 중요한가?}
-    I -->|예| J[StatefulSet + PVC]
-    I -->|아니오| K[외부 Storage API로 분리]
+    I -->|예| J["StatefulSet + PVC"]
+    I -->|아니오| K["외부 Storage API로 분리"]
 ```
 
 ---
@@ -663,13 +663,13 @@ Kubernetes Storage는 단순히 “파일을 어디에 저장할 것인가”의
 
 ```mermaid
 flowchart TD
-    A[Spring Boot Application Pod] --> B[임시 볼륨 emptyDir]
-    A --> C[PVC]
-    C --> D[PV]
-    D --> E[StorageClass]
+    A["Spring Boot Application Pod"] --> B["임시 볼륨 emptyDir"]
+    A --> C["PVC"]
+    C --> D["PV"]
+    D --> E["StorageClass"]
 
-    B --> F[Cache File]
-    D --> G[Shared Log File]
+    B --> F["Cache File"]
+    D --> G["Shared Log File"]
 ```
 
 구성 요소는 다음과 같다.
@@ -691,7 +691,7 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    A[Map Cache] --> B[1초마다 JSON 저장]
+    A["Map Cache"] --> B["1초마다 JSON 저장"]
     B --> C["/tmp/cache/cache.json"]
 ```
 
@@ -699,8 +699,8 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    A[Application Start] --> B[cache.json 읽기]
-    B --> C[Map 복구]
+    A["Application Start"] --> B["cache.json 읽기"]
+    B --> C["Map 복구"]
 ```
 
 ---
@@ -711,9 +711,9 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    P1[Pod-1] --> L[shared-log.txt]
-    P2[Pod-2] --> L
-    P3[Pod-3] --> L
+    P1["Pod-1"] --> L["shared-log.txt"]
+    P2["Pod-2"] --> L
+    P3["Pod-3"] --> L
 ```
 
 로그에는 다음 정보를 기록한다.
@@ -859,13 +859,13 @@ spec:
 
 ```mermaid
 flowchart TD
-    A[Pod] --> B[Container]
+    A["Pod"] --> B["Container"]
     B --> C["/tmp/cache"]
     B --> D["/app/logs"]
 
-    C --> E[emptyDir]
-    D --> F[PVC]
-    F --> G[PV]
+    C --> E["emptyDir"]
+    D --> F["PVC"]
+    F --> G["PV"]
 ```
 
 `/tmp/cache`는 임시 볼륨이다.
@@ -1058,11 +1058,11 @@ public class CacheInitializer {
 
 ```mermaid
 flowchart TD
-    A[Application Start] --> B{cache.json 존재?}
-    B -->|없음| C[빈 캐시로 시작]
-    B -->|있음| D[JSON 파일 읽기]
-    D --> E[Map에 복구]
-    E --> F[서비스 시작]
+    A["Application Start"] --> B{cache.json 존재?}
+    B -->|없음| C["빈 캐시로 시작"]
+    B -->|있음| D["JSON 파일 읽기"]
+    D --> E["Map에 복구"]
+    E --> F["서비스 시작"]
 ```
 
 ---
@@ -1228,18 +1228,18 @@ cat /tmp/cache/cache.json
 
 ```mermaid
 flowchart TD
-    A[장애 발생] --> B{무엇이 재시작되는가?}
+    A["장애 발생"] --> B{무엇이 재시작되는가?}
 
-    B -->|컨테이너만 재시작| C[Pod 유지]
-    C --> D[emptyDir 유지 가능]
-    D --> E[캐시 복구 가능]
+    B -->|컨테이너만 재시작| C["Pod 유지"]
+    C --> D["emptyDir 유지 가능"]
+    D --> E["캐시 복구 가능"]
 
-    B -->|Pod 삭제 후 재생성| F[새 Pod 생성]
-    F --> G[emptyDir 새로 생성]
-    G --> H[캐시 복구 불가]
+    B -->|Pod 삭제 후 재생성| F["새 Pod 생성"]
+    F --> G["emptyDir 새로 생성"]
+    G --> H["캐시 복구 불가"]
 
-    F --> I[PVC 재연결]
-    I --> J[영구 로그 유지 가능]
+    F --> I["PVC 재연결"]
+    I --> J["영구 로그 유지 가능"]
 ```
 
 ---
@@ -1269,10 +1269,10 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    A[임시 데이터] --> B[emptyDir]
-    C[영구 데이터] --> D[PVC/PV]
-    E[Pod별 고유 데이터] --> F[StatefulSet]
-    G[장기 보관 파일] --> H[Object Storage]
+    A["임시 데이터"] --> B["emptyDir"]
+    C["영구 데이터"] --> D["PVC/PV"]
+    E["Pod별 고유 데이터"] --> F["StatefulSet"]
+    G["장기 보관 파일"] --> H["Object Storage"]
 ```
 
 Kubernetes Storage를 사용할 때는 파일을 저장하는 방법보다 먼저 데이터의 생명주기를 판단해야 한다.

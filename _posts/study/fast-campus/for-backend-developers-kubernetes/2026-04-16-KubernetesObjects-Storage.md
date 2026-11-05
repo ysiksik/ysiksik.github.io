@@ -66,7 +66,7 @@ Volume Mount는
 
 구조적으로 보면 다음과 같다.
 
-```
+```text
 Volume (저장소)
     ↓
 Volume Mount
@@ -140,7 +140,7 @@ items:
 
 👉 결과
 
-```
+```text
 /config-files/welcome.sh
 ```
 
@@ -175,7 +175,7 @@ mountPath: /config-files
 
 👉 관계
 
-```
+```text
 Volume ↔ Container = 다대다
 ```
 
@@ -379,7 +379,7 @@ PVC는
 
 ### 구조
 
-```
+```text
 Pod → PVC → PV
 ```
 
@@ -581,7 +581,7 @@ mountPath: /data
 * PVC = 저장소 요청
 * Pod = PVC 사용
 
-```
+```text
 Pod → PVC → PV → Storage
 ```
 
@@ -627,13 +627,13 @@ Dynamic Provisioning은
 
 기존 (Static):
 
-```id="7n4hff"
+```text
 Pod → PVC → 미리 만들어둔 PV
 ```
 
 Dynamic:
 
-```id="79cmxk"
+```text
 Pod → PVC → StorageClass → PV 자동 생성
 ```
 
@@ -663,7 +663,9 @@ apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: ebs-storage
-provisioner: kubernetes.io/aws-ebs
+provisioner: ebs.csi.aws.com
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Retain
 parameters:
   type: gp3
 ```
@@ -675,10 +677,12 @@ parameters:
 #### provisioner
 
 ```yaml
-provisioner: kubernetes.io/aws-ebs
+provisioner: ebs.csi.aws.com
 ```
 
 * 어떤 스토리지 제공자를 사용할지 정의
+* 이 예시는 일반 Amazon EBS CSI Driver가 설치되고 필요한 AWS 권한이 준비된 EC2 기반 클러스터를 전제로 한다. kind에 이 YAML만 적용해 EBS를 사용할 수는 없다.
+* EKS Auto Mode의 EBS 프로비저너는 `ebs.csi.eks.amazonaws.com`으로 다르므로 현재 클러스터의 운영 방식을 먼저 확인한다.
 * 예:
 
     * AWS EBS
@@ -700,6 +704,10 @@ parameters:
 ---
 
 ### StorageClass (로컬 스토리지 예시)
+
+앞의 EBS 예시에서 `WaitForFirstConsumer`는 소비할 Pod의 배치 조건을 고려해 볼륨을 준비하도록 한다. EBS는 가용 영역 제약이 있으므로 PVC가 먼저 생성됐다고 즉시 Bound가 되지 않는 것이 정상일 수 있다. `Retain`은 PVC 삭제 후에도 PV와 실제 저장소를 관리자가 회수하도록 남기는 정책이며 백업을 대신하지 않는다.
+
+다음 로컬 예시는 별도의 local-path provisioner가 설치됐다는 전제다. `StorageClass`는 저장소 생성 규칙이지 드라이버나 외부 스토리지 자체를 설치하는 객체는 아니다.
 
 ```yaml
 apiVersion: storage.k8s.io/v1
@@ -771,7 +779,7 @@ storageClassName: local-storage
 
 ### 동작 흐름
 
-```id="pfk1nm"
+```text
 1. PVC 생성
 2. StorageClass 확인
 3. PV 자동 생성
@@ -839,7 +847,7 @@ spec:
 
 ### 실제 동작 구조
 
-```id="7pph2u"
+```text
 StatefulSet-0 → PVC-0 → PV-0
 StatefulSet-1 → PVC-1 → PV-1
 ```
@@ -884,7 +892,7 @@ StatefulSet-1 → PVC-1 → PV-1
 
 지금까지 스토리지 흐름은 이렇게 완성된다:
 
-```id="6y8bcz"
+```text
 Pod → PVC → StorageClass → PV → Storage
 ```
 

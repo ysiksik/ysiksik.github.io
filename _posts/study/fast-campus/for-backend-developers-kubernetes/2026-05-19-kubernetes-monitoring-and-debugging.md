@@ -44,10 +44,10 @@ Kubernetes에서는 기본적으로 `kubectl` 명령어를 통해
 
 ```mermaid
 graph TD
-    A[kubectl get] --> B[kubectl describe]
-    B --> C[kubectl logs]
-    C --> D[kubectl exec]
-    D --> E[kubectl get events]
+    A["kubectl get"] --> B["kubectl describe"]
+    B --> C["kubectl logs"]
+    C --> D["kubectl exec"]
+    D --> E["kubectl get events"]
 ```
 
 ---
@@ -127,8 +127,8 @@ my-simple-pod   1/1     Running   0          5m
 
 | 상태               | 의미     |
 | ---------------- | ------ |
-| Running          | 정상 실행  |
-| Pending          | 스케줄 대기 |
+| Running          | 컨테이너가 실행 중이거나 시작·재시작 중이며 서비스 정상 여부는 별도 확인 |
+| Pending          | 스케줄링 또는 이미지 준비 등 컨테이너 실행 준비 중 |
 | CrashLoopBackOff | 반복 크래시 |
 | Error            | 실행 실패  |
 | Completed        | 정상 종료  |
@@ -160,7 +160,7 @@ metadata:
 `-o yaml` 옵션은:
 
 ```text
-현재 Kubernetes 내부 실제 상태
+API Server에 저장된 객체의 현재 spec과 status
 ```
 
 를 그대로 보여준다.
@@ -299,7 +299,7 @@ $ kubectl exec -it my-simple-pod -- bash
 #### 환경 변수 확인
 
 ```shell
-env
+printenv SPRING_PROFILES_ACTIVE
 ```
 
 ---
@@ -529,6 +529,12 @@ kubectl get events
 ---
 
 ### 실무 운영 환경
+
+한 명령의 성공으로 애플리케이션 전체를 정상이라고 판단하지 않는다. `get`은 조사 대상을 찾고, `describe`는 조건과 이벤트를 확인하며, `logs --previous`는 같은 Pod에서 직전 컨테이너가 종료되기 전의 단서를 확인한다. `exec`는 실제 실행 중인 컨테이너가 있어야 가능하고, 이미지에 Shell이나 curl이 없을 수도 있다.
+
+예를 들어 Pod가 Running인데 요청이 실패한다면 먼저 READY와 재시작 횟수를 보고, 해당 요청을 처리한 컨테이너의 로그에서 시각과 호출 대상을 찾는다. 반대로 Node가 배정되지 않은 Pending에서는 애플리케이션 로그보다 FailedScheduling 이벤트가 먼저다. 문제의 단계에 따라 사용하는 증거가 달라진다.
+
+환경 변수를 검사할 때는 위 예시처럼 필요한 비민감 키만 선택한다. 전체 `env` 출력이나 Secret YAML은 자격 증명을 노출할 수 있다. 객체 YAML도 원본 배포 파일이나 데이터 백업과 동일하지 않으며, 이벤트는 보관 기간과 집계 특성 때문에 영구 감사 기록을 대신하지 않는다.
 
 kubectl만으로도 기본 디버깅은 가능하지만
 실제 운영 환경에서는 전문 모니터링 도구를 함께 사용한다.
