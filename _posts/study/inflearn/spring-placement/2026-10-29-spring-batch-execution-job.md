@@ -21121,3 +21121,2947 @@ new JobParametersBuilder(previous)
 #### 한 줄 요약
 
 > Spring Batch의 `incrementer()`는 JobParametersIncrementer 구현체를 Job에 등록하는 API다. `RunIdIncrementer`는 기존 JobParameters를 복사한 뒤 식별용 `run.id`를 1씩 증가시켜 새로운 JobParameters를 반환한다. 이 값을 이용하면 기존 비즈니스 파라미터를 유지하면서 새로운 JobInstance를 생성할 수 있다. 다만 Incrementer의 실제 호출 여부는 JobLauncher, JobOperator, JobLauncherApplicationRunner 등 실행 경로에 따라 달라지며, 새로운 JobInstance 실행과 기존 JobInstance의 재시작은 명확하게 구분해야 한다.
+
+## SimpleJob 아키텍처 
+
+
+### Spring Batch SimpleJob 아키텍처 이해: JobLauncher부터 Tasklet 실행까지의 전체 흐름
+
+Spring Batch에서 하나의 배치 작업을 실행하려면 여러 컴포넌트가 협력해야 한다.
+
+가장 기본적인 구성은 Job, Step, Tasklet이다.
+
+Job은 배치 작업 전체를 정의한다.
+
+Step은 Job을 구성하는 개별 실행 단위다.
+
+Tasklet은 Step 내부에서 실제 비즈니스 로직을 수행한다.
+
+예를 들어 다음과 같은 정산 시스템을 생각해보자.
+
+```text
+dailySettlementJob
+       │
+       ├── prepareSettlementStep
+       │       │
+       │       └── 정산 대상 준비
+       │
+       └── saveSettlementStep
+               │
+               └── 정산 결과 저장
+```
+
+이 작업을 Spring Batch로 구성하면 다음과 같은 코드를 작성할 수 있다.
+
+```java
+@Bean
+public Job dailySettlementJob(
+        JobRepository jobRepository,
+        Step prepareSettlementStep,
+        Step saveSettlementStep
+) {
+    return new JobBuilder(
+            "dailySettlementJob",
+            jobRepository
+    )
+            .start(prepareSettlementStep)
+            .next(saveSettlementStep)
+            .build();
+}
+```
+
+이 코드는 두 개의 Step을 순차적으로 실행하는 Job을 생성한다.
+
+`start()`는 최초 실행할 Step을 등록한다.
+
+`next()`는 다음에 실행할 Step을 등록한다.
+
+마지막으로 `build()`를 호출하면 `SimpleJob` 객체가 생성된다.
+
+여기까지는 Job을 정의하는 과정이다.
+
+실제 배치 작업이 실행되는 시점에는 더 많은 컴포넌트가 동작한다.
+
+JobLauncher는 Job 실행을 시작한다.
+
+JobRepository는 실행 메타데이터를 생성하고 저장한다.
+
+AbstractJob은 Job의 공통 실행 흐름을 관리한다.
+
+SimpleJob은 등록된 Step을 순서대로 실행한다.
+
+각 Step은 StepExecution을 통해 실행 상태를 관리한다.
+
+그리고 Tasklet은 실제 비즈니스 로직을 수행한다.
+
+전체 구조를 단순화하면 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["JobLauncher"]
+    B["JobRepository"]
+    C["JobInstance"]
+    D["JobExecution"]
+    E["AbstractJob"]
+    F["SimpleJob"]
+
+    G["Step 1"]
+    H["Tasklet 1"]
+
+    I["Step 2"]
+    J["Tasklet 2"]
+
+    K["StepExecution 1"]
+    L["StepExecution 2"]
+
+    A -->|"실행 메타데이터 요청"| B
+    B --> C
+    B --> D
+
+    A -->|"execute(JobExecution)"| E
+    E -->|"doExecute()"| F
+
+    F --> G
+    G --> H
+    G --> K
+
+    F --> I
+    I --> J
+    I --> L
+
+    K -.->|"저장 및 갱신"| B
+    L -.->|"저장 및 갱신"| B
+```
+
+여기서 중요한 사실은 단순히 Job이 Step을 호출하는 것으로 실행이 끝나는 것이 아니라는 점이다.
+
+**Spring Batch는 실행 흐름을 제어하는 동시에, 각 실행 단위의 상태를 독립적인 도메인 객체로 관리하고 데이터베이스에 저장한다.**
+
+이 구조를 이해하면 배치 실행 중 장애가 발생했을 때 어떤 객체를 확인해야 하는지, 어떤 메서드에서 실행이 중단되었는지, 왜 특정 Step이 재실행되거나 생략되었는지 분석할 수 있다.
+
+이번에는 SimpleJob의 전체 아키텍처를 객체 생성, 실행 흐름, 메타데이터 저장, Listener 호출, 상태 전이의 관점에서 살펴보자.
+
+---
+
+### SimpleJob 아키텍처의 핵심 개념
+
+SimpleJob은 Spring Batch에서 제공하는 기본적인 Job 구현체다.
+
+등록된 Step을 순차적으로 실행하고, 각 Step의 실행 결과를 확인해 후속 Step의 실행 여부를 결정한다.
+
+SimpleJob의 특징은 다음과 같다.
+
+| 항목 | 설명 |
+|---|---|
+| 상위 클래스 | AbstractJob |
+| 구현 인터페이스 | Job |
+| 생성 Builder | SimpleJobBuilder |
+| 실행 방식 | 등록된 Step의 순차 실행 |
+| 주요 실행 메서드 | `doExecute()` |
+| Step 실행 위임 | `handleStep()` |
+| 실행 메타데이터 | JobInstance, JobExecution, StepExecution |
+| 실행 상태 | BatchStatus, ExitStatus |
+| 실행 전후 처리 | JobExecutionListener |
+| 메타데이터 저장 | JobRepository |
+
+SimpleJob을 이해할 때는 다음 두 가지 관점을 구분하는 것이 중요하다.
+
+첫 번째는 **정적인 구성 구조**다.
+
+두 번째는 **동적인 실행 구조**다.
+
+#### 정적인 구성 구조
+
+정적인 구조는 Spring Container가 Job과 Step 객체를 생성하고 연결하는 과정이다.
+
+예를 들어 다음과 같다.
+
+```text
+JobBuilder
+    │
+    ▼
+SimpleJobBuilder
+    │
+    ├── Step 1 등록
+    └── Step 2 등록
+    │
+    ▼
+build()
+    │
+    ▼
+SimpleJob
+    │
+    └── List<Step>
+            ├── Step 1
+            └── Step 2
+```
+
+이 단계에서는 실제 비즈니스 로직이 실행되지 않는다.
+
+Job과 Step 객체를 생성하고 실행 관계를 구성한다.
+
+#### 동적인 실행 구조
+
+동적인 구조는 실제 실행 요청이 들어온 이후의 처리 과정이다.
+
+```text
+JobLauncher.run()
+       │
+       ▼
+JobExecution 생성
+       │
+       ▼
+AbstractJob.execute()
+       │
+       ▼
+SimpleJob.doExecute()
+       │
+       ▼
+Step 1 실행
+       │
+       ▼
+Step 2 실행
+       │
+       ▼
+JobExecution 최종 상태 갱신
+```
+
+이 단계에서 실제 Tasklet이 실행되고 메타데이터가 데이터베이스에 저장된다.
+
+따라서 **Job 객체의 생성과 JobExecution의 생성은 서로 다른 시점에 발생한다.**
+
+이 차이는 Spring Batch의 실행 아키텍처를 이해하는 출발점이다.
+
+---
+
+### 왜 SimpleJob의 내부 아키텍처를 이해해야 할까?
+
+일반적인 Java 프로그램에서는 메서드 호출만 추적하면 실행 흐름을 파악할 수 있는 경우가 많다.
+
+예를 들어 다음과 같다.
+
+```java
+public void executeSettlement() {
+    prepareSettlement();
+    saveSettlement();
+}
+```
+
+하지만 Spring Batch에서는 다음과 같은 상황을 고려해야 한다.
+
+정산 준비 작업은 성공했지만 정산 결과 저장 작업이 실패할 수 있다.
+
+이때 Spring Batch는 정산 준비 작업을 완료한 사실을 기록해야 한다.
+
+또한 어느 JobInstance에 속한 실행인지 확인해야 한다.
+
+다시 실행할 때 기존 JobInstance를 재시작할지, 새로운 JobInstance를 생성할지 판단해야 한다.
+
+실패한 Step의 ExecutionContext를 복원해야 할 수도 있다.
+
+그리고 마지막으로 Job 전체의 상태를 FAILED 또는 COMPLETED로 확정해야 한다.
+
+이러한 기능을 지원하기 위해 여러 객체가 역할을 나누어 수행한다.
+
+| 요구사항 | 담당 객체 또는 컴포넌트 |
+|---|---|
+| Job 실행 시작 | JobLauncher |
+| 실행 이력 조회 및 생성 | JobRepository |
+| 논리적 작업 식별 | JobInstance |
+| 개별 Job 실행 관리 | JobExecution |
+| Job 공통 실행 흐름 | AbstractJob |
+| Step 순차 실행 | SimpleJob |
+| Step 실행 여부 및 재시작 판단 | SimpleStepHandler |
+| 개별 Step 실행 상태 | StepExecution |
+| 실제 비즈니스 처리 | Tasklet |
+| 실행 상태 저장 및 복원 | ExecutionContext |
+| Job 실행 전후 처리 | JobExecutionListener |
+
+이처럼 실행 책임과 상태 관리 책임이 분리되어 있기 때문에 Spring Batch는 실패 복구와 실행 이력 관리를 지원할 수 있다.
+
+---
+
+### SimpleJob의 전체 클래스 구조
+
+먼저 SimpleJob과 관련된 주요 클래스의 상속 및 협력 관계를 살펴보자.
+
+```mermaid
+classDiagram
+    class Job {
+        <<interface>>
+        +execute(JobExecution)
+        +getName()
+        +isRestartable()
+    }
+
+    class AbstractJob {
+        -JobRepository jobRepository
+        -JobExecutionListener listener
+        +execute(JobExecution)
+        #doExecute(JobExecution)
+        #handleStep(Step, JobExecution)
+    }
+
+    class SimpleJob {
+        -List~Step~ steps
+        +setSteps(List~Step~)
+        #doExecute(JobExecution)
+    }
+
+    class StepHandler {
+        <<interface>>
+        +handleStep(Step, JobExecution)
+    }
+
+    class SimpleStepHandler {
+        -JobRepository jobRepository
+        +handleStep(Step, JobExecution)
+    }
+
+    class Step {
+        <<interface>>
+        +execute(StepExecution)
+    }
+
+    class AbstractStep {
+        +execute(StepExecution)
+        #doExecute(StepExecution)
+    }
+
+    class TaskletStep {
+        -Tasklet tasklet
+        #doExecute(StepExecution)
+    }
+
+    Job <|.. AbstractJob
+    AbstractJob <|-- SimpleJob
+
+    StepHandler <|.. SimpleStepHandler
+    AbstractJob --> StepHandler
+
+    Step <|.. AbstractStep
+    AbstractStep <|-- TaskletStep
+    SimpleStepHandler --> Step
+```
+
+이 구조에서는 두 개의 중요한 상속 관계를 확인할 수 있다.
+
+첫 번째는 Job 계층이다.
+
+```text
+Job
+ │
+ ▼
+AbstractJob
+ │
+ ▼
+SimpleJob
+```
+
+두 번째는 Step 계층이다.
+
+```text
+Step
+ │
+ ▼
+AbstractStep
+ │
+ ▼
+TaskletStep
+```
+
+AbstractJob은 Job 실행에 필요한 공통 로직을 처리한다.
+
+SimpleJob은 Step을 순차적으로 실행하는 구체적인 로직을 담당한다.
+
+AbstractStep은 Step 실행 전후의 공통 처리를 담당한다.
+
+TaskletStep은 등록된 Tasklet을 실제로 호출한다.
+
+이러한 구조는 템플릿 메서드 패턴을 이해하는 데 좋은 사례다.
+
+상위 클래스가 공통 실행 절차를 정의하고, 하위 클래스가 구체적인 실행 로직을 구현한다.
+
+---
+
+### SimpleJob의 전체 실행 흐름
+
+이제 실제 배치 작업이 시작되는 순간부터 종료되는 순간까지의 과정을 살펴보자.
+
+전체 과정은 크게 여덟 단계로 나눌 수 있다.
+
+| 단계 | 주요 동작 |
+|---|---|
+| 1 | JobLauncher에 Job과 JobParameters 전달 |
+| 2 | 기존 JobInstance 및 JobExecution 조회 |
+| 3 | JobExecution 생성 및 ExecutionContext 준비 |
+| 4 | AbstractJob에서 검증 및 beforeJob() 호출 |
+| 5 | SimpleJob에서 Step 순차 실행 |
+| 6 | 각 Step의 StepExecution 및 ExecutionContext 관리 |
+| 7 | 마지막 Step 상태를 JobExecution에 반영 |
+| 8 | afterJob() 호출 및 최종 메타데이터 저장 |
+
+이를 시퀀스 다이어그램으로 표현하면 다음과 같다.
+
+```mermaid
+sequenceDiagram
+    participant Client as 실행 요청
+    participant Launcher as JobLauncher
+    participant Repository as JobRepository
+    participant Job as AbstractJob
+    participant SimpleJob as SimpleJob
+    participant Handler as SimpleStepHandler
+    participant Step as TaskletStep
+    participant Tasklet as Tasklet
+
+    Client->>Launcher: run(Job, JobParameters)
+
+    Launcher->>Repository: getLastJobExecution()
+    Repository-->>Launcher: 이전 실행 또는 null
+
+    Launcher->>Repository: createJobExecution()
+    Repository-->>Launcher: JobExecution
+
+    Launcher->>Job: execute(JobExecution)
+
+    Job->>Job: validate()
+    Job->>Repository: STARTED 상태 갱신
+    Job->>Job: beforeJob()
+
+    Job->>SimpleJob: doExecute()
+
+    loop Step 목록 순회
+        SimpleJob->>Handler: handleStep(Step, JobExecution)
+        Handler->>Repository: 이전 StepExecution 조회
+        Handler->>Repository: StepExecution 생성 및 저장
+        Handler->>Step: execute(StepExecution)
+        Step->>Tasklet: execute()
+        Tasklet-->>Step: RepeatStatus
+        Step->>Repository: StepExecution 최종 상태 저장
+        Step-->>Handler: 실행 완료
+        Handler-->>SimpleJob: StepExecution
+    end
+
+    SimpleJob->>SimpleJob: JobExecution 상태 반영
+    SimpleJob-->>Job: 실행 종료
+
+    Job->>Job: afterJob()
+    Job->>Repository: JobExecution 최종 상태 저장
+
+    Job-->>Launcher: 실행 완료
+    Launcher-->>Client: JobExecution
+```
+
+이 다이어그램에서 각 단계가 실제로 어떤 역할을 수행하는지 자세히 살펴보자.
+
+---
+
+### 첫 번째 단계: JobLauncher가 Job 실행을 시작한다
+
+Spring Batch에서 Job 실행을 시작하는 대표적인 인터페이스는 `JobLauncher`다.
+
+다음과 같이 사용할 수 있다.
+
+```java
+JobExecution execution =
+        jobLauncher.run(
+                simpleJob,
+                jobParameters
+        );
+```
+
+JobLauncher의 `run()`은 두 개의 인자를 전달받는다.
+
+첫 번째는 Job이다.
+
+두 번째는 JobParameters다.
+
+```text
+JobLauncher
+    │
+    ├── Job
+    │     └── SimpleJob
+    │
+    └── JobParameters
+          ├── businessDate
+          └── run.id
+```
+
+여기서 Job은 어떤 작업을 실행할지 결정한다.
+
+JobParameters는 해당 작업을 어떤 입력값으로 실행할지 결정한다.
+
+Spring Batch 5.2.4에서 대표적인 JobLauncher 구현체는 `TaskExecutorJobLauncher`다.
+
+TaskExecutorJobLauncher는 Job을 실행하기 전에 JobRepository를 통해 기존 실행 이력을 확인한다.
+
+핵심 호출은 다음과 같다.
+
+```java
+JobExecution lastExecution =
+        jobRepository.getLastJobExecution(
+                job.getName(),
+                jobParameters
+        );
+```
+
+이 코드는 Job 이름과 JobParameters를 이용해 이전 JobExecution을 조회한다.
+
+반환 결과는 두 가지다.
+
+**첫 번째는 null이다.**
+
+기존에 실행한 이력이 없다는 의미다.
+
+**두 번째는 JobExecution 객체다.**
+
+동일한 JobInstance에 대한 이전 실행 이력이 존재한다는 의미다.
+
+이 결과를 이용해 최초 실행인지, 재시작 대상인지, 실행을 거부해야 하는 상황인지 판단한다.
+
+다만 이전 JobExecution이 존재한다고 해서 무조건 재시작이 가능한 것은 아니다.
+
+이전 실행이 COMPLETED인지, 실행 중인지, Job의 재시작이 허용되는지 등도 확인해야 한다.
+
+---
+
+### 두 번째 단계: JobInstance를 조회하거나 생성한다
+
+JobLauncher가 실행을 요청하면 JobRepository는 JobInstance를 조회한다.
+
+JobInstance는 논리적으로 동일한 배치 작업을 나타낸다.
+
+식별 기준은 다음과 같다.
+
+```text
+JobInstance
+    =
+Job 이름
+    +
+식별용 JobParameters
+```
+
+예를 들어 다음과 같은 실행 요청이 있다고 생각해보자.
+
+```text
+Job Name = dailySettlementJob
+
+businessDate = 2026-11-05
+```
+
+기존에 동일한 JobInstance가 없다면 새로운 JobInstance를 생성한다.
+
+```text
+JobInstance 1
+    │
+    ├── Job Name
+    │      └── dailySettlementJob
+    │
+    └── Job Key
+           └── businessDate 기반 식별값
+```
+
+여기서 중요한 것은 JobInstance가 단순히 JobLauncher에서 직접 생성되는 객체가 아니라는 사실이다.
+
+실제 생성과 조회는 JobRepository가 담당한다.
+
+Spring Batch 5.2.4의 `SimpleJobRepository.createJobExecution()`에서는 기존 JobInstance를 먼저 조회한다.
+
+```java
+JobInstance jobInstance =
+        jobInstanceDao.getJobInstance(
+                jobName,
+                jobParameters
+        );
+```
+
+기존 JobInstance가 존재하지 않는다면 새로 생성한다.
+
+```java
+jobInstance =
+        jobInstanceDao.createJobInstance(
+                jobName,
+                jobParameters
+        );
+```
+
+반면 이전 실행 이력이 존재하고 재시작이 허용된다면 기존 JobInstance를 재사용한다.
+
+이때 JobInstance가 다시 생성되는 것은 아니다.
+
+---
+
+### 세 번째 단계: JobExecution을 생성한다
+
+JobInstance가 결정되면 이번 실행을 나타내는 JobExecution을 생성한다.
+
+JobExecution은 JobInstance에 속한 개별 실행 시도를 나타낸다.
+
+예를 들어 하나의 JobInstance가 두 번 실행되었다면 다음과 같은 관계가 만들어진다.
+
+```text
+JobInstance 1
+    │
+    ├── JobExecution 1
+    │       └── FAILED
+    │
+    └── JobExecution 2
+            └── COMPLETED
+```
+
+따라서 JobInstance와 JobExecution의 관계는 다음과 같다.
+
+```text
+JobInstance 1 : N JobExecution
+```
+
+JobExecution은 다음과 같은 정보를 관리한다.
+
+| 속성 | 설명 |
+|---|---|
+| `jobInstance` | 소속 JobInstance |
+| `jobParameters` | 실행에 사용된 파라미터 |
+| `status` | BatchStatus |
+| `exitStatus` | ExitStatus |
+| `startTime` | 실행 시작 시각 |
+| `endTime` | 실행 종료 시각 |
+| `createTime` | 실행 객체 생성 시각 |
+| `lastUpdated` | 마지막 메타데이터 갱신 시각 |
+| `stepExecutions` | 소속 StepExecution 목록 |
+| `executionContext` | Job 수준 실행 상태 |
+| `failureExceptions` | 실패 예외 정보 |
+
+JobExecution은 처음 생성되었을 때 기본적으로 다음 상태를 가진다.
+
+```text
+BatchStatus = STARTING
+
+ExitStatus = UNKNOWN
+```
+
+아직 실제 비즈니스 로직이 시작되지 않았기 때문이다.
+
+이후 Job이 실행되면 BatchStatus가 STARTED로 변경된다.
+
+#### JobExecution 생성과 ExecutionContext
+
+JobExecution에는 ExecutionContext도 존재한다.
+
+ExecutionContext는 배치 실행 과정에서 필요한 상태 정보를 저장하는 객체다.
+
+최초 실행이라면 새로운 ExecutionContext를 생성한다.
+
+반면 재시작이라면 이전 JobExecution에 저장된 ExecutionContext를 복원할 수 있다.
+
+개념적으로 다음과 같다.
+
+```java
+ExecutionContext executionContext;
+
+if (jobInstance == null) {
+    // 최초 실행
+    executionContext = new ExecutionContext();
+} else {
+    // 기존 JobInstance 재시작
+    executionContext =
+            loadPreviousExecutionContext();
+}
+```
+
+실제 SimpleJobRepository는 실행 이력과 재시작 가능 여부를 확인한 후 JobExecution을 생성하고, ExecutionContext를 연결한 뒤 메타데이터를 저장한다.
+
+여기서 주목해야 할 부분은 **JobExecution과 Job 수준의 ExecutionContext가 실제 Step이 실행되기 전에 준비된다는 점**이다.
+
+---
+
+### JobInstance와 JobExecution의 생성 시점 비교
+
+두 객체는 비슷해 보이지만 생성 조건이 다르다.
+
+| 구분 | JobInstance | JobExecution |
+|---|---|---|
+| 의미 | 논리적 배치 작업 | 실제 실행 시도 |
+| 최초 실행 | 생성 | 생성 |
+| 실패 후 재시작 | 기존 객체 사용 | 새로 생성 |
+| 새로운 식별용 파라미터 | 새로 생성 | 새로 생성 |
+| 주요 식별 기준 | Job 이름 + 식별용 파라미터 | JobExecution ID |
+| DB 테이블 | BATCH_JOB_INSTANCE | BATCH_JOB_EXECUTION |
+
+이 관계를 이해하면 다음 상황도 쉽게 설명할 수 있다.
+
+```text
+첫 번째 실행
+
+JobInstance 1
+    └── JobExecution 1 → FAILED
+```
+
+```text
+두 번째 실행
+
+JobInstance 1
+    ├── JobExecution 1 → FAILED
+    └── JobExecution 2 → COMPLETED
+```
+
+동일한 JobInstance에 JobExecution이 추가된 것이다.
+
+따라서 Job이 실패했다가 재시작된 상황을 분석할 때는 JobInstance 개수만 확인해서는 안 된다.
+
+JobExecution 이력도 함께 확인해야 한다.
+
+---
+
+### 네 번째 단계: AbstractJob이 공통 실행 처리를 수행한다
+
+JobExecution이 생성되면 JobLauncher는 실제 Job을 실행한다.
+
+```java
+job.execute(jobExecution);
+```
+
+여기서 Job의 실제 구현체가 SimpleJob이라면 `AbstractJob.execute()`가 호출된다.
+
+SimpleJob은 AbstractJob을 상속하기 때문이다.
+
+```text
+Job
+ │
+ ▼
+AbstractJob
+ │
+ ▼
+SimpleJob
+```
+
+AbstractJob은 Job 실행의 공통 흐름을 담당한다.
+
+대표적인 작업은 다음과 같다.
+
+| 순서 | 처리 내용 |
+|---|---|
+| 1 | JobExecution 등록 및 실행 환경 준비 |
+| 2 | JobParametersValidator 실행 |
+| 3 | JobExecution 시작 상태 설정 |
+| 4 | JobRepository 상태 갱신 |
+| 5 | JobExecutionListener.beforeJob() |
+| 6 | SimpleJob.doExecute() |
+| 7 | 예외 및 종료 상태 처리 |
+| 8 | JobExecutionListener.afterJob() |
+| 9 | JobExecution 최종 메타데이터 저장 |
+
+실행 흐름은 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["AbstractJob.execute()"]
+    B["JobParameters 검증"]
+    C["BatchStatus.STARTED 설정"]
+    D["JobRepository 업데이트"]
+    E["beforeJob()"]
+    F["SimpleJob.doExecute()"]
+    G["Job 종료 상태 확정"]
+    H["afterJob()"]
+    I["JobRepository 최종 업데이트"]
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+    F --> G
+    G --> H
+    H --> I
+```
+
+여기서 중요한 점은 Job의 공통 실행 처리를 SimpleJob이 직접 구현하지 않는다는 사실이다.
+
+SimpleJob은 Step 실행 순서를 처리하는 역할에 집중한다.
+
+반면 AbstractJob은 실행 전후의 공통 처리를 담당한다.
+
+이러한 역할 분리가 Spring Batch의 핵심적인 아키텍처 특징이다.
+
+---
+
+### JobExecutionListener는 언제 실행될까?
+
+Spring Batch에서는 Job 실행 전후에 별도의 로직을 수행할 수 있도록 `JobExecutionListener`를 제공한다.
+
+대표적인 메서드는 다음과 같다.
+
+```java
+void beforeJob(JobExecution jobExecution);
+```
+
+```java
+void afterJob(JobExecution jobExecution);
+```
+
+`beforeJob()`은 Job의 실제 Step 실행이 시작되기 전에 호출된다.
+
+`afterJob()`은 Job 실행 처리가 끝난 뒤 호출된다.
+
+예를 들어 다음과 같은 Listener를 등록할 수 있다.
+
+```java
+@Bean
+public JobExecutionListener jobExecutionListener() {
+
+    return new JobExecutionListener() {
+
+        @Override
+        public void beforeJob(
+                JobExecution jobExecution
+        ) {
+            System.out.println(
+                    "Job 시작: "
+                            + jobExecution.getJobInstance().getJobName()
+            );
+        }
+
+        @Override
+        public void afterJob(
+                JobExecution jobExecution
+        ) {
+            System.out.println(
+                    "Job 종료: "
+                            + jobExecution.getStatus()
+            );
+        }
+    };
+}
+```
+
+그리고 JobBuilder에 등록한다.
+
+```java
+new JobBuilder("dailySettlementJob", jobRepository)
+        .listener(jobExecutionListener)
+        .start(step1)
+        .next(step2)
+        .build();
+```
+
+실행 시 다음과 같은 순서로 동작한다.
+
+```text
+JobExecution 생성
+       │
+       ▼
+AbstractJob.execute()
+       │
+       ▼
+beforeJob()
+       │
+       ▼
+SimpleJob.doExecute()
+       │
+       ├── Step 1
+       └── Step 2
+       │
+       ▼
+JobExecution 상태 반영
+       │
+       ▼
+afterJob()
+       │
+       ▼
+최종 메타데이터 저장
+```
+
+여기서 한 가지 중요한 순서를 기억해야 한다.
+
+**일반적인 정상 실행 경로에서 마지막 Step의 상태가 JobExecution에 반영되는 시점은 `afterJob()`보다 앞선다.**
+
+SimpleJob의 doExecute()가 먼저 종료 상태를 반영하고, 이후 AbstractJob의 finally 블록에서 afterJob()을 호출하기 때문이다.
+
+또한 afterJob()이 호출되었다는 사실만으로 JobExecution의 최종 상태가 이미 데이터베이스에 저장되었다고 단정해서는 안 된다.
+
+Spring Batch 5.2.4에서는 afterJob() 이후에 JobRepository의 최종 업데이트가 수행된다.
+
+---
+
+### 다섯 번째 단계: SimpleJob이 Step을 순차적으로 실행한다
+
+AbstractJob의 공통 처리가 끝나면 SimpleJob의 `doExecute()`가 호출된다.
+
+SimpleJob에서 가장 중요한 메서드다.
+
+SimpleJob은 내부적으로 다음과 같은 Step 목록을 관리한다.
+
+```java
+private final List<Step> steps = new ArrayList<>();
+```
+
+예를 들어 다음과 같이 Job을 구성했다면
+
+```java
+new JobBuilder("dailySettlementJob", jobRepository)
+        .start(step1)
+        .next(step2)
+        .build();
+```
+
+실제 SimpleJob에는 다음과 같은 목록이 저장된다.
+
+```text
+steps
+  │
+  ├── step1
+  └── step2
+```
+
+SimpleJob의 doExecute()는 이 목록을 순서대로 순회한다.
+
+핵심 동작을 이해하기 쉽게 표현하면 다음과 같다.
+
+```java
+StepExecution lastStepExecution = null;
+
+for (Step step : steps) {
+
+    lastStepExecution =
+            handleStep(step, jobExecution);
+
+    if (lastStepExecution.getStatus()
+            != BatchStatus.COMPLETED) {
+
+        break;
+    }
+}
+```
+
+이 코드에서 중요한 부분은 두 가지다.
+
+첫 번째는 다음 코드다.
+
+```java
+handleStep(step, jobExecution);
+```
+
+현재 Step의 실행을 처리한다.
+
+두 번째는 다음 조건이다.
+
+```java
+lastStepExecution.getStatus()
+        != BatchStatus.COMPLETED
+```
+
+현재 Step이 COMPLETED 상태가 아니라면 반복문을 종료한다.
+
+따라서 SimpleJob은 등록된 모든 Step을 무조건 실행하지 않는다.
+
+각 Step의 실행 결과에 따라 후속 실행 여부를 결정한다.
+
+#### 모든 Step이 성공한 경우
+
+```text
+SimpleJob
+    │
+    ▼
+Step 1
+    │
+    └── COMPLETED
+    │
+    ▼
+Step 2
+    │
+    └── COMPLETED
+    │
+    ▼
+Job COMPLETED
+```
+
+#### 첫 번째 Step이 실패한 경우
+
+```text
+SimpleJob
+    │
+    ▼
+Step 1
+    │
+    └── FAILED
+    │
+    ▼
+반복문 종료
+    │
+    ▼
+Step 2 실행되지 않음
+    │
+    ▼
+Job FAILED
+```
+
+이러한 순차 실행 구조는 SimpleJob의 가장 기본적인 특징이다.
+
+---
+
+### 여섯 번째 단계: SimpleStepHandler가 Step 실행을 관리한다
+
+여기서 조금 더 내부로 들어가보자.
+
+SimpleJob은 `handleStep()`을 호출한다.
+
+```java
+handleStep(step, jobExecution);
+```
+
+하지만 이 메서드가 곧바로 Tasklet을 실행하는 것은 아니다.
+
+AbstractJob은 내부적으로 StepHandler에 Step 실행을 위임한다.
+
+대표적인 구현체가 `SimpleStepHandler`다.
+
+따라서 다음과 같은 구조가 만들어진다.
+
+```text
+SimpleJob.doExecute()
+       │
+       ▼
+AbstractJob.handleStep()
+       │
+       ▼
+SimpleStepHandler.handleStep()
+       │
+       ▼
+Step.execute()
+       │
+       ▼
+TaskletStep
+       │
+       ▼
+Tasklet.execute()
+```
+
+SimpleStepHandler는 단순한 메서드 전달 이상의 역할을 담당한다.
+
+대표적으로 다음과 같은 작업을 수행한다.
+
+| 역할 | 설명 |
+|---|---|
+| 이전 실행 조회 | 같은 JobInstance의 이전 StepExecution 확인 |
+| 재시작 판단 | 이전 Step 상태를 기준으로 실행 여부 결정 |
+| StepExecution 생성 | 현재 실행에 사용할 StepExecution 생성 |
+| ExecutionContext 준비 | 새 Context 생성 또는 이전 Context 복원 |
+| 메타데이터 저장 | Step 실행 전에 StepExecution 저장 |
+| Step 실행 | 실제 Step.execute() 호출 |
+| Job Context 갱신 | Step 종료 후 Job 수준 ExecutionContext 저장 |
+
+이러한 구조 덕분에 SimpleJob은 Step의 실행 순서에 집중할 수 있다.
+
+반면 Step의 재시작 여부나 실행 메타데이터 처리 등은 StepHandler가 담당한다.
+
+---
+
+### StepExecution은 언제 생성될까?
+
+SimpleStepHandler가 Step 실행을 시작하기 전에 StepExecution을 준비한다.
+
+먼저 이전 실행 정보를 조회한다.
+
+```java
+StepExecution lastStepExecution =
+        jobRepository.getLastStepExecution(
+                jobInstance,
+                step.getName()
+        );
+```
+
+이 코드는 현재 JobInstance에 대해 동일한 이름의 Step이 이전에 실행되었는지 확인한다.
+
+이후 실행 가능 여부를 판단한다.
+
+새로운 Step 실행이 필요하다면 다음과 같이 StepExecution을 생성한다.
+
+```java
+StepExecution currentStepExecution =
+        jobExecution.createStepExecution(
+                step.getName()
+        );
+```
+
+여기서 중요한 것은 StepExecution이 JobExecution과 연결된다는 사실이다.
+
+```text
+JobExecution
+    │
+    ├── StepExecution 1
+    │       └── stepName = prepareSettlementStep
+    │
+    └── StepExecution 2
+            └── stepName = saveSettlementStep
+```
+
+각 StepExecution은 현재 JobExecution에 속한다.
+
+또한 실행 상태와 처리 통계를 독립적으로 관리한다.
+
+대표적인 속성은 다음과 같다.
+
+| 속성 | 설명 |
+|---|---|
+| `stepName` | 실행한 Step 이름 |
+| `jobExecution` | 소속 JobExecution |
+| `status` | Step의 BatchStatus |
+| `exitStatus` | Step의 ExitStatus |
+| `readCount` | 읽은 데이터 건수 |
+| `writeCount` | 저장한 데이터 건수 |
+| `commitCount` | 커밋 횟수 |
+| `rollbackCount` | 롤백 횟수 |
+| `startTime` | 실행 시작 시각 |
+| `endTime` | 실행 종료 시각 |
+| `executionContext` | Step 수준 실행 상태 |
+| `failureExceptions` | 실패 예외 |
+
+StepExecution은 실행 정보를 메모리에서 관리하는 동시에 JobRepository를 통해 데이터베이스에 저장된다.
+
+따라서 Job 실행이 종료된 이후에도 각 Step의 결과를 조회할 수 있다.
+
+---
+
+### StepExecution의 ExecutionContext는 어떻게 준비될까?
+
+StepExecution에도 ExecutionContext가 존재한다.
+
+다만 JobExecution의 ExecutionContext와는 역할이 다르다.
+
+JobExecutionContext는 Job 수준의 상태를 관리한다.
+
+반면 StepExecutionContext는 개별 Step의 상태를 관리한다.
+
+두 Context를 비교하면 다음과 같다.
+
+| 구분 | JobExecutionContext | StepExecutionContext |
+|---|---|---|
+| 소속 | JobExecution | StepExecution |
+| 주요 목적 | Job 전체의 상태 공유 | 개별 Step의 실행 상태 |
+| 사용 범위 | Job에 속한 Step에서 접근 가능 | 해당 Step의 실행 상태 중심 |
+| 재시작 | 이전 JobExecution의 상태 복원 | 이전 StepExecution의 상태 복원 |
+| 저장 테이블 | BATCH_JOB_EXECUTION_CONTEXT | BATCH_STEP_EXECUTION_CONTEXT |
+
+예를 들어 다음과 같은 정보를 저장할 수 있다.
+
+```text
+JobExecutionContext
+    │
+    └── businessDate = 2026-11-05
+```
+
+반면 StepExecutionContext에는 다음과 같은 정보를 저장할 수 있다.
+
+```text
+StepExecutionContext
+    │
+    ├── lastProcessedId = 1500
+    └── processedCount = 1500
+```
+
+여기서 중요한 점은 StepExecutionContext가 Step마다 독립적으로 관리된다는 사실이다.
+
+Step 1의 ExecutionContext에 데이터를 저장했다고 해서 Step 2의 ExecutionContext에 자동으로 복사되는 것은 아니다.
+
+Step 사이에서 데이터를 공유하려면 JobExecutionContext 등을 사용해야 한다.
+
+---
+
+### 재시작 시 ExecutionContext의 동작
+
+최초 실행이라면 새로운 ExecutionContext를 준비한다.
+
+하지만 이전에 실패한 Step을 재시작하는 경우에는 기존 ExecutionContext를 복원할 수 있다.
+
+예를 들어 다음과 같은 실행 결과가 있다고 생각해보자.
+
+```text
+JobExecution 1
+    │
+    └── StepExecution 1
+            │
+            ├── BatchStatus = FAILED
+            │
+            └── ExecutionContext
+                    └── lastProcessedId = 1500
+```
+
+이후 동일한 JobInstance를 재시작하면 이전 Context를 가져와 다음 실행에 활용할 수 있다.
+
+```text
+JobExecution 2
+    │
+    └── StepExecution 2
+            │
+            └── ExecutionContext
+                    └── lastProcessedId = 1500
+```
+
+이 상태를 이용하면 이전에 처리한 데이터를 다시 처음부터 처리하지 않도록 구현할 수 있다.
+
+다만 ExecutionContext에 값이 저장되어 있다는 사실만으로 자동으로 해당 위치부터 데이터 처리가 재개되는 것은 아니다.
+
+실제 Reader나 Tasklet이 이 값을 읽어 복원하는 로직을 구현해야 한다.
+
+Spring Batch의 `ItemStream` 기반 컴포넌트는 이러한 상태 저장과 복원에 활용된다.
+
+SimpleStepHandler는 이전 StepExecution과 ExecutionContext를 조회하고, 새로운 실행이 필요한 경우 적절한 Context를 설정하는 역할을 수행한다.
+
+---
+
+### 일곱 번째 단계: TaskletStep이 Tasklet을 실행한다
+
+StepExecution이 준비되면 실제 Step이 실행된다.
+
+Tasklet 기반 Step의 경우 `TaskletStep`이 사용된다.
+
+호출 흐름은 다음과 같다.
+
+```text
+SimpleStepHandler
+       │
+       ▼
+TaskletStep.execute()
+       │
+       ▼
+AbstractStep.execute()
+       │
+       ├── StepExecution 시작 상태 설정
+       ├── beforeStep() 호출
+       │
+       ▼
+TaskletStep.doExecute()
+       │
+       ▼
+Tasklet.execute()
+       │
+       ▼
+비즈니스 로직 수행
+       │
+       ▼
+StepExecution 최종 상태 저장
+       │
+       ▼
+afterStep() 호출
+```
+
+실제 코드에서는 `afterStep()`과 최종 상태 저장이 AbstractStep의 종료 처리 과정에서 수행된다.
+
+Tasklet은 다음과 같은 인터페이스를 구현한다.
+
+```java
+public interface Tasklet {
+
+    RepeatStatus execute(
+            StepContribution contribution,
+            ChunkContext chunkContext
+    ) throws Exception;
+}
+```
+
+여기서 두 개의 인자를 전달받는다.
+
+첫 번째는 StepContribution이다.
+
+두 번째는 ChunkContext다.
+
+StepContribution은 현재 처리 단위의 실행 결과를 StepExecution에 반영하는 데 사용된다.
+
+ChunkContext는 Step 실행에 필요한 Context 정보에 접근할 수 있도록 지원한다.
+
+예를 들어 다음과 같은 Tasklet을 작성할 수 있다.
+
+```java
+@Bean
+public Step prepareSettlementStep(
+        JobRepository jobRepository,
+        PlatformTransactionManager transactionManager
+) {
+    return new StepBuilder(
+            "prepareSettlementStep",
+            jobRepository
+    )
+            .tasklet((contribution, chunkContext) -> {
+
+                StepExecution stepExecution =
+                        contribution.getStepExecution();
+
+                System.out.println(
+                        "Step 실행: "
+                                + stepExecution.getStepName()
+                );
+
+                return RepeatStatus.FINISHED;
+
+            }, transactionManager)
+            .build();
+}
+```
+
+이 Tasklet은 Step 이름을 출력한 후 RepeatStatus.FINISHED를 반환한다.
+
+TaskletStep은 해당 반환값을 이용해 반복 실행 여부를 판단한다.
+
+정상적으로 종료되면 StepExecution의 상태를 COMPLETED로 갱신할 수 있다.
+
+반면 실행 중 예외가 발생하면 FAILED 상태로 종료될 수 있다.
+
+이처럼 Step과 Tasklet은 별도의 책임을 가지고 있다.
+
+**Step은 실행 상태와 트랜잭션을 관리하고, Tasklet은 실제 비즈니스 로직을 수행한다.**
+
+---
+
+### Step의 실행 상태는 어떻게 변경될까?
+
+StepExecution도 JobExecution과 마찬가지로 실행 상태를 가진다.
+
+대표적인 상태 변화는 다음과 같다.
+
+```text
+STARTING
+    │
+    ▼
+STARTED
+    │
+    ├── 정상 종료 → COMPLETED
+    │
+    ├── 실행 실패 → FAILED
+    │
+    └── 실행 중단 → STOPPED
+```
+
+실제 TaskletStep이 실행되면 AbstractStep은 StepExecution을 STARTED 상태로 변경한다.
+
+```java
+stepExecution.setStatus(
+        BatchStatus.STARTED
+);
+```
+
+이후 실제 비즈니스 로직이 수행된다.
+
+정상적으로 완료되면 다음과 같이 상태를 변경할 수 있다.
+
+```java
+stepExecution.upgradeStatus(
+        BatchStatus.COMPLETED
+);
+```
+
+반면 예외가 발생했다면 예외 유형과 이전 상태 등을 고려해 실패 상태를 반영한다.
+
+여기서 중요한 부분은 `upgradeStatus()`다.
+
+이 메서드는 무조건 상태를 덮어쓰는 방식이 아니다.
+
+기존 상태와 새로운 상태를 비교해 상태가 부적절하게 낮아지지 않도록 처리한다.
+
+예를 들어 이미 FAILED 상태인 StepExecution을 이후 정상 종료 처리에서 단순히 COMPLETED로 바꾸면 실행 결과를 잘못 기록할 수 있다.
+
+따라서 Spring Batch는 상태 전이를 관리하기 위한 API를 제공한다.
+
+---
+
+### 여덟 번째 단계: 마지막 Step의 상태를 JobExecution에 반영한다
+
+모든 Step 실행이 끝나면 SimpleJob은 최종 실행 상태를 결정한다.
+
+여기서 중요한 메서드가 `SimpleJob.doExecute()`다.
+
+SimpleJob은 마지막으로 처리한 StepExecution을 가지고 있다.
+
+```java
+StepExecution lastStepExecution;
+```
+
+그리고 해당 StepExecution의 상태를 JobExecution에 반영한다.
+
+Spring Batch 5.2.4의 핵심 코드는 다음과 같다.
+
+```java
+execution.upgradeStatus(
+        stepExecution.getStatus()
+);
+
+execution.setExitStatus(
+        stepExecution.getExitStatus()
+);
+```
+
+첫 번째 코드는 JobExecution의 BatchStatus를 갱신한다.
+
+```java
+execution.upgradeStatus(
+        stepExecution.getStatus()
+);
+```
+
+두 번째 코드는 JobExecution의 ExitStatus를 설정한다.
+
+```java
+execution.setExitStatus(
+        stepExecution.getExitStatus()
+);
+```
+
+즉, 마지막으로 처리한 StepExecution의 상태가 Job의 최종 결과를 결정하는 중요한 기준이 된다.
+
+#### 마지막 Step이 성공한 경우
+
+```text
+Step 1 → COMPLETED
+
+Step 2 → COMPLETED
+
+Job → COMPLETED
+```
+
+#### 마지막 Step이 실패한 경우
+
+```text
+Step 1 → COMPLETED
+
+Step 2 → FAILED
+
+Job → FAILED
+```
+
+여기서 한 가지 주의해야 한다.
+
+**JobExecution의 BatchStatus가 마지막 StepExecution의 상태로 무조건 덮어써지는 것은 아니다.**
+
+BatchStatus는 `setStatus()`가 아니라 `upgradeStatus()`를 통해 반영된다.
+
+따라서 이미 JobExecution에 더 높은 우선순위의 상태가 존재한다면 해당 상태가 유지될 수 있다.
+
+또한 ExitStatus는 BatchStatus와 독립적으로 관리되므로 두 값이 반드시 같아야 하는 것도 아니다.
+
+마지막으로 AbstractJob의 예외 처리나 Listener 등에 의해 최종 상태가 추가로 영향을 받을 수도 있다.
+
+따라서 정확하게는 **SimpleJob이 마지막으로 처리한 StepExecution의 상태를 JobExecution에 반영하고, AbstractJob이 최종 종료 처리를 수행한다**고 이해해야 한다.
+
+---
+
+### BatchStatus와 ExitStatus의 차이
+
+Spring Batch의 실행 결과를 분석할 때는 BatchStatus와 ExitStatus를 구분해야 한다.
+
+| 구분 | BatchStatus | ExitStatus |
+|---|---|---|
+| 목적 | 실제 실행 상태 표현 | 종료 결과 표현 |
+| 대표 값 | STARTING, STARTED, COMPLETED, FAILED | COMPLETED, FAILED, STOPPED |
+| 사용자 정의 코드 | 제한적 | 가능 |
+| 주요 활용 | 실행 및 재시작 판단 | 종료 코드 기반 후속 처리 |
+| StepExecution | 관리 | 관리 |
+| JobExecution | 관리 | 관리 |
+
+예를 들어 어떤 Step이 정상적으로 실행되었지만 처리 대상 데이터가 없었다고 생각해보자.
+
+이때 BatchStatus는 COMPLETED일 수 있다.
+
+하지만 ExitStatus는 별도의 코드로 표현할 수 있다.
+
+```text
+BatchStatus = COMPLETED
+
+ExitStatus = NO_DATA
+```
+
+단, SimpleJob의 기본 순차 실행에서는 주로 BatchStatus를 기준으로 다음 Step의 실행 여부를 결정한다.
+
+ExitStatus를 기준으로 복잡한 조건 분기를 구성하려면 FlowJob을 사용하는 것이 적합하다.
+
+---
+
+### JobExecutionListener.afterJob()은 언제 호출될까?
+
+SimpleJob.doExecute()의 실행이 끝나면 제어권이 AbstractJob으로 돌아간다.
+
+AbstractJob은 마지막 종료 처리를 수행한다.
+
+일반적인 실행 흐름은 다음과 같다.
+
+```text
+SimpleJob.doExecute()
+       │
+       ▼
+마지막 StepExecution 상태 반영
+       │
+       ▼
+AbstractJob으로 반환
+       │
+       ▼
+종료 시각 설정
+       │
+       ▼
+JobExecutionListener.afterJob()
+       │
+       ▼
+JobRepository.update()
+       │
+       ▼
+Job 실행 종료
+```
+
+따라서 afterJob()에서는 다음 정보를 확인할 수 있다.
+
+```java
+@Override
+public void afterJob(JobExecution jobExecution) {
+
+    BatchStatus batchStatus =
+            jobExecution.getStatus();
+
+    ExitStatus exitStatus =
+            jobExecution.getExitStatus();
+
+    System.out.println(
+            "BatchStatus = " + batchStatus
+    );
+
+    System.out.println(
+            "ExitStatus = " + exitStatus
+    );
+}
+```
+
+이 Listener는 Job의 최종 실행 결과를 확인하는 데 활용할 수 있다.
+
+예를 들어 다음과 같은 작업을 수행할 수 있다.
+
+- 정상 종료 알림
+- 실패 알림
+- 실행 소요 시간 확인
+- Step별 처리 결과 요약
+- 모니터링 정보 기록
+
+다만 Listener는 핵심 비즈니스 트랜잭션을 수행하는 장소로 사용하기보다 실행 전후의 부가 처리에 활용하는 것이 좋다.
+
+---
+
+### SimpleJob 아키텍처 전체 예제
+
+이제 지금까지 살펴본 내용을 실제 코드로 확인해보자.
+
+이번 예제에서는 다음과 같은 Job을 생성한다.
+
+```text
+simpleArchitectureJob
+       │
+       ├── prepareSettlementStep
+       │       │
+       │       └── 정산 대상 준비
+       │
+       └── saveSettlementStep
+               │
+               └── 정산 결과 저장
+```
+
+또한 다음 정보를 확인한다.
+
+| 확인 대상 | 내용 |
+|---|---|
+| JobInstance | 실행한 논리적 Job |
+| JobExecution | 현재 실행 ID와 상태 |
+| JobExecutionContext | Job 수준 공유 상태 |
+| StepExecution | 각 Step의 실행 ID와 상태 |
+| StepExecutionContext | 개별 Step의 상태 |
+| beforeJob() | Job 실행 전 호출 |
+| afterJob() | Job 실행 후 호출 |
+| BatchStatus | 성공 및 실패 상태 |
+| ExitStatus | 최종 종료 코드 |
+
+이번 예제에서는 정상 실행과 실패 실행을 비교할 수 있도록 구성한다.
+
+#### 개발 환경
+
+| 항목 | 기술 |
+|---|---|
+| Java | Java 17 |
+| Spring Boot | 3.4.13 |
+| Spring Batch | 5.2.4 |
+| Build Tool | Maven |
+| Database | H2 |
+| Job | SimpleJob |
+| Step | TaskletStep |
+
+---
+
+### Maven 의존성 설정
+
+`pom.xml`
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="
+             http://maven.apache.org/POM/4.0.0
+             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.4.13</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.example</groupId>
+    <artifactId>spring-batch-architecture</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+
+    <properties>
+        <java.version>17</java.version>
+        <spring-batch.version>5.2.4</spring-batch.version>
+    </properties>
+
+    <dependencies>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-batch</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>
+```
+
+Spring Batch를 사용하기 위해 `spring-boot-starter-batch`를 추가한다.
+
+그리고 실행 메타데이터를 저장하기 위해 H2를 사용한다.
+
+이번 예제에서는 애플리케이션을 종료한 이후에도 실행 이력을 확인할 수 있도록 파일 기반 H2 데이터베이스를 사용한다.
+
+---
+
+### application.yml 설정
+
+`application.yml`
+
+```yaml
+spring:
+  application:
+    name: spring-batch-architecture
+
+  main:
+    web-application-type: none
+
+  datasource:
+    url: jdbc:h2:file:./data/batch-architecture;DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+  batch:
+    job:
+      enabled: true
+      name: simpleArchitectureJob
+
+    jdbc:
+      initialize-schema: ${BATCH_SCHEMA_INIT:never}
+
+logging:
+  level:
+    org.springframework.batch: INFO
+    com.example.batch: INFO
+```
+
+여기서 중요한 설정은 다음과 같다.
+
+```yaml
+spring:
+  batch:
+    job:
+      name: simpleArchitectureJob
+```
+
+실행할 Job 이름을 지정한다.
+
+다음 설정은 데이터베이스 스키마 초기화 정책이다.
+
+```yaml
+spring:
+  batch:
+    jdbc:
+      initialize-schema: ${BATCH_SCHEMA_INIT:never}
+```
+
+최초 실행에서는 환경변수 `BATCH_SCHEMA_INIT=always`를 전달해 스키마를 생성한다.
+
+이후에는 기존 스키마와 실행 이력을 유지한다.
+
+---
+
+### Spring Boot 애플리케이션
+
+`BatchApplication.java`
+
+```java
+package com.example.batch;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class BatchApplication {
+
+    public static void main(String[] args) {
+
+        SpringApplication.run(
+                BatchApplication.class,
+                args
+        );
+    }
+}
+```
+
+이 애플리케이션이 시작되면 Spring Container가 Job과 Step Bean을 생성한다.
+
+이후 Spring Boot의 Batch 자동 실행 기능을 통해 Job이 실행된다.
+
+---
+
+### SimpleJobArchitectureConfiguration 전체 코드
+
+`SimpleJobArchitectureConfiguration.java`
+
+```java
+package com.example.batch;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobExecutionListener;
+import org.springframework.batch.core.JobParameters;
+import org.springframework.batch.core.Step;
+import org.springframework.batch.core.StepExecution;
+
+import org.springframework.batch.core.job.builder.JobBuilder;
+import org.springframework.batch.core.launch.support.RunIdIncrementer;
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.step.builder.StepBuilder;
+
+import org.springframework.batch.item.ExecutionContext;
+import org.springframework.batch.repeat.RepeatStatus;
+
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import org.springframework.transaction.PlatformTransactionManager;
+
+@Configuration
+public class SimpleJobArchitectureConfiguration {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(
+                    SimpleJobArchitectureConfiguration.class
+            );
+
+    @Bean
+    public Job simpleArchitectureJob(
+            JobRepository jobRepository,
+            @Qualifier("prepareSettlementStep") Step prepareStep,
+            @Qualifier("saveSettlementStep") Step saveStep,
+            JobExecutionListener architectureListener
+    ) {
+
+        return new JobBuilder(
+                "simpleArchitectureJob",
+                jobRepository
+        )
+                .incrementer(new RunIdIncrementer())
+                .listener(architectureListener)
+                .start(prepareStep)
+                .next(saveStep)
+                .build();
+    }
+
+    @Bean
+    public Step prepareSettlementStep(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+
+        return new StepBuilder(
+                "prepareSettlementStep",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    StepExecution stepExecution =
+                            contribution.getStepExecution();
+
+                    JobExecution jobExecution =
+                            stepExecution.getJobExecution();
+
+                    String businessDate =
+                            stepExecution
+                                    .getJobParameters()
+                                    .getString("businessDate");
+
+                    log.info(
+                            "[Step 1] stepExecutionId={}",
+                            stepExecution.getId()
+                    );
+
+                    log.info(
+                            "[Step 1] jobExecutionId={}",
+                            jobExecution.getId()
+                    );
+
+                    ExecutionContext stepContext =
+                            stepExecution.getExecutionContext();
+
+                    stepContext.putString(
+                            "prepare.result",
+                            "READY"
+                    );
+
+                    ExecutionContext jobContext =
+                            jobExecution.getExecutionContext();
+
+                    jobContext.putString(
+                            "settlement.businessDate",
+                            businessDate
+                    );
+
+                    log.info(
+                            "[Step 1] 정산 대상 준비 완료"
+                    );
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+
+    @Bean
+    public Step saveSettlementStep(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+
+        return new StepBuilder(
+                "saveSettlementStep",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    StepExecution stepExecution =
+                            contribution.getStepExecution();
+
+                    JobExecution jobExecution =
+                            stepExecution.getJobExecution();
+
+                    JobParameters parameters =
+                            stepExecution.getJobParameters();
+
+                    String businessDate =
+                            jobExecution
+                                    .getExecutionContext()
+                                    .getString(
+                                            "settlement.businessDate"
+                                    );
+
+                    log.info(
+                            "[Step 2] stepExecutionId={}",
+                            stepExecution.getId()
+                    );
+
+                    log.info(
+                            "[Step 2] 공유된 businessDate={}",
+                            businessDate
+                    );
+
+                    String failStep2 =
+                            parameters.getString(
+                                    "failStep2"
+                            );
+
+                    if ("true".equals(failStep2)) {
+
+                        throw new IllegalStateException(
+                                "정산 결과 저장 중 오류 발생"
+                        );
+                    }
+
+                    stepExecution
+                            .getExecutionContext()
+                            .putString(
+                                    "settlement.result",
+                                    "SAVED"
+                            );
+
+                    log.info(
+                            "[Step 2] 정산 결과 저장 완료"
+                    );
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+
+    @Bean
+    public JobExecutionListener architectureListener() {
+
+        return new JobExecutionListener() {
+
+            @Override
+            public void beforeJob(
+                    JobExecution jobExecution
+            ) {
+
+                log.info(
+                        "[beforeJob] jobInstanceId={}",
+                        jobExecution
+                                .getJobInstance()
+                                .getId()
+                );
+
+                log.info(
+                        "[beforeJob] jobExecutionId={}",
+                        jobExecution.getId()
+                );
+
+                log.info(
+                        "[beforeJob] status={}",
+                        jobExecution.getStatus()
+                );
+            }
+
+            @Override
+            public void afterJob(
+                    JobExecution jobExecution
+            ) {
+
+                log.info(
+                        "[afterJob] jobExecutionId={}",
+                        jobExecution.getId()
+                );
+
+                log.info(
+                        "[afterJob] BatchStatus={}",
+                        jobExecution.getStatus()
+                );
+
+                log.info(
+                        "[afterJob] ExitStatus={}",
+                        jobExecution
+                                .getExitStatus()
+                                .getExitCode()
+                );
+
+                for (StepExecution stepExecution
+                        : jobExecution.getStepExecutions()) {
+
+                    log.info(
+                            "[afterJob] step={}, status={}, exit={}",
+                            stepExecution.getStepName(),
+                            stepExecution.getStatus(),
+                            stepExecution
+                                    .getExitStatus()
+                                    .getExitCode()
+                    );
+                }
+            }
+        };
+    }
+}
+```
+
+이 예제에서는 하나의 SimpleJob과 두 개의 TaskletStep을 생성했다.
+
+그리고 JobExecutionListener를 등록했다.
+
+각 단계에서 JobExecution ID와 StepExecution ID를 확인할 수 있도록 로그를 추가했다.
+
+또한 ExecutionContext의 동작을 확인하기 위해 Step 1에서 JobExecutionContext에 값을 저장하고 Step 2에서 해당 값을 조회하도록 구성했다.
+
+---
+
+### 코드 분석: Job 생성과 실행 메타데이터의 관계
+
+먼저 다음 코드를 살펴보자.
+
+```java
+return new JobBuilder(
+        "simpleArchitectureJob",
+        jobRepository
+)
+        .incrementer(new RunIdIncrementer())
+        .listener(architectureListener)
+        .start(prepareStep)
+        .next(saveStep)
+        .build();
+```
+
+이 코드에서 SimpleJob이 생성된다.
+
+이때 두 개의 Step이 등록된다.
+
+```text
+SimpleJob
+    │
+    └── steps
+          │
+          ├── prepareSettlementStep
+          │
+          └── saveSettlementStep
+```
+
+하지만 이 시점에 JobExecution이나 StepExecution이 생성되는 것은 아니다.
+
+이 객체들은 실제 Job 실행 과정에서 생성된다.
+
+따라서 다음과 같이 구분할 수 있다.
+
+```text
+Spring Bean 초기화
+       │
+       ▼
+SimpleJob 생성
+       │
+       ▼
+Step 객체 연결
+       │
+       ▼
+Job 실행 대기
+```
+
+```text
+JobLauncher.run()
+       │
+       ▼
+JobInstance 조회 또는 생성
+       │
+       ▼
+JobExecution 생성
+       │
+       ▼
+StepExecution 생성
+       │
+       ▼
+Tasklet 실행
+```
+
+이처럼 Job과 Step은 실행 정의이고, JobExecution과 StepExecution은 실제 실행 이력에 해당한다.
+
+---
+
+### 코드 분석: StepExecutionContext와 JobExecutionContext
+
+이번 예제에서는 Step 1에서 두 개의 ExecutionContext에 값을 저장했다.
+
+먼저 StepExecutionContext다.
+
+```java
+ExecutionContext stepContext =
+        stepExecution.getExecutionContext();
+
+stepContext.putString(
+        "prepare.result",
+        "READY"
+);
+```
+
+이 값은 prepareSettlementStep의 실행 상태에 해당한다.
+
+다음으로 JobExecutionContext다.
+
+```java
+ExecutionContext jobContext =
+        jobExecution.getExecutionContext();
+
+jobContext.putString(
+        "settlement.businessDate",
+        businessDate
+);
+```
+
+이 값은 Job 전체에서 사용할 수 있는 상태 정보다.
+
+따라서 Step 2에서 조회할 수 있다.
+
+```java
+String businessDate =
+        jobExecution
+                .getExecutionContext()
+                .getString(
+                        "settlement.businessDate"
+                );
+```
+
+이러한 구조를 이용하면 Step 사이에서 필요한 정보를 전달할 수 있다.
+
+다만 다음 사실을 기억해야 한다.
+
+**ExecutionContext에 값을 저장하는 것과 해당 값이 즉시 데이터베이스에 영속화되는 것은 다르다.**
+
+ExecutionContext는 메모리에서 값을 관리한다.
+
+그리고 Spring Batch는 실행 과정의 적절한 시점에 JobRepository를 통해 Context를 데이터베이스에 저장한다.
+
+Job 수준 ExecutionContext는 일반적으로 Step 종료 경계에서 저장되고, Step 수준 ExecutionContext는 Step 실행 및 체크포인트 처리 과정에서 저장된다.
+
+따라서 장애 복구를 고려한다면 Context의 저장 시점까지 함께 이해해야 한다.
+
+---
+
+### 실제 SimpleJob 실행하기
+
+먼저 프로젝트를 빌드한다.
+
+```bash
+mvn clean package
+```
+
+정상적으로 빌드되면 다음과 같은 결과가 출력된다.
+
+```text
+BUILD SUCCESS
+```
+
+다음으로 H2 데이터베이스 파일을 저장할 디렉터리를 생성한다.
+
+```bash
+mkdir -p data
+```
+
+이 명령어는 현재 프로젝트에 data 디렉터리를 생성한다.
+
+이제 최초 실행에서 Spring Batch 메타데이터 스키마를 생성한다.
+
+```bash
+BATCH_SCHEMA_INIT=always \
+java -jar target/spring-batch-architecture-0.0.1-SNAPSHOT.jar \
+  businessDate=2026-11-05 \
+  failStep2=false
+```
+
+이 명령어는 다음과 같은 작업을 수행한다.
+
+첫 번째로 Spring Batch 메타데이터 테이블을 생성한다.
+
+두 번째로 simpleArchitectureJob을 실행한다.
+
+세 번째로 JobParameters를 전달한다.
+
+이번에는 failStep2가 false이므로 두 개의 Step이 정상적으로 완료된다.
+
+---
+
+### 정상 실행 결과 확인하기
+
+정상적으로 실행되면 다음과 유사한 로그를 확인할 수 있다.
+
+```text
+[beforeJob] jobInstanceId=1
+
+[beforeJob] jobExecutionId=1
+
+[beforeJob] status=STARTED
+
+[Step 1] stepExecutionId=1
+
+[Step 1] jobExecutionId=1
+
+[Step 1] 정산 대상 준비 완료
+
+[Step 2] stepExecutionId=2
+
+[Step 2] 공유된 businessDate=2026-11-05
+
+[Step 2] 정산 결과 저장 완료
+
+[afterJob] jobExecutionId=1
+
+[afterJob] BatchStatus=COMPLETED
+
+[afterJob] ExitStatus=COMPLETED
+```
+
+이 로그에서 중요한 부분을 살펴보자.
+
+#### JobExecution은 하나 생성된다
+
+```text
+jobExecutionId=1
+```
+
+하나의 Job 실행 요청에 대해 하나의 JobExecution이 생성되었다.
+
+#### StepExecution은 두 개 생성된다
+
+```text
+stepExecutionId=1
+
+stepExecutionId=2
+```
+
+Step 1과 Step 2가 각각 실행되었으므로 두 개의 StepExecution이 생성되었다.
+
+#### JobExecutionContext를 통해 값을 공유한다
+
+```text
+공유된 businessDate=2026-11-05
+```
+
+Step 1에서 JobExecutionContext에 저장한 값을 Step 2에서 조회했다.
+
+#### 마지막으로 Job의 상태가 완료된다
+
+```text
+BatchStatus=COMPLETED
+
+ExitStatus=COMPLETED
+```
+
+두 Step이 모두 정상적으로 완료되었으므로 JobExecution도 COMPLETED 상태로 종료된다.
+
+---
+
+### 실패한 경우의 실행 흐름
+
+이번에는 Step 2에서 의도적으로 예외를 발생시켜보자.
+
+실행 시 다음 값을 전달한다.
+
+```text
+failStep2=true
+```
+
+예를 들어 기존과 다른 정산 기준일로 다음 Job을 실행할 수 있다.
+
+```bash
+java -jar target/spring-batch-architecture-0.0.1-SNAPSHOT.jar \
+  businessDate=2026-11-06 \
+  failStep2=true
+```
+
+이번에는 Step 2에서 다음 코드가 실행된다.
+
+```java
+if ("true".equals(failStep2)) {
+
+    throw new IllegalStateException(
+            "정산 결과 저장 중 오류 발생"
+    );
+}
+```
+
+따라서 Step 2는 FAILED 상태로 종료된다.
+
+전체 실행 흐름은 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["Job 실행"]
+    B["JobExecution 생성"]
+    C["beforeJob()"]
+    D["Step 1"]
+    E["COMPLETED"]
+    F["Step 2"]
+    G["예외 발생"]
+    H["StepExecution FAILED"]
+    I["JobExecution FAILED"]
+    J["afterJob()"]
+    K["최종 메타데이터 저장"]
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+    F --> G
+    G --> H
+    H --> I
+    I --> J
+    J --> K
+```
+
+실행 결과는 다음과 유사하다.
+
+```text
+[beforeJob] status=STARTED
+
+[Step 1] 정산 대상 준비 완료
+
+[Step 2] 공유된 businessDate=2026-11-06
+
+IllegalStateException:
+정산 결과 저장 중 오류 발생
+
+[afterJob] BatchStatus=FAILED
+
+[afterJob] ExitStatus=FAILED
+```
+
+이 경우 두 개의 StepExecution이 생성된다.
+
+첫 번째 StepExecution은 COMPLETED다.
+
+두 번째 StepExecution은 FAILED다.
+
+그리고 마지막으로 처리한 Step의 상태가 JobExecution에 반영되어 Job이 FAILED로 종료된다.
+
+---
+
+### 데이터베이스에 저장되는 메타데이터 구조
+
+Spring Batch는 실행 정보를 여러 테이블에 나누어 저장한다.
+
+대표적인 테이블은 다음과 같다.
+
+| 테이블 | 저장 정보 |
+|---|---|
+| BATCH_JOB_INSTANCE | JobInstance |
+| BATCH_JOB_EXECUTION | JobExecution |
+| BATCH_JOB_EXECUTION_PARAMS | JobParameters |
+| BATCH_JOB_EXECUTION_CONTEXT | Job 수준 ExecutionContext |
+| BATCH_STEP_EXECUTION | StepExecution |
+| BATCH_STEP_EXECUTION_CONTEXT | Step 수준 ExecutionContext |
+
+테이블 사이의 관계를 표현하면 다음과 같다.
+
+```mermaid
+erDiagram
+    BATCH_JOB_INSTANCE ||--o{ BATCH_JOB_EXECUTION : has
+    BATCH_JOB_EXECUTION ||--o{ BATCH_STEP_EXECUTION : has
+    BATCH_JOB_EXECUTION ||--o{ BATCH_JOB_EXECUTION_PARAMS : has
+    BATCH_JOB_EXECUTION ||--|| BATCH_JOB_EXECUTION_CONTEXT : has
+    BATCH_STEP_EXECUTION ||--|| BATCH_STEP_EXECUTION_CONTEXT : has
+```
+
+이 구조에서 중요한 것은 실행 메타데이터가 계층적으로 연결된다는 점이다.
+
+하나의 JobInstance는 여러 JobExecution을 가질 수 있다.
+
+하나의 JobExecution에는 여러 StepExecution이 연결될 수 있다.
+
+JobExecution과 StepExecution은 각각 자신의 ExecutionContext를 가진다.
+
+따라서 Job 전체의 실행 상태와 개별 Step의 실행 상태를 구분해서 추적할 수 있다.
+
+---
+
+### JobInstance와 JobExecution 조회하기
+
+먼저 Job 전체의 실행 이력을 확인해보자.
+
+```sql
+SELECT
+    ji.JOB_INSTANCE_ID,
+    ji.JOB_NAME,
+    ji.JOB_KEY,
+
+    je.JOB_EXECUTION_ID,
+    je.STATUS,
+    je.EXIT_CODE,
+    je.START_TIME,
+    je.END_TIME
+
+FROM BATCH_JOB_INSTANCE ji
+
+JOIN BATCH_JOB_EXECUTION je
+    ON ji.JOB_INSTANCE_ID = je.JOB_INSTANCE_ID
+
+WHERE ji.JOB_NAME = 'simpleArchitectureJob'
+
+ORDER BY
+    ji.JOB_INSTANCE_ID,
+    je.JOB_EXECUTION_ID;
+```
+
+이 쿼리는 JobInstance와 JobExecution의 관계를 확인한다.
+
+예를 들어 다음과 같은 결과를 확인할 수 있다.
+
+| JOB_INSTANCE_ID | JOB_EXECUTION_ID | STATUS | EXIT_CODE |
+|---|---|---|---|
+| 1 | 1 | COMPLETED | COMPLETED |
+| 2 | 2 | FAILED | FAILED |
+
+여기서는 서로 다른 식별용 JobParameters를 이용해 실행했으므로 두 개의 JobInstance가 생성된 상황이다.
+
+만약 동일한 JobInstance를 실패 후 재시작했다면 다음과 같은 결과가 만들어질 수 있다.
+
+| JOB_INSTANCE_ID | JOB_EXECUTION_ID | STATUS |
+|---|---|---|
+| 3 | 3 | FAILED |
+| 3 | 4 | COMPLETED |
+
+같은 JobInstance ID에 두 개의 JobExecution이 연결된다.
+
+---
+
+### StepExecution 조회하기
+
+이번에는 개별 Step의 실행 정보를 확인해보자.
+
+```sql
+SELECT
+    ji.JOB_NAME,
+
+    je.JOB_EXECUTION_ID,
+
+    se.STEP_EXECUTION_ID,
+    se.STEP_NAME,
+
+    se.STATUS,
+    se.EXIT_CODE,
+
+    se.START_TIME,
+    se.END_TIME,
+
+    se.COMMIT_COUNT,
+    se.ROLLBACK_COUNT
+
+FROM BATCH_JOB_INSTANCE ji
+
+JOIN BATCH_JOB_EXECUTION je
+    ON ji.JOB_INSTANCE_ID = je.JOB_INSTANCE_ID
+
+JOIN BATCH_STEP_EXECUTION se
+    ON je.JOB_EXECUTION_ID = se.JOB_EXECUTION_ID
+
+WHERE ji.JOB_NAME = 'simpleArchitectureJob'
+
+ORDER BY
+    je.JOB_EXECUTION_ID,
+    se.STEP_EXECUTION_ID;
+```
+
+이 쿼리는 다음 정보를 확인한다.
+
+첫 번째는 StepExecution ID다.
+
+두 번째는 Step 이름이다.
+
+세 번째는 BatchStatus와 ExitStatus다.
+
+네 번째는 실행 시작 시간과 종료 시간이다.
+
+다섯 번째는 커밋 횟수와 롤백 횟수다.
+
+예를 들어 다음과 같은 결과를 확인할 수 있다.
+
+| JOB_EXECUTION_ID | STEP_NAME | STATUS |
+|---|---|---|
+| 1 | prepareSettlementStep | COMPLETED |
+| 1 | saveSettlementStep | COMPLETED |
+| 2 | prepareSettlementStep | COMPLETED |
+| 2 | saveSettlementStep | FAILED |
+
+이 결과를 통해 JobExecution별 Step 실행 상태를 확인할 수 있다.
+
+특히 두 번째 JobExecution에서 Step 2가 FAILED 상태로 종료되었음을 알 수 있다.
+
+---
+
+### ExecutionContext 조회하기
+
+이번에는 ExecutionContext가 저장된 테이블을 확인해보자.
+
+Job 수준의 ExecutionContext는 다음 테이블에 저장된다.
+
+```text
+BATCH_JOB_EXECUTION_CONTEXT
+```
+
+다음 SQL로 조회할 수 있다.
+
+```sql
+SELECT
+    JOB_EXECUTION_ID,
+    SHORT_CONTEXT,
+    SERIALIZED_CONTEXT
+
+FROM BATCH_JOB_EXECUTION_CONTEXT
+
+ORDER BY JOB_EXECUTION_ID;
+```
+
+Step 수준의 ExecutionContext는 다음 테이블에 저장된다.
+
+```text
+BATCH_STEP_EXECUTION_CONTEXT
+```
+
+조회 쿼리는 다음과 같다.
+
+```sql
+SELECT
+    STEP_EXECUTION_ID,
+    SHORT_CONTEXT,
+    SERIALIZED_CONTEXT
+
+FROM BATCH_STEP_EXECUTION_CONTEXT
+
+ORDER BY STEP_EXECUTION_ID;
+```
+
+여기서 중요한 점은 ExecutionContext가 단순히 메모리에서만 사용하는 객체가 아니라는 사실이다.
+
+Spring Batch는 ExecutionContext를 직렬화해 데이터베이스에 저장한다.
+
+따라서 Job이나 Step이 실패한 이후에도 이전 상태를 복원할 수 있다.
+
+다만 Context의 직렬화 형식과 저장 방식은 Spring Batch 버전 및 설정에 따라 달라질 수 있다.
+
+또한 Context에 대용량 객체를 저장하면 메타데이터 처리 비용이 증가할 수 있으므로 주의해야 한다.
+
+---
+
+### SimpleJob 아키텍처를 분석할 때 확인할 메서드
+
+SimpleJob의 내부 동작을 확인할 때는 모든 코드를 처음부터 추적하기보다 핵심 메서드를 중심으로 살펴보는 것이 효율적이다.
+
+대표적인 메서드는 다음과 같다.
+
+| 확인 순서 | 클래스 | 메서드 | 확인할 내용 |
+|---|---|---|---|
+| 1 | TaskExecutorJobLauncher | `run()` | Job 실행 요청 및 이전 실행 조회 |
+| 2 | SimpleJobRepository | `getLastJobExecution()` | 기존 JobExecution 조회 |
+| 3 | SimpleJobRepository | `createJobExecution()` | JobInstance 및 JobExecution 생성 |
+| 4 | AbstractJob | `execute()` | Job 공통 실행 처리 |
+| 5 | JobExecutionListener | `beforeJob()` | Job 실행 전 처리 |
+| 6 | SimpleJob | `doExecute()` | Step 순차 실행 |
+| 7 | SimpleStepHandler | `handleStep()` | StepExecution 생성 및 재시작 판단 |
+| 8 | AbstractStep | `execute()` | Step 공통 실행 처리 |
+| 9 | TaskletStep | `doExecute()` | Tasklet 실행 |
+| 10 | Tasklet | `execute()` | 비즈니스 로직 수행 |
+| 11 | SimpleJob | `doExecute()` 종료 부분 | JobExecution 상태 반영 |
+| 12 | JobExecutionListener | `afterJob()` | Job 실행 후 처리 |
+| 13 | SimpleJobRepository | `update()` | 최종 실행 상태 저장 |
+
+이 순서대로 확인하면 각 객체의 역할과 호출 관계를 연결할 수 있다.
+
+특히 StepExecution과 ExecutionContext의 생성 및 저장 시점을 확인할 때는 SimpleStepHandler와 AbstractStep을 함께 살펴보는 것이 좋다.
+
+---
+
+### SimpleJob을 분석할 때 혼동하기 쉬운 부분
+
+SimpleJob의 전체 흐름을 이해할 때는 다음 개념을 명확하게 구분해야 한다.
+
+| 혼동하기 쉬운 내용 | 정확한 이해 |
+|---|---|
+| Job 객체가 생성되면 JobExecution도 생성된다 | 실제 Job 실행 시 JobExecution이 생성된다 |
+| JobInstance는 실행할 때마다 생성된다 | 같은 식별용 JobParameters라면 기존 JobInstance를 사용할 수 있다 |
+| JobLauncher가 직접 모든 메타데이터를 생성한다 | JobRepository가 생성과 저장을 담당한다 |
+| SimpleJob이 직접 Tasklet을 호출한다 | StepHandler와 TaskletStep 등의 실행 계층을 거친다 |
+| Step이 실행된 이후 StepExecution이 생성된다 | 실행 전에 StepExecution이 준비되고 저장된다 |
+| 모든 Step이 하나의 ExecutionContext를 공유한다 | StepExecutionContext는 Step마다 별도로 관리된다 |
+| ExecutionContext에 값을 넣으면 즉시 DB에 저장된다 | 저장 시점은 JobRepository의 갱신 과정에 따른다 |
+| SimpleJob은 모든 Step을 반드시 실행한다 | 이전 Step이 COMPLETED가 아니면 후속 실행을 중단한다 |
+| 마지막 Step의 상태가 JobExecution에 무조건 덮어써진다 | BatchStatus는 upgradeStatus()로 반영된다 |
+| afterJob()이 호출되면 모든 DB 갱신이 끝났다 | JobExecution의 최종 업데이트는 afterJob() 이후에 수행된다 |
+
+이러한 차이를 이해하면 실행 과정에서 발생하는 문제를 더 정확하게 분석할 수 있다.
+
+---
+
+### 실무에서 SimpleJob 아키텍처를 활용하는 10가지 방법
+
+SimpleJob의 실행 아키텍처를 이해하면 배치를 단순히 구현하는 것을 넘어 안정적으로 운영할 수 있다.
+
+특히 결제, 정산, 데이터 집계처럼 실행 이력과 장애 복구가 중요한 업무에서 도움이 된다.
+
+#### 1. JobInstance를 기준으로 동일한 업무를 식별한다
+
+예를 들어 일별 정산 Job이 있다고 생각해보자.
+
+```text
+Job Name = dailySettlementJob
+
+businessDate = 2026-11-05
+```
+
+이 두 값이 논리적 작업을 식별하는 기준이 될 수 있다.
+
+따라서 동일한 업무를 중복 실행하는 문제를 방지하려면 JobInstance의 식별 정책부터 명확하게 정의해야 한다.
+
+run.id처럼 실행을 구분하는 파라미터를 무조건 추가하면 동일한 업무 대상에 대해 서로 다른 JobInstance가 생성될 수 있으므로 주의해야 한다.
+
+#### 2. JobExecution을 기준으로 실제 실행 이력을 추적한다
+
+하나의 JobInstance가 여러 번 실행될 수 있다.
+
+따라서 장애를 분석할 때는 JobInstance뿐 아니라 JobExecution을 확인해야 한다.
+
+어떤 실행이 실패했고 어떤 실행이 성공했는지 구분해야 실제 복구 과정을 이해할 수 있다.
+
+특히 운영 로그에는 JobExecution ID를 함께 기록하는 것이 좋다.
+
+#### 3. StepExecution을 기준으로 장애 위치를 확인한다
+
+Job 전체의 상태가 FAILED라는 사실만으로는 어떤 작업에서 오류가 발생했는지 알기 어렵다.
+
+이때 StepExecution을 조회하면 실패한 Step을 확인할 수 있다.
+
+또한 실행 시간과 처리 건수, 커밋 횟수 등의 정보를 이용해 문제의 범위를 좁힐 수 있다.
+
+따라서 운영 모니터링에서도 StepExecution을 중요한 관찰 단위로 사용하는 것이 좋다.
+
+#### 4. JobExecutionContext는 Step 사이의 공유 상태로 활용한다
+
+Step 1에서 생성한 식별자나 처리 결과 요약을 Step 2에서 사용해야 할 수 있다.
+
+이 경우 JobExecutionContext를 활용할 수 있다.
+
+다만 대용량 데이터 전체를 Context에 저장하기보다는 해당 데이터를 다시 조회할 수 있는 식별자를 저장하는 것이 적절하다.
+
+예를 들어 정산 대상 목록 전체보다 정산 배치 ID를 저장하는 방식이 더 유용할 수 있다.
+
+#### 5. StepExecutionContext는 재시작 상태 복원에 활용한다
+
+대량의 데이터를 처리하는 Step에서는 어디까지 처리했는지 기록해야 할 수 있다.
+
+예를 들어 마지막 처리 ID나 파일 읽기 위치를 저장할 수 있다.
+
+이러한 정보는 StepExecutionContext에 저장할 수 있다.
+
+다만 단순히 값을 저장하는 것만으로 재시작이 완성되는 것은 아니다.
+
+실제 Reader나 Tasklet이 해당 값을 복원할 수 있도록 구현해야 한다.
+
+#### 6. Listener에는 실행 전후의 공통 처리를 배치한다
+
+JobExecutionListener는 Job 실행 전후에 필요한 공통 작업을 수행할 수 있다.
+
+예를 들어 실행 시작 로그, 실패 알림, 처리 결과 요약 등을 구현할 수 있다.
+
+하지만 핵심 비즈니스 처리를 Listener에 집중시키면 트랜잭션 경계가 불명확해질 수 있다.
+
+따라서 비즈니스 데이터 처리와 실행 전후의 부가 작업을 구분하는 것이 좋다.
+
+#### 7. Step의 상태와 Job의 상태를 함께 확인한다
+
+Job의 상태가 FAILED라면 어떤 Step이 실패했는지 함께 확인해야 한다.
+
+또한 BatchStatus와 ExitStatus가 서로 다른 값으로 관리될 수 있다는 사실을 이해해야 한다.
+
+특히 사용자 정의 ExitStatus를 사용하는 경우에는 종료 코드를 별도로 확인해야 한다.
+
+운영 시스템에서 Job 상태만 확인하는 것보다 StepExecution과 ExitStatus를 함께 분석하는 편이 정확하다.
+
+#### 8. 실행 시점과 메타데이터 저장 시점을 구분한다
+
+Tasklet에서 특정 값이 변경되었다고 해서 해당 값이 즉시 데이터베이스에 저장되는 것은 아니다.
+
+Spring Batch는 실행 상태와 Context를 정해진 시점에 저장한다.
+
+따라서 장애가 발생하면 메모리에서 변경된 상태와 실제 영속화된 상태가 다를 수 있다.
+
+재시작 기능을 설계할 때는 이러한 저장 시점을 고려해야 한다.
+
+#### 9. 여러 Step의 트랜잭션을 하나의 트랜잭션으로 오해하지 않는다
+
+SimpleJob은 Step을 순차적으로 실행한다.
+
+하지만 여러 Step을 하나의 데이터베이스 트랜잭션으로 묶는 것은 아니다.
+
+Step 1이 커밋된 이후 Step 2에서 실패하더라도 Step 1의 데이터가 자동으로 롤백되지 않는다.
+
+따라서 정산과 결제처럼 데이터 정합성이 중요한 업무에서는 Step별 트랜잭션 경계와 보상 처리 전략을 함께 설계해야 한다.
+
+#### 10. 아키텍처의 각 계층을 기준으로 장애를 분리한다
+
+배치 장애가 발생했을 때는 모든 문제를 Tasklet의 비즈니스 로직 문제로 판단해서는 안 된다.
+
+JobParameters 검증에서 실패했을 수도 있다.
+
+JobRepository에서 이전 실행 상태를 확인하는 과정에서 예외가 발생했을 수도 있다.
+
+StepExecution 생성이나 ExecutionContext 저장 과정에서 문제가 발생했을 수도 있다.
+
+따라서 장애가 발생한 위치를 다음과 같이 구분하는 것이 좋다.
+
+```text
+JobLauncher
+    │
+    ├── 실행 요청 및 파라미터 문제
+    │
+    ▼
+JobRepository
+    │
+    ├── 메타데이터 조회 및 저장 문제
+    │
+    ▼
+AbstractJob
+    │
+    ├── 검증 및 Listener 문제
+    │
+    ▼
+SimpleJob
+    │
+    ├── Step 실행 순서 문제
+    │
+    ▼
+SimpleStepHandler
+    │
+    ├── 재시작 및 StepExecution 문제
+    │
+    ▼
+TaskletStep
+    │
+    ├── 트랜잭션 및 Step 상태 문제
+    │
+    ▼
+Tasklet
+    │
+    └── 실제 비즈니스 로직 문제
+```
+
+이러한 관점으로 장애를 분석하면 문제의 발생 위치를 더 빠르게 좁힐 수 있다.
+
+---
+
+### SimpleJob 전체 아키텍처 정리
+
+마지막으로 SimpleJob의 전체 실행 구조를 하나의 흐름으로 정리해보자.
+
+```mermaid
+flowchart TD
+    A["JobLauncher.run()"]
+
+    B["JobRepository"]
+    C["기존 JobInstance 조회"]
+
+    D{"기존 JobInstance 존재?"}
+
+    E["새 JobInstance 생성"]
+    F["기존 JobInstance 사용"]
+
+    G["JobExecution 생성"]
+    H["JobExecutionContext 준비"]
+
+    I["AbstractJob.execute()"]
+    J["JobParameters 검증"]
+
+    K["BatchStatus STARTED"]
+    L["beforeJob()"]
+
+    M["SimpleJob.doExecute()"]
+
+    N["SimpleStepHandler"]
+    O["StepExecution 생성"]
+    P["StepExecutionContext 준비"]
+
+    Q["TaskletStep.execute()"]
+    R["Tasklet.execute()"]
+
+    S{"Step COMPLETED?"}
+
+    T["다음 Step 실행"]
+    U["후속 Step 실행 중단"]
+
+    V["JobExecution 상태 반영"]
+    W["afterJob()"]
+
+    X["JobRepository 최종 업데이트"]
+
+    A --> B
+    B --> C
+    C --> D
+
+    D -->|NO| E
+    D -->|YES| F
+
+    E --> G
+    F --> G
+
+    G --> H
+    H --> I
+
+    I --> J
+    J --> K
+    K --> L
+    L --> M
+
+    M --> N
+    N --> O
+    O --> P
+    P --> Q
+    Q --> R
+    R --> S
+
+    S -->|YES| T
+    T -->|"다음 Step이 존재하면"| N
+
+    S -->|NO| U
+
+    T -->|"모든 Step 완료"| V
+    U --> V
+
+    V --> W
+    W --> X
+```
+
+이 구조에서 가장 중요한 것은 각 컴포넌트가 서로 다른 책임을 가진다는 사실이다.
+
+JobLauncher는 실행을 시작한다.
+
+JobRepository는 실행 메타데이터를 관리한다.
+
+JobInstance는 논리적인 작업을 식별한다.
+
+JobExecution은 개별 Job의 실행 상태를 관리한다.
+
+AbstractJob은 Job 실행 전후의 공통 처리를 수행한다.
+
+SimpleJob은 Step의 실행 순서를 관리한다.
+
+SimpleStepHandler는 Step 실행 여부와 재시작 상태를 처리한다.
+
+StepExecution은 개별 Step의 실행 상태를 관리한다.
+
+TaskletStep은 Tasklet의 실행을 관리한다.
+
+Tasklet은 실제 비즈니스 로직을 수행한다.
+
+그리고 ExecutionContext는 실행 과정에서 필요한 상태를 저장하고 복원하는 데 사용된다.
+
+이러한 구조를 통해 Spring Batch는 실행 흐름과 상태 관리를 체계적으로 분리한다.
+
+---
+
+### 정리
+
+Spring Batch의 SimpleJob은 등록된 Step을 순차적으로 실행하는 기본적인 Job 구현체다.
+
+하지만 실제 실행 과정에서는 SimpleJob만 동작하는 것이 아니다.
+
+JobLauncher, JobRepository, AbstractJob, SimpleStepHandler, TaskletStep 등 여러 컴포넌트가 협력한다.
+
+전체 실행 흐름은 다음과 같다.
+
+```text
+JobLauncher.run()
+       │
+       ▼
+JobRepository
+       │
+       ├── JobInstance 조회 또는 생성
+       │
+       ├── JobExecution 생성
+       │
+       └── JobExecutionContext 준비
+       │
+       ▼
+AbstractJob.execute()
+       │
+       ├── JobParameters 검증
+       ├── BatchStatus STARTED
+       └── beforeJob()
+       │
+       ▼
+SimpleJob.doExecute()
+       │
+       ▼
+SimpleStepHandler
+       │
+       ├── 이전 StepExecution 조회
+       ├── StepExecution 생성
+       └── StepExecutionContext 준비
+       │
+       ▼
+TaskletStep.execute()
+       │
+       ▼
+Tasklet.execute()
+       │
+       ▼
+비즈니스 로직 수행
+       │
+       ▼
+StepExecution 최종 상태 저장
+       │
+       ▼
+SimpleJob
+       │
+       ├── COMPLETED → 다음 Step
+       └── FAILED → 실행 중단
+       │
+       ▼
+JobExecution 상태 반영
+       │
+       ▼
+AbstractJob
+       │
+       ├── afterJob()
+       └── JobRepository 최종 업데이트
+       │
+       ▼
+Job 실행 종료
+```
+
+여기서 반드시 구분해야 할 개념은 세 가지다.
+
+첫 번째는 **Job 객체와 JobExecution 객체의 차이**다.
+
+Job 객체는 실행 정의다.
+
+반면 JobExecution은 실제 실행 이력이다.
+
+두 번째는 **JobInstance와 JobExecution의 차이**다.
+
+JobInstance는 논리적 작업을 나타낸다.
+
+JobExecution은 해당 작업에 대한 개별 실행을 나타낸다.
+
+따라서 하나의 JobInstance에 여러 JobExecution이 연결될 수 있다.
+
+세 번째는 **JobExecutionContext와 StepExecutionContext의 차이**다.
+
+JobExecutionContext는 Job 수준에서 공유할 상태를 관리한다.
+
+반면 StepExecutionContext는 개별 Step의 상태를 관리한다.
+
+두 Context는 재시작과 상태 복원을 지원하는 중요한 구성 요소다.
+
+또한 SimpleJob은 마지막으로 처리한 StepExecution의 상태를 JobExecution에 반영한다.
+
+BatchStatus는 `upgradeStatus()`를 통해 갱신된다.
+
+ExitStatus는 `setExitStatus()`를 통해 설정된다.
+
+이러한 상태 반영이 끝나면 AbstractJob은 afterJob()을 호출하고 최종 메타데이터를 저장한다.
+
+따라서 SimpleJob의 실행 구조를 이해할 때는 단순히 Job이 Step을 순차적으로 실행한다는 사실만 기억해서는 안 된다.
+
+**각 도메인 객체가 언제 생성되고, 어떤 컴포넌트가 실행을 담당하며, 실행 상태가 언제 변경되고 저장되는지까지 연결해서 이해해야 한다.**
+
+이러한 관점으로 Spring Batch를 살펴보면 Job의 실행 흐름뿐 아니라 장애 처리, 재시작, 메타데이터 관리, 트랜잭션 경계까지 하나의 구조로 이해할 수 있다.
+
+#### 한 줄 요약
+
+> Spring Batch의 `SimpleJob`은 `JobLauncher`가 실행을 시작하고 `JobRepository`가 JobInstance와 JobExecution을 준비한 뒤, `AbstractJob`의 공통 실행 처리를 거쳐 등록된 Step을 순차적으로 실행하는 구조다. 각 Step은 `SimpleStepHandler`와 `TaskletStep`을 통해 실행되며 StepExecution과 ExecutionContext로 상태가 관리된다. 모든 Step 처리가 끝나면 SimpleJob은 마지막으로 처리한 Step의 상태를 JobExecution에 반영하고, AbstractJob은 `afterJob()` 호출과 최종 메타데이터 저장을 수행한다.
