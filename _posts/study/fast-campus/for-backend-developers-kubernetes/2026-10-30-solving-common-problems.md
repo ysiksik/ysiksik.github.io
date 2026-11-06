@@ -606,3 +606,2043 @@ AWS Load Balancer Controller는 ALB 등을 구성하는 제어 역할을 하며,
 
 ### 정리
 네트워크 진단에서는 “호출이 안 된다”를 DNS 실패, 연결 실패, TLS 실패, HTTP 오류, 응답 지연으로 나누는 것이 먼저다. 실제 오류가 발생한 Pod에서 Service 이름·포트·EndpointSlice를 확인하고, 동일 조건으로 경로를 비교한 뒤 정책과 Node·외부 인프라로 조사 범위를 넓힌다. 수정 후에는 진단 명령의 성공에 그치지 않고 **원래 실패했던 업무 요청을 같은 출발지와 조건에서 다시 확인해야 한다.**
+
+## 06. Pod의 배포 과정에서 발생하는 문제 
+
+### Kubernetes 배포 과정에서 발생하는 장애와 롤링 업데이트 트러블슈팅
+
+Kubernetes에서는 Deployment를 사용해 애플리케이션을 배포하고, Rolling Update를 통해 기존 버전을 새로운 버전으로 점진적으로 교체할 수 있다.
+
+Rolling Update는 기존 Pod를 한 번에 종료하지 않고 새로운 Pod를 순차적으로 생성하면서 교체하기 때문에, 서비스 중단을 최소화할 수 있는 대표적인 배포 전략이다.
+
+하지만 Rolling Update를 사용한다고 해서 모든 배포가 정상적으로 완료되거나 서비스 중단이 발생하지 않는 것은 아니다.
+
+예를 들어 다음과 같은 상황을 생각해 볼 수 있다.
+
+- 기존 애플리케이션은 정상적으로 실행되고 있지만 새로운 버전의 Pod가 생성되지 않는 경우
+- 새로운 Pod가 생성되었지만 `Pending` 상태에서 벗어나지 못하는 경우
+- 기존 Pod가 종료되었는데 새로운 Pod가 준비되지 않아 서비스 처리량이 감소하는 경우
+- 잘못된 이미지 태그로 인해 새로운 컨테이너를 실행하지 못하는 경우
+- Deployment, ReplicaSet, Pod의 상태를 임의로 수정하다가 배포 상태가 복잡해지는 경우
+
+이러한 문제는 애플리케이션 자체의 오류뿐 아니라 **컨테이너 이미지, Node 리소스, Rolling Update 전략, Kubernetes 컨트롤러의 동작 방식**과 밀접하게 관련되어 있다.
+
+특히 Node의 자원이 부족한 상황에서는 Rolling Update 설정에 따라 배포가 무기한 지연되거나, 반대로 배포 과정에서 기존 Pod가 과도하게 종료되어 서비스 장애가 발생할 수 있다.
+
+이번에는 Kubernetes의 배포 구조를 이해하고, 실제 운영 환경에서 발생할 수 있는 배포 장애를 원인별로 분석한 뒤 안전하게 복구하는 방법을 알아본다.
+
+---
+
+### Kubernetes의 배포 구조
+
+#### Deployment, ReplicaSet, Pod의 관계
+
+Kubernetes에서 Deployment를 생성하면 Deployment가 직접 Pod를 관리하는 것이 아니라, ReplicaSet을 통해 Pod를 관리한다.
+
+```mermaid
+flowchart TD
+    A["Deployment"] --> B["ReplicaSet"]
+    B --> C["Pod 1"]
+    B --> D["Pod 2"]
+    B --> E["Pod 3"]
+```
+
+각 객체의 역할은 다음과 같다.
+
+| 객체 | 역할 |
+|---|---|
+| Deployment | 애플리케이션의 선언적 배포 및 업데이트 관리 |
+| ReplicaSet | 지정된 수량의 Pod를 유지 |
+| Pod | 실제 애플리케이션 컨테이너 실행 |
+| Service | Ready 상태의 Pod를 대상으로 트래픽 전달 |
+
+Deployment의 핵심 역할은 사용자가 선언한 원하는 상태를 실제 클러스터에 반영하는 것이다.
+
+예를 들어 다음과 같은 설정이 있다고 가정하자.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: feed-server
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: feed-server
+  template:
+    metadata:
+      labels:
+        app: feed-server
+    spec:
+      containers:
+        - name: feed
+          image: registry.example.com/team/feed-server:1.0.0
+          ports:
+            - containerPort: 8080
+```
+
+`registry.example.com/team/feed-server:1.0.0`은 설명을 위한 이미지 주소이며, 실제 적용할 때는 사용하는 Container Registry 주소로 변경해야 한다.
+
+이 Deployment를 적용하면 Kubernetes는 다음 상태를 유지하려고 한다.
+
+```text
+Deployment: feed-server
+replicas: 3
+
+ReplicaSet
+ ├── Pod 1
+ ├── Pod 2
+ └── Pod 3
+```
+
+Pod 하나가 삭제되더라도 ReplicaSet은 원하는 수량인 3개를 유지하기 위해 새로운 Pod를 생성한다.
+
+이 구조는 배포 장애를 해결할 때도 중요하다.
+
+문제가 발생한 Pod를 무작정 삭제해도 ReplicaSet이 동일한 설정으로 Pod를 다시 생성할 수 있기 때문이다.
+
+---
+
+### Rolling Update의 동작 원리
+
+Rolling Update는 기존 버전의 Pod를 새로운 버전으로 점진적으로 교체하는 배포 전략이다.
+
+예를 들어 `feed-server` 애플리케이션의 버전을 다음과 같이 변경한다고 가정하자.
+
+```text
+기존 버전: 1.0.0
+새로운 버전: 1.1.0
+```
+
+기존에는 ReplicaSet 하나가 Pod 3개를 관리하고 있다.
+
+```mermaid
+flowchart TD
+    A["Deployment: feed-server"] --> B["ReplicaSet v1"]
+    B --> C["Pod v1"]
+    B --> D["Pod v1"]
+    B --> E["Pod v1"]
+```
+
+이 상태에서 컨테이너 이미지가 변경되면 Deployment는 새로운 Pod Template을 기반으로 새로운 ReplicaSet을 생성한다.
+
+```mermaid
+flowchart TD
+    A["Deployment: feed-server"] --> B["ReplicaSet v1"]
+    A --> C["ReplicaSet v2"]
+
+    B --> D["Pod v1"]
+    B --> E["Pod v1"]
+    B --> F["Pod v1"]
+
+    C --> G["Pod v2"]
+```
+
+새로운 Pod가 정상적으로 준비되면 기존 ReplicaSet의 Pod를 줄이고 새로운 ReplicaSet의 Pod를 늘린다.
+
+```mermaid
+flowchart TD
+    A["Deployment: feed-server"] --> B["ReplicaSet v1"]
+    A --> C["ReplicaSet v2"]
+
+    B --> D["Pod v1"]
+    B --> E["Pod v1"]
+
+    C --> F["Pod v2"]
+    C --> G["Pod v2"]
+```
+
+최종적으로 새로운 ReplicaSet이 Pod 3개를 관리하게 된다.
+
+```mermaid
+flowchart TD
+    A["Deployment: feed-server"] --> B["ReplicaSet v1"]
+    A --> C["ReplicaSet v2"]
+
+    B --> D["replicas: 0"]
+
+    C --> E["Pod v2"]
+    C --> F["Pod v2"]
+    C --> G["Pod v2"]
+```
+
+기존 ReplicaSet은 Pod 수가 0이 되더라도 롤백을 위해 일정 기간 유지될 수 있다.
+
+이러한 배포 과정에서 생성할 수 있는 Pod 수와 일시적으로 사용할 수 없게 되는 Pod 수를 제어하는 설정이 바로 `maxSurge`와 `maxUnavailable`이다.
+
+---
+
+### 배포 장애가 발생했을 때 가장 먼저 확인할 항목
+
+새로운 애플리케이션을 배포했는데 정상적으로 실행되지 않는다면, 가장 먼저 Pod 상태와 이벤트를 확인해야 한다.
+
+#### Pod 상태 확인
+
+```bash
+kubectl get pods
+```
+
+예상 출력은 다음과 같다.
+
+```text
+NAME                           READY   STATUS             RESTARTS
+feed-server-7c8d9f5b6-abc12   1/1     Running            0
+feed-server-7c8d9f5b6-def34   1/1     Running            0
+feed-server-7c8d9f5b6-ghi56   1/1     Running            0
+feed-server-8d9f6c7b5-xyz78   0/1     ImagePullBackOff   0
+```
+
+기존 Pod는 정상적으로 실행되고 있지만, 새로운 Pod는 이미지를 가져오지 못하고 있다.
+
+이 경우 애플리케이션 로그보다 먼저 이미지 관련 오류를 확인하는 것이 효과적이다.
+
+반대로 새로운 Pod가 `Pending` 상태라면 Node 리소스나 스케줄링 제약을 확인해야 한다.
+
+대표적인 상태와 확인 방향은 다음과 같다.
+
+| 상태 | 주요 원인 | 우선 확인할 항목 |
+|---|---|---|
+| `Pending` | Node 자원 부족, 스케줄링 제약 | Pod Events, Node Allocatable |
+| `ImagePullBackOff` | 이미지 다운로드 실패 | 이미지 주소, 태그, 인증 |
+| `ErrImagePull` | 이미지 다운로드 과정에서 오류 발생 | Registry 접근, 태그 |
+| `CrashLoopBackOff` | 컨테이너 반복 종료 | 애플리케이션 로그, 종료 코드 |
+| `CreateContainerConfigError` | 컨테이너 설정 오류 | Secret, ConfigMap, 환경 변수 |
+| `ContainerCreating` | 컨테이너 생성 과정 진행 또는 지연 | 이미지, Volume, 네트워크 관련 Events |
+| `Running`이지만 `0/1` | Readiness Probe 실패 등 | Probe 설정, 애플리케이션 상태 |
+
+`CrashLoopBackOff`, `ImagePullBackOff` 등은 Pod의 현재 실행 상황을 조회할 때 표시되는 상태 문자열이며, Pod의 최상위 Phase와는 구분된다.
+
+#### Pod 상세 정보 확인
+
+```bash
+kubectl describe pod <pod-name>
+```
+
+특히 출력 하단의 `Events` 항목을 확인한다.
+
+```text
+Events:
+  Type     Reason             Message
+  ----     ------             -------
+  Warning  FailedScheduling   0/3 nodes are available: Insufficient cpu.
+```
+
+이 메시지를 통해 Scheduler가 새로운 Pod를 배치할 수 없는 이유를 확인할 수 있다.
+
+#### 애플리케이션 로그 확인
+
+컨테이너가 실행된 후 오류가 발생했다면 로그를 확인한다.
+
+```bash
+kubectl logs <pod-name>
+```
+
+컨테이너가 재시작되었다면 이전 컨테이너 로그를 확인할 수 있다.
+
+```bash
+kubectl logs <pod-name> --previous
+```
+
+다만 `ImagePullBackOff`처럼 이미지 자체를 가져오지 못한 상태에서는 애플리케이션 프로세스가 실행되지 않았으므로 컨테이너 로그가 존재하지 않을 수 있다.
+
+이때는 `kubectl describe pod`의 이벤트가 더 유용하다.
+
+---
+
+### 배포 시 자주 발생하는 이미지 오류
+
+애플리케이션을 새롭게 배포하거나 기존 버전을 업그레이드할 때 자주 발생하는 문제 중 하나는 컨테이너 이미지를 가져오지 못하는 오류이다.
+
+특히 기존 애플리케이션이 정상적으로 실행되고 있었고 이미지 태그만 변경했다면, 변경된 이미지 주소와 태그를 우선적으로 확인할 필요가 있다.
+
+#### 1. 이미지 태그가 존재하지 않는 경우
+
+기존 이미지가 다음과 같다고 가정하자.
+
+```yaml
+image: registry.example.com/team/feed-server:1.0.0
+```
+
+새로운 버전으로 변경한다.
+
+```yaml
+image: registry.example.com/team/feed-server:1.1.0
+```
+
+그런데 실제 Container Registry에는 `1.1.0` 이미지가 등록되어 있지 않을 수 있다.
+
+이 경우 Kubernetes는 새로운 이미지를 다운로드하려고 시도하지만 실패한다.
+
+```text
+ErrImagePull
+    ↓
+ImagePullBackOff
+```
+
+`ImagePullBackOff`는 이미지 다운로드에 실패한 후 재시도를 지연하고 있는 상태를 의미한다.
+
+확인해야 할 항목은 다음과 같다.
+
+- 이미지 이름이 정확한가?
+- 이미지 태그가 실제로 존재하는가?
+- 새로운 이미지가 Registry에 Push되었는가?
+- Registry 주소가 올바른가?
+- 대상 클러스터가 이미지를 다운로드할 수 있는가?
+
+#### 2. Registry 인증이 실패하는 경우
+
+Private Registry를 사용한다면 인증 정보도 확인해야 한다.
+
+대표적으로 `imagePullSecrets`를 사용한다.
+
+```yaml
+spec:
+  imagePullSecrets:
+    - name: registry-credentials
+  containers:
+    - name: feed
+      image: registry.example.com/team/feed-server:1.1.0
+```
+
+Secret이 현재 Namespace에 존재하는지 확인한다.
+
+```bash
+kubectl get secret registry-credentials
+```
+
+Registry 인증 정보가 잘못되었거나 Secret이 존재하지 않는다면 이미지를 가져올 수 없다.
+
+#### 3. 변경된 이미지 확인
+
+현재 Deployment에 적용된 이미지를 확인한다.
+
+```bash
+kubectl get deployment feed-server \
+  -o jsonpath='{.spec.template.spec.containers[*].image}{"\n"}'
+```
+
+예상 출력:
+
+```text
+registry.example.com/team/feed-server:1.1.0
+```
+
+실제 이미지가 변경되었는지, 의도한 태그인지 확인할 수 있다.
+
+실무에서는 이미지 태그만 변경된 배포라면 우선 새로운 이미지가 정상적으로 빌드·배포되었는지 확인하는 것이 효율적이다.
+
+다만 이미지 자체는 정상적이어도 새로운 버전에서 환경 변수나 Secret이 추가로 필요할 수 있으므로, 이미지 문제가 아니라면 이전 버전과의 실행 환경 차이도 함께 확인해야 한다.
+
+---
+
+### 명령어로 컨테이너 이미지 업데이트하기
+
+Deployment YAML을 수정하는 대신 `kubectl set image` 명령어로 컨테이너 이미지를 변경할 수도 있다.
+
+예를 들어 다음과 같은 Deployment가 있다고 가정하자.
+
+```text
+Deployment: feed-server
+Container: feed
+Image: feed-server:1.0.0
+Replicas: 3
+```
+
+이미지를 새로운 버전으로 변경한다.
+
+```bash
+kubectl set image deployment/feed-server \
+  feed=registry.example.com/team/feed-server:1.1.0
+```
+
+정상적으로 반영되면 다음과 같은 메시지가 출력된다.
+
+```text
+deployment.apps/feed-server image updated
+```
+
+이 명령어는 Deployment의 Pod Template에 있는 이미지 필드를 변경한다.
+
+Pod Template이 변경되면 새로운 ReplicaSet이 생성되고 Rolling Update가 시작된다.
+
+단, 위 명령어의 성공은 **Deployment 설정 변경이 성공했다는 의미이지, 새로운 Pod의 배포가 완료되었다는 의미는 아니다.**
+
+배포 진행 상태를 별도로 확인해야 한다.
+
+```bash
+kubectl rollout status deployment/feed-server
+```
+
+정상적으로 완료되면 다음과 같은 메시지가 출력된다.
+
+```text
+deployment "feed-server" successfully rolled out
+```
+
+새로운 Pod가 준비되지 못한다면 완료되지 않은 상태로 대기하거나 진행 제한 시간을 초과했다는 오류가 발생할 수 있다.
+
+---
+
+### Rolling Update 설정 이해하기
+
+Rolling Update에서 가장 중요한 설정은 `maxSurge`와 `maxUnavailable`이다.
+
+두 설정은 비슷해 보이지만 역할이 다르다.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: feed-server
+spec:
+  replicas: 3
+  revisionHistoryLimit: 10
+  minReadySeconds: 5
+  progressDeadlineSeconds: 180
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+
+  selector:
+    matchLabels:
+      app: feed-server
+
+  template:
+    metadata:
+      labels:
+        app: feed-server
+
+    spec:
+      terminationGracePeriodSeconds: 30
+
+      containers:
+        - name: feed
+          image: registry.example.com/team/feed-server:1.0.0
+
+          ports:
+            - containerPort: 8080
+
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+```
+
+위 YAML은 Spring Boot Actuator의 Readiness Endpoint가 활성화되어 있는 애플리케이션을 가정한 예시이다.
+
+주요 설정의 의미는 다음과 같다.
+
+| 설정 | 의미 |
+|---|---|
+| `replicas: 3` | 목표 Pod 수량 3개 |
+| `type: RollingUpdate` | 점진적 배포 전략 |
+| `maxSurge: 1` | 업데이트 중 목표 수량보다 최대 1개 추가 생성 |
+| `maxUnavailable: 0` | 업데이트 중 사용할 수 있는 Pod를 목표 수량보다 줄이지 않음 |
+| `minReadySeconds: 5` | Ready 상태를 최소 5초 유지한 후 Available로 인정 |
+| `progressDeadlineSeconds: 180` | 배포 진행이 멈춘 상태를 보고하기 위한 제한 시간 |
+| `revisionHistoryLimit: 10` | 롤백을 위해 보관할 이전 ReplicaSet의 개수 |
+
+`maxSurge`와 `maxUnavailable`의 기본값은 각각 `25%`이며, 비율을 정수로 변환할 때 서로 다른 반올림 정책을 사용한다.
+
+---
+
+### maxSurge란?
+
+`maxSurge`는 Rolling Update 과정에서 **목표 replicas보다 추가로 생성할 수 있는 Pod의 최대 수량**을 의미한다.
+
+예를 들어 다음과 같은 설정이 있다고 가정하자.
+
+```yaml
+replicas: 3
+
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+```
+
+기본적으로 유지해야 하는 Pod는 3개이다.
+
+하지만 업데이트 과정에서는 최대 1개의 Pod를 추가로 생성할 수 있다.
+
+```text
+기존 Pod 수량: 3
+maxSurge: 1
+
+최대 Pod 수량: 4
+```
+
+배포 과정은 다음과 같이 진행된다.
+
+```mermaid
+flowchart TD
+    A["기존 Pod 3개 실행"] --> B["새로운 Pod 1개 생성"]
+    B --> C["총 4개 Pod"]
+    C --> D["새로운 Pod Ready 확인"]
+    D --> E["기존 Pod 1개 종료"]
+    E --> F["새로운 Pod 추가 생성"]
+    F --> G["모든 Pod 교체 완료"]
+```
+
+`maxSurge`의 핵심은 **추가 생성 가능한 최대 수량**이라는 점이다.
+
+예를 들어 `maxSurge: 3`이라고 설정했다고 해서 Kubernetes가 반드시 새로운 Pod를 동시에 3개 생성하고 실행해야 하는 것은 아니다.
+
+현재 클러스터 상태와 업데이트 진행 상황에 따라 더 적은 수량만 생성하면서 점진적으로 업데이트할 수 있다.
+
+따라서 `maxSurge`가 크다고 해서 항상 그 수량만큼의 여유 Node 자원이 있어야 업데이트가 가능한 것은 아니다.
+
+다만 `maxUnavailable`이 0이고 새로운 Pod를 실행할 여유 자원이 전혀 없다면 업데이트가 진행되지 못할 수 있다.
+
+#### maxSurge가 25%인 경우
+
+```yaml
+replicas: 3
+
+strategy:
+  rollingUpdate:
+    maxSurge: 25%
+```
+
+3개의 25%는 다음과 같다.
+
+```text
+3 × 0.25 = 0.75
+```
+
+Kubernetes는 `maxSurge`의 비율 계산 결과를 올림 처리한다.
+
+```text
+ceil(0.75) = 1
+```
+
+따라서 최대 1개의 Pod를 추가로 생성할 수 있다.
+
+| replicas | maxSurge | 추가 가능한 Pod |
+|---:|---:|---:|
+| 3 | 25% | 1 |
+| 4 | 25% | 1 |
+| 5 | 25% | 2 |
+| 8 | 25% | 2 |
+| 10 | 25% | 3 |
+
+여기서 주의할 점은 `maxSurge`가 Running 상태의 Pod만 계산하는 설정은 아니라는 것이다.
+
+Pod가 삭제 중인 `Terminating` 상태에서도 실제 리소스를 사용하고 있을 수 있다.
+
+따라서 Rolling Update 중에는 종료 중인 Pod까지 포함한 실제 Pod 수와 리소스 사용량이 설정상 예상한 최대치보다 일시적으로 커질 수 있다.
+
+---
+
+### maxUnavailable이란?
+
+`maxUnavailable`은 Rolling Update 과정에서 **사용할 수 없는 상태가 되는 Pod를 최대 몇 개까지 허용할 것인지**를 결정하는 설정이다.
+
+```yaml
+replicas: 3
+
+strategy:
+  rollingUpdate:
+    maxUnavailable: 1
+```
+
+목표 Pod가 3개이고 `maxUnavailable`이 1이라면 업데이트 과정에서 최소 2개의 Pod가 Available 상태를 유지하도록 제어한다.
+
+```text
+목표 replicas: 3
+maxUnavailable: 1
+
+최소 Available Pod: 2
+```
+
+이 값을 이해할 때 중요한 점은 단순히 Running 상태의 Pod 수를 계산하는 것이 아니라는 것이다.
+
+Kubernetes에서 Deployment의 Available Pod는 Ready 상태를 만족하고, 설정된 `minReadySeconds`까지 충족한 Pod를 의미한다.
+
+예를 들어 새로운 Pod가 생성되었더라도 Readiness Probe를 통과하지 못했다면 Available Pod에 포함되지 않는다.
+
+#### maxUnavailable이 0인 경우
+
+```yaml
+maxUnavailable: 0
+```
+
+업데이트 과정에서 Available Pod 수가 목표 replicas보다 적어지는 것을 허용하지 않는다.
+
+```text
+replicas: 3
+maxUnavailable: 0
+
+최소 Available Pod: 3
+```
+
+즉 새로운 Pod가 정상적으로 준비되기 전에 기존 Pod를 줄일 수 없게 된다.
+
+서비스 안정성 측면에서는 유리하지만, 새로운 Pod를 생성할 Node 자원이 없다면 업데이트가 막힐 수 있다.
+
+#### maxUnavailable이 2인 경우
+
+```yaml
+maxUnavailable: 2
+```
+
+목표 Pod가 3개라면 최소 1개의 Pod만 Available 상태를 유지해도 업데이트 정책을 만족할 수 있다.
+
+```text
+replicas: 3
+maxUnavailable: 2
+
+최소 Available Pod: 1
+```
+
+이 설정에서는 새로운 버전의 Pod가 준비되기 전에 기존 Pod가 최대 2개까지 줄어들 수 있다.
+
+기존 Pod 3개가 트래픽을 나누어 처리하고 있었다면, 배포 과정에서 순간적으로 1개만 남아 전체 트래픽을 감당해야 하는 상황이 생길 수 있다.
+
+#### maxUnavailable이 25%인 경우
+
+```yaml
+replicas: 3
+
+strategy:
+  rollingUpdate:
+    maxUnavailable: 25%
+```
+
+3개의 25%는 0.75이다.
+
+하지만 `maxUnavailable`의 비율 계산 결과는 내림 처리한다.
+
+```text
+floor(3 × 0.25) = 0
+```
+
+따라서 3개의 Pod를 운영하는 Deployment에서 `maxUnavailable: 25%`는 실제로 `maxUnavailable: 0`과 같은 결과가 된다.
+
+| replicas | maxUnavailable | 허용되는 Unavailable Pod |
+|---:|---:|---:|
+| 3 | 25% | 0 |
+| 4 | 25% | 1 |
+| 5 | 25% | 1 |
+| 8 | 25% | 2 |
+| 10 | 25% | 2 |
+
+이러한 반올림 차이 때문에 replicas 수가 적은 서비스에서는 퍼센트보다 정수 값을 명시하는 편이 배포 동작을 예측하기 쉬울 수 있다.
+
+---
+
+### maxSurge와 maxUnavailable 비교
+
+| 구분 | maxSurge | maxUnavailable |
+|---|---|---|
+| 목적 | 추가 Pod 생성 수 제한 | 사용 불가능한 Pod 수 제한 |
+| 기준 | 목표 replicas | 목표 replicas |
+| 비율 계산 | 올림 | 내림 |
+| 기본값 | 25% | 25% |
+| 값이 클 때 | 추가 Pod를 더 많이 생성할 수 있음 | 기존 Pod를 더 많이 줄일 수 있음 |
+| 운영상 위험 | 추가 리소스 부족 | 배포 중 서비스 처리 용량 감소 |
+| 주요 고려사항 | Node 여유 자원 | 최소 서비스 처리 용량 |
+
+다음 관계를 기억하면 이해하기 쉽다.
+
+```text
+추가 생성 가능 Pod
+= replicas + maxSurge
+
+최소 Available Pod
+= replicas - maxUnavailable
+```
+
+단, 이 값은 Rolling Update의 정책상 목표와 허용 범위를 의미한다.
+
+실제 서비스 가용성은 Readiness Probe, 애플리케이션 상태, Node 장애, 네트워크 문제 등의 영향도 받는다.
+
+또한 `maxSurge: 0`과 `maxUnavailable: 0`을 동시에 설정할 수 없다.
+
+새로운 Pod를 추가할 수도 없고 기존 Pod를 줄일 수도 없다면 Rolling Update를 진행할 방법이 없기 때문이다.
+
+---
+
+### Node 리소스 부족으로 Rolling Update가 멈추는 경우
+
+이제 실제로 발생할 수 있는 대표적인 배포 장애를 살펴보자.
+
+다음과 같은 환경이 있다고 가정하자.
+
+```text
+Deployment: feed-server
+replicas: 3
+
+maxSurge: 1
+maxUnavailable: 0
+
+기존 Pod: 3개
+새로운 Pod: 0개
+
+Node의 추가 CPU/Memory 여유: 없음
+```
+
+기존 Pod 3개가 Node의 할당 가능한 자원을 거의 모두 사용하고 있다.
+
+```mermaid
+flowchart TD
+    A["Node의 할당 가능한 자원"] --> B["Pod v1"]
+    A --> C["Pod v1"]
+    A --> D["Pod v1"]
+
+    B --> E["추가 Pod를 배치할 자원 없음"]
+    C --> E
+    D --> E
+```
+
+이 상태에서 새로운 버전으로 이미지를 업데이트한다.
+
+```bash
+kubectl set image deployment/feed-server \
+  feed=registry.example.com/team/feed-server:1.1.0
+```
+
+Deployment는 새로운 ReplicaSet을 생성하고 새로운 Pod를 실행하려고 한다.
+
+```text
+기존 Pod: 3개 Running
+새로운 Pod: 1개 Pending
+```
+
+하지만 Node에는 추가 Pod의 `requests`를 충족할 자원이 없다.
+
+따라서 새로운 Pod는 `Pending` 상태에 머무른다.
+
+```mermaid
+flowchart TD
+    A["Rolling Update 시작"] --> B["새로운 ReplicaSet 생성"]
+    B --> C["새로운 Pod 생성"]
+    C --> D{"Node 자원 충분한가?"}
+
+    D -->|"아니오"| E["Pod Pending"]
+    E --> F["새로운 Pod Available 불가"]
+
+    F --> G{"maxUnavailable = 0"}
+    G --> H["기존 Pod 3개 유지"]
+    H --> I["배포 진행 중단"]
+```
+
+여기서 중요한 문제가 발생한다.
+
+새로운 Pod를 실행하려면 Node 자원이 필요하다.
+
+하지만 Node 자원을 확보하기 위해 기존 Pod를 종료할 수도 없다.
+
+왜냐하면 `maxUnavailable: 0`이기 때문이다.
+
+즉 다음과 같은 상태가 된다.
+
+```text
+새로운 Pod를 실행하려면
+→ 자원이 필요함
+
+자원을 확보하려면
+→ 기존 Pod를 종료해야 함
+
+하지만 maxUnavailable: 0
+→ 기존 Pod를 종료할 수 없음
+
+결과
+→ 새로운 Pod Pending
+→ Rolling Update 진행 불가
+```
+
+이것이 **리소스 부족과 maxUnavailable 설정이 결합되어 Rolling Update가 멈추는 대표적인 사례**이다.
+
+#### 실제 상태 확인
+
+```bash
+kubectl get pods
+```
+
+예상 출력:
+
+```text
+NAME                           READY   STATUS    RESTARTS
+feed-server-7c8d9f5b6-abc12   1/1     Running   0
+feed-server-7c8d9f5b6-def34   1/1     Running   0
+feed-server-7c8d9f5b6-ghi56   1/1     Running   0
+feed-server-8d9f6c7b5-xyz78   0/1     Pending   0
+```
+
+새로운 Pod의 상세 정보를 확인한다.
+
+```bash
+kubectl describe pod feed-server-8d9f6c7b5-xyz78
+```
+
+예상 이벤트:
+
+```text
+Warning  FailedScheduling  0/3 nodes are available: Insufficient cpu.
+```
+
+이 메시지는 Scheduler가 Pod의 CPU requests를 만족하는 Node를 찾지 못했다는 의미이다.
+
+---
+
+### Pending이 발생하는 이유는 실제 CPU 사용률 때문만은 아니다
+
+여기서 한 가지 더 중요한 점이 있다.
+
+Kubernetes Scheduler는 일반적으로 Pod의 실제 CPU 사용량이 아니라 **requests를 기준으로 배치 가능 여부를 판단한다.**
+
+예를 들어 Node의 자원 상황이 다음과 같다고 가정하자.
+
+```text
+Node Allocatable CPU: 2000m
+
+기존 Pod A requests: 700m
+기존 Pod B requests: 700m
+기존 Pod C requests: 600m
+
+총 requests: 2000m
+```
+
+실제 CPU 사용량은 낮을 수 있다.
+
+```text
+Pod A 실제 사용량: 100m
+Pod B 실제 사용량: 100m
+Pod C 실제 사용량: 100m
+
+총 실제 사용량: 300m
+```
+
+하지만 새로운 Pod가 `cpu: 500m`를 요청한다면 Scheduler는 해당 Node에 배치할 수 없다고 판단할 수 있다.
+
+```text
+Node Allocatable: 2000m
+이미 할당된 requests: 2000m
+새로운 Pod requests: 500m
+
+추가 배치 불가
+```
+
+즉 `kubectl top nodes`에서는 CPU 사용률이 낮아 보여도 새로운 Pod가 Pending 상태일 수 있다.
+
+이를 확인하려면 다음 명령어를 사용한다.
+
+```bash
+kubectl describe node <node-name>
+```
+
+출력의 `Allocated resources` 부분을 확인하면 Node에서 이미 예약된 CPU·메모리 requests와 limits를 파악할 수 있다.
+
+추가로 실제 스케줄링 실패 원인은 CPU·메모리 외에도 다양하다.
+
+| 원인 | 설명 |
+|---|---|
+| CPU requests 부족 | 요청한 CPU를 제공할 Node가 없음 |
+| Memory requests 부족 | 요청한 메모리를 제공할 Node가 없음 |
+| Node Affinity | Pod가 배치할 수 있는 Node 조건이 제한됨 |
+| Pod Anti-Affinity | 기존 Pod와 같은 Node에 배치할 수 없음 |
+| Taints / Tolerations | Node에 배치될 권한이 없음 |
+| Pod 수 제한 | Node가 허용하는 최대 Pod 수 도달 |
+| ResourceQuota | Namespace의 리소스 사용 한도 초과 |
+| PVC 관련 제약 | Volume 바인딩 또는 토폴로지 조건을 만족하지 못함 |
+
+따라서 Rolling Update가 멈추었다면 단순히 CPU 사용률만 보는 것이 아니라 `FailedScheduling` 이벤트의 구체적인 원인을 확인해야 한다.
+
+---
+
+### 리소스 부족으로 멈춘 Rolling Update 해결 방법
+
+가장 근본적인 방법은 새로운 Pod를 실행할 수 있을 만큼 충분한 클러스터 자원을 확보하는 것이다.
+
+그러나 현재 운영 환경에서 즉시 Node를 늘릴 수 없을 수도 있다.
+
+이 경우에는 Rolling Update 설정을 변경해 배포를 진행하는 방법도 고려할 수 있다.
+
+#### 방법 1. Node 리소스 확보
+
+기존 서비스의 처리 용량을 유지하면서 배포하려면 새로운 Pod를 실행할 여유 자원이 있어야 한다.
+
+예를 들어 다음과 같은 상태를 만든다.
+
+```text
+기존 Pod: 3개
+추가 실행 가능한 Pod: 1개
+
+maxSurge: 1
+maxUnavailable: 0
+```
+
+이 경우 다음 순서로 배포할 수 있다.
+
+```mermaid
+flowchart TD
+    A["기존 Pod 3개 실행"] --> B["여유 자원에 새 Pod 생성"]
+    B --> C["새 Pod Ready"]
+    C --> D["기존 Pod 1개 종료"]
+    D --> E["확보된 자원으로 다음 Pod 생성"]
+    E --> F["새 Pod Ready"]
+    F --> G["모든 Pod 교체 완료"]
+```
+
+기존 Pod 3개의 Available 상태를 유지하면서 점진적으로 업데이트할 수 있다.
+
+이 방식은 서비스 안정성 측면에서 우선적으로 고려할 만한 방법이다.
+
+#### 방법 2. maxUnavailable을 1 이상으로 설정
+
+Node를 추가할 수 없는 환경이라면 `maxUnavailable`을 1로 조정할 수 있다.
+
+```yaml
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 1
+```
+
+이 설정은 목표 Pod 3개 중 최소 2개만 Available 상태를 유지하도록 허용한다.
+
+배포 과정은 다음과 같이 진행될 수 있다.
+
+```mermaid
+flowchart TD
+    A["기존 Pod 3개 실행"] --> B["새 Pod 생성 시도"]
+    B --> C["Node 자원 부족으로 Pending"]
+    C --> D["기존 Pod 1개 종료"]
+    D --> E["Node 자원 확보"]
+    E --> F["Pending Pod 스케줄링"]
+    F --> G["새 Pod Ready"]
+    G --> H["나머지 Pod 순차 교체"]
+```
+
+기존 Pod 1개를 종료하면 그 Pod가 사용하던 자원을 새로운 Pod에 할당할 수 있다.
+
+이렇게 하면 추가 Node 없이도 Rolling Update를 진행할 가능성이 생긴다.
+
+다만 **배포를 진행할 수 있다는 것과 서비스가 안정적으로 동작한다는 것은 별개의 문제**이다.
+
+기존 Pod 3개가 처리하던 트래픽을 일시적으로 Pod 2개가 처리해야 하기 때문이다.
+
+따라서 이 방법은 서비스 처리 용량에 충분한 여유가 있는 경우에 사용해야 한다.
+
+#### 명령어로 변경하기
+
+다음 명령어로 Deployment의 Rolling Update 설정을 변경할 수 있다.
+
+```bash
+kubectl patch deployment feed-server \
+  --type=merge \
+  -p '{"spec":{"strategy":{"rollingUpdate":{"maxSurge":1,"maxUnavailable":1}}}}'
+```
+
+정상적으로 반영되면 다음과 같은 메시지가 출력된다.
+
+```text
+deployment.apps/feed-server patched
+```
+
+설정이 변경되었는지 확인한다.
+
+```bash
+kubectl get deployment feed-server -o yaml
+```
+
+변경 후에도 실제 Pod가 정상적으로 배치되고 준비되는지 반드시 확인해야 한다.
+
+```bash
+kubectl rollout status deployment/feed-server
+```
+
+`maxUnavailable` 값을 수정하는 것만으로 Node 부족 문제 자체가 해결되는 것은 아니다.
+
+기존 Pod 종료로 자원을 회수할 수 있고, 새 Pod의 requests 및 스케줄링 조건을 만족해야 배포가 이어질 수 있다.
+
+---
+
+### maxUnavailable이 너무 크면 서비스 장애가 발생할 수 있다
+
+`maxUnavailable`을 늘리면 리소스가 부족한 환경에서도 Rolling Update를 진행할 여지가 생긴다.
+
+하지만 너무 크게 설정하면 오히려 서비스에 심각한 영향을 줄 수 있다.
+
+#### replicas가 3이고 maxUnavailable이 2인 경우
+
+```yaml
+replicas: 3
+
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 2
+```
+
+이 설정에서는 최소 1개의 Pod만 Available 상태를 유지하면 된다.
+
+```text
+기존 Pod: 3개
+
+배포 진행 중
+→ 기존 Pod 2개가 종료될 수 있음
+
+최소 Available Pod: 1개
+```
+
+새로운 Pod가 아직 준비되지 않았다면 다음과 같은 상태가 생길 수 있다.
+
+```mermaid
+flowchart TD
+    A["기존 Pod 3개가 트래픽 처리"] --> B["Rolling Update 시작"]
+    B --> C["기존 Pod 2개 종료"]
+    C --> D["새 Pod는 아직 Pending"]
+    D --> E["남은 Pod 1개가 전체 트래픽 처리"]
+    E --> F["CPU와 Thread 사용량 증가"]
+    F --> G["응답 지연 및 요청 실패 가능"]
+```
+
+기존 Pod 3개가 각각 비슷한 양의 트래픽을 처리하고 있었다면, 남은 Pod 1개의 처리 부담이 크게 증가한다.
+
+트래픽이 균등하게 분산되었다고 단순 가정할 경우, 각 Pod의 요청 처리량은 다음처럼 변할 수 있다.
+
+```text
+기존
+
+Pod A: 100 RPS
+Pod B: 100 RPS
+Pod C: 100 RPS
+
+전체: 300 RPS
+```
+
+Pod 2개가 제외되면 다음과 같이 된다.
+
+```text
+변경 후
+
+Pod A: 최대 300 RPS 처리 필요
+Pod B: 종료
+Pod C: 종료
+```
+
+하지만 Pod A가 최대 150 RPS밖에 처리하지 못한다면 전체 요청을 정상적으로 처리할 수 없다.
+
+이 경우 다음 문제가 발생할 수 있다.
+
+- 응답 시간 증가
+- CPU 사용률 증가
+- Thread Pool 포화
+- Connection Timeout
+- HTTP 5xx 오류
+- Readiness Probe 실패
+
+특히 Readiness Probe가 실패해 남은 Pod마저 Service 트래픽 대상에서 제외된다면 서비스가 사실상 중단되는 상황도 발생할 수 있다.
+
+#### replicas가 3이고 maxUnavailable이 3인 경우
+
+```yaml
+replicas: 3
+
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 3
+```
+
+이 설정에서는 업데이트 과정에서 Available Pod가 0개까지 감소하는 것을 허용한다.
+
+```text
+replicas: 3
+maxUnavailable: 3
+
+최소 Available Pod: 0
+```
+
+새로운 Pod가 준비되기 전에 기존 Pod가 모두 종료될 수 있다.
+
+```mermaid
+flowchart TD
+    A["기존 Pod 3개 실행"] --> B["Rolling Update 시작"]
+    B --> C["기존 Pod 모두 종료 가능"]
+    C --> D["새 Pod는 아직 Pending 또는 Starting"]
+    D --> E["Available Pod 0개"]
+    E --> F["서비스 요청 처리 불가"]
+```
+
+Rolling Update를 사용하는 목적 중 하나는 서비스 중단을 최소화하는 것이다.
+
+그런데 `maxUnavailable`을 replicas와 동일하게 설정하면 이러한 목적을 달성하지 못할 수 있다.
+
+따라서 Rolling Update를 사용한다는 이유만으로 무중단 배포가 보장된다고 생각해서는 안 된다.
+
+---
+
+### maxUnavailable은 현재 트래픽 처리 용량을 기준으로 결정해야 한다
+
+`maxUnavailable`을 결정할 때 가장 중요한 것은 현재 Pod 수량이 아니라 **최소 몇 개의 Pod가 있어야 현재 트래픽을 안정적으로 처리할 수 있는가**이다.
+
+예를 들어 서비스의 최대 예상 트래픽이 800 RPS이고 Pod 하나가 안정적으로 처리할 수 있는 요청량이 250 RPS라고 가정하자.
+
+필요한 최소 Pod 수량은 다음과 같이 계산할 수 있다.
+
+```text
+필요 Pod 수량
+= ceil(최대 예상 RPS / Pod당 안정적 처리 RPS)
+
+= ceil(800 / 250)
+= 4
+```
+
+현재 replicas가 5라면 다음과 같다.
+
+```text
+현재 Pod 수량: 5
+최소 필요 Pod 수량: 4
+```
+
+이 경우 이론적으로 1개의 Pod가 일시적으로 제외되어도 트래픽을 처리할 수 있다.
+
+```text
+maxUnavailable ≤ 5 - 4
+
+maxUnavailable ≤ 1
+```
+
+따라서 `maxUnavailable: 1` 정도를 검토할 수 있다.
+
+다만 실제 운영에서는 네트워크 연결 분산, Pod별 처리량 차이, 트래픽 급증, 재시도 요청, 외부 의존성 등을 고려해 추가적인 여유를 확보해야 한다.
+
+반대로 현재 Pod 3개가 모두 높은 CPU 사용률로 동작하고 있다면 `maxUnavailable: 1`조차 위험할 수 있다.
+
+**현재 replicas에서 몇 개를 줄일 수 있는지가 아니라, 몇 개를 줄여도 안정적으로 운영할 수 있는지를 기준으로 설정해야 한다.**
+
+---
+
+### 안정적인 Rolling Update 전략
+
+서비스 요구사항에 따라 적절한 Rolling Update 설정은 달라진다.
+
+| 운영 상황 | maxSurge | maxUnavailable | 고려사항 |
+|---|---:|---:|---|
+| 가용성이 매우 중요한 API 서비스 | 1 이상 | 0 | 새 Pod 실행을 위한 여유 자원 필요 |
+| 일반적인 백엔드 서비스 | 1 | 0 또는 1 | 실제 처리 용량 기준으로 선택 |
+| Node 자원이 제한적인 환경 | 1 | 1 | 일시적인 처리량 감소 허용 필요 |
+| 배포 중 일부 서비스 저하 허용 | 1 | 2 이상 | 높은 장애 위험을 감수해야 함 |
+| 완전한 재생성 방식 | 해당 없음 | 해당 없음 | `Recreate` 전략 검토 |
+
+가용성이 중요한 서비스라면 다음 설정을 우선 검토할 수 있다.
+
+```yaml
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+```
+
+이 설정은 기존 서비스 처리 용량을 유지하면서 새로운 Pod를 준비시키는 방향으로 동작한다.
+
+다만 다음 조건이 함께 만족되어야 한다.
+
+1. 새로운 Pod를 실행할 Node 자원이 충분해야 한다.
+2. Readiness Probe가 실제 트래픽 처리 가능 상태를 정확하게 판단해야 한다.
+3. Pod 종료 시 Graceful Shutdown이 동작해야 한다.
+4. 새로운 Pod가 정상적으로 시작될 수 있어야 한다.
+5. Service와 Ingress가 Ready 상태의 Pod를 정상적으로 사용해야 한다.
+
+Rolling Update 설정 하나만으로 무중단 배포를 완성할 수는 없다.
+
+---
+
+### 배포 중 장애를 방지하기 위한 Readiness Probe
+
+Rolling Update에서는 새로운 Pod가 생성되었다는 사실보다 **실제로 요청을 처리할 준비가 되었는지**가 중요하다.
+
+예를 들어 Spring Boot 애플리케이션은 컨테이너가 실행되더라도 다음 작업이 완료되지 않았을 수 있다.
+
+- Spring ApplicationContext 초기화
+- 데이터베이스 연결 준비
+- Cache 초기화
+- 필수 외부 시스템 연결
+- 애플리케이션 내부 리소스 준비
+
+이 상태에서 새로운 Pod로 요청이 전달되면 오류가 발생할 수 있다.
+
+Readiness Probe를 사용하면 Kubernetes가 해당 Pod의 준비 상태를 확인한 뒤 Service의 트래픽 대상으로 포함할 수 있다.
+
+```yaml
+readinessProbe:
+  httpGet:
+    path: /actuator/health/readiness
+    port: 8080
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  timeoutSeconds: 2
+  failureThreshold: 3
+  successThreshold: 1
+```
+
+Spring Boot Actuator를 사용하는 경우 다음 설정도 함께 고려할 수 있다.
+
+```yaml
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
+```
+
+Rolling Update와 Readiness Probe는 다음과 같이 연결된다.
+
+```mermaid
+flowchart TD
+    A["새로운 Pod 생성"] --> B["Spring Boot 애플리케이션 기동"]
+    B --> C["Readiness Probe 실행"]
+    C --> D{"요청 처리 준비 완료?"}
+
+    D -->|"아니오"| E["트래픽 대상에서 제외"]
+    E --> C
+
+    D -->|"예"| F["Pod Ready"]
+    F --> G["설정된 minReadySeconds 충족"]
+    G --> H["Pod Available"]
+    H --> I["기존 Pod 교체 진행"]
+```
+
+여기서 `minReadySeconds`를 사용하면 새로운 Pod가 Ready 상태에 진입한 직후가 아니라 일정 시간 동안 안정적으로 Ready 상태를 유지한 후 Available로 판단하도록 할 수 있다.
+
+```yaml
+spec:
+  minReadySeconds: 10
+```
+
+새로운 Pod가 시작 직후 잠깐 Ready 상태가 되었다가 다시 실패하는 문제가 있다면 이러한 설정을 검토할 수 있다.
+
+---
+
+### 배포가 멈췄을 때 Deployment 상태 확인
+
+Rolling Update가 정상적으로 진행되지 않는다면 Deployment 상태를 확인해야 한다.
+
+```bash
+kubectl describe deployment feed-server
+```
+
+예를 들어 다음과 같은 상태가 나타날 수 있다.
+
+```text
+Replicas: 3 desired | 1 updated | 4 total | 3 available | 1 unavailable
+
+StrategyType: RollingUpdate
+
+RollingUpdateStrategy:
+  0 max unavailable, 1 max surge
+```
+
+이 출력은 다음을 의미한다.
+
+| 항목 | 의미 |
+|---|---|
+| `3 desired` | 목표 Pod 수량 3개 |
+| `1 updated` | 새로운 Pod Template을 사용하는 Pod 1개 |
+| `4 total` | 현재 생성된 Pod 4개 |
+| `3 available` | 사용 가능한 Pod 3개 |
+| `1 unavailable` | 사용 불가능한 Pod 1개 |
+
+새로운 Pod가 Pending 상태라면 `updated`에 포함되더라도 `available`에는 포함되지 않는다.
+
+즉 **새로운 Pod가 생성되었다는 사실만으로 배포가 성공한 것은 아니다.**
+
+#### Deployment Conditions 확인
+
+Deployment에는 현재 배포 상태를 나타내는 Condition이 존재한다.
+
+```bash
+kubectl get deployment feed-server -o yaml
+```
+
+다음과 같은 상태가 나타날 수 있다.
+
+```yaml
+status:
+  conditions:
+    - type: Available
+      status: "True"
+      reason: MinimumReplicasAvailable
+
+    - type: Progressing
+      status: "False"
+      reason: ProgressDeadlineExceeded
+```
+
+`ProgressDeadlineExceeded`는 지정된 시간 동안 Deployment가 정상적으로 진행되지 않았다는 의미이다.
+
+예를 들어 다음과 같이 설정할 수 있다.
+
+```yaml
+spec:
+  progressDeadlineSeconds: 180
+```
+
+이 경우 Deployment는 일정 시간 동안 배포 진행이 이루어지지 않으면 실패 상태를 보고할 수 있다.
+
+하지만 중요한 점이 있다.
+
+**`progressDeadlineSeconds`를 초과했다고 해서 Kubernetes가 자동으로 이전 버전으로 롤백하는 것은 아니다.**
+
+Deployment Controller는 진행 실패 상태를 기록하지만, 기본적으로 자동 롤백까지 수행하지 않는다.
+
+별도의 배포 자동화 시스템이 이를 감지해 롤백하거나 운영자가 직접 조치해야 한다.
+
+---
+
+### Rolling Update 중 ReplicaSet 상태 확인
+
+Deployment는 새로운 버전의 Pod를 직접 생성하지 않고 새로운 ReplicaSet을 통해 생성한다.
+
+따라서 배포 장애가 발생했다면 ReplicaSet도 함께 확인해야 한다.
+
+```bash
+kubectl get replicasets
+```
+
+또는 축약 명령어를 사용할 수 있다.
+
+```bash
+kubectl get rs
+```
+
+예상 출력:
+
+```text
+NAME                     DESIRED   CURRENT   READY
+feed-server-7c8d9f5b6    3         3         3
+feed-server-8d9f6c7b5    1         1         0
+```
+
+이 경우 다음과 같이 해석할 수 있다.
+
+```text
+기존 ReplicaSet
+→ Pod 3개
+→ 모두 Ready
+
+새로운 ReplicaSet
+→ Pod 1개 생성
+→ Ready Pod 0개
+```
+
+새로운 ReplicaSet의 Pod가 준비되지 못했기 때문에 배포가 진행되지 않는 것이다.
+
+ReplicaSet 이름 뒤에는 일반적으로 Pod Template을 구분하기 위한 해시값이 포함된다.
+
+예를 들어 다음 두 ReplicaSet은 서로 다른 Pod Template을 기반으로 생성되었다.
+
+```text
+feed-server-7c8d9f5b6
+feed-server-8d9f6c7b5
+```
+
+각 ReplicaSet을 구분하면 어떤 Pod가 기존 버전이고 어떤 Pod가 새로운 버전인지 파악하기 쉽다.
+
+더 정확하게 확인하려면 ReplicaSet의 이미지와 Pod Template을 함께 확인한다.
+
+```bash
+kubectl describe rs feed-server-8d9f6c7b5
+```
+
+---
+
+### 배포가 실패했을 때 롤백하는 방법
+
+Rolling Update가 정상적으로 진행되지 않는다면 문제를 해결하는 방법은 크게 두 가지이다.
+
+첫 번째는 현재 배포 설정을 수정해 진행 중인 업데이트를 정상적으로 완료하는 것이다.
+
+두 번째는 이전에 정상적으로 실행되던 버전으로 롤백한 후 문제를 수정하고 다시 배포하는 것이다.
+
+특히 운영 환경에서 서비스 영향이 발생하고 있다면 무리하게 문제를 수정하면서 배포를 계속 진행하는 것보다 **먼저 안정적인 버전으로 복구하는 방식**이 적절할 수 있다.
+
+다만 롤백 역시 새로운 리소스 변경을 유발하므로 현재 Node 자원과 기존 ReplicaSet의 상태를 확인한 후 수행해야 한다.
+
+---
+
+### Deployment 롤백
+
+Kubernetes Deployment는 이전 배포 이력을 기반으로 롤백할 수 있다.
+
+#### 1. 현재 배포 이력 확인
+
+```bash
+kubectl rollout history deployment/feed-server
+```
+
+예상 출력:
+
+```text
+deployment.apps/feed-server
+
+REVISION  CHANGE-CAUSE
+1         <none>
+2         <none>
+3         <none>
+```
+
+여기서 `REVISION`은 Deployment의 Pod Template 변경 이력을 나타낸다.
+
+`CHANGE-CAUSE`가 `<none>`으로 표시되는 것은 변경 사유가 별도로 기록되지 않았다는 의미이다.
+
+현재 Deployment의 이전 설정을 확인하려면 다음 명령어를 사용할 수 있다.
+
+```bash
+kubectl rollout history deployment/feed-server --revision=2
+```
+
+예상 출력:
+
+```text
+deployment.apps/feed-server revision 2
+
+Containers:
+  feed:
+    Image: registry.example.com/team/feed-server:1.0.0
+```
+
+#### 2. 이전 버전으로 롤백
+
+```bash
+kubectl rollout undo deployment/feed-server
+```
+
+정상적으로 요청이 반영되면 다음과 같은 메시지가 출력된다.
+
+```text
+deployment.apps/feed-server rolled back
+```
+
+이 명령어는 이전 Deployment Revision의 Pod Template으로 되돌리는 작업을 수행한다.
+
+특정 Revision으로 롤백할 수도 있다.
+
+```bash
+kubectl rollout undo deployment/feed-server --to-revision=2
+```
+
+#### 3. 롤백 완료 확인
+
+```bash
+kubectl rollout status deployment/feed-server
+```
+
+Pod 상태도 확인한다.
+
+```bash
+kubectl get pods
+```
+
+ReplicaSet 상태도 확인한다.
+
+```bash
+kubectl get rs
+```
+
+롤백이 정상적으로 완료되면 이전 버전의 Pod Template을 사용하는 ReplicaSet이 다시 확장되고, 문제가 있었던 새로운 버전의 ReplicaSet은 축소된다.
+
+```mermaid
+flowchart TD
+    A["새로운 버전 배포 실패"] --> B["kubectl rollout undo"]
+    B --> C["이전 Pod Template으로 복구"]
+    C --> D["이전 ReplicaSet 확장"]
+    D --> E["문제 버전 ReplicaSet 축소"]
+    E --> F["이전 버전 Pod Ready 확인"]
+    F --> G["서비스 정상화 확인"]
+```
+
+단, 롤백 대상 버전 역시 현재 Node 자원으로 실행할 수 있어야 한다.
+
+기존 ReplicaSet의 Pod가 이미 많이 종료되었다면 롤백 과정에서도 Pod 생성과 스케줄링 시간이 필요할 수 있다.
+
+---
+
+### 롤백하면 모든 설정이 이전으로 돌아갈까?
+
+여기서 주의할 점이 있다.
+
+`kubectl rollout undo`는 Deployment의 이전 Revision을 기반으로 복구하지만, Deployment의 모든 설정을 무조건 이전 상태로 되돌리는 기능은 아니다.
+
+Deployment Revision은 기본적으로 `.spec.template` 변경을 기준으로 생성된다.
+
+따라서 이미지나 Pod Template에 포함된 환경 변수, 컨테이너 리소스 설정 등은 롤백 대상이 될 수 있다.
+
+반면 다음과 같은 설정은 이전 Revision으로 자동 복구되지 않는다.
+
+- Deployment의 `replicas`
+- Rolling Update의 `maxSurge`
+- Rolling Update의 `maxUnavailable`
+- Service 설정
+- 별도로 관리되는 ConfigMap과 Secret의 내용
+- 외부 데이터베이스 스키마
+
+예를 들어 배포 장애를 해결하기 위해 다음 설정을 변경했다고 가정하자.
+
+```yaml
+strategy:
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 2
+```
+
+이 상태에서 `kubectl rollout undo`를 실행해도 `maxUnavailable`이 자동으로 이전 값으로 돌아가는 것은 아니다.
+
+따라서 롤백 후에도 다음 명령어로 실제 Deployment 설정을 확인해야 한다.
+
+```bash
+kubectl get deployment feed-server -o yaml
+```
+
+특히 GitOps 또는 Helm으로 관리하는 환경이라면 클러스터의 현재 설정과 배포 관리 시스템에 선언된 설정이 일치하는지도 확인해야 한다.
+
+---
+
+### Helm으로 배포한 경우 롤백하기
+
+Helm을 사용해 애플리케이션을 배포했다면 Deployment만 수정하기보다 Helm Release 단위로 롤백하는 것이 적절할 수 있다.
+
+Helm은 Chart와 Values를 기반으로 여러 Kubernetes 리소스를 함께 관리하기 때문이다.
+
+예를 들어 다음과 같이 배포했다고 가정하자.
+
+```bash
+helm upgrade feed-server ./feed-server-chart \
+  --namespace production
+```
+
+Helm Release의 이력을 확인한다.
+
+```bash
+helm history feed-server --namespace production
+```
+
+예상 출력:
+
+```text
+REVISION  STATUS       DESCRIPTION
+1         superseded   Install complete
+2         superseded   Upgrade complete
+3         deployed     Upgrade complete
+```
+
+이전 Revision인 2로 롤백하려면 다음 명령어를 사용한다.
+
+```bash
+helm rollback feed-server 2 \
+  --namespace production \
+  --wait \
+  --timeout 5m
+```
+
+주요 옵션은 다음과 같다.
+
+| 옵션 | 설명 |
+|---|---|
+| `feed-server` | Helm Release 이름 |
+| `2` | 롤백할 Release Revision |
+| `--namespace` | Release가 설치된 Namespace |
+| `--wait` | 관련 리소스가 준비될 때까지 대기 |
+| `--timeout` | 대기 제한 시간 |
+
+Helm Release Revision과 Kubernetes Deployment Revision은 서로 다른 이력이라는 점에 주의해야 한다.
+
+Helm은 Chart가 관리하는 리소스 집합을 대상으로 이전 Release 상태를 복구한다.
+
+반면 `kubectl rollout undo`는 특정 Deployment의 Pod Template 이력을 기준으로 동작한다.
+
+따라서 Helm으로 운영하는 서비스라면 가능하면 Helm을 통해 변경 및 롤백 이력을 일관되게 관리하는 것이 좋다.
+
+---
+
+### Pod를 직접 삭제하면 문제가 해결될까?
+
+배포가 정상적으로 완료되지 않을 때 흔히 시도하는 방법 중 하나가 문제 Pod를 직접 삭제하는 것이다.
+
+```bash
+kubectl delete pod <pod-name>
+```
+
+하지만 ReplicaSet이 관리하는 Pod라면 단순 삭제로 문제가 해결되지 않을 수 있다.
+
+```mermaid
+flowchart TD
+    A["Pod가 Pending 또는 오류 상태"] --> B["kubectl delete pod"]
+    B --> C["Pod 삭제"]
+    C --> D["ReplicaSet이 replicas 부족 감지"]
+    D --> E["새 Pod 생성"]
+    E --> F["동일한 설정으로 다시 실패"]
+```
+
+Pod를 삭제해도 ReplicaSet이 원하는 Pod 수량을 유지하려고 하기 때문이다.
+
+예를 들어 새로운 ReplicaSet의 이미지 태그가 잘못되었다면, 해당 Pod를 삭제하더라도 같은 이미지 태그를 사용하는 Pod가 다시 생성된다.
+
+```text
+잘못된 이미지 태그
+    ↓
+Pod ImagePullBackOff
+    ↓
+Pod 삭제
+    ↓
+ReplicaSet이 새 Pod 생성
+    ↓
+동일한 ImagePullBackOff
+```
+
+근본적인 원인이 ReplicaSet의 Pod Template에 남아 있다면 동일한 문제가 반복된다.
+
+따라서 문제 Pod를 삭제하기 전에 Deployment와 ReplicaSet의 설정을 확인해야 한다.
+
+---
+
+### ReplicaSet을 직접 수정하거나 삭제할 때 주의할 점
+
+Deployment가 관리하는 ReplicaSet을 직접 수정하는 것도 주의해야 한다.
+
+예를 들어 배포가 멈췄다는 이유로 ReplicaSet의 replicas를 직접 변경했다고 가정하자.
+
+```bash
+kubectl scale rs <replicaset-name> --replicas=0
+```
+
+그러나 상위 Deployment Controller는 자신의 원하는 상태를 유지하려고 한다.
+
+따라서 사용자가 변경한 ReplicaSet의 replicas 값이 다시 조정되거나, Deployment의 Rolling Update 상태와 맞지 않는 결과가 나타날 수 있다.
+
+또한 이전 ReplicaSet을 무분별하게 삭제하면 롤백에 필요한 이력이 사라질 수 있다.
+
+#### ReplicaSet의 소유 관계 확인
+
+ReplicaSet이 어떤 Deployment에 속하는지 확인할 수 있다.
+
+```bash
+kubectl get rs <replicaset-name> \
+  -o jsonpath='{.metadata.ownerReferences[*].name}{"\n"}'
+```
+
+예상 출력:
+
+```text
+feed-server
+```
+
+Pod가 어떤 ReplicaSet에 속하는지도 확인할 수 있다.
+
+```bash
+kubectl get pod <pod-name> \
+  -o jsonpath='{.metadata.ownerReferences[*].name}{"\n"}'
+```
+
+예상 출력:
+
+```text
+feed-server-8d9f6c7b5
+```
+
+이러한 소유 관계를 통해 다음 구조를 확인할 수 있다.
+
+```mermaid
+flowchart TD
+    A["Deployment: feed-server"] --> B["ReplicaSet: old"]
+    A --> C["ReplicaSet: new"]
+
+    B --> D["기존 Pod 3개"]
+    C --> E["새로운 Pod 1개"]
+```
+
+배포 장애가 발생했다고 해서 Pod나 ReplicaSet을 무조건 직접 삭제하는 것은 적절하지 않다.
+
+가능하면 다음 순서를 우선 적용한다.
+
+1. Deployment 상태 확인
+2. ReplicaSet과 Pod의 관계 확인
+3. 배포 실패 원인 확인
+4. Deployment 설정 수정 또는 롤백
+5. 정상화 여부 확인
+6. 필요할 때만 남아 있는 비정상 리소스 정리
+
+수동 정리가 꼭 필요한 경우에는 해당 ReplicaSet의 소유 관계와 배포 이력, 현재 트래픽 처리 여부를 확인해야 한다.
+
+특히 롤백을 위해 보관 중인 ReplicaSet은 함부로 삭제하지 않는 것이 좋다.
+
+---
+
+### revisionHistoryLimit을 이용한 이전 ReplicaSet 관리
+
+Deployment는 이전 버전으로 롤백할 수 있도록 과거 ReplicaSet을 보관한다.
+
+이때 보관할 이력의 개수를 지정하는 설정이 `revisionHistoryLimit`이다.
+
+```yaml
+spec:
+  revisionHistoryLimit: 10
+```
+
+위 설정은 이전 ReplicaSet 이력을 최대 10개까지 보관하도록 지정한다.
+
+기본값도 10이다.
+
+이전 ReplicaSet의 replicas는 일반적으로 0이므로 Pod를 실행하지 않지만, ReplicaSet 객체는 클러스터에 남아 있다.
+
+```text
+Deployment: feed-server
+
+ReplicaSet v1 → replicas: 0
+ReplicaSet v2 → replicas: 0
+ReplicaSet v3 → replicas: 3
+```
+
+이러한 이력이 있어야 이전 Pod Template으로 롤백할 수 있다.
+
+다음처럼 설정할 수도 있다.
+
+```yaml
+revisionHistoryLimit: 0
+```
+
+하지만 이 경우 이전 ReplicaSet 이력이 정리되어 Deployment의 이전 Revision으로 롤백할 수 없게 된다.
+
+배포 안정성이 중요한 운영 환경에서는 무조건 이 값을 0으로 설정하기보다 적절한 수량의 이력을 유지하는 것이 좋다.
+
+---
+
+### 배포 장애 발생 시 권장 복구 순서
+
+실제 운영 환경에서는 배포가 멈췄다고 해서 바로 Node를 추가하거나 ReplicaSet을 삭제하기보다, 원인을 순서대로 확인하는 것이 중요하다.
+
+다음과 같은 흐름으로 접근할 수 있다.
+
+```mermaid
+flowchart TD
+    A["Rolling Update 실패"] --> B["Deployment와 Pod 상태 확인"]
+    B --> C{"Pod 상태는?"}
+
+    C -->|"ImagePullBackOff"| D["이미지 주소와 인증 확인"]
+    C -->|"Pending"| E["Node 자원 및 스케줄링 확인"]
+    C -->|"CrashLoopBackOff"| F["애플리케이션 로그 확인"]
+    C -->|"Running / NotReady"| G["Readiness Probe 확인"]
+
+    D --> H["원인 수정 가능 여부 판단"]
+    E --> H
+    F --> H
+    G --> H
+
+    H --> I{"서비스 영향이 있는가?"}
+
+    I -->|"없음"| J["설정 수정 후 배포 재시도"]
+    I -->|"있음"| K["안정적인 이전 버전으로 롤백 검토"]
+
+    J --> L["Rollout 상태 확인"]
+    K --> L
+
+    L --> M["Pod / ReplicaSet / Service 상태 검증"]
+```
+
+특히 리소스 부족이 발생한 경우에는 다음 사항을 확인하는 것이 좋다.
+
+| 확인 항목 | 확인 이유 |
+|---|---|
+| Node Allocatable | 새로운 Pod를 배치할 실제 자원 여유 확인 |
+| Pod requests | Scheduler가 요구하는 자원량 확인 |
+| maxSurge | 추가 생성 가능한 Pod 수 확인 |
+| maxUnavailable | 배포 중 유지할 최소 Available Pod 수 확인 |
+| minReadySeconds | 새로운 Pod를 Available로 판단하는 시점 확인 |
+| Readiness Probe | 신규 Pod가 트래픽을 받을 준비가 되었는지 확인 |
+| progressDeadlineSeconds | 배포 진행 실패 판단 기준 확인 |
+| ReplicaSet | 기존/신규 버전별 Pod 수 확인 |
+| Deployment Revision | 롤백 가능한 이력 확인 |
+
+---
+
+### 실무에서 고려해야 할 추가 사항
+
+#### 1. Rolling Update를 위한 여유 리소스를 확보해야 한다
+
+운영 중인 Pod가 Node 자원을 모두 사용하고 있다면 배포 시 새로운 Pod를 생성하기 어렵다.
+
+따라서 평상시 자원 사용량뿐 아니라 Rolling Update에 필요한 추가 리소스도 고려해야 한다.
+
+예를 들어 다음과 같은 서비스가 있다고 가정하자.
+
+```text
+replicas: 5
+Pod당 CPU requests: 500m
+maxSurge: 1
+```
+
+기존 Pod에 필요한 CPU requests 총합은 다음과 같다.
+
+```text
+5 × 500m = 2500m
+```
+
+Rolling Update에서 새 Pod 1개를 추가로 실행하려면 다음과 같은 자원이 필요하다.
+
+```text
+추가 CPU requests: 500m
+
+필요한 총 CPU requests:
+2500m + 500m = 3000m
+```
+
+따라서 해당 워크로드를 배치할 수 있는 Node들의 자원과 스케줄링 제약을 고려해 최소 500m의 추가 CPU requests를 수용할 여유가 있어야 한다.
+
+이 계산에는 Memory requests, DaemonSet, 시스템 예약 자원, Pod 배치 제약 등도 함께 고려해야 한다.
+
+단순히 클러스터 전체 CPU가 충분하다고 해서 반드시 해당 Pod를 배치할 수 있는 것은 아니다.
+
+#### 2. maxUnavailable이 0이어도 무조건 무중단은 아니다
+
+`maxUnavailable: 0`은 Deployment Controller가 업데이트 중 목표 Available Pod 수를 유지하도록 제어하는 설정이다.
+
+하지만 다음과 같은 상황에서는 실제 서비스 장애가 발생할 수 있다.
+
+- Readiness Probe가 잘못 설정된 경우
+- 기존 Pod에 예상치 못한 장애가 발생한 경우
+- Node 자체가 장애를 일으킨 경우
+- 애플리케이션이 연결 종료를 안전하게 처리하지 못하는 경우
+- 새 Pod가 Ready 상태이지만 실제 요청을 정상적으로 처리하지 못하는 경우
+
+즉 `maxUnavailable: 0`은 Rolling Update 중 가용성을 높이기 위한 설정이지 서비스 장애를 완전히 방지하는 보장 장치는 아니다.
+
+#### 3. Graceful Shutdown이 중요하다
+
+Rolling Update 과정에서 기존 Pod는 종료된다.
+
+이때 이미 처리 중인 요청이 있다면 가능하면 해당 요청을 정상적으로 마무리해야 한다.
+
+Spring Boot에서는 다음과 같은 설정을 사용할 수 있다.
+
+```yaml
+server:
+  shutdown: graceful
+
+spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+```
+
+Kubernetes Deployment에도 종료 유예 시간을 지정할 수 있다.
+
+```yaml
+spec:
+  template:
+    spec:
+      terminationGracePeriodSeconds: 40
+```
+
+이를 통해 Pod 종료 시 애플리케이션이 진행 중인 작업을 정리할 시간을 확보할 수 있다.
+
+다만 실제 무중단 종료를 위해서는 Service Endpoint 전파 지연, 기존 연결, Ingress 및 Load Balancer 동작도 함께 고려해야 한다.
+
+#### 4. 이미지 태그는 가능한 한 변경 불가능하게 관리한다
+
+동일한 이미지 태그에 서로 다른 이미지를 반복 Push하면 어떤 Pod가 실제로 어떤 이미지를 실행하고 있는지 파악하기 어려워질 수 있다.
+
+예를 들어 다음과 같은 방식은 주의가 필요하다.
+
+```yaml
+image: registry.example.com/team/feed-server:latest
+```
+
+운영 환경에서는 다음과 같이 빌드 버전이나 커밋을 식별할 수 있는 태그를 사용하는 것이 좋다.
+
+```yaml
+image: registry.example.com/team/feed-server:1.1.0
+```
+
+더 엄격하게 이미지를 고정하려면 이미지 Digest를 사용할 수도 있다.
+
+```yaml
+image: registry.example.com/team/feed-server@sha256:<image-digest>
+```
+
+이렇게 하면 어떤 이미지가 배포되었는지 명확하게 추적할 수 있다.
+
+#### 5. HPA를 사용한다면 replicas 변경 주체를 고려해야 한다
+
+HPA가 Deployment의 replicas를 관리하는 환경에서는 Deployment YAML이나 수동 스케일 명령어로 replicas를 변경하더라도 HPA가 이후 다시 조정할 수 있다.
+
+따라서 트래픽이 높은 서비스에서 배포 전 replicas를 임의로 변경할 때는 HPA의 최소·최대 replicas 설정과 현재 메트릭도 함께 확인해야 한다.
+
+또한 HPA가 Pod 수를 늘려도 Node 자원이 부족하면 새로운 Pod는 Pending 상태가 될 수 있다.
+
+이 경우에는 Cluster Autoscaler나 Node Auto Provisioning 같은 Node 수준의 확장 기능도 함께 고려할 수 있다.
+
+#### 6. 배포 실패 후 무조건 재시작하는 것은 해결책이 아니다
+
+`kubectl rollout restart`는 Deployment의 Pod Template을 변경해 새로운 롤아웃을 시작하게 만드는 명령어이다.
+
+```bash
+kubectl rollout restart deployment/feed-server
+```
+
+그러나 이미지 태그가 존재하지 않거나 Node 리소스가 부족한 상태라면 재시작만으로 근본 문제가 해결되지 않는다.
+
+오히려 불필요한 Pod 교체로 서비스에 영향을 줄 수 있다.
+
+배포 장애가 발생했을 때는 재시작보다 **왜 새로운 Pod가 Ready 또는 Available 상태가 되지 못했는지**를 먼저 확인해야 한다.
+
+#### 7. 배포 자동화에서는 실패를 감지하고 대응할 수 있어야 한다
+
+수동 배포에서는 운영자가 `kubectl rollout status`를 확인할 수 있지만, CI/CD 환경에서는 배포 실패를 자동으로 감지하는 구성이 필요하다.
+
+예를 들어 다음 명령어를 사용할 수 있다.
+
+```bash
+kubectl rollout status deployment/feed-server --timeout=180s
+```
+
+배포가 정상적으로 완료되면 종료 코드 0을 반환한다.
+
+반면 제한 시간 내에 완료되지 않거나 실패 상태가 확인되면 0이 아닌 종료 코드를 반환할 수 있다.
+
+배포 자동화에서는 이 결과를 기준으로 후속 작업을 중단하거나 알림을 전송할 수 있다.
+
+다만 `--timeout`은 명령어가 대기하는 시간이고, Deployment의 `progressDeadlineSeconds`는 Deployment Controller가 배포 진행 상태를 판단하는 시간이라는 점에서 서로 다르다.
+
+---
+
+### Rolling Update 설정에 따른 장애 가능성 비교
+
+지금까지 살펴본 내용을 다음과 같이 비교할 수 있다.
+
+| 상황 | maxSurge | maxUnavailable | 발생 가능한 문제 |
+|---|---:|---:|---|
+| Node 자원 충분 | 1 | 0 | 비교적 안정적인 순차 배포 |
+| Node 자원 부족 | 1 | 0 | 신규 Pod Pending, 배포 정체 |
+| Node 자원 부족 | 1 | 1 | 기존 Pod 종료 후 배포 가능성 증가 |
+| Node 자원 부족 | 1 | 2 | 배포 중 처리 용량 급감 가능 |
+| Node 자원 부족 | 1 | 3 | Available Pod 0개까지 감소 가능 |
+| Readiness Probe 오류 | 1 | 0 | 새 Pod 준비 실패로 배포 정체 |
+| 이미지 태그 오류 | 1 | 0 | ImagePullBackOff로 배포 정체 |
+| 새 버전 애플리케이션 오류 | 1 | 0 | CrashLoopBackOff 또는 NotReady |
+| ReplicaSet 임의 수정 | 다양 | 다양 | Deployment와 실제 상태 사이의 불일치 가능 |
+
+핵심은 `maxSurge`와 `maxUnavailable` 중 어느 하나가 절대적으로 좋은 설정은 아니라는 것이다.
+
+**Node 자원과 서비스 처리 용량을 동시에 고려해야 적절한 값을 결정할 수 있다.**
+
+---
+
+### 배포 장애를 예방하기 위한 운영 전략
+
+실무에서는 Rolling Update 자체가 문제가 아니라, 배포를 고려하지 않은 리소스 설계와 가용성 정책이 장애를 유발하는 경우가 많다.
+
+이를 예방하기 위해서는 다음과 같은 접근이 효과적이다.
+
+#### 배포 전
+
+애플리케이션의 정상 실행에 필요한 CPU·Memory requests를 확인하고, 추가 Pod를 생성할 여유 자원이 있는지 검토한다.
+
+또한 배포 중 Pod가 일부 감소하더라도 트래픽을 처리할 수 있는 최소 Pod 수량을 파악해야 한다.
+
+#### 배포 중
+
+Deployment, ReplicaSet, Pod의 상태를 함께 관찰한다.
+
+```bash
+kubectl get deployment feed-server
+```
+
+```bash
+kubectl get rs -l app=feed-server
+```
+
+```bash
+kubectl get pods -l app=feed-server
+```
+
+```bash
+kubectl rollout status deployment/feed-server
+```
+
+새로운 Pod가 Ready 상태인지, 기존 Pod가 과도하게 종료되지 않는지 확인한다.
+
+#### 배포 실패 시
+
+실패 원인이 이미지인지, 애플리케이션인지, Node 리소스인지 먼저 구분한다.
+
+서비스에 영향을 주는 상황이라면 안정적인 이전 버전으로 복구하는 것을 우선 검토한다.
+
+문제 해결을 위해 ReplicaSet과 Pod를 무분별하게 삭제하는 행동은 피한다.
+
+#### 배포 완료 후
+
+다음 항목을 확인한다.
+
+- 새로운 버전의 Pod가 목표 수량만큼 실행되는가?
+- 모든 Pod가 Ready 상태인가?
+- 이전 ReplicaSet이 정상적으로 축소되었는가?
+- 응답 시간과 오류율이 정상 범위인가?
+- CPU·메모리 사용량이 예상 범위에 있는가?
+- 불필요한 재시작이 발생하지 않는가?
+
+이러한 검증을 통해 단순히 Kubernetes 관점에서 배포가 완료된 상태뿐 아니라 실제 서비스 관점에서도 정상적으로 운영되고 있는지 확인해야 한다.
+
+---
+
+### 정리
+
+Kubernetes에서 Deployment를 이용하면 Rolling Update를 통해 애플리케이션을 점진적으로 교체할 수 있다.
+
+하지만 Rolling Update는 모든 상황에서 무중단 배포를 보장하는 기능이 아니다.
+
+새로운 Pod를 생성할 Node 자원이 부족하거나, `maxUnavailable` 설정이 서비스 처리 용량에 비해 너무 크다면 배포 과정에서 장애가 발생할 수 있다.
+
+특히 다음 내용을 이해하는 것이 중요하다.
+
+**첫째, 새로운 Pod가 Pending 상태라고 해서 반드시 애플리케이션 오류인 것은 아니다.**
+
+Scheduler가 CPU·Memory requests를 만족할 Node를 찾지 못했을 수 있다.
+
+**둘째, maxSurge는 추가 Pod를 생성할 수 있는 최대 수량을 의미한다.**
+
+`maxSurge`가 크다고 반드시 그 수량만큼 한꺼번에 Pod를 실행해야 하는 것은 아니다.
+
+**셋째, maxUnavailable은 배포 중 허용되는 최대 사용 불가능 Pod 수량을 의미한다.**
+
+`maxUnavailable: 0`은 기존 서비스의 가용성을 유지하는 데 유리하지만 추가 자원이 부족하면 배포가 멈출 수 있다.
+
+**넷째, maxUnavailable을 늘리면 배포를 진행할 수 있는 여지가 생기지만 처리 용량 감소를 감수해야 한다.**
+
+설정값이 너무 크면 새로운 Pod가 준비되기 전에 기존 Pod가 과도하게 종료되어 장애가 발생할 수 있다.
+
+**다섯째, 배포 실패 시 Deployment와 ReplicaSet의 관계를 이해해야 한다.**
+
+Pod를 삭제해도 ReplicaSet이 동일한 Pod를 다시 생성할 수 있으므로 근본 원인을 해결해야 한다.
+
+**여섯째, 문제가 발생하면 Deployment 또는 Helm의 롤백 기능을 활용할 수 있다.**
+
+다만 롤백 범위와 관리 주체가 다르므로 실제로 어떤 설정이 복구되는지 이해해야 한다.
+
+**일곱째, 안정적인 배포를 위해서는 충분한 Node 자원, 정확한 Readiness Probe, Graceful Shutdown, 적절한 Rolling Update 전략이 함께 필요하다.**
+
+#### 한 줄 요약
+
+> Kubernetes의 Rolling Update는 새로운 Pod를 순차적으로 교체하는 배포 전략이며, 안정적인 배포를 위해서는 `maxSurge`와 `maxUnavailable`을 Node의 자원 여유와 서비스의 최소 처리 용량에 맞게 설정해야 한다.
