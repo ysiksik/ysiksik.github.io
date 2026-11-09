@@ -2,7 +2,7 @@
 layout: post
 bigtitle: '스프링 시큐리티 JWT'
 subtitle: 스프링 시큐리티 JWT - 5. DB연결 및 Entity 작성
-date: '2026-10-27 00:00:03 +0900'
+date: '2026-10-28 00:00:03 +0900'
 categories:
     - spring-security-jwt
 comments: true

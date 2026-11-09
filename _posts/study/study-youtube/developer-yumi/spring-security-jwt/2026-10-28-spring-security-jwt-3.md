@@ -2,7 +2,7 @@
 layout: post
 bigtitle: '스프링 시큐리티 JWT'
 subtitle: 스프링 시큐리티 JWT - 3. Security Config 클래스 (STATELESS)
-date: '2026-10-27 00:00:02 +0900'
+date: '2026-10-28 00:00:02 +0900'
 categories:
     - spring-security-jwt
 comments: true

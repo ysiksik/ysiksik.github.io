@@ -2,7 +2,7 @@
 layout: post
 bigtitle: '스프링 시큐리티 JWT'
 subtitle: 스프링 시큐리티 JWT - 6. 회원가입 로직 구현
-date: '2026-10-27 00:00:03 +0900'
+date: '2026-10-29 00:00:03 +0900'
 categories:
     - spring-security-jwt
 comments: true
