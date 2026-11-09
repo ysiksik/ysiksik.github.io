@@ -8183,3 +8183,2861 @@ TaskletStep은 등록된 Tasklet을 RepeatTemplate과 TransactionTemplate을 통
 #### 한 줄 요약
 
 > Spring Batch의 `tasklet()` API는 `Tasklet` 구현체와 `PlatformTransactionManager`를 `TaskletStepBuilder`에 등록하고 최종적으로 `TaskletStep`을 생성하는 기능이다. `Tasklet`은 `execute(StepContribution, ChunkContext)` 메서드를 통해 실제 비즈니스 로직을 수행하며, `RepeatStatus.FINISHED`를 반환하면 종료하고 `RepeatStatus.CONTINUABLE`을 반환하면 반복한다. 하나의 TaskletStep은 하나의 Tasklet을 실행하며, 반복 제어와 트랜잭션 처리는 Spring Batch가 담당한다.
+
+## TaskeltStep - startLimit() / allowStartIfComplete()
+
+
+### Spring Batch startLimit()과 allowStartIfComplete() 이해: Step 실행 횟수 제한과 재시작 정책
+
+Spring Batch는 배치 작업이 실패했을 때 기존 실행 이력을 바탕으로 작업을 재시작할 수 있는 기능을 제공한다.
+
+하지만 Job을 재시작한다고 해서 모든 Step이 처음부터 다시 실행되는 것은 아니다.
+
+Spring Batch는 이전 StepExecution의 상태를 확인한 후 각 Step의 재실행 여부를 판단한다.
+
+예를 들어 다음과 같은 Job이 있다고 생각해보자.
+
+```text
+dailySettlementJob
+       │
+       ├── Step 1. 정산 대상 검증
+       │
+       └── Step 2. 정산 데이터 처리
+```
+
+최초 실행에서 Step 1은 성공했지만 Step 2에서 오류가 발생했다고 가정해보자.
+
+```text
+JobExecution 1
+       │
+       ├── Step 1 → COMPLETED
+       │
+       └── Step 2 → FAILED
+
+Job → FAILED
+```
+
+이때 동일한 JobInstance를 재시작하면 어떻게 될까?
+
+Spring Batch는 이전에 정상적으로 완료된 Step 1을 다시 실행하지 않는다.
+
+반면 실패한 Step 2는 다시 실행할 수 있다.
+
+```text
+JobExecution 2
+       │
+       ├── Step 1 → 실행 생략
+       │
+       └── Step 2 → 재실행
+```
+
+이것이 Spring Batch의 기본적인 재시작 동작이다.
+
+하지만 실제 배치 시스템에서는 이 동작을 변경해야 하는 상황이 발생한다.
+
+예를 들어 정산 대상 검증은 배치를 실행할 때마다 반드시 수행해야 할 수 있다.
+
+첫 번째 실행에서 검증에 성공했더라도 두 번째 실행에서는 데이터 상태가 달라졌을 수 있기 때문이다.
+
+반면 외부 시스템에 요청을 전달하는 Step은 일정 횟수 이상 반복해서 실행하면 안 되는 경우가 있다.
+
+실패한 작업을 무제한 재시작하면 외부 시스템에 과도한 요청이 발생하거나 데이터 정합성에 문제가 생길 수 있기 때문이다.
+
+Spring Batch는 이러한 요구사항을 위해 두 가지 API를 제공한다.
+
+```java
+.startLimit(3)
+```
+
+```java
+.allowStartIfComplete(true)
+```
+
+두 API는 모두 Step의 실행 여부에 영향을 주지만 목적은 다르다.
+
+`startLimit()`은 **Step이 시작될 수 있는 최대 횟수를 제한**한다.
+
+반면 `allowStartIfComplete()`는 **이전에 완료된 Step을 Job 재시작 과정에서 다시 실행할 것인지 결정**한다.
+
+예를 들어 다음과 같이 구성할 수 있다.
+
+```java
+@Bean
+public Step validationStep(
+        JobRepository jobRepository,
+        PlatformTransactionManager transactionManager
+) {
+    return new StepBuilder("validationStep", jobRepository)
+            .tasklet(validationTasklet(), transactionManager)
+            .allowStartIfComplete(true)
+            .build();
+}
+```
+
+이 Step은 이전에 정상적으로 완료되었더라도 Job이 재시작되면 다시 실행할 수 있다.
+
+반면 다음 Step은 최대 세 번까지만 시작할 수 있다.
+
+```java
+@Bean
+public Step settlementStep(
+        JobRepository jobRepository,
+        PlatformTransactionManager transactionManager
+) {
+    return new StepBuilder("settlementStep", jobRepository)
+            .tasklet(settlementTasklet(), transactionManager)
+            .startLimit(3)
+            .build();
+}
+```
+
+이러한 설정을 조합하면 다음과 같은 실행 정책을 구성할 수 있다.
+
+```text
+Job 재시작
+    │
+    ▼
+ValidationStep
+    │
+    └── 이전에 성공했더라도 다시 실행
+    │
+    ▼
+SettlementStep
+    │
+    ├── 실행 횟수 3회 미만 → 실행
+    │
+    └── 실행 횟수 3회 이상 → 실행 제한
+```
+
+이번에는 `startLimit()`과 `allowStartIfComplete()`의 개념, 적용 범위, 내부 구현, 실제 재시작 흐름, JobExecution과 StepExecution의 변화까지 자세히 살펴보자.
+
+---
+
+### 개념
+
+#### startLimit()이란?
+
+`startLimit()`은 동일한 JobInstance 안에서 특정 Step을 시작할 수 있는 최대 횟수를 설정하는 API다.
+
+예를 들어 다음과 같이 설정할 수 있다.
+
+```java
+.startLimit(3)
+```
+
+이 설정은 해당 Step이 최대 세 번까지 시작될 수 있다는 의미다.
+
+여기서 중요한 것은 **성공 횟수가 아니라 시작 횟수를 제한한다는 사실**이다.
+
+예를 들어 Step이 실행되었지만 실패했다고 생각해보자.
+
+```text
+첫 번째 실행 → FAILED
+
+두 번째 실행 → FAILED
+
+세 번째 실행 → FAILED
+```
+
+이 경우 Step은 세 번 시작되었다.
+
+따라서 startLimit(3)의 제한을 모두 사용했다.
+
+이후 네 번째 실행을 시도하면 다음 예외가 발생한다.
+
+```text
+StartLimitExceededException
+```
+
+이 예외는 Step의 시작 가능 횟수를 초과했을 때 발생한다.
+
+따라서 해당 Step의 비즈니스 로직은 더 이상 실행되지 않는다.
+
+#### startLimit()의 기본값
+
+startLimit을 설정하지 않으면 기본값이 적용된다.
+
+```java
+Integer.MAX_VALUE
+```
+
+이 값은 다음과 같다.
+
+```text
+2,147,483,647
+```
+
+실질적으로 매우 큰 실행 횟수를 허용하는 설정이다.
+
+다만 이 값이 무조건 Step을 재실행한다는 의미는 아니다.
+
+Step이 이전에 COMPLETED 상태로 종료되었다면 다른 재시작 정책에 따라 실행이 생략될 수 있기 때문이다.
+
+따라서 startLimit은 Step의 실행을 강제하는 설정이 아니다.
+
+**Step의 실행이 허용되는 상황에서 최대 시작 횟수를 제한하는 설정**이다.
+
+#### startLimit()의 특징
+
+| 항목 | 설명 |
+|---|---|
+| 적용 대상 | Step |
+| 주요 목적 | Step 최대 시작 횟수 제한 |
+| 기본값 | Integer.MAX_VALUE |
+| 실행 횟수 기준 | 동일 JobInstance + Step 이름 |
+| 실패한 실행 | 시작 횟수에 포함 |
+| 완료된 실행 | 시작 횟수에 포함 |
+| 제한 초과 | StartLimitExceededException |
+| 설정 위치 | StepBuilder |
+| 새로운 JobInstance | 별도의 실행 횟수로 관리 |
+
+여기서 가장 중요한 부분은 실행 횟수의 기준이다.
+
+startLimit은 특정 Step이 애플리케이션 전체에서 몇 번 실행되었는지 계산하지 않는다.
+
+**동일한 JobInstance에 속한 특정 Step의 실행 횟수**를 기준으로 계산한다.
+
+---
+
+### allowStartIfComplete()란?
+
+`allowStartIfComplete()`는 Job 재시작 과정에서 이전에 정상적으로 완료된 Step을 다시 실행할 것인지 설정하는 API다.
+
+Spring Batch는 기본적으로 COMPLETED 상태의 Step을 재시작하지 않는다.
+
+이전에 정상적으로 완료된 작업을 다시 실행할 필요가 없다고 판단하기 때문이다.
+
+예를 들어 다음과 같은 실행 결과가 있다고 생각해보자.
+
+```text
+JobExecution 1
+       │
+       ├── ValidationStep → COMPLETED
+       │
+       └── SettlementStep → FAILED
+```
+
+이 상태에서 Job을 재시작하면 일반적으로 다음과 같이 실행된다.
+
+```text
+JobExecution 2
+       │
+       ├── ValidationStep → 실행 생략
+       │
+       └── SettlementStep → 재실행
+```
+
+하지만 ValidationStep이 매번 데이터의 유효성을 검사해야 하는 작업이라면 어떨까?
+
+이 경우 이전에 검증을 완료했더라도 다시 실행하는 것이 적절할 수 있다.
+
+이때 다음 API를 사용한다.
+
+```java
+.allowStartIfComplete(true)
+```
+
+이 설정을 적용하면 Job 재시작 과정에서 완료된 Step도 다시 실행할 수 있다.
+
+```text
+JobExecution 2
+       │
+       ├── ValidationStep → 다시 실행
+       │
+       └── SettlementStep → 재실행
+```
+
+따라서 allowStartIfComplete는 실행할 때마다 필요한 사전 검증이나 준비 작업에 유용하다.
+
+#### allowStartIfComplete()의 기본값
+
+기본값은 false다.
+
+```java
+allowStartIfComplete = false;
+```
+
+설정하지 않으면 완료된 Step은 Job 재시작 시 실행을 생략한다.
+
+반면 다음과 같이 설정하면
+
+```java
+.allowStartIfComplete(true)
+```
+
+완료된 Step도 다시 시작할 수 있다.
+
+#### allowStartIfComplete()의 특징
+
+| 항목 | 설명 |
+|---|---|
+| 적용 대상 | Step |
+| 주요 목적 | 완료된 Step의 재실행 허용 |
+| 기본값 | false |
+| false | 이전에 COMPLETED였다면 실행 생략 |
+| true | 이전에 COMPLETED였더라도 재실행 허용 |
+| 적용 상황 | 동일 JobInstance의 재시작 |
+| startLimit과 관계 | 시작 횟수 제한은 별도로 적용 |
+| Job이 COMPLETED인 경우 | 이 API만으로 Job 재실행 불가 |
+
+여기서 반드시 기억해야 할 점이 있다.
+
+**allowStartIfComplete(true)는 모든 상황에서 Step을 무조건 실행한다는 의미가 아니다.**
+
+Job 자체가 실행될 수 있어야 한다.
+
+또한 startLimit과 같은 다른 실행 제한 조건도 만족해야 한다.
+
+---
+
+### startLimit()과 allowStartIfComplete()의 차이
+
+두 API는 모두 Step의 실행 여부를 제어한다.
+
+하지만 판단하는 조건이 다르다.
+
+| 구분 | startLimit() | allowStartIfComplete() |
+|---|---|---|
+| 목적 | 최대 시작 횟수 제한 | 완료된 Step의 재실행 허용 |
+| 판단 기준 | 기존 StepExecution 개수 | 이전 StepExecution 상태 |
+| 기본값 | Integer.MAX_VALUE | false |
+| 핵심 조건 | 시작 횟수가 제한보다 작은가? | 이전 상태가 COMPLETED인가? |
+| 실행 차단 | 횟수 초과 시 예외 | 완료된 Step 실행 생략 |
+| 관련 예외 | StartLimitExceededException | 기본적인 생략은 예외가 아님 |
+| 적용 범위 | 동일 JobInstance의 Step | 동일 JobInstance의 Step |
+| 활용 사례 | 제한적인 재시도 | 반복 검증 및 사전 작업 |
+
+두 API의 관계는 다음과 같이 이해할 수 있다.
+
+`allowStartIfComplete()`는 이전에 완료된 Step을 다시 실행할 수 있는지 결정한다.
+
+`startLimit()`은 그 Step이 지금까지 몇 번 시작되었는지 확인해 실행을 제한한다.
+
+따라서 두 API를 동시에 설정할 수도 있다.
+
+```java
+new StepBuilder("validationStep", jobRepository)
+        .tasklet(tasklet, transactionManager)
+        .allowStartIfComplete(true)
+        .startLimit(3)
+        .build();
+```
+
+이 설정은 다음을 의미한다.
+
+이전에 완료된 Step이라도 재시작 시 다시 실행할 수 있다.
+
+하지만 같은 JobInstance에서 세 번 시작했다면 네 번째부터는 시작할 수 없다.
+
+즉, **재실행 허용과 시작 횟수 제한은 서로 독립적인 정책이며 함께 적용된다.**
+
+---
+
+### 왜 사용하는가?
+
+Spring Batch에서 Step 실행 정책을 별도로 제공하는 이유는 실제 배치 업무마다 재시작 요구사항이 다르기 때문이다.
+
+예를 들어 다음과 같은 정산 Job이 있다고 생각해보자.
+
+```text
+dailySettlementJob
+       │
+       ├── Step 1. 정산 대상 유효성 검증
+       │
+       ├── Step 2. 정산 금액 계산
+       │
+       └── Step 3. 외부 정산 시스템 전송
+```
+
+Step 1은 데이터를 검증하는 작업이다.
+
+Job이 재시작될 때 데이터가 변경되었을 가능성이 있으므로 매번 실행하는 것이 적절할 수 있다.
+
+따라서 다음과 같이 설정한다.
+
+```java
+.allowStartIfComplete(true)
+```
+
+Step 2는 정산 금액을 계산하는 작업이다.
+
+이미 정상적으로 완료했다면 불필요하게 다시 계산하지 않아도 될 수 있다.
+
+따라서 기본 재시작 정책을 사용한다.
+
+```java
+.allowStartIfComplete(false)
+```
+
+Step 3은 외부 정산 시스템에 요청을 전달하는 작업이다.
+
+외부 시스템 장애로 인해 계속 실패할 수 있다.
+
+하지만 무제한으로 재시도하면 운영상 문제가 발생할 수 있다.
+
+따라서 최대 실행 횟수를 제한할 수 있다.
+
+```java
+.startLimit(3)
+```
+
+이처럼 각 Step의 성격에 따라 실행 정책을 다르게 구성할 수 있다.
+
+```mermaid
+flowchart TD
+    A["dailySettlementJob"]
+    B["정산 유효성 검증"]
+    C["정산 금액 계산"]
+    D["외부 정산 시스템 전송"]
+
+    E["allowStartIfComplete(true)"]
+    F["기본 재시작 정책"]
+    G["startLimit(3)"]
+
+    A --> B
+    B --> C
+    C --> D
+
+    B -.-> E
+    C -.-> F
+    D -.-> G
+```
+
+이러한 구성이 가능한 이유는 Spring Batch가 Job 전체의 실행 상태와 개별 Step의 실행 상태를 구분해서 관리하기 때문이다.
+
+---
+
+### Step의 재시작과 Job의 재시작은 어떻게 다를까?
+
+두 API를 정확히 이해하려면 JobInstance, JobExecution, StepExecution의 관계를 먼저 알아야 한다.
+
+Spring Batch에서 JobInstance는 논리적으로 동일한 배치 작업을 나타낸다.
+
+JobExecution은 해당 JobInstance의 개별 실행 시도를 나타낸다.
+
+StepExecution은 특정 Step의 개별 실행 시도를 나타낸다.
+
+예를 들어 다음과 같은 구조가 만들어질 수 있다.
+
+```text
+JobInstance 1
+    │
+    ├── JobExecution 1
+    │       │
+    │       ├── StepExecution 1 → COMPLETED
+    │       └── StepExecution 2 → FAILED
+    │
+    └── JobExecution 2
+            │
+            └── StepExecution 3 → FAILED
+```
+
+여기서 첫 번째 JobExecution에서는 두 개의 Step이 실행되었다.
+
+Step 1은 정상적으로 완료되었다.
+
+Step 2는 실패했다.
+
+이후 동일한 JobInstance를 재시작했다.
+
+이때 Step 1은 이미 완료되었으므로 실행을 생략했다.
+
+반면 Step 2는 실패했으므로 다시 실행했다.
+
+따라서 두 번째 JobExecution에는 Step 2에 대한 새로운 StepExecution만 생성되었다.
+
+이러한 구조에서 startLimit은 특정 Step에 대한 이전 StepExecution 개수를 확인한다.
+
+반면 allowStartIfComplete는 이전 StepExecution의 BatchStatus가 COMPLETED인지 확인한다.
+
+#### 새로운 JobInstance에서는 어떻게 될까?
+
+다음 두 실행을 생각해보자.
+
+```text
+첫 번째 실행
+
+Job Name = dailySettlementJob
+businessDate = 2026-11-09
+```
+
+```text
+두 번째 실행
+
+Job Name = dailySettlementJob
+businessDate = 2026-11-10
+```
+
+businessDate가 식별용 JobParameters라면 두 실행은 서로 다른 JobInstance다.
+
+따라서 Step 실행 이력도 JobInstance별로 구분된다.
+
+```text
+JobInstance 1
+    └── businessDate=2026-11-09
+```
+
+```text
+JobInstance 2
+    └── businessDate=2026-11-10
+```
+
+JobInstance 1에서 특정 Step을 세 번 실행했다고 해서 JobInstance 2의 같은 이름을 가진 Step까지 시작 횟수가 제한되는 것은 아니다.
+
+따라서 startLimit은 **비즈니스 전체의 전역 실행 횟수를 제한하는 기능이 아니라 JobInstance별 Step 시작 횟수를 제한하는 기능**이다.
+
+---
+
+### 주요 특징: startLimit()의 실제 동작
+
+startLimit의 동작을 이해하기 위해 다음과 같이 설정했다고 가정해보자.
+
+```java
+.startLimit(3)
+```
+
+그리고 해당 Step에서 의도적으로 예외를 발생시킨다.
+
+```java
+throw new IllegalStateException(
+        "정산 처리 실패"
+);
+```
+
+이제 같은 JobInstance를 반복 실행해보자.
+
+#### 첫 번째 실행
+
+이전 실행 이력이 없다.
+
+따라서 Step을 실행할 수 있다.
+
+```text
+StepExecution 1
+    │
+    └── FAILED
+```
+
+현재 시작 횟수는 1회다.
+
+#### 두 번째 실행
+
+이전 StepExecution은 FAILED 상태다.
+
+현재까지의 시작 횟수는 1회다.
+
+startLimit은 3이다.
+
+따라서 두 번째 실행이 허용된다.
+
+```text
+StepExecution 1 → FAILED
+
+StepExecution 2 → FAILED
+```
+
+현재 시작 횟수는 2회다.
+
+#### 세 번째 실행
+
+현재까지의 시작 횟수는 2회다.
+
+startLimit은 3이다.
+
+따라서 세 번째 실행도 허용된다.
+
+```text
+StepExecution 1 → FAILED
+
+StepExecution 2 → FAILED
+
+StepExecution 3 → FAILED
+```
+
+현재 시작 횟수는 3회다.
+
+#### 네 번째 실행
+
+현재까지의 시작 횟수는 3회다.
+
+startLimit도 3이다.
+
+따라서 더 이상 시작할 수 없다.
+
+```text
+StartLimitExceededException
+```
+
+이때 중요한 점은 **네 번째 StepExecution이 생성되지 않는다는 사실**이다.
+
+Spring Batch는 새로운 StepExecution을 생성하기 전에 시작 가능 여부를 확인하기 때문이다.
+
+전체 결과를 정리하면 다음과 같다.
+
+| Job 실행 | 이전 StepExecution 개수 | Step 실행 | 결과 |
+|---|---:|---|---|
+| 1회 | 0 | 실행 | FAILED |
+| 2회 | 1 | 실행 | FAILED |
+| 3회 | 2 | 실행 | FAILED |
+| 4회 | 3 | 실행 안 함 | StartLimitExceededException |
+| 5회 | 3 | 실행 안 함 | StartLimitExceededException |
+
+네 번째와 다섯 번째 실행에서는 StepExecution 개수가 증가하지 않는다.
+
+왜냐하면 Step 자체가 시작되지 않았기 때문이다.
+
+---
+
+### 주요 특징: allowStartIfComplete()의 실제 동작
+
+이번에는 다음과 같은 Job이 있다고 생각해보자.
+
+```text
+Job
+    │
+    ├── Step 1 → COMPLETED
+    │
+    └── Step 2 → FAILED
+```
+
+이 Job을 재시작하면 일반적으로 Step 1은 실행을 생략한다.
+
+하지만 다음과 같이 설정하면 달라진다.
+
+```java
+.allowStartIfComplete(true)
+```
+
+이제 Job을 재시작할 때 Step 1도 다시 실행할 수 있다.
+
+```text
+JobExecution 1
+    │
+    ├── Step 1 → COMPLETED
+    └── Step 2 → FAILED
+```
+
+```text
+JobExecution 2
+    │
+    ├── Step 1 → COMPLETED
+    └── Step 2 → FAILED
+```
+
+```text
+JobExecution 3
+    │
+    ├── Step 1 → COMPLETED
+    └── Step 2 → FAILED
+```
+
+각 JobExecution에 Step 1에 대한 새로운 StepExecution이 생성된다.
+
+반면 allowStartIfComplete가 false라면 다음과 같이 동작한다.
+
+```text
+JobExecution 1
+    │
+    ├── Step 1 → COMPLETED
+    └── Step 2 → FAILED
+```
+
+```text
+JobExecution 2
+    │
+    └── Step 2 → FAILED
+```
+
+```text
+JobExecution 3
+    │
+    └── Step 2 → FAILED
+```
+
+이처럼 allowStartIfComplete는 완료된 Step의 재실행 여부에 영향을 준다.
+
+---
+
+### startLimit()과 allowStartIfComplete()를 함께 사용하면?
+
+이번에는 두 API를 하나의 Job에서 함께 사용해보자.
+
+Job은 두 개의 Step으로 구성한다.
+
+```text
+restartPolicyJob
+       │
+       ├── validationStep
+       │       │
+       │       └── allowStartIfComplete(true)
+       │
+       └── processingStep
+               │
+               └── startLimit(3)
+```
+
+validationStep은 이전에 성공했더라도 다시 실행한다.
+
+processingStep은 최대 세 번까지만 시작할 수 있다.
+
+그리고 processingStep에서 계속 실패한다고 가정하자.
+
+#### 첫 번째 실행
+
+```text
+JobExecution 1
+       │
+       ├── validationStep → COMPLETED
+       │
+       └── processingStep → FAILED
+```
+
+두 Step이 모두 실행된다.
+
+#### 두 번째 실행
+
+```text
+JobExecution 2
+       │
+       ├── validationStep → COMPLETED
+       │
+       └── processingStep → FAILED
+```
+
+validationStep은 이전에 완료되었지만 allowStartIfComplete가 true이므로 다시 실행한다.
+
+processingStep은 아직 두 번째 실행이므로 허용된다.
+
+#### 세 번째 실행
+
+```text
+JobExecution 3
+       │
+       ├── validationStep → COMPLETED
+       │
+       └── processingStep → FAILED
+```
+
+processingStep은 세 번째 실행까지 허용된다.
+
+#### 네 번째 실행
+
+```text
+JobExecution 4
+       │
+       ├── validationStep → COMPLETED
+       │
+       └── processingStep → 실행 제한
+```
+
+validationStep은 정상적으로 실행된다.
+
+하지만 processingStep은 이미 세 번 시작되었다.
+
+따라서 StartLimitExceededException이 발생한다.
+
+이때 processingStep에 대한 새로운 StepExecution은 생성되지 않는다.
+
+#### 전체 실행 결과
+
+| JobExecution | validationStep | processingStep | Job 상태 |
+|---|---|---|---|
+| 1 | COMPLETED | FAILED | FAILED |
+| 2 | COMPLETED | FAILED | FAILED |
+| 3 | COMPLETED | FAILED | FAILED |
+| 4 | COMPLETED | 시작 제한 | FAILED |
+| 5 | COMPLETED | 시작 제한 | FAILED |
+
+여기서 두 API의 차이를 명확하게 확인할 수 있다.
+
+allowStartIfComplete는 validationStep을 반복 실행하도록 허용한다.
+
+startLimit은 processingStep이 세 번을 초과하여 시작하지 못하도록 제한한다.
+
+---
+
+### 내부 구조: StepBuilderHelper
+
+두 API는 모두 StepBuilder의 공통 설정을 관리하는 `StepBuilderHelper`에 정의되어 있다.
+
+Spring Batch 5.2.4에서 StepBuilderHelper는 다음과 같은 구조를 가진다.
+
+```text
+StepBuilderHelper
+       │
+       └── CommonStepProperties
+               │
+               ├── name
+               ├── jobRepository
+               ├── startLimit
+               ├── allowStartIfComplete
+               └── stepExecutionListeners
+```
+
+이 중 중요한 속성은 다음 두 가지다.
+
+```java
+private int startLimit = Integer.MAX_VALUE;
+```
+
+```java
+private Boolean allowStartIfComplete;
+```
+
+startLimit은 기본값이 Integer.MAX_VALUE다.
+
+allowStartIfComplete는 설정하지 않으면 실제 Step에 false가 적용된다.
+
+#### startLimit() 내부 구현
+
+핵심 코드는 다음과 같다.
+
+```java
+public B startLimit(int startLimit) {
+
+    properties.startLimit = startLimit;
+
+    return self();
+}
+```
+
+이 코드는 전달받은 시작 횟수를 CommonStepProperties에 저장한다.
+
+예를 들어 다음 API를 호출하면
+
+```java
+.startLimit(3)
+```
+
+다음 속성이 설정된다.
+
+```text
+startLimit = 3
+```
+
+#### allowStartIfComplete() 내부 구현
+
+핵심 코드는 다음과 같다.
+
+```java
+public B allowStartIfComplete(
+        boolean allowStartIfComplete
+) {
+
+    properties.allowStartIfComplete =
+            allowStartIfComplete;
+
+    return self();
+}
+```
+
+이 코드도 전달받은 값을 CommonStepProperties에 저장한다.
+
+예를 들어 다음과 같이 설정하면
+
+```java
+.allowStartIfComplete(true)
+```
+
+다음 값이 저장된다.
+
+```text
+allowStartIfComplete = true
+```
+
+이렇게 Builder에 저장된 값은 Step을 생성하는 과정에서 실제 Step 객체에 전달된다.
+
+---
+
+### Builder 설정이 실제 Step에 적용되는 과정
+
+StepBuilderHelper는 Step을 생성할 때 `enhance()` 메서드를 통해 공통 설정을 적용한다.
+
+관련 핵심 코드는 다음과 같다.
+
+```java
+protected void enhance(AbstractStep step) {
+
+    Boolean allowStartIfComplete =
+            properties.allowStartIfComplete;
+
+    if (allowStartIfComplete != null) {
+
+        step.setAllowStartIfComplete(
+                allowStartIfComplete
+        );
+    }
+
+    step.setStartLimit(
+            properties.startLimit
+    );
+}
+```
+
+이 코드는 두 API와 관련된 핵심 구문만 나타낸 것이다.
+
+실제 enhance()에는 JobRepository, Listener, Observation 등의 설정도 포함되어 있다.
+
+여기서 중요한 부분은 다음이다.
+
+```java
+step.setStartLimit(
+        properties.startLimit
+);
+```
+
+Builder에 저장된 startLimit 값을 실제 Step에 전달한다.
+
+다음 코드도 마찬가지다.
+
+```java
+step.setAllowStartIfComplete(
+        allowStartIfComplete
+);
+```
+
+Builder에 저장된 allowStartIfComplete 값을 실제 Step에 전달한다.
+
+최종적으로 생성된 TaskletStep은 다음과 같은 속성을 가지게 된다.
+
+```text
+TaskletStep
+    │
+    ├── name = processingStep
+    ├── startLimit = 3
+    ├── allowStartIfComplete = false
+    └── tasklet = ProcessingTasklet
+```
+
+또는 다음과 같이 구성될 수 있다.
+
+```text
+TaskletStep
+    │
+    ├── name = validationStep
+    ├── startLimit = Integer.MAX_VALUE
+    ├── allowStartIfComplete = true
+    └── tasklet = ValidationTasklet
+```
+
+이렇게 설정된 속성은 이후 Step 실행 과정에서 사용된다.
+
+---
+
+### 실제 실행 제한은 어디에서 검사할까?
+
+여기서 중요한 점이 있다.
+
+`startLimit()`과 `allowStartIfComplete()`는 StepBuilder에서 설정한다.
+
+하지만 **실제 실행 여부를 검사하는 곳은 StepBuilder가 아니다.**
+
+Spring Batch 5.2.4에서는 `SimpleStepHandler`가 중요한 역할을 담당한다.
+
+SimpleJob은 Step을 실행할 때 다음 메서드를 호출한다.
+
+```java
+handleStep(step, jobExecution);
+```
+
+AbstractJob은 이 호출을 SimpleStepHandler에 위임한다.
+
+```text
+SimpleJob
+    │
+    ▼
+AbstractJob.handleStep()
+    │
+    ▼
+SimpleStepHandler.handleStep()
+    │
+    ▼
+SimpleStepHandler.shouldStart()
+```
+
+SimpleStepHandler는 이전 StepExecution을 조회한다.
+
+그리고 현재 Step을 실행할 수 있는지 판단한다.
+
+주요 메서드는 다음과 같다.
+
+```java
+protected boolean shouldStart(
+        StepExecution lastStepExecution,
+        JobExecution jobExecution,
+        Step step
+)
+```
+
+이 메서드는 현재 Step의 실행 가능 여부를 판단한다.
+
+반환값이 true라면 실행을 진행할 수 있다.
+
+반환값이 false라면 실행을 생략한다.
+
+특정 제한 조건에 해당하면 예외를 발생시킨다.
+
+---
+
+### SimpleStepHandler.shouldStart() 내부 분석
+
+Spring Batch 5.2.4에서 두 API의 실제 동작을 이해하기 위해 가장 중요한 메서드다.
+
+핵심 구현은 다음과 같다.
+
+```java
+protected boolean shouldStart(
+        StepExecution lastStepExecution,
+        JobExecution jobExecution,
+        Step step
+) throws JobRestartException,
+         StartLimitExceededException {
+
+    BatchStatus stepStatus;
+
+    if (lastStepExecution == null) {
+
+        stepStatus = BatchStatus.STARTING;
+
+    } else {
+
+        stepStatus = lastStepExecution.getStatus();
+    }
+
+    if (stepStatus == BatchStatus.UNKNOWN) {
+
+        throw new JobRestartException(
+                "Cannot restart step from UNKNOWN status."
+        );
+    }
+
+    if (
+        (stepStatus == BatchStatus.COMPLETED
+                && !step.isAllowStartIfComplete())
+        || stepStatus == BatchStatus.ABANDONED
+    ) {
+
+        return false;
+    }
+
+    if (
+        jobRepository.getStepExecutionCount(
+                jobExecution.getJobInstance(),
+                step.getName()
+        ) < step.getStartLimit()
+    ) {
+
+        return true;
+    }
+
+    throw new StartLimitExceededException(
+            "Maximum start limit exceeded for step: "
+                    + step.getName()
+    );
+}
+```
+
+위 코드는 Spring Batch 5.2.4의 실제 검증 순서를 유지하면서 메시지 등 일부 부가 표현을 정리한 것이다.
+
+이 메서드는 크게 네 가지 조건을 확인한다.
+
+#### 첫 번째: 이전 StepExecution 조회
+
+먼저 이전 StepExecution이 존재하는지 확인한다.
+
+```java
+if (lastStepExecution == null) {
+
+    stepStatus = BatchStatus.STARTING;
+
+} else {
+
+    stepStatus = lastStepExecution.getStatus();
+}
+```
+
+기존 StepExecution이 없다면 최초 실행으로 판단할 수 있다.
+
+반면 이전 실행 이력이 존재한다면 해당 StepExecution의 상태를 확인한다.
+
+#### 두 번째: UNKNOWN 상태 확인
+
+```java
+if (stepStatus == BatchStatus.UNKNOWN) {
+
+    throw new JobRestartException(...);
+}
+```
+
+이전 Step의 상태가 UNKNOWN이라면 안전하게 재시작할 수 있는지 판단하기 어렵다.
+
+따라서 JobRestartException이 발생한다.
+
+여기서 중요한 것은 allowStartIfComplete가 true여도 UNKNOWN 상태의 Step을 무조건 재실행하지 않는다는 사실이다.
+
+#### 세 번째: COMPLETED 상태와 allowStartIfComplete 확인
+
+```java
+if (
+    stepStatus == BatchStatus.COMPLETED
+        && !step.isAllowStartIfComplete()
+) {
+
+    return false;
+}
+```
+
+이전에 완료된 Step인지 확인한다.
+
+그리고 allowStartIfComplete가 false인지 확인한다.
+
+두 조건을 모두 만족하면 실행을 생략한다.
+
+반면 allowStartIfComplete가 true라면 다음 검증으로 진행한다.
+
+또한 ABANDONED 상태라면 이 경로에서는 실행을 생략한다.
+
+#### 네 번째: startLimit 확인
+
+마지막으로 현재까지의 StepExecution 개수를 확인한다.
+
+```java
+jobRepository.getStepExecutionCount(
+        jobExecution.getJobInstance(),
+        step.getName()
+);
+```
+
+이 메서드는 해당 JobInstance에서 특정 Step이 지금까지 몇 번 시작되었는지 확인하는 데 사용된다.
+
+이후 다음 조건을 검사한다.
+
+```java
+executionCount < step.getStartLimit()
+```
+
+현재 실행 횟수가 startLimit보다 작다면 실행을 허용한다.
+
+반면 실행 횟수가 startLimit 이상이라면 예외를 발생시킨다.
+
+```java
+throw new StartLimitExceededException(...);
+```
+
+따라서 두 API는 SimpleStepHandler의 동일한 실행 판단 과정에서 함께 적용된다.
+
+---
+
+### startLimit과 allowStartIfComplete의 검증 순서
+
+앞에서 확인한 shouldStart()의 검증 순서는 중요하다.
+
+다음과 같이 정리할 수 있다.
+
+```mermaid
+flowchart TD
+    A["SimpleStepHandler.shouldStart()"]
+    B["이전 StepExecution 조회"]
+    C{"이전 상태 UNKNOWN?"}
+    D["JobRestartException"]
+
+    E{"이전 상태 COMPLETED?"}
+    F{"allowStartIfComplete?"}
+    G["실행 생략"]
+
+    H{"이전 상태 ABANDONED?"}
+
+    I["기존 StepExecution 개수 조회"]
+    J{"실행 횟수 < startLimit?"}
+    K["Step 실행 허용"]
+    L["StartLimitExceededException"]
+
+    A --> B
+    B --> C
+
+    C -->|YES| D
+    C -->|NO| E
+
+    E -->|YES| F
+    E -->|NO| H
+
+    F -->|FALSE| G
+    F -->|TRUE| H
+
+    H -->|YES| G
+    H -->|NO| I
+
+    I --> J
+
+    J -->|YES| K
+    J -->|NO| L
+```
+
+여기서 중요한 사실은 **COMPLETED 상태의 실행 생략 여부를 먼저 판단하고, 그다음 startLimit을 검사한다는 점**이다.
+
+예를 들어 이미 완료된 Step이 있다고 생각해보자.
+
+```text
+Step 상태 = COMPLETED
+
+allowStartIfComplete = false
+
+startLimit = 1
+```
+
+이 Step은 이미 한 번 실행되었다.
+
+하지만 Job 재시작 시에는 이전 완료 이력 때문에 먼저 실행을 생략한다.
+
+따라서 startLimit 초과 예외가 발생하는 대신 Step이 건너뛰어질 수 있다.
+
+반면 다음과 같이 설정했다면
+
+```text
+Step 상태 = COMPLETED
+
+allowStartIfComplete = true
+
+startLimit = 1
+```
+
+완료된 Step도 다시 실행할 수 있도록 허용했기 때문에 다음 단계인 startLimit 검증으로 진행한다.
+
+이때 이미 한 번 실행되었으므로 제한을 초과하게 된다.
+
+따라서 StartLimitExceededException이 발생한다.
+
+이처럼 두 API를 함께 사용할 때는 **검증 순서까지 이해해야 실제 실행 결과를 정확히 예측할 수 있다.**
+
+---
+
+### StartLimitExceededException이 발생하면 StepExecution은 생성될까?
+
+이 부분은 실행 메타데이터를 이해할 때 중요하다.
+
+SimpleStepHandler의 실행 흐름을 살펴보자.
+
+```java
+StepExecution lastStepExecution =
+        jobRepository.getLastStepExecution(
+                jobInstance,
+                step.getName()
+        );
+
+if (shouldStart(
+        lastStepExecution,
+        jobExecution,
+        step
+)) {
+
+    StepExecution currentStepExecution =
+            jobExecution.createStepExecution(
+                    step.getName()
+            );
+
+    jobRepository.add(currentStepExecution);
+
+    step.execute(currentStepExecution);
+}
+```
+
+이 코드에서 중요한 순서는 다음과 같다.
+
+첫 번째로 이전 StepExecution을 조회한다.
+
+두 번째로 shouldStart()를 호출한다.
+
+세 번째로 shouldStart()가 true를 반환한 경우에만 새로운 StepExecution을 생성한다.
+
+네 번째로 생성한 StepExecution을 JobRepository에 저장한다.
+
+다섯 번째로 Step을 실제 실행한다.
+
+따라서 shouldStart()에서 StartLimitExceededException이 발생하면 새로운 StepExecution을 생성하는 단계까지 진행하지 못한다.
+
+결과적으로 다음과 같은 상태가 만들어진다.
+
+```text
+JobExecution 4
+       │
+       ├── validationStep → COMPLETED
+       │
+       └── processingStep
+               │
+               └── StartLimitExceededException
+```
+
+이때 processingStep에 대한 새로운 StepExecution은 생성되지 않는다.
+
+반면 JobExecution은 이미 생성된 상태다.
+
+따라서 JobExecution에는 실패 상태가 기록될 수 있다.
+
+이는 **JobExecution 생성과 StepExecution 생성이 서로 다른 시점에 이루어진다는 사실**을 보여준다.
+
+---
+
+### startLimit의 실행 횟수는 어디에 저장될까?
+
+Spring Batch는 Step의 실행 이력을 데이터베이스에 저장한다.
+
+대표적인 테이블은 다음과 같다.
+
+```text
+BATCH_JOB_INSTANCE
+
+BATCH_JOB_EXECUTION
+
+BATCH_STEP_EXECUTION
+```
+
+startLimit을 확인할 때 Spring Batch는 JobRepository를 통해 특정 Step의 이전 실행 횟수를 조회한다.
+
+핵심 메서드는 다음과 같다.
+
+```java
+jobRepository.getStepExecutionCount(
+        jobInstance,
+        stepName
+);
+```
+
+이 메서드는 같은 JobInstance에 속한 해당 Step 이름의 실행 횟수를 반환한다.
+
+예를 들어 다음과 같은 데이터가 있다고 생각해보자.
+
+| JOB_INSTANCE_ID | JOB_EXECUTION_ID | STEP_NAME | STATUS |
+|---|---|---|---|
+| 1 | 1 | processingStep | FAILED |
+| 1 | 2 | processingStep | FAILED |
+| 1 | 3 | processingStep | FAILED |
+
+이 경우 processingStep의 실행 횟수는 3이다.
+
+따라서 다음과 같이 설정되어 있다면
+
+```java
+.startLimit(3)
+```
+
+네 번째 실행은 허용되지 않는다.
+
+반면 새로운 JobInstance가 생성되면 해당 JobInstance에 대한 실행 횟수는 새롭게 계산된다.
+
+---
+
+### 실제 예제: 두 API를 함께 사용하기
+
+이제 startLimit과 allowStartIfComplete를 실제로 구현해보자.
+
+이번 예제에서는 하나의 Job을 생성한다.
+
+그리고 두 개의 Step을 등록한다.
+
+첫 번째 Step은 매번 검증을 수행해야 하므로 allowStartIfComplete를 true로 설정한다.
+
+두 번째 Step은 최대 세 번까지만 시작할 수 있도록 startLimit을 3으로 설정한다.
+
+전체 구조는 다음과 같다.
+
+```text
+restartPolicyJob
+       │
+       ├── validationStep
+       │       │
+       │       ├── 데이터 유효성 검증
+       │       └── allowStartIfComplete(true)
+       │
+       └── processingStep
+               │
+               ├── 비즈니스 데이터 처리
+               ├── startLimit(3)
+               └── 의도적인 예외 발생
+```
+
+이번 예제에서는 processingStep에서 의도적으로 예외를 발생시킨다.
+
+따라서 Job은 FAILED 상태로 종료된다.
+
+이후 동일한 JobParameters로 여러 번 실행하면서 두 API의 동작을 확인한다.
+
+#### 개발 환경
+
+| 구분 | 기술 |
+|---|---|
+| Java | Java 17 |
+| Spring Boot | 3.4.13 |
+| Spring Batch | 5.2.4 |
+| Build Tool | Maven |
+| Database | H2 |
+| Job 구현체 | SimpleJob |
+| Step 구현체 | TaskletStep |
+
+---
+
+### Maven 의존성 설정
+
+`pom.xml`
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="
+             http://maven.apache.org/POM/4.0.0
+             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.4.13</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.example</groupId>
+    <artifactId>spring-batch-step-restart</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+
+    <properties>
+        <java.version>17</java.version>
+        <spring-batch.version>5.2.4</spring-batch.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-batch</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>
+```
+
+이번 예제에서는 Spring Batch 실행 이력을 유지해야 한다.
+
+따라서 단순한 인메모리 데이터베이스가 아니라 파일 기반 H2를 사용한다.
+
+애플리케이션을 종료했다가 다시 실행해도 이전 JobExecution과 StepExecution이 유지되어야 하기 때문이다.
+
+---
+
+### application.yml 설정
+
+`application.yml`
+
+```yaml
+spring:
+  application:
+    name: spring-batch-step-restart
+
+  main:
+    web-application-type: none
+
+  datasource:
+    url: jdbc:h2:file:./data/step-restart;DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+  batch:
+    job:
+      enabled: true
+      name: restartPolicyJob
+
+    jdbc:
+      initialize-schema: ${BATCH_SCHEMA_INIT:never}
+
+logging:
+  level:
+    org.springframework.batch: INFO
+    com.example.batch: INFO
+```
+
+중요한 설정은 다음과 같다.
+
+```yaml
+spring:
+  datasource:
+    url: jdbc:h2:file:./data/step-restart;DB_CLOSE_ON_EXIT=FALSE
+```
+
+H2 데이터를 파일에 저장한다.
+
+따라서 애플리케이션이 종료되어도 기존 실행 이력이 유지된다.
+
+또한 다음 설정을 사용한다.
+
+```yaml
+spring:
+  batch:
+    jdbc:
+      initialize-schema: ${BATCH_SCHEMA_INIT:never}
+```
+
+최초 실행에서만 환경변수로 always를 전달하여 Spring Batch 메타데이터 테이블을 생성한다.
+
+이후 실행에서는 기존 테이블을 사용한다.
+
+이렇게 하면 이전 StepExecution의 상태와 실행 횟수를 유지할 수 있다.
+
+---
+
+### Spring Boot 애플리케이션
+
+`BatchApplication.java`
+
+```java
+package com.example.batch;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class BatchApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(
+                BatchApplication.class,
+                args
+        );
+    }
+}
+```
+
+이제 Job과 Step을 생성한다.
+
+---
+
+### RestartPolicyConfiguration 전체 코드
+
+`RestartPolicyConfiguration.java`
+
+```java
+package com.example.batch;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.Step;
+
+import org.springframework.batch.core.job.builder.JobBuilder;
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.step.builder.StepBuilder;
+
+import org.springframework.batch.repeat.RepeatStatus;
+
+import org.springframework.beans.factory.annotation.Qualifier;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import org.springframework.transaction.PlatformTransactionManager;
+
+@Configuration
+public class RestartPolicyConfiguration {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(
+                    RestartPolicyConfiguration.class
+            );
+
+    // Job 구성
+
+    @Bean
+    public Job restartPolicyJob(
+            JobRepository jobRepository,
+            @Qualifier("validationStep") Step validationStep,
+            @Qualifier("processingStep") Step processingStep
+    ) {
+
+        return new JobBuilder(
+                "restartPolicyJob",
+                jobRepository
+        )
+                .start(validationStep)
+                .next(processingStep)
+                .build();
+    }
+
+    // Step 1: 완료되었더라도 재시작 시 다시 실행
+
+    @Bean
+    public Step validationStep(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+
+        return new StepBuilder(
+                "validationStep",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    log.info(
+                            "[ValidationStep] 정산 대상 검증 실행"
+                    );
+
+                    log.info(
+                            "[ValidationStep] JobExecutionId={}",
+                            contribution
+                                    .getStepExecution()
+                                    .getJobExecutionId()
+                    );
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .allowStartIfComplete(true)
+                .build();
+    }
+
+    // Step 2: 최대 세 번까지만 시작 가능
+
+    @Bean
+    public Step processingStep(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+
+        return new StepBuilder(
+                "processingStep",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    log.info(
+                            "[ProcessingStep] 정산 데이터 처리 실행"
+                    );
+
+                    log.info(
+                            "[ProcessingStep] StepExecutionId={}",
+                            contribution
+                                    .getStepExecution()
+                                    .getId()
+                    );
+
+                    throw new IllegalStateException(
+                            "정산 처리 중 의도적인 예외 발생"
+                    );
+
+                }, transactionManager)
+                .startLimit(3)
+                .build();
+    }
+}
+```
+
+이 코드에서는 두 개의 Step을 생성한다.
+
+첫 번째 Step에는 다음 API를 설정했다.
+
+```java
+.allowStartIfComplete(true)
+```
+
+따라서 Job 재시작 시 이전에 완료된 Step도 다시 실행할 수 있다.
+
+두 번째 Step에는 다음 API를 설정했다.
+
+```java
+.startLimit(3)
+```
+
+따라서 같은 JobInstance에서 최대 세 번까지만 시작할 수 있다.
+
+또한 두 번째 Step은 실행될 때마다 예외를 발생시킨다.
+
+```java
+throw new IllegalStateException(
+        "정산 처리 중 의도적인 예외 발생"
+);
+```
+
+따라서 startLimit의 실행 횟수 제한을 확인할 수 있다.
+
+---
+
+### 첫 번째 실행: 최초 JobExecution 생성
+
+먼저 프로젝트를 빌드한다.
+
+```bash
+mvn clean package
+```
+
+정상적으로 빌드되면 다음과 같은 결과를 확인할 수 있다.
+
+```text
+BUILD SUCCESS
+```
+
+이제 H2 데이터베이스 파일을 저장할 디렉터리를 생성한다.
+
+```bash
+mkdir -p data
+```
+
+최초 실행에서는 Spring Batch 메타데이터 테이블을 생성해야 한다.
+
+따라서 다음 명령어를 실행한다.
+
+```bash
+BATCH_SCHEMA_INIT=always \
+java -jar target/spring-batch-step-restart-0.0.1-SNAPSHOT.jar \
+  businessDate=2026-11-09
+```
+
+이 명령어는 다음 JobParameters를 전달한다.
+
+```text
+businessDate = 2026-11-09
+```
+
+이 값은 JobInstance를 구분하는 식별용 파라미터로 사용된다.
+
+#### 예상 실행 결과
+
+```text
+[ValidationStep] 정산 대상 검증 실행
+
+[ProcessingStep] 정산 데이터 처리 실행
+
+IllegalStateException:
+정산 처리 중 의도적인 예외 발생
+```
+
+최종 실행 상태는 다음과 같다.
+
+```text
+JobExecution 1
+       │
+       ├── validationStep → COMPLETED
+       │
+       └── processingStep → FAILED
+
+Job → FAILED
+```
+
+따라서 JobInstance는 하나 생성된다.
+
+JobExecution도 하나 생성된다.
+
+StepExecution은 두 개 생성된다.
+
+---
+
+### 두 번째 실행: Job 재시작
+
+이번에는 동일한 명령어를 다시 실행한다.
+
+```bash
+java -jar target/spring-batch-step-restart-0.0.1-SNAPSHOT.jar \
+  businessDate=2026-11-09
+```
+
+이전과 동일한 JobParameters를 전달했다.
+
+따라서 새로운 JobInstance를 생성하지 않는다.
+
+기존 JobInstance를 재시작한다.
+
+이때 validationStep의 이전 상태는 COMPLETED다.
+
+하지만 allowStartIfComplete가 true다.
+
+따라서 validationStep을 다시 실행한다.
+
+반면 processingStep은 이전에 FAILED 상태였다.
+
+그리고 지금까지 한 번만 시작되었다.
+
+따라서 startLimit(3)의 제한에 걸리지 않는다.
+
+processingStep도 다시 실행된다.
+
+#### 예상 실행 결과
+
+```text
+[ValidationStep] 정산 대상 검증 실행
+
+[ProcessingStep] 정산 데이터 처리 실행
+
+IllegalStateException:
+정산 처리 중 의도적인 예외 발생
+```
+
+최종 구조는 다음과 같다.
+
+```text
+JobInstance 1
+    │
+    ├── JobExecution 1
+    │       │
+    │       ├── validationStep → COMPLETED
+    │       └── processingStep → FAILED
+    │
+    └── JobExecution 2
+            │
+            ├── validationStep → COMPLETED
+            └── processingStep → FAILED
+```
+
+여기서 중요한 점은 validationStep이 두 번째 JobExecution에서도 실행되었다는 사실이다.
+
+allowStartIfComplete 설정이 없었다면 일반적으로 실행을 생략했을 것이다.
+
+---
+
+### 세 번째 실행: startLimit에 도달하기
+
+이번에도 동일한 JobParameters로 실행한다.
+
+```bash
+java -jar target/spring-batch-step-restart-0.0.1-SNAPSHOT.jar \
+  businessDate=2026-11-09
+```
+
+validationStep은 다시 실행된다.
+
+processingStep도 세 번째 실행이므로 아직 허용된다.
+
+```text
+JobInstance 1
+    │
+    ├── JobExecution 1
+    │       ├── validationStep → COMPLETED
+    │       └── processingStep → FAILED
+    │
+    ├── JobExecution 2
+    │       ├── validationStep → COMPLETED
+    │       └── processingStep → FAILED
+    │
+    └── JobExecution 3
+            ├── validationStep → COMPLETED
+            └── processingStep → FAILED
+```
+
+현재 processingStep의 시작 횟수는 3회다.
+
+따라서 다음 실행부터 제한이 적용된다.
+
+---
+
+### 네 번째 실행: StartLimitExceededException 발생
+
+이번에도 같은 JobParameters로 실행한다.
+
+```bash
+java -jar target/spring-batch-step-restart-0.0.1-SNAPSHOT.jar \
+  businessDate=2026-11-09
+```
+
+이번에는 실행 결과가 달라진다.
+
+validationStep은 allowStartIfComplete가 true이므로 다시 실행된다.
+
+하지만 processingStep은 이미 세 번 시작되었다.
+
+따라서 다음 조건에 해당하지 않는다.
+
+```java
+executionCount < step.getStartLimit()
+```
+
+현재 값은 다음과 같다.
+
+```text
+executionCount = 3
+
+startLimit = 3
+```
+
+따라서 다음 조건은 false다.
+
+```text
+3 < 3
+```
+
+이 때문에 StartLimitExceededException이 발생한다.
+
+#### 예상 실행 결과
+
+```text
+[ValidationStep] 정산 대상 검증 실행
+
+StartLimitExceededException:
+Maximum start limit exceeded for step: processingStep
+```
+
+여기서 주목해야 할 부분은 processingStep의 Tasklet 로그가 출력되지 않는다는 사실이다.
+
+```text
+[ProcessingStep] 정산 데이터 처리 실행
+```
+
+이 로그가 나타나지 않는다.
+
+왜냐하면 processingStep의 execute()가 호출되기 전에 shouldStart()에서 예외가 발생했기 때문이다.
+
+#### 최종 메타데이터 구조
+
+```text
+JobInstance 1
+    │
+    ├── JobExecution 1
+    │       ├── validationStep → COMPLETED
+    │       └── processingStep → FAILED
+    │
+    ├── JobExecution 2
+    │       ├── validationStep → COMPLETED
+    │       └── processingStep → FAILED
+    │
+    ├── JobExecution 3
+    │       ├── validationStep → COMPLETED
+    │       └── processingStep → FAILED
+    │
+    └── JobExecution 4
+            ├── validationStep → COMPLETED
+            └── processingStep → 실행되지 않음
+```
+
+JobExecution은 네 개 존재한다.
+
+validationStep의 StepExecution도 네 개 존재한다.
+
+하지만 processingStep의 StepExecution은 세 개만 존재한다.
+
+이것이 두 API를 함께 사용했을 때의 핵심적인 동작이다.
+
+---
+
+### 데이터베이스에서 실행 결과 확인하기
+
+이제 실제 실행 이력을 조회해보자.
+
+#### JobInstance와 JobExecution 조회
+
+```sql
+SELECT
+    ji.JOB_INSTANCE_ID,
+    ji.JOB_NAME,
+    je.JOB_EXECUTION_ID,
+    je.STATUS,
+    je.EXIT_CODE,
+    je.START_TIME,
+    je.END_TIME
+FROM BATCH_JOB_INSTANCE ji
+JOIN BATCH_JOB_EXECUTION je
+    ON ji.JOB_INSTANCE_ID = je.JOB_INSTANCE_ID
+WHERE ji.JOB_NAME = 'restartPolicyJob'
+ORDER BY je.JOB_EXECUTION_ID;
+```
+
+이 쿼리는 Job 전체의 실행 이력을 확인한다.
+
+네 번 실행했다면 다음과 유사한 결과를 확인할 수 있다.
+
+| JOB_INSTANCE_ID | JOB_EXECUTION_ID | STATUS |
+|---|---|---|
+| 1 | 1 | FAILED |
+| 1 | 2 | FAILED |
+| 1 | 3 | FAILED |
+| 1 | 4 | FAILED |
+
+여기서 JobInstance ID는 모두 동일하다.
+
+동일한 JobParameters를 이용해 기존 JobInstance를 재시작했기 때문이다.
+
+반면 JobExecution ID는 실행할 때마다 새롭게 생성된다.
+
+#### StepExecution 조회
+
+이번에는 Step 실행 이력을 조회한다.
+
+```sql
+SELECT
+    je.JOB_EXECUTION_ID,
+    se.STEP_EXECUTION_ID,
+    se.STEP_NAME,
+    se.STATUS,
+    se.EXIT_CODE
+FROM BATCH_JOB_EXECUTION je
+JOIN BATCH_STEP_EXECUTION se
+    ON je.JOB_EXECUTION_ID = se.JOB_EXECUTION_ID
+ORDER BY
+    je.JOB_EXECUTION_ID,
+    se.STEP_EXECUTION_ID;
+```
+
+예상 결과는 다음과 같다.
+
+| JOB_EXECUTION_ID | STEP_NAME | STATUS |
+|---|---|---|
+| 1 | validationStep | COMPLETED |
+| 1 | processingStep | FAILED |
+| 2 | validationStep | COMPLETED |
+| 2 | processingStep | FAILED |
+| 3 | validationStep | COMPLETED |
+| 3 | processingStep | FAILED |
+| 4 | validationStep | COMPLETED |
+
+여기서 네 번째 JobExecution에는 processingStep이 존재하지 않는다.
+
+startLimit을 초과했기 때문에 StepExecution이 생성되지 않았기 때문이다.
+
+이처럼 JobExecution과 StepExecution의 이력을 함께 조회하면 두 API가 실제로 어떤 영향을 주었는지 확인할 수 있다.
+
+---
+
+### Step별 실행 횟수 확인하기
+
+특정 JobInstance에서 Step이 몇 번 실행되었는지 SQL로 확인할 수도 있다.
+
+```sql
+SELECT
+    ji.JOB_INSTANCE_ID,
+    ji.JOB_NAME,
+    se.STEP_NAME,
+    COUNT(*) AS EXECUTION_COUNT
+FROM BATCH_JOB_INSTANCE ji
+JOIN BATCH_JOB_EXECUTION je
+    ON ji.JOB_INSTANCE_ID = je.JOB_INSTANCE_ID
+JOIN BATCH_STEP_EXECUTION se
+    ON je.JOB_EXECUTION_ID = se.JOB_EXECUTION_ID
+WHERE ji.JOB_NAME = 'restartPolicyJob'
+GROUP BY
+    ji.JOB_INSTANCE_ID,
+    ji.JOB_NAME,
+    se.STEP_NAME
+ORDER BY se.STEP_NAME;
+```
+
+네 번의 실행이 완료되었다면 다음과 유사한 결과를 확인할 수 있다.
+
+| STEP_NAME | EXECUTION_COUNT |
+|---|---:|
+| processingStep | 3 |
+| validationStep | 4 |
+
+validationStep은 allowStartIfComplete가 true이므로 네 번 실행되었다.
+
+반면 processingStep은 startLimit이 3이므로 세 번까지만 실행되었다.
+
+이 결과는 Spring Batch의 실행 메타데이터가 실제 재시작 정책과 연결되어 있음을 보여준다.
+
+---
+
+### JUnit으로 두 API의 동작 검증하기
+
+이번에는 실제 JobLauncher를 사용해 실행 정책을 검증해보자.
+
+검증할 내용은 다음과 같다.
+
+첫 번째는 동일한 JobInstance에 새로운 JobExecution이 생성되는지 확인한다.
+
+두 번째는 allowStartIfComplete가 설정된 Step이 계속 재실행되는지 확인한다.
+
+세 번째는 startLimit이 설정된 Step의 실행 횟수가 제한되는지 확인한다.
+
+네 번째는 제한을 초과했을 때 새로운 StepExecution이 생성되지 않는지 확인한다.
+
+`RestartPolicyTest.java`
+
+```java
+package com.example.batch;
+
+import java.util.UUID;
+
+import org.junit.jupiter.api.Test;
+
+import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobInstance;
+import org.springframework.batch.core.JobParameters;
+import org.springframework.batch.core.JobParametersBuilder;
+import org.springframework.batch.core.StartLimitExceededException;
+
+import org.springframework.batch.core.launch.JobLauncher;
+import org.springframework.batch.core.repository.JobRepository;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+
+import org.springframework.boot.test.context.SpringBootTest;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+@SpringBootTest(properties = {
+        "spring.batch.job.enabled=false",
+        "spring.datasource.url=jdbc:h2:mem:restart-policy-test;DB_CLOSE_DELAY=-1",
+        "spring.batch.jdbc.initialize-schema=always"
+})
+class RestartPolicyTest {
+
+    @Autowired
+    private JobLauncher jobLauncher;
+
+    @Autowired
+    private JobRepository jobRepository;
+
+    @Autowired
+    @Qualifier("restartPolicyJob")
+    private Job restartPolicyJob;
+
+    @Test
+    void startLimit과_allowStartIfComplete가_함께_적용된다()
+            throws Exception {
+
+        JobParameters parameters =
+                new JobParametersBuilder()
+                        .addString(
+                                "businessDate",
+                                "2026-11-09"
+                        )
+                        .addString(
+                                "testRun",
+                                UUID.randomUUID().toString()
+                        )
+                        .toJobParameters();
+
+        JobInstance jobInstance = null;
+
+        for (int attempt = 1; attempt <= 4; attempt++) {
+
+            JobExecution execution =
+                    jobLauncher.run(
+                            restartPolicyJob,
+                            parameters
+                    );
+
+            assertEquals(
+                    BatchStatus.FAILED,
+                    execution.getStatus()
+            );
+
+            if (jobInstance == null) {
+
+                jobInstance = execution.getJobInstance();
+
+            } else {
+
+                assertEquals(
+                        jobInstance.getId(),
+                        execution.getJobInstance().getId()
+                );
+            }
+
+            long validationCount =
+                    jobRepository.getStepExecutionCount(
+                            jobInstance,
+                            "validationStep"
+                    );
+
+            long processingCount =
+                    jobRepository.getStepExecutionCount(
+                            jobInstance,
+                            "processingStep"
+                    );
+
+            assertEquals(
+                    attempt,
+                    validationCount
+            );
+
+            assertEquals(
+                    Math.min(attempt, 3),
+                    processingCount
+            );
+
+            if (attempt == 4) {
+
+                assertTrue(
+                        execution.getFailureExceptions()
+                                .stream()
+                                .anyMatch(
+                                        exception ->
+                                                exception instanceof
+                                                        StartLimitExceededException
+                                )
+                );
+            }
+        }
+    }
+}
+```
+
+이 테스트에서는 동일한 JobParameters를 네 번 사용한다.
+
+따라서 네 번의 실행이 동일한 JobInstance에 속한다.
+
+다음 반복문이 핵심이다.
+
+```java
+for (int attempt = 1; attempt <= 4; attempt++) {
+
+    JobExecution execution =
+            jobLauncher.run(
+                    restartPolicyJob,
+                    parameters
+            );
+}
+```
+
+첫 번째 실행부터 네 번째 실행까지 동일한 Job을 반복 실행한다.
+
+각 실행의 최종 상태는 FAILED가 된다.
+
+다만 실패 원인은 다르다.
+
+첫 번째부터 세 번째까지는 Tasklet에서 발생시킨 IllegalStateException 때문에 실패한다.
+
+네 번째는 startLimit을 초과했기 때문에 실패한다.
+
+#### validationStep 실행 횟수 검증
+
+```java
+assertEquals(
+        attempt,
+        validationCount
+);
+```
+
+validationStep은 allowStartIfComplete가 true다.
+
+따라서 네 번의 JobExecution에서 모두 실행된다.
+
+#### processingStep 실행 횟수 검증
+
+```java
+assertEquals(
+        Math.min(attempt, 3),
+        processingCount
+);
+```
+
+processingStep은 최대 세 번까지만 실행된다.
+
+따라서 실행 횟수는 다음과 같다.
+
+```text
+attempt=1 → processingCount=1
+
+attempt=2 → processingCount=2
+
+attempt=3 → processingCount=3
+
+attempt=4 → processingCount=3
+```
+
+네 번째 실행에서는 processingStep의 실행 횟수가 증가하지 않는다.
+
+#### StartLimitExceededException 검증
+
+마지막으로 네 번째 실행에서 다음 예외가 발생했는지 확인한다.
+
+```java
+assertTrue(
+        execution.getFailureExceptions()
+                .stream()
+                .anyMatch(
+                        exception ->
+                                exception instanceof
+                                        StartLimitExceededException
+                )
+);
+```
+
+이 검증이 성공한다면 startLimit이 실제로 Step 시작을 제한했다는 의미다.
+
+#### 테스트 실행
+
+```bash
+mvn test
+```
+
+정상적으로 실행되면 다음과 유사한 결과를 확인할 수 있다.
+
+```text
+Tests run: 1
+
+Failures: 0
+
+Errors: 0
+
+BUILD SUCCESS
+```
+
+---
+
+### allowStartIfComplete와 startLimit을 함께 적용할 때 주의할 점
+
+앞에서 확인한 것처럼 두 API는 서로 독립적으로 동작한다.
+
+따라서 다음과 같이 설정할 수도 있다.
+
+```java
+new StepBuilder("validationStep", jobRepository)
+        .tasklet(tasklet, transactionManager)
+        .allowStartIfComplete(true)
+        .startLimit(2)
+        .build();
+```
+
+이 Step은 이전에 완료되었더라도 다시 실행할 수 있다.
+
+하지만 같은 JobInstance에서 두 번 시작했다면 세 번째 실행은 허용되지 않는다.
+
+따라서 다음과 같은 상황이 발생할 수 있다.
+
+| JobExecution | 이전 Step 상태 | allowStartIfComplete | 시작 횟수 | 결과 |
+|---|---|---|---:|---|
+| 1 | 없음 | true | 0 | 실행 |
+| 2 | COMPLETED | true | 1 | 실행 |
+| 3 | COMPLETED | true | 2 | StartLimitExceededException |
+
+여기서 중요한 것은 **allowStartIfComplete가 startLimit보다 우선하는 무조건 실행 옵션이 아니라는 사실**이다.
+
+이 API는 완료된 Step을 다시 실행할 수 있도록 허용한다.
+
+하지만 시작 횟수 제한까지 해제하지는 않는다.
+
+---
+
+### Job이 COMPLETED 상태라면 어떻게 될까?
+
+다음과 같은 Job이 있다고 생각해보자.
+
+```text
+JobExecution 1
+       │
+       ├── validationStep → COMPLETED
+       │
+       └── processingStep → COMPLETED
+
+Job → COMPLETED
+```
+
+이때 validationStep에 다음 설정이 있다고 가정해보자.
+
+```java
+.allowStartIfComplete(true)
+```
+
+그렇다면 동일한 JobParameters로 Job을 다시 실행할 수 있을까?
+
+일반적으로 실행할 수 없다.
+
+이미 완료된 JobInstance는 동일한 식별용 JobParameters로 다시 실행할 수 없기 때문이다.
+
+따라서 다음과 같은 예외가 발생할 수 있다.
+
+```text
+JobInstanceAlreadyCompleteException
+```
+
+이 검증은 Step 실행이 시작되기 전에 이루어진다.
+
+따라서 allowStartIfComplete가 true라고 해서 완료된 JobInstance를 다시 실행할 수 있는 것은 아니다.
+
+정확히는 다음과 같이 이해해야 한다.
+
+> allowStartIfComplete는 Job의 재시작이 허용된 상황에서 이전에 완료된 Step도 다시 실행하도록 허용하는 설정이다.
+
+이 구분은 실제 운영에서 매우 중요하다.
+
+---
+
+### preventRestart()와의 관계
+
+앞에서 살펴본 `preventRestart()`는 Job 전체의 재시작을 금지하는 API다.
+
+예를 들어 다음과 같이 구성할 수 있다.
+
+```java
+new JobBuilder("batchJob", jobRepository)
+        .preventRestart()
+        .start(validationStep)
+        .next(processingStep)
+        .build();
+```
+
+이 경우 Job이 실패하더라도 동일한 JobInstance를 재시작할 수 없다.
+
+따라서 validationStep에 allowStartIfComplete가 true로 설정되어 있어도 재실행되지 않는다.
+
+processingStep에 startLimit이 설정되어 있어도 해당 검증 단계까지 도달하지 못한다.
+
+왜냐하면 Job 수준에서 재시작이 먼저 차단되기 때문이다.
+
+전체 관계는 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["Job 재실행 요청"]
+    B{"Job 재시작 허용?"}
+    C["JobRestartException"]
+
+    D["JobExecution 생성"]
+    E["SimpleStepHandler"]
+
+    F{"이전 Step 상태 확인"}
+    G{"allowStartIfComplete?"}
+    H["실행 생략"]
+
+    I{"startLimit 초과?"}
+    J["StartLimitExceededException"]
+    K["Step 실행"]
+
+    A --> B
+
+    B -->|NO| C
+    B -->|YES| D
+
+    D --> E
+    E --> F
+
+    F -->|COMPLETED| G
+    F -->|그 외 실행 가능 상태| I
+
+    G -->|FALSE| H
+    G -->|TRUE| I
+
+    I -->|YES| J
+    I -->|NO| K
+```
+
+이 그림은 핵심 판단 관계를 단순화한 것이다.
+
+실제로는 UNKNOWN, ABANDONED, STOPPING 등의 상태에 대한 추가 검증도 이루어진다.
+
+따라서 Job 수준의 재시작 정책과 Step 수준의 재실행 정책을 함께 이해해야 한다.
+
+---
+
+### Incrementer와 startLimit의 관계
+
+이전에 살펴본 `RunIdIncrementer`는 새로운 JobParameters를 생성하는 데 사용된다.
+
+예를 들어 다음과 같은 파라미터를 생성할 수 있다.
+
+```text
+businessDate = 2026-11-09
+
+run.id = 1
+```
+
+다음 실행에서는 run.id가 증가한다.
+
+```text
+businessDate = 2026-11-09
+
+run.id = 2
+```
+
+run.id가 식별용 파라미터라면 새로운 JobInstance가 생성된다.
+
+이때 중요한 점이 있다.
+
+**startLimit은 같은 JobInstance의 Step 실행 횟수를 기준으로 적용된다.**
+
+따라서 run.id를 변경하여 새로운 JobInstance를 생성하면 기존 JobInstance의 Step 실행 횟수를 그대로 이어서 계산하지 않는다.
+
+예를 들어 다음과 같은 상황이다.
+
+```text
+JobInstance 1
+    │
+    ├── run.id = 1
+    │
+    └── processingStep 실행 횟수 = 3
+```
+
+```text
+JobInstance 2
+    │
+    ├── run.id = 2
+    │
+    └── processingStep 실행 횟수 = 0
+```
+
+이러한 이유로 startLimit을 이용해 특정 비즈니스 작업의 전체 재처리 횟수를 제한하려는 경우에는 주의해야 한다.
+
+새로운 JobInstance를 계속 생성한다면 동일한 업무를 여러 번 처리할 수 있기 때문이다.
+
+이번 예제에서 RunIdIncrementer를 사용하지 않은 이유도 여기에 있다.
+
+**동일한 JobInstance를 재시작해야 startLimit과 allowStartIfComplete의 동작을 정확하게 확인할 수 있기 때문이다.**
+
+---
+
+### 실무에서 활용할 수 있는 12가지 설계 방법
+
+두 API는 단순한 설정이지만 실제 운영에서는 여러 문제를 해결하는 데 활용할 수 있다.
+
+다만 무조건 설정하는 것보다 해당 Step의 업무 특성과 장애 복구 정책을 먼저 이해해야 한다.
+
+#### 1. 매번 실행해야 하는 데이터 검증 Step
+
+배치를 재시작할 때마다 데이터 상태를 다시 확인해야 하는 경우가 있다.
+
+예를 들어 정산 대상 데이터가 정상적으로 준비되었는지 확인하는 작업이다.
+
+```java
+.allowStartIfComplete(true)
+```
+
+이렇게 설정하면 이전 검증이 성공했더라도 Job 재시작 시 다시 검증할 수 있다.
+
+다만 검증 과정에서 데이터를 변경한다면 중복 실행 시 어떤 문제가 발생하는지도 함께 고려해야 한다.
+
+#### 2. 외부 API 요청 횟수 제한
+
+외부 시스템에 요청을 전달하는 Step은 무제한 재실행이 위험할 수 있다.
+
+예를 들어 외부 시스템 장애가 발생했을 때 동일한 요청을 반복하면 부하가 증가할 수 있다.
+
+이러한 경우 startLimit을 이용해 Step의 시작 횟수를 제한할 수 있다.
+
+하지만 외부 API가 중복 요청을 처리할 수 있는지와는 별개의 문제다.
+
+따라서 멱등성 키나 요청 상태 확인 기능을 함께 고려해야 한다.
+
+#### 3. 수동 복구가 필요한 Step
+
+일부 작업은 일정 횟수 이상 실패하면 운영자의 확인이 필요할 수 있다.
+
+예를 들어 외부 정산 시스템의 처리 상태가 불명확한 경우다.
+
+이때 startLimit을 이용해 자동 재실행을 제한할 수 있다.
+
+하지만 제한 횟수에 도달한 이후에는 어떤 절차로 복구할 것인지도 정의해야 한다.
+
+#### 4. 사전 데이터 정리 Step
+
+배치를 재시작할 때마다 임시 데이터를 정리해야 할 수 있다.
+
+이러한 작업은 allowStartIfComplete를 활용할 수 있다.
+
+다만 정리 작업이 여러 번 실행되어도 안전한지 확인해야 한다.
+
+가능하면 동일한 요청을 반복해도 결과가 달라지지 않는 멱등성을 확보하는 것이 좋다.
+
+#### 5. 정산 확정 이전의 상태 검증
+
+정산 확정 작업 이전에 거래 상태나 정산 대상 수량을 검증할 수 있다.
+
+이러한 검증은 재시작할 때마다 수행할 필요가 있을 수 있다.
+
+따라서 allowStartIfComplete가 적절할 수 있다.
+
+반면 실제 정산 확정 작업은 중복 실행 여부를 별도로 관리해야 한다.
+
+#### 6. JobInstance별 재시도 정책 설계
+
+startLimit은 JobInstance별로 적용된다.
+
+따라서 JobParameters가 어떤 업무를 식별하는지 명확하게 설계해야 한다.
+
+특히 businessDate 같은 비즈니스 파라미터와 run.id 같은 실행 식별값을 혼용할 때는 주의해야 한다.
+
+#### 7. 재실행 가능한 Step과 불가능한 Step 분리
+
+하나의 Job에는 재시작할 때마다 실행해야 하는 Step과 그렇지 않은 Step이 함께 존재할 수 있다.
+
+예를 들어 다음과 같이 구성할 수 있다.
+
+```text
+SettlementJob
+    │
+    ├── ValidationStep
+    │       └── 항상 재검증
+    │
+    ├── CalculationStep
+    │       └── 완료되었다면 생략
+    │
+    └── ExternalRequestStep
+            └── 시작 횟수 제한
+```
+
+이렇게 구성하면 각 Step의 실행 정책을 업무 특성에 맞게 설정할 수 있다.
+
+#### 8. StepExecution을 기반으로 장애 원인 분석
+
+Job이 실패했다고 해서 모든 Step이 실패한 것은 아니다.
+
+특히 startLimit을 초과한 경우 해당 Step의 새로운 StepExecution이 생성되지 않을 수 있다.
+
+따라서 장애 분석 시 JobExecution과 StepExecution을 함께 조회하는 것이 중요하다.
+
+#### 9. Job 실행 횟수와 Step 실행 횟수 구분
+
+JobExecution이 다섯 개 존재한다고 해서 모든 Step이 다섯 번 실행된 것은 아니다.
+
+일부 Step은 이전 완료 이력으로 인해 생략되었을 수 있다.
+
+또는 startLimit을 초과하여 실행되지 않았을 수 있다.
+
+따라서 모니터링에서는 JobExecution 개수와 StepExecution 개수를 별도로 확인해야 한다.
+
+#### 10. 운영 중 startLimit 설정 변경 시 주의
+
+운영 중인 Step의 startLimit을 변경할 수 있다.
+
+하지만 이미 저장된 StepExecution 이력이 사라지는 것은 아니다.
+
+예를 들어 이전에 세 번 실행한 Step에 startLimit(3)을 적용하면 추가 실행이 제한될 수 있다.
+
+따라서 설정을 변경하기 전에 기존 실행 이력을 확인하는 것이 좋다.
+
+#### 11. Step 이름 변경에 따른 영향 고려
+
+Spring Batch는 Step 이름을 기준으로 이전 StepExecution을 조회한다.
+
+따라서 운영 중 Step 이름을 변경하면 기존 실행 이력과 연결되지 않을 수 있다.
+
+이 경우 startLimit과 재시작 정책에 영향을 줄 수 있다.
+
+Step 이름은 단순한 코드상의 식별자가 아니라 실행 메타데이터의 일부로 관리해야 한다.
+
+#### 12. 실행 제한과 복구 전략을 함께 설계
+
+startLimit은 실행 횟수를 제한할 뿐 장애를 자동으로 복구하지 않는다.
+
+allowStartIfComplete는 완료된 Step의 재실행을 허용할 뿐 비즈니스 정합성을 보장하지 않는다.
+
+따라서 다음 요소를 함께 고려해야 한다.
+
+| 요소 | 목적 |
+|---|---|
+| startLimit | Step 시작 횟수 제한 |
+| allowStartIfComplete | 완료된 Step의 재실행 허용 |
+| preventRestart | Job 재시작 금지 |
+| JobParameters | JobInstance 식별 |
+| ExecutionContext | 실행 상태 저장 및 복원 |
+| 멱등성 | 중복 비즈니스 처리 방지 |
+| 운영 복구 절차 | 제한 초과 또는 장애 발생 시 대응 |
+
+결국 두 API는 실행 제어 정책의 일부일 뿐이다.
+
+실제 운영에서는 데이터 정합성과 장애 복구까지 함께 고려해야 한다.
+
+---
+
+### 자주 혼동하는 부분
+
+| 혼동하기 쉬운 내용 | 정확한 이해 |
+|---|---|
+| startLimit(3)은 성공한 실행만 세 번 허용한다 | 실패한 실행도 시작 횟수에 포함한다 |
+| startLimit은 Job 전체의 실행 횟수를 제한한다 | 특정 Step의 시작 횟수를 제한한다 |
+| startLimit은 모든 JobInstance의 실행을 합산한다 | 동일 JobInstance의 Step 실행 이력을 기준으로 한다 |
+| startLimit을 초과해도 StepExecution이 생성된다 | 실행 전 검증에서 거부되면 생성되지 않는다 |
+| startLimit을 초과하면 JobExecution도 생성되지 않는다 | JobExecution은 이미 생성되었을 수 있다 |
+| allowStartIfComplete의 기본값은 true다 | 기본값은 false다 |
+| allowStartIfComplete(true)는 완료된 Job도 재실행할 수 있게 한다 | Job 자체의 재실행 가능 여부와는 별개다 |
+| allowStartIfComplete(true)는 startLimit을 무시한다 | startLimit 제한도 적용된다 |
+| 완료된 Step은 항상 재실행할 수 없다 | allowStartIfComplete로 재실행을 허용할 수 있다 |
+| Step이 실행 생략되면 예외가 발생한다 | 일반적인 완료 Step 생략은 정상적인 처리다 |
+| 새로운 JobInstance에서도 기존 startLimit 횟수가 유지된다 | JobInstance별로 실행 횟수를 계산한다 |
+| RunIdIncrementer를 사용해도 같은 JobInstance로 재시작한다 | 식별용 run.id가 달라지면 새로운 JobInstance다 |
+
+---
+
+### 전체 아키텍처
+
+마지막으로 두 API의 전체 처리 흐름을 하나의 구조로 정리해보자.
+
+```mermaid
+flowchart TD
+    A["JobLauncher.run()"]
+    B["JobRepository"]
+    C["JobExecution 생성"]
+    D["SimpleJob.doExecute()"]
+
+    E["SimpleStepHandler.handleStep()"]
+    F["이전 StepExecution 조회"]
+
+    G["shouldStart()"]
+
+    H{"이전 상태 UNKNOWN?"}
+    I["JobRestartException"]
+
+    J{"이전 상태 COMPLETED?"}
+    K{"allowStartIfComplete?"}
+    L["Step 실행 생략"]
+
+    M{"이전 상태 ABANDONED?"}
+
+    N["StepExecution 개수 조회"]
+    O{"실행 횟수 < startLimit?"}
+
+    P["StartLimitExceededException"]
+
+    Q["새로운 StepExecution 생성"]
+    R["JobRepository.add()"]
+    S["TaskletStep.execute()"]
+
+    T["Tasklet.execute()"]
+    U["StepExecution 상태 저장"]
+    V["다음 Step 또는 Job 종료"]
+
+    A --> B
+    B --> C
+    C --> D
+
+    D --> E
+    E --> F
+    F --> G
+
+    G --> H
+
+    H -->|YES| I
+    H -->|NO| J
+
+    J -->|YES| K
+    J -->|NO| M
+
+    K -->|FALSE| L
+    K -->|TRUE| M
+
+    M -->|YES| L
+    M -->|NO| N
+
+    N --> O
+
+    O -->|NO| P
+    O -->|YES| Q
+
+    Q --> R
+    R --> S
+    S --> T
+    T --> U
+    U --> V
+
+    L --> V
+    P --> V
+```
+
+이 구조에서 가장 중요한 것은 실행 가능 여부를 검사하는 위치다.
+
+SimpleJob은 등록된 Step을 순차적으로 실행한다.
+
+하지만 실제 Step을 시작할 수 있는지는 SimpleStepHandler가 판단한다.
+
+SimpleStepHandler는 이전 StepExecution을 조회한다.
+
+그리고 이전 상태와 allowStartIfComplete 설정을 확인한다.
+
+그다음 startLimit을 검사한다.
+
+실행이 허용되면 새로운 StepExecution을 생성하고 실제 Step을 실행한다.
+
+반면 실행이 허용되지 않으면 Step을 생략하거나 예외를 발생시킨다.
+
+따라서 두 API의 실제 동작을 이해하려면 **SimpleStepHandler.shouldStart()의 검증 순서**를 이해하는 것이 중요하다.
+
+---
+
+### 정리
+
+Spring Batch의 `startLimit()`과 `allowStartIfComplete()`는 Step의 재실행을 제어하는 API다.
+
+두 API는 모두 StepBuilder에서 설정한다.
+
+하지만 서로 다른 목적을 가진다.
+
+`startLimit()`은 Step의 최대 시작 횟수를 제한한다.
+
+예를 들어 다음과 같이 설정할 수 있다.
+
+```java
+.startLimit(3)
+```
+
+이 설정은 동일한 JobInstance에서 해당 Step이 최대 세 번 시작될 수 있다는 의미다.
+
+실패한 실행도 시작 횟수에 포함된다.
+
+설정한 횟수를 초과하면 StartLimitExceededException이 발생한다.
+
+이때 새로운 StepExecution은 생성되지 않는다.
+
+반면 `allowStartIfComplete()`는 이전에 완료된 Step을 다시 실행할 수 있도록 허용한다.
+
+```java
+.allowStartIfComplete(true)
+```
+
+기본값은 false다.
+
+따라서 별도로 설정하지 않으면 완료된 Step은 Job 재시작 시 실행을 생략한다.
+
+하지만 true로 설정하면 이전에 완료되었더라도 다시 실행할 수 있다.
+
+이러한 설정은 데이터 검증이나 사전 준비 작업에 유용하다.
+
+다만 allowStartIfComplete가 true라고 해서 모든 실행 제한을 무시하는 것은 아니다.
+
+startLimit을 초과했다면 Step 실행은 제한된다.
+
+또한 Job 자체가 COMPLETED 상태라면 동일한 JobInstance를 다시 실행할 수 없다.
+
+따라서 Job 수준의 실행 정책과 Step 수준의 재실행 정책을 구분해야 한다.
+
+두 API의 설정은 StepBuilderHelper의 CommonStepProperties에 저장된다.
+
+이후 Step 생성 과정에서 AbstractStep에 전달된다.
+
+실제 실행 가능 여부는 SimpleStepHandler의 shouldStart()에서 판단한다.
+
+이 메서드는 이전 StepExecution의 상태를 확인한다.
+
+COMPLETED 상태라면 allowStartIfComplete를 검사한다.
+
+실행이 허용되는 경우에는 기존 StepExecution 개수와 startLimit을 비교한다.
+
+그 결과 실행이 허용되면 새로운 StepExecution을 생성한다.
+
+반면 제한을 초과하면 StartLimitExceededException이 발생한다.
+
+최종적으로 다음과 같이 정리할 수 있다.
+
+| API | 핵심 동작 |
+|---|---|
+| startLimit(n) | 같은 JobInstance에서 Step 시작 횟수를 n회로 제한 |
+| allowStartIfComplete(true) | 완료된 Step도 Job 재시작 시 다시 실행하도록 허용 |
+| allowStartIfComplete(false) | 완료된 Step의 재실행 생략 |
+| SimpleStepHandler.shouldStart() | 이전 실행 상태와 제한 조건을 이용해 실행 여부 판단 |
+| StartLimitExceededException | Step의 최대 시작 횟수 초과 시 발생 |
+
+결국 **startLimit은 실행 가능한 횟수를 제어하고, allowStartIfComplete는 이전에 완료된 Step의 재실행 여부를 제어한다.**
+
+두 API를 적절히 조합하면 반복 검증이 필요한 Step과 실행 횟수를 제한해야 하는 Step을 하나의 Job 안에서 독립적으로 관리할 수 있다.
+
+#### 한 줄 요약
+
+> Spring Batch의 `startLimit()`은 동일한 JobInstance에서 특정 Step이 시작될 수 있는 최대 횟수를 제한하며, 제한을 초과하면 `StartLimitExceededException`이 발생한다. `allowStartIfComplete()`는 Job 재시작 시 이전에 COMPLETED 상태였던 Step을 다시 실행할 것인지 결정하며 기본값은 false다. 두 API의 실제 실행 여부는 `SimpleStepHandler.shouldStart()`에서 이전 StepExecution 상태와 실행 횟수를 기준으로 판단한다.
