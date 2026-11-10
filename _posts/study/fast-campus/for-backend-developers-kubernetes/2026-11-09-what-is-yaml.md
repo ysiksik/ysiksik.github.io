@@ -16,7 +16,7 @@ comments: true
 
 ---
 
-## 01. Orientation
+## 00. Orientation
 
 ### Kubernetes YAML의 개념과 yq를 활용한 설정 파일 관리
 
@@ -1757,3 +1757,1260 @@ yq를 활용하면 이러한 YAML 설정을 명령어로 조회하거나 변경�
 #### 한 줄 요약
 
 > YAML은 Kubernetes 리소스의 원하는 상태를 선언하는 데 사용하는 핵심 데이터 형식이며, yq는 YAML 파일을 구조적으로 조회하고 수정하여 설정 관리와 배포 자동화를 효율적으로 수행할 수 있도록 도와주는 도구이다.
+
+## 01. Yaml 정의
+
+### YAML이란? YAML의 개념과 특징, 데이터 직렬화의 이해
+
+Kubernetes에서는 Pod, Deployment, Service, ConfigMap 등 다양한 리소스를 YAML 파일로 정의하고 관리한다.
+
+Spring Boot의 `application.yml`, Docker Compose의 `compose.yaml`, GitHub Actions의 Workflow 파일에서도 YAML을 사용한다.
+
+이처럼 YAML은 다양한 개발 환경에서 널리 사용되는 데이터 표현 형식이다.
+
+그렇다면 YAML은 정확히 무엇이며, 여러 시스템에서 공통적으로 사용하는 이유는 무엇일까?
+
+YAML의 가장 큰 특징은 **사람이 쉽게 읽고 작성할 수 있도록 설계된 데이터 직렬화 언어**라는 점이다.
+
+예를 들어 다음과 같은 데이터를 살펴보자.
+
+```yaml
+name: 홍길동
+age: 30
+
+favorites:
+  food: Steak
+  musician: The Weeknd
+```
+
+별도의 설명 없이도 다음 정보를 이해할 수 있다.
+
+- 이름은 홍길동이다.
+- 나이는 30세이다.
+- 좋아하는 음식은 Steak이다.
+- 좋아하는 음악가는 The Weeknd이다.
+
+YAML에서는 복잡한 태그나 기호를 반복해서 사용하지 않는다.
+
+대신 콜론(`:`), 들여쓰기, 하이픈(`-`)과 같은 간단한 문법으로 데이터를 표현한다.
+
+따라서 사람이 작성하고 읽어야 하는 설정 파일에 특히 적합하다.
+
+YAML을 제대로 이해하려면 다음 세 가지 개념을 먼저 살펴볼 필요가 있다.
+
+1. **YAML Ain't Markup Language**: YAML은 마크업 언어가 아니다.
+2. **Human-Friendly**: 사람이 읽고 작성하기 쉬운 형식이다.
+3. **Data Serialization**: 데이터를 저장하거나 전달할 수 있는 형태로 표현한다.
+
+---
+
+### YAML의 정의
+
+YAML은 **YAML Ain't Markup Language**의 약자이다.
+
+이름을 그대로 해석하면 'YAML은 마크업 언어가 아니다'라는 의미이다.
+
+정확하게는 YAML이 단순히 문서의 구조나 표현 방식을 표시하기 위한 언어가 아니라, **프로그래밍 언어와 관계없이 구조화된 데이터를 표현하기 위해 만들어진 직렬화 언어**라는 점을 강조한다.
+
+YAML은 공식적으로 다음 특징을 가진 데이터 언어로 정의된다.
+
+| 특징 | 의미 |
+|---|---|
+| Human-Friendly | 사람이 읽고 작성하기 쉬움 |
+| Cross-Language | 서로 다른 프로그래밍 언어에서 활용 가능 |
+| Data Serialization | 데이터를 저장하거나 전달할 수 있는 형태로 표현 |
+| Unicode-Based | 다양한 언어의 문자를 표현할 수 있음 |
+
+이러한 특징을 바탕으로 YAML은 애플리케이션 설정, 데이터 저장, 시스템 간 데이터 교환 등에 활용된다.
+
+YAML은 사람이 읽기 쉬운 형식이지만, 단순한 메모 형식은 아니다. 정해진 데이터 모델과 문법을 가진 정식 데이터 직렬화 언어이다.
+
+---
+
+### YAML은 왜 마크업 언어가 아닐까?
+
+YAML의 이름에 포함된 'Ain't Markup Language'를 이해하려면 먼저 마크업 언어가 무엇인지 알아야 한다.
+
+#### 마크업 언어란?
+
+마크업 언어(Markup Language)는 문서의 구조나 의미, 표현 방식을 표시하기 위해 특정한 기호나 태그를 사용하는 언어이다.
+
+대표적인 마크업 언어에는 다음과 같은 것들이 있다.
+
+| 언어 | 주요 용도 |
+|---|---|
+| HTML | 웹 문서의 구조와 의미 표현 |
+| XML | 태그 기반의 구조화된 문서 및 데이터 표현 |
+| Markdown | 간단한 문법으로 문서 구조와 서식 표현 |
+
+예를 들어 다음 문장을 작성한다고 가정하자.
+
+> 내 고양이는 아주 고약해.
+
+여기서 '아주'라는 단어를 강조하고 싶다면 HTML에서는 다음과 같이 표현할 수 있다.
+
+```html
+<p>내 고양이는 <strong>아주</strong> 고약해.</p>
+```
+
+`<strong>` 태그는 해당 텍스트가 중요하다는 의미를 나타낸다.
+
+HTML은 이러한 태그를 사용해 문서의 구조와 의미를 표현한다.
+
+XML 역시 태그를 사용하지만 HTML과는 목적이 다르다. XML은 문서뿐 아니라 구조화된 데이터를 표현하는 데도 사용된다.
+
+예를 들어 다음과 같이 작성할 수 있다.
+
+```xml
+<person>
+    <name>홍길동</name>
+    <age>30</age>
+    <favoriteFood>Steak</favoriteFood>
+</person>
+```
+
+여기서 `<person>`, `<name>`, `<age>`는 데이터의 구조와 의미를 나타내는 태그이다.
+
+#### YAML은 데이터를 어떻게 표현할까?
+
+동일한 데이터를 YAML로 작성하면 다음과 같다.
+
+```yaml
+person:
+  name: 홍길동
+  age: 30
+  favoriteFood: Steak
+```
+
+XML과 달리 시작 태그와 종료 태그를 작성할 필요가 없다.
+
+데이터의 관계를 들여쓰기로 표현하고, 각 항목을 Key-Value 형태로 작성한다.
+
+두 형식을 비교하면 다음과 같다.
+
+**XML**
+
+```xml
+<server>
+    <host>localhost</host>
+    <port>8080</port>
+    <enabled>true</enabled>
+</server>
+```
+
+**YAML**
+
+```yaml
+server:
+  host: localhost
+  port: 8080
+  enabled: true
+```
+
+YAML은 데이터의 내용을 표현하는 데 필요한 기호를 최소화하기 때문에 설정 파일처럼 자주 읽고 수정해야 하는 데이터를 간결하게 작성할 수 있다.
+
+다만 XML 역시 데이터 교환에 사용할 수 있고 YAML에도 명확한 구조와 문법이 존재한다.
+
+따라서 'YAML은 마크업 언어가 아니다'라는 표현을 'XML은 데이터를 표현하지 못한다'거나 'YAML에는 구조가 없다'는 의미로 이해해서는 안 된다.
+
+핵심은 **YAML이 문서의 마크업보다 데이터 자체의 표현과 직렬화에 초점을 맞춘 언어**라는 점이다.
+
+---
+
+### YAML의 핵심 구조: Key와 Value
+
+YAML에서 가장 기본적인 데이터 표현 방식은 Key-Value 구조이다.
+
+```yaml
+name: 홍길동
+age: 30
+city: Seoul
+```
+
+각 항목은 다음과 같이 구성된다.
+
+```text
+Key: Value
+```
+
+예를 들어 다음 데이터를 살펴보자.
+
+```yaml
+age: 30
+```
+
+여기서 각 요소의 의미는 다음과 같다.
+
+| 요소 | 값 | 의미 |
+|---|---|---|
+| Key | `age` | 데이터의 이름 |
+| Value | `30` | 해당 데이터의 값 |
+| 구분 기호 | `:` | Key와 Value의 구분 |
+
+이러한 Key-Value 관계를 YAML에서는 **Mapping**이라고 부른다.
+
+다른 프로그래밍 언어에서 사용하는 Map, Dictionary와 비슷한 개념이다.
+
+예를 들어 Java의 `Map`으로는 다음과 같이 표현할 수 있다.
+
+```java
+Map<String, Object> person = new HashMap<>();
+
+person.put("name", "홍길동");
+person.put("age", 30);
+person.put("city", "Seoul");
+```
+
+이를 YAML로 표현하면 다음과 같다.
+
+```yaml
+name: 홍길동
+age: 30
+city: Seoul
+```
+
+이처럼 YAML은 프로그래밍 언어에서 사용하는 데이터 구조를 사람이 읽기 쉬운 형식으로 표현할 수 있다.
+
+---
+
+### YAML의 기본 데이터 구조
+
+YAML에서 데이터를 표현하는 핵심 구조는 크게 세 가지이다.
+
+- Scalar
+- Mapping
+- Sequence
+
+이 세 가지 구조를 조합하면 복잡한 데이터를 표현할 수 있다.
+
+```mermaid
+flowchart TD
+    A["YAML 데이터 구조"] --> B["Scalar"]
+    A --> C["Mapping"]
+    A --> D["Sequence"]
+
+    B --> E["문자열, 숫자, Boolean 등"]
+    C --> F["Key-Value 구조"]
+    D --> G["순서가 있는 데이터 목록"]
+```
+
+#### Scalar: 하나의 값
+
+Scalar는 하나의 값을 의미한다.
+
+문자열, 숫자, Boolean 등이 대표적인 예시이다.
+
+```yaml
+name: 홍길동
+age: 30
+height: 175.5
+enabled: true
+```
+
+여기서 다음 값들은 모두 Scalar이다.
+
+```text
+홍길동
+30
+175.5
+true
+```
+
+YAML은 이러한 값들을 문자열이나 숫자 등의 데이터 타입으로 표현할 수 있다.
+
+#### Mapping: Key-Value 구조
+
+Mapping은 Key와 Value의 관계를 표현하는 구조이다.
+
+```yaml
+person:
+  name: 홍길동
+  age: 30
+```
+
+`person`의 Value는 단순한 문자열이 아니라 또 다른 Mapping이다.
+
+따라서 중첩된 구조를 표현할 수 있다.
+
+```mermaid
+flowchart TD
+    A["person"] --> B["name"]
+    A --> C["age"]
+
+    B --> D["홍길동"]
+    C --> E["30"]
+```
+
+#### Sequence: 여러 값의 목록
+
+Sequence는 순서가 있는 데이터의 목록을 의미한다.
+
+YAML에서는 일반적으로 하이픈(`-`)을 사용한다.
+
+```yaml
+foods:
+  - Steak
+  - Pizza
+  - Pasta
+```
+
+Java의 List와 비슷한 구조이다.
+
+```java
+List<String> foods = List.of(
+    "Steak",
+    "Pizza",
+    "Pasta"
+);
+```
+
+Sequence 안에 Mapping을 포함할 수도 있다.
+
+```yaml
+users:
+  - name: 홍길동
+    age: 30
+
+  - name: 김철수
+    age: 28
+```
+
+이 구조는 사용자 객체 여러 개를 가진 목록에 해당한다.
+
+Java로 표현하면 다음과 비슷하다.
+
+```java
+record User(String name, int age) {}
+
+List<User> users = List.of(
+    new User("홍길동", 30),
+    new User("김철수", 28)
+);
+```
+
+즉 YAML은 특정 프로그래밍 언어에 종속된 문법을 사용하지 않으면서도 여러 언어에서 사용하는 자료구조를 표현할 수 있다.
+
+---
+
+### YAML이 사람이 읽기 쉬운 이유
+
+YAML의 가장 큰 장점 중 하나는 Human-Friendly한 데이터 표현 방식이다.
+
+Human-Friendly는 사람이 데이터를 쉽게 읽고 이해하고 수정할 수 있도록 설계되었다는 의미이다.
+
+이를 조금 더 구체적으로 살펴보자.
+
+#### 1. 읽는 순서대로 데이터를 이해할 수 있다
+
+다음 YAML을 살펴보자.
+
+```yaml
+person:
+  name: 홍길동
+  age: 30
+
+  favorites:
+    food: Steak
+    musician: The Weeknd
+```
+
+일반적인 문장을 읽는 것처럼 위에서 아래로 데이터를 읽으면 된다.
+
+```text
+person
+ ├── name: 홍길동
+ ├── age: 30
+ └── favorites
+      ├── food: Steak
+      └── musician: The Weeknd
+```
+
+별도의 파싱 도구를 사용하지 않더라도 데이터의 구조를 직관적으로 파악할 수 있다.
+
+#### 2. 들여쓰기로 데이터의 계층을 표현한다
+
+YAML에서는 들여쓰기를 사용하여 데이터 사이의 관계를 표현한다.
+
+```yaml
+application:
+  server:
+    host: localhost
+    port: 8080
+
+  database:
+    host: mysql
+    port: 3306
+```
+
+이 구조에서는 `application` 아래에 `server`와 `database`가 존재한다.
+
+그리고 각각의 설정 안에 `host`와 `port`가 존재한다.
+
+```mermaid
+flowchart TD
+    A["application"] --> B["server"]
+    A --> C["database"]
+
+    B --> D["host: localhost"]
+    B --> E["port: 8080"]
+
+    C --> F["host: mysql"]
+    C --> G["port: 3306"]
+```
+
+중괄호나 시작·종료 태그 없이도 계층 구조를 표현할 수 있다는 점이 YAML의 장점이다.
+
+다만 들여쓰기는 단순히 가독성을 높이기 위한 장식이 아니다.
+
+**YAML에서는 들여쓰기 자체가 데이터 구조를 결정하는 문법 요소이다.**
+
+따라서 들여쓰기가 잘못되면 데이터 구조가 달라지거나 문법 오류가 발생할 수 있다.
+
+#### 3. 하이픈으로 목록을 표현한다
+
+여러 개의 데이터를 나열할 때는 하이픈을 사용할 수 있다.
+
+```yaml
+skills:
+  - Java
+  - Spring Boot
+  - Kubernetes
+  - Docker
+```
+
+이 구조는 사람이 목록을 작성하는 방식과 비슷하다.
+
+각 항목의 순서도 유지된다.
+
+Kubernetes에서도 Pod의 컨테이너 목록을 정의할 때 이러한 문법을 사용한다.
+
+```yaml
+containers:
+  - name: application
+    image: nginx:1.27
+
+  - name: redis
+    image: redis:7
+```
+
+각 하이픈은 하나의 컨테이너 설정을 의미한다.
+
+#### 4. 주석을 작성할 수 있다
+
+YAML에서는 `#`을 사용하여 주석을 작성할 수 있다.
+
+```yaml
+# 애플리케이션 이름
+name: my-app
+
+# 서버 포트
+port: 8080
+
+# 운영 환경 여부
+production: true
+```
+
+주석은 프로그램에서 처리할 실제 데이터가 아니라 작성자가 설정을 이해하는 데 도움을 주는 설명이다.
+
+복잡한 Kubernetes Manifest나 애플리케이션 설정 파일에서 주석을 사용하면 특정 설정의 목적을 더 쉽게 이해할 수 있다.
+
+다만 주석의 내용을 변경한다고 해서 Kubernetes 리소스의 동작이 변경되는 것은 아니다.
+
+#### 5. 불필요한 기호를 최소화한다
+
+YAML은 데이터를 구분하기 위해 많은 기호를 사용하지 않는다.
+
+예를 들어 다음 설정을 살펴보자.
+
+```yaml
+server:
+  port: 8080
+
+spring:
+  application:
+    name: my-app
+```
+
+중괄호, 세미콜론, 종료 태그가 필요하지 않다.
+
+사람이 주로 읽고 수정하는 설정 파일에서는 이러한 특징이 가독성과 유지보수성에 도움이 된다.
+
+---
+
+### Human-Friendly와 Machine-Friendly의 차이
+
+데이터를 표현하는 방식이 모두 사람에게 읽기 쉬울 필요는 없다.
+
+컴퓨터가 효율적으로 처리하는 데 중점을 둔 데이터 표현 방식도 있다.
+
+대표적인 예시로 Base64 인코딩을 살펴볼 수 있다.
+
+#### 사람이 읽기 쉬운 YAML
+
+다음은 사용자 정보를 YAML로 표현한 예시이다.
+
+```yaml
+name: Hong
+age: 30
+food: Steak
+```
+
+사람은 별도의 도구 없이 데이터의 의미를 파악할 수 있다.
+
+반면 이러한 텍스트를 Base64로 인코딩하면 사람이 내용을 직접 읽기는 어려워진다.
+
+Base64는 데이터를 문자 형태로 안전하게 표현하기 위한 인코딩 방식이다.
+
+예를 들어 다음 문자열을 살펴보자.
+
+```text
+Hello
+```
+
+이를 Base64로 인코딩하면 다음과 같다.
+
+```text
+SGVsbG8=
+```
+
+원래 문자열과 인코딩된 문자열을 비교하면 다음과 같다.
+
+| 구분 | 데이터 | 사람이 이해하기 쉬운가? |
+|---|---|---|
+| 원본 문자열 | `Hello` | 쉬움 |
+| Base64 인코딩 | `SGVsbG8=` | 디코딩 전에는 어려움 |
+
+Base64로 인코딩된 데이터를 원래 문자열로 복원하려면 디코딩이 필요하다.
+
+```mermaid
+flowchart LR
+    A["원본 데이터"] --> B["Base64 Encoding"]
+    B --> C["인코딩된 문자열"]
+    C --> D["Base64 Decoding"]
+    D --> E["원본 데이터 복원"]
+```
+
+#### YAML과 Base64는 목적이 다르다
+
+여기서 중요한 점은 **YAML과 Base64가 서로 경쟁하는 데이터 형식은 아니라는 것**이다.
+
+YAML은 구조화된 데이터를 표현하는 직렬화 언어이다.
+
+반면 Base64는 바이너리 데이터를 제한된 문자 집합으로 표현하기 위한 인코딩 방식이다.
+
+| 구분 | YAML | Base64 |
+|---|---|---|
+| 분류 | 데이터 직렬화 언어 | 데이터 인코딩 방식 |
+| 목적 | 구조화된 데이터 표현 | 데이터를 문자 형태로 변환 |
+| 사람이 읽기 쉬운가? | 대체로 쉬움 | 인코딩 전 원본을 알기 어려움 |
+| 데이터 구조 표현 | Mapping, Sequence 등 지원 | 자체적인 데이터 구조 표현 기능 없음 |
+| 주요 활용 | 설정 파일, 데이터 교환 | 바이너리 데이터의 텍스트 표현 |
+
+따라서 YAML 데이터 전체를 Base64로 인코딩할 수도 있고, YAML의 특정 Value에 Base64 문자열을 넣을 수도 있다.
+
+실제 Kubernetes에서도 두 방식이 함께 사용된다.
+
+예를 들어 Kubernetes Secret의 `data` 필드에는 Base64로 인코딩된 값이 사용된다.
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: my-secret
+type: Opaque
+data:
+  username: YWRtaW4=
+```
+
+여기서 `YWRtaW4=`는 `admin`이라는 문자열을 Base64로 인코딩한 값이다.
+
+YAML은 Secret의 전체 구조를 표현하고, Base64는 특정 데이터 값을 인코딩하는 역할을 한다.
+
+단, Base64는 암호화가 아니다.
+
+Base64로 인코딩된 값은 누구나 쉽게 디코딩할 수 있으므로, 민감한 정보를 보호하려면 Kubernetes Secret에 대한 접근 권한 관리와 저장 시 암호화 등의 추가적인 보안 조치가 필요하다.
+
+---
+
+### YAML이 설정 파일에 적합한 이유
+
+YAML은 사람이 자주 읽고 수정해야 하는 데이터를 표현할 때 장점이 크다.
+
+애플리케이션 설정 파일을 예로 들어보자.
+
+```yaml
+server:
+  port: 8080
+
+spring:
+  application:
+    name: payment-service
+
+  datasource:
+    url: jdbc:mysql://localhost:3306/payment
+    username: payment_user
+    password: ${DB_PASSWORD}
+```
+
+이 설정에서 다음 내용을 쉽게 확인할 수 있다.
+
+- 애플리케이션의 이름
+- 서버 포트
+- 데이터베이스 연결 주소
+- 데이터베이스 사용자
+- 환경 변수로 주입받는 비밀번호
+
+이러한 데이터를 사람이 읽기 쉬운 형태로 관리할 수 있기 때문에 YAML은 설정 파일에 널리 사용된다.
+
+또한 YAML은 중첩 구조를 자연스럽게 표현할 수 있어 설정 항목이 많아져도 데이터 사이의 관계를 파악하기 쉽다.
+
+다만 설정 파일이 지나치게 커지면 깊은 들여쓰기 구조가 오히려 가독성을 떨어뜨릴 수 있다.
+
+따라서 실무에서는 YAML이라는 형식 자체뿐 아니라 파일 분리, 환경별 설정 관리, 명확한 Key 이름 등도 함께 고려해야 한다.
+
+---
+
+### 데이터 직렬화란?
+
+YAML의 또 다른 핵심 특징은 데이터 직렬화(Data Serialization)이다.
+
+직렬화란 **프로그램 내부의 객체나 자료구조를 저장하거나 다른 시스템에 전달할 수 있는 형태로 변환하는 과정**이다.
+
+예를 들어 Java 애플리케이션에서 사용자 정보를 객체로 관리한다고 가정하자.
+
+```java
+public record User(
+    String name,
+    int age,
+    String favoriteFood
+) {
+}
+```
+
+이 객체를 생성한다.
+
+```java
+User user = new User(
+    "홍길동",
+    30,
+    "Steak"
+);
+```
+
+Java 애플리케이션은 해당 객체를 메모리에서 관리할 수 있다.
+
+하지만 이 객체를 파일에 저장하거나 다른 애플리케이션에 전달하려면 어떻게 해야 할까?
+
+Java 객체를 그대로 다른 프로그래밍 언어에서 사용할 수 있는 것은 아니다.
+
+객체의 필드와 값을 공통으로 이해할 수 있는 데이터 형식으로 표현해야 한다.
+
+이때 사용하는 과정이 직렬화이다.
+
+```mermaid
+flowchart LR
+    A["Java 객체"] --> B["Serialization"]
+    B --> C["YAML 데이터"]
+    C --> D["파일 저장 또는 네트워크 전달"]
+```
+
+앞서 생성한 사용자 객체를 YAML로 표현하면 다음과 같다.
+
+```yaml
+name: 홍길동
+age: 30
+favoriteFood: Steak
+```
+
+Java 객체의 필드와 값이 YAML 문서로 표현된 것이다.
+
+이렇게 변환된 데이터는 파일로 저장하거나 네트워크를 통해 다른 시스템으로 전달할 수 있다.
+
+단, 직렬화는 단순히 메모리에 있는 객체를 그대로 복사하는 과정이 아니다.
+
+객체의 데이터를 특정한 형식으로 표현하여 저장하거나 전달할 수 있도록 만드는 과정이다.
+
+---
+
+### 역직렬화란?
+
+직렬화의 반대 과정은 역직렬화(Deserialization)이다.
+
+역직렬화란 **저장되거나 전달된 데이터를 애플리케이션이 사용할 수 있는 객체나 자료구조로 복원하는 과정**이다.
+
+예를 들어 YAML 파일에 다음 데이터가 저장되어 있다고 가정하자.
+
+```yaml
+name: 홍길동
+age: 30
+favoriteFood: Steak
+```
+
+Java 애플리케이션이 이 YAML을 읽어 `User` 객체로 변환하면 역직렬화가 이루어진 것이다.
+
+```mermaid
+flowchart LR
+    A["YAML 데이터"] --> B["Deserialization"]
+    B --> C["Java User 객체"]
+```
+
+직렬화와 역직렬화를 하나의 흐름으로 표현하면 다음과 같다.
+
+```mermaid
+flowchart LR
+    A["Java 객체"] --> B["Serialization"]
+    B --> C["YAML 문서"]
+    C --> D["Deserialization"]
+    D --> E["Java 객체"]
+```
+
+이를 통해 애플리케이션은 프로그램 내부의 데이터를 외부에 저장하고, 필요할 때 다시 복원할 수 있다.
+
+#### 직렬화와 역직렬화 비교
+
+| 구분 | Serialization | Deserialization |
+|---|---|---|
+| 한글 명칭 | 직렬화 | 역직렬화 |
+| 변환 방향 | 객체 → 데이터 표현 | 데이터 표현 → 객체 |
+| 주요 목적 | 저장 및 전달 | 데이터 복원 |
+| 입력 | 객체 또는 자료구조 | YAML, JSON 등 |
+| 출력 | 직렬화된 데이터 | 객체 또는 자료구조 |
+
+---
+
+### 직렬화가 필요한 이유
+
+직렬화의 필요성을 이해하려면 프로그램 내부의 데이터가 다른 프로그램으로 전달되는 상황을 생각해 보면 된다.
+
+예를 들어 다음 두 애플리케이션이 있다고 가정하자.
+
+```text
+서비스 A: Java
+서비스 B: Python
+```
+
+Java와 Python은 객체를 메모리에서 표현하는 방식이 다르다.
+
+Java의 객체를 그대로 Python 애플리케이션에 전달한다고 해서 Python이 이를 자동으로 이해할 수 있는 것은 아니다.
+
+각 프로그래밍 언어의 객체 모델과 런타임 구조가 다르기 때문이다.
+
+따라서 서로 다른 언어로 개발된 애플리케이션이 데이터를 교환하려면 양쪽에서 이해할 수 있는 공통 데이터 형식이 필요하다.
+
+이때 YAML이나 JSON과 같은 데이터 직렬화 형식을 활용할 수 있다.
+
+```mermaid
+flowchart LR
+    A["Java Application"] --> B["Java 객체"]
+    B --> C["Serialization"]
+    C --> D["공통 데이터 형식"]
+    D --> E["Deserialization"]
+    E --> F["Python 객체"]
+    F --> G["Python Application"]
+```
+
+Java에서 생성한 데이터를 YAML로 직렬화하고 Python에서 해당 YAML을 역직렬화한다면 서로 다른 프로그래밍 언어 사이에서도 데이터를 교환할 수 있다.
+
+예를 들어 Java 애플리케이션이 다음 데이터를 생성했다고 가정하자.
+
+```yaml
+order:
+  id: 1001
+  product: Keyboard
+  quantity: 2
+  price: 50000
+```
+
+Python 애플리케이션도 동일한 YAML 구조를 파싱하여 주문 정보를 사용할 수 있다.
+
+중요한 것은 두 언어가 같은 객체를 메모리에 생성하는 것이 아니라는 점이다.
+
+각 애플리케이션은 공통 데이터 형식을 해석하여 자신의 언어에 맞는 객체나 자료구조를 생성한다.
+
+이것이 직렬화 언어가 시스템 사이의 데이터 교환에서 중요한 이유이다.
+
+---
+
+### 서로 다른 프로그래밍 언어가 동일한 데이터를 이해하는 과정
+
+Java와 Python을 예로 들어 직렬화와 역직렬화 과정을 조금 더 자세히 살펴보자.
+
+#### 1. Java 애플리케이션에서 객체 생성
+
+```java
+public record Order(
+    Long id,
+    String product,
+    int quantity
+) {
+}
+```
+
+다음과 같은 주문 객체를 생성한다.
+
+```java
+Order order = new Order(
+    1001L,
+    "Keyboard",
+    2
+);
+```
+
+#### 2. YAML 형식으로 직렬화
+
+해당 객체를 YAML로 직렬화하면 다음과 같은 데이터로 표현할 수 있다.
+
+```yaml
+id: 1001
+product: Keyboard
+quantity: 2
+```
+
+직렬화된 데이터는 Java 객체 자체가 아니다.
+
+언어에 종속되지 않는 형태로 표현된 데이터이다.
+
+#### 3. 다른 애플리케이션으로 데이터 전달
+
+이 YAML 데이터를 파일로 저장하거나 네트워크를 통해 다른 애플리케이션에 전달한다.
+
+```mermaid
+flowchart TD
+    A["Java Order 객체"] --> B["YAML 직렬화"]
+    B --> C["YAML 데이터 생성"]
+    C --> D["파일 또는 네트워크 전달"]
+    D --> E["Python 애플리케이션"]
+```
+
+#### 4. Python에서 역직렬화
+
+Python은 YAML 파서를 이용해 다음과 같은 자료구조로 데이터를 복원할 수 있다.
+
+```python
+order = {
+    "id": 1001,
+    "product": "Keyboard",
+    "quantity": 2
+}
+```
+
+여기서 Java의 `Order` 객체와 Python의 Dictionary는 서로 다른 자료구조이다.
+
+하지만 다음 데이터의 의미는 동일하다.
+
+```text
+주문 번호: 1001
+상품: Keyboard
+수량: 2
+```
+
+결과적으로 서로 다른 프로그래밍 언어 사이에서도 데이터를 교환할 수 있게 된다.
+
+다만 공통 직렬화 형식을 사용한다고 해서 모든 문제가 자동으로 해결되는 것은 아니다.
+
+양쪽 애플리케이션이 필드 이름, 데이터 타입, 필수 항목, 기본값 등에 대해서도 동일한 규칙을 이해해야 한다.
+
+이러한 규칙을 데이터 스키마 또는 데이터 계약이라고 부를 수 있다.
+
+---
+
+### 데이터 직렬화와 인코딩의 차이
+
+직렬화와 인코딩은 함께 사용되는 경우가 많아 혼동하기 쉽다.
+
+하지만 두 개념은 서로 다르다.
+
+#### 데이터 직렬화
+
+직렬화는 객체나 자료구조를 저장하거나 전달할 수 있는 형식으로 변환한다.
+
+```text
+Java 객체
+    ↓
+YAML 직렬화
+    ↓
+YAML 문서
+```
+
+#### 데이터 인코딩
+
+인코딩은 데이터를 특정한 규칙에 따라 다른 표현 형태로 변환한다.
+
+대표적인 예시가 Base64 인코딩이다.
+
+```text
+원본 데이터
+    ↓
+Base64 Encoding
+    ↓
+Base64 문자열
+```
+
+두 과정을 함께 사용할 수도 있다.
+
+```mermaid
+flowchart TD
+    A["애플리케이션 객체"] --> B["YAML 직렬화"]
+    B --> C["YAML 텍스트"]
+    C --> D["UTF-8 인코딩"]
+    D --> E["바이트 데이터"]
+    E --> F["파일 저장 또는 네트워크 전송"]
+```
+
+여기서 YAML 직렬화는 데이터의 구조와 값을 표현하는 역할을 한다.
+
+UTF-8 인코딩은 문자를 바이트로 표현하는 역할을 한다.
+
+실제로 파일이나 네트워크를 통해 데이터를 전달할 때는 이러한 개념이 서로 연결된다.
+
+따라서 직렬화와 인코딩을 같은 의미로 사용하는 것은 정확하지 않다.
+
+---
+
+### YAML이 모든 프로그래밍 언어에서 활용될 수 있는 이유
+
+YAML은 특정 프로그래밍 언어의 문법이나 객체 구조에 종속되지 않도록 설계되었다.
+
+예를 들어 다음 YAML은 어떤 특정 프로그래밍 언어에만 속하는 데이터가 아니다.
+
+```yaml
+application:
+  name: payment-service
+  enabled: true
+
+  servers:
+    - host: server1
+      port: 8080
+
+    - host: server2
+      port: 8080
+```
+
+Java에서는 객체나 Map으로 표현할 수 있다.
+
+Python에서는 Dictionary와 List로 표현할 수 있다.
+
+JavaScript에서는 Object와 Array로 표현할 수 있다.
+
+```mermaid
+flowchart TD
+    A["YAML 문서"] --> B["YAML Parser"]
+
+    B --> C["Java"]
+    B --> D["Python"]
+    B --> E["JavaScript"]
+
+    C --> F["Object 또는 Map"]
+    D --> G["Dictionary와 List"]
+    E --> H["Object와 Array"]
+```
+
+각 언어에서 사용하는 객체 모델은 다르지만 YAML의 기본 구조를 해석하는 방식은 공통으로 사용할 수 있다.
+
+이것이 YAML의 Cross-Language 특성이다.
+
+다만 YAML 파서의 버전이나 스키마에 따라 일부 데이터 타입이 다르게 해석될 수 있으므로, 여러 언어가 데이터를 교환하는 환경에서는 타입과 스키마를 명확하게 정의하는 것이 좋다.
+
+---
+
+### YAML은 어디에서 활용될까?
+
+YAML은 읽기 쉬운 형식과 데이터 직렬화라는 특징을 바탕으로 다양한 환경에서 활용된다.
+
+#### 1. Kubernetes 리소스 정의
+
+Kubernetes에서는 원하는 리소스 상태를 YAML로 작성할 수 있다.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+spec:
+  replicas: 2
+
+  selector:
+    matchLabels:
+      app: nginx
+
+  template:
+    metadata:
+      labels:
+        app: nginx
+
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.27
+```
+
+여기서 YAML은 Deployment의 원하는 상태를 표현한다.
+
+Kubernetes API Server는 전달받은 설정을 해석하고 리소스를 생성하거나 수정한다.
+
+#### 2. Spring Boot 설정 관리
+
+Spring Boot에서는 `application.yml`을 사용해 애플리케이션 설정을 관리할 수 있다.
+
+```yaml
+server:
+  port: 8080
+
+spring:
+  application:
+    name: order-service
+
+logging:
+  level:
+    root: INFO
+```
+
+환경별 설정을 관리하거나 중첩된 설정을 표현할 때 유용하다.
+
+#### 3. Docker Compose
+
+Docker Compose에서도 YAML 파일을 사용해 여러 컨테이너의 실행 구성을 정의할 수 있다.
+
+```yaml
+services:
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+```
+
+컨테이너 이미지, 포트, 환경 변수 등의 설정을 구조적으로 표현할 수 있다.
+
+#### 4. GitHub Actions
+
+GitHub Actions에서는 YAML을 사용해 자동화 Workflow를 정의한다.
+
+```yaml
+name: Build
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Print message
+        run: echo "Build started"
+```
+
+애플리케이션 빌드나 테스트, 배포 작업을 YAML로 선언할 수 있다.
+
+이처럼 YAML은 특정 시스템의 전용 언어가 아니라 여러 시스템에서 공통으로 사용하는 데이터 표현 형식이다.
+
+---
+
+### YAML 사용 시 알아야 할 주의사항
+
+YAML은 읽기 쉬운 형식이지만 문법을 정확하게 이해하지 못하면 예상하지 못한 문제가 발생할 수 있다.
+
+#### 1. 들여쓰기 자체가 문법이다
+
+다음 YAML은 정상적인 예시이다.
+
+```yaml
+server:
+  host: localhost
+  port: 8080
+```
+
+반면 다음은 잘못된 예시이다.
+
+```yaml
+server:
+  host: localhost
+   port: 8080
+```
+
+같은 계층에 있어야 하는 `host`와 `port`의 들여쓰기가 다르다.
+
+YAML에서는 들여쓰기에 Tab 대신 공백을 사용해야 한다.
+
+#### 2. 데이터 타입을 정확하게 구분해야 한다
+
+다음 값은 숫자이다.
+
+```yaml
+port: 8080
+```
+
+반면 다음 값은 문자열이다.
+
+```yaml
+port: "8080"
+```
+
+두 값은 화면에서 비슷하게 보이지만 타입이 다르다.
+
+특히 Kubernetes의 환경 변수 설정에서는 문자열을 사용해야 한다.
+
+```yaml
+env:
+  - name: SERVER_PORT
+    value: "8080"
+```
+
+설정 파일을 읽는 애플리케이션이 어떤 타입을 기대하는지 함께 고려해야 한다.
+
+#### 3. 일부 문자열에는 따옴표가 필요하다
+
+YAML에서는 문자열을 따옴표 없이 작성할 수 있다.
+
+```yaml
+name: my-app
+```
+
+하지만 특수문자가 포함되거나 다른 데이터 타입으로 해석될 가능성이 있는 값은 따옴표로 감싸는 것이 안전하다.
+
+```yaml
+message: "Hello: World"
+version: "1.0"
+enabled: "true"
+```
+
+특히 YAML 파서의 버전에 따라 문자열과 Boolean 등으로 해석되는 규칙이 달라질 수 있다.
+
+실무에서는 데이터 타입이 중요한 값에 따옴표를 명시하여 해석상의 모호함을 줄이는 것이 좋다.
+
+#### 4. YAML은 실행 가능한 프로그래밍 언어가 아니다
+
+YAML 자체는 일반적인 프로그래밍 언어처럼 조건문이나 반복문을 실행하는 언어가 아니다.
+
+다음과 같은 설정이 있다고 가정하자.
+
+```yaml
+replicas: 3
+```
+
+이 설정이 Pod 3개를 직접 생성하는 것은 아니다.
+
+Kubernetes가 YAML을 파싱하고 `replicas` 필드의 의미를 해석하여 필요한 동작을 수행하는 것이다.
+
+즉 YAML은 데이터를 표현하고, 그 데이터를 사용하는 프로그램이 실제 동작을 결정한다.
+
+```mermaid
+flowchart LR
+    A["YAML 설정"] --> B["YAML Parser"]
+    B --> C["설정 데이터"]
+    C --> D["애플리케이션"]
+    D --> E["실제 동작 수행"]
+```
+
+이 차이를 이해하면 YAML과 Kubernetes의 역할을 더 명확하게 구분할 수 있다.
+
+---
+
+### 실무에서 YAML을 이해해야 하는 이유
+
+백엔드 개발에서는 애플리케이션의 코드를 작성하는 것만큼 실행 환경과 설정을 관리하는 일도 중요하다.
+
+예를 들어 Spring Boot 애플리케이션을 Kubernetes에 배포한다고 가정하자.
+
+이 과정에서는 여러 YAML 파일을 사용할 수 있다.
+
+```text
+Spring Boot
+ └── application.yml
+      ├── 서버 설정
+      ├── 데이터베이스 설정
+      └── 로깅 설정
+
+Kubernetes
+ ├── deployment.yaml
+ ├── service.yaml
+ ├── configmap.yaml
+ └── hpa.yaml
+```
+
+각 YAML 파일은 서로 다른 역할을 한다.
+
+하지만 기본적인 데이터 표현 방식은 동일하다.
+
+```mermaid
+flowchart TD
+    A["YAML 문법"] --> B["Spring Boot 설정"]
+    A --> C["Kubernetes Manifest"]
+    A --> D["Docker Compose"]
+    A --> E["CI/CD Workflow"]
+
+    B --> F["애플리케이션 실행 설정"]
+    C --> G["클러스터 리소스 관리"]
+    D --> H["컨테이너 실행 구성"]
+    E --> I["자동화 작업 정의"]
+```
+
+따라서 YAML의 기본 개념을 정확하게 이해하면 특정 도구의 문법을 무작정 암기하지 않아도 설정 파일의 구조를 빠르게 파악할 수 있다.
+
+실무에서는 다음과 같은 능력으로 이어진다.
+
+- 중첩된 설정의 구조를 정확하게 이해할 수 있다.
+- 설정 파일의 오류를 빠르게 찾을 수 있다.
+- 서로 다른 환경의 설정을 비교하기 쉬워진다.
+- CI/CD에서 설정 파일을 자동으로 수정하거나 검증할 수 있다.
+- Kubernetes Manifest를 더 안전하게 작성할 수 있다.
+- 다른 개발자가 작성한 설정 파일을 빠르게 분석할 수 있다.
+
+특히 Kubernetes 환경에서는 YAML을 통해 시스템의 원하는 상태를 선언하기 때문에 설정 하나가 실제 운영 환경에 영향을 줄 수 있다.
+
+따라서 YAML을 단순한 텍스트 파일로 생각하기보다 **애플리케이션과 인프라의 동작을 정의하는 구조화된 데이터**로 이해하는 것이 중요하다.
+
+---
+
+### 정리
+
+YAML은 사람이 읽고 작성하기 쉽도록 설계된 데이터 직렬화 언어이다.
+
+YAML의 이름은 `YAML Ain't Markup Language`이며, 문서에 태그를 붙이는 마크업보다 데이터 자체를 표현하는 데 중점을 둔다.
+
+YAML의 핵심적인 특징은 다음과 같다.
+
+| 특징 | 설명 |
+|---|---|
+| Human-Friendly | 사람이 쉽게 읽고 작성할 수 있는 문법 |
+| Data Serialization | 객체와 자료구조를 저장하거나 전달할 수 있는 형식으로 표현 |
+| Cross-Language | 서로 다른 프로그래밍 언어에서도 활용 가능 |
+| Key-Value | 데이터를 이름과 값의 관계로 표현 |
+| Indentation | 들여쓰기를 사용해 데이터의 계층 구조 표현 |
+| Sequence | 하이픈을 사용해 데이터 목록 표현 |
+| Comment | `#`으로 주석 작성 |
+| Unicode | 다양한 언어의 문자 표현 가능 |
+
+또한 직렬화와 역직렬화의 개념을 이해하는 것도 중요하다.
+
+**직렬화(Serialization)** 는 애플리케이션의 객체나 자료구조를 저장하거나 전달할 수 있는 데이터 형식으로 변환하는 과정이다.
+
+**역직렬화(Deserialization)** 는 직렬화된 데이터를 애플리케이션이 사용할 수 있는 객체나 자료구조로 복원하는 과정이다.
+
+```mermaid
+flowchart LR
+    A["애플리케이션 객체"] --> B["직렬화"]
+    B --> C["YAML 데이터"]
+    C --> D["저장 또는 전달"]
+    D --> E["역직렬화"]
+    E --> F["애플리케이션 객체"]
+```
+
+이러한 특성 때문에 YAML은 Kubernetes, Spring Boot, Docker Compose, GitHub Actions 등 다양한 개발 환경에서 활용된다.
+
+다만 YAML은 읽기 쉬운 형식이라는 장점이 있는 반면, 들여쓰기와 데이터 타입에 민감하다는 특징도 가지고 있다.
+
+따라서 YAML을 정확하게 활용하려면 기본 문법뿐 아니라 데이터의 계층 구조와 직렬화 개념을 함께 이해해야 한다.
+
+#### 한 줄 요약
+
+> YAML은 Key-Value, 들여쓰기, 목록 등을 이용해 구조화된 데이터를 사람이 읽기 쉬운 형태로 표현하는 데이터 직렬화 언어이며, 서로 다른 애플리케이션과 프로그래밍 언어 사이에서 데이터를 저장하고 전달하는 데 활용된다.
