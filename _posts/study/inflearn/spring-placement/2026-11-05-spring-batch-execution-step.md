@@ -11041,3 +11041,6412 @@ COMPLETED 상태라면 allowStartIfComplete를 검사한다.
 #### 한 줄 요약
 
 > Spring Batch의 `startLimit()`은 동일한 JobInstance에서 특정 Step이 시작될 수 있는 최대 횟수를 제한하며, 제한을 초과하면 `StartLimitExceededException`이 발생한다. `allowStartIfComplete()`는 Job 재시작 시 이전에 COMPLETED 상태였던 Step을 다시 실행할 것인지 결정하며 기본값은 false다. 두 API의 실제 실행 여부는 `SimpleStepHandler.shouldStart()`에서 이전 StepExecution 상태와 실행 횟수를 기준으로 판단한다.
+
+## TaskletStep 아키텍처
+
+
+### Spring Batch TaskletStep 아키텍처 이해: RepeatTemplate, 트랜잭션, StepExecution과 Listener 실행 흐름
+
+Spring Batch에서 Job은 여러 Step으로 구성되고, 각 Step은 실제 비즈니스 로직을 수행하는 독립적인 실행 단위다.
+
+가장 기본적인 Step 구현체 중 하나는 `TaskletStep`이다.
+
+TaskletStep은 `Tasklet` 인터페이스를 구현한 객체를 실행한다.
+
+하지만 TaskletStep의 역할은 단순히 Tasklet의 `execute()` 메서드를 호출하는 것에 그치지 않는다.
+
+TaskletStep은 반복 실행과 트랜잭션을 관리하고, 실행 과정에서 발생하는 정보를 `StepExecution`에 반영한다.
+
+또한 상위 클래스인 `AbstractStep`은 실행 상태를 갱신하고, Listener를 호출하며, 최종 메타데이터를 저장한다.
+
+예를 들어 다음과 같은 배치 작업을 생각해보자.
+
+```text
+dailySettlementJob
+       │
+       ├── prepareSettlementStep
+       │       │
+       │       └── 정산 데이터 준비
+       │
+       └── saveSettlementStep
+               │
+               └── 정산 결과 저장
+```
+
+이 Job은 두 개의 Step으로 구성된다.
+
+첫 번째 Step은 정산 데이터를 준비한다.
+
+두 번째 Step은 정산 결과를 저장한다.
+
+각 Step을 Tasklet 기반으로 구성한다면 다음과 같이 작성할 수 있다.
+
+```java
+@Bean
+public Step prepareSettlementStep(
+        JobRepository jobRepository,
+        PlatformTransactionManager transactionManager
+) {
+    return new StepBuilder(
+            "prepareSettlementStep",
+            jobRepository
+    )
+            .tasklet((contribution, chunkContext) -> {
+
+                System.out.println("정산 데이터 준비");
+
+                return RepeatStatus.FINISHED;
+
+            }, transactionManager)
+            .build();
+}
+```
+
+이 코드는 하나의 `TaskletStep`을 생성한다.
+
+그리고 TaskletStep 내부에 실행할 Tasklet을 등록한다.
+
+이후 Job이 실행되면 다음과 같은 호출 관계가 만들어진다.
+
+```text
+JobLauncher
+    │
+    ▼
+SimpleJob
+    │
+    ▼
+SimpleStepHandler
+    │
+    ▼
+AbstractStep
+    │
+    ▼
+TaskletStep
+    │
+    ▼
+RepeatTemplate
+    │
+    ▼
+TransactionTemplate
+    │
+    ▼
+Tasklet.execute()
+```
+
+여기서 각각의 컴포넌트는 서로 다른 책임을 담당한다.
+
+`SimpleJob`은 Step을 순차적으로 실행한다.
+
+`SimpleStepHandler`는 Step의 실행 가능 여부를 판단하고 StepExecution을 준비한다.
+
+`AbstractStep`은 실행 상태와 Listener를 관리한다.
+
+`TaskletStep`은 Tasklet의 반복 실행을 관리한다.
+
+`RepeatTemplate`은 반복 제어를 담당한다.
+
+`TransactionTemplate`은 각 실행의 트랜잭션을 처리한다.
+
+마지막으로 `Tasklet`은 실제 비즈니스 로직을 수행한다.
+
+따라서 TaskletStep의 아키텍처를 이해하려면 단순히 Tasklet이 실행되는 과정뿐 아니라 **각 단계에서 생성되는 객체와 실행 상태가 갱신되는 시점**까지 살펴봐야 한다.
+
+이번에는 TaskletStep의 전체 실행 흐름을 객체 생성, 반복 제어, 트랜잭션 처리, Listener 호출, 상태 변경과 메타데이터 저장의 관점에서 분석해보자.
+
+---
+
+### 개념
+
+#### TaskletStep이란?
+
+`TaskletStep`은 Spring Batch에서 제공하는 Step 구현체로, Tasklet을 반복적으로 실행할 수 있도록 설계된 클래스다.
+
+TaskletStep은 다음과 같은 상속 관계를 가진다.
+
+```text
+Step
+ │
+ ▼
+AbstractStep
+ │
+ ▼
+TaskletStep
+```
+
+`Step`은 Step 실행을 위한 인터페이스다.
+
+`AbstractStep`은 모든 Step에 공통으로 필요한 실행 기능을 제공한다.
+
+`TaskletStep`은 실제 Tasklet을 실행하는 구체적인 로직을 구현한다.
+
+TaskletStep의 대표적인 책임은 다음과 같다.
+
+| 책임 | 설명 |
+|---|---|
+| Tasklet 실행 | 등록된 Tasklet의 execute() 호출 |
+| 반복 제어 | RepeatTemplate을 통한 반복 실행 |
+| 트랜잭션 관리 | Tasklet 호출마다 트랜잭션 적용 |
+| 실행 결과 반영 | StepContribution을 StepExecution에 반영 |
+| 실행 상태 관리 | AbstractStep을 통한 BatchStatus, ExitStatus 갱신 |
+| Context 관리 | ExecutionContext의 상태 저장 |
+| Listener 처리 | Step 실행 전후의 콜백 호출 |
+| 장애 처리 | 예외 발생 시 반복 중단 및 실패 상태 처리 |
+
+여기서 중요한 점은 이러한 책임을 TaskletStep 혼자서 모두 수행하지 않는다는 것이다.
+
+상위 클래스와 여러 내부 컴포넌트가 역할을 나누어 수행한다.
+
+#### TaskletStep의 핵심 구조
+
+TaskletStep의 주요 구성요소를 살펴보자.
+
+```mermaid
+classDiagram
+    class Step {
+        <<interface>>
+        +execute(StepExecution)
+    }
+
+    class AbstractStep {
+        -JobRepository jobRepository
+        -StepExecutionListener listener
+        +execute(StepExecution)
+        #doExecute(StepExecution)
+    }
+
+    class TaskletStep {
+        -Tasklet tasklet
+        -RepeatOperations stepOperations
+        -PlatformTransactionManager transactionManager
+        #doExecute(StepExecution)
+    }
+
+    class Tasklet {
+        <<interface>>
+        +execute(StepContribution, ChunkContext) RepeatStatus
+    }
+
+    class RepeatOperations {
+        <<interface>>
+        +iterate(RepeatCallback)
+    }
+
+    class RepeatTemplate {
+        +iterate(RepeatCallback)
+    }
+
+    Step <|.. AbstractStep
+    AbstractStep <|-- TaskletStep
+
+    RepeatOperations <|.. RepeatTemplate
+
+    TaskletStep --> Tasklet
+    TaskletStep --> RepeatOperations
+```
+
+여기서 핵심은 TaskletStep이 `RepeatOperations`라는 인터페이스를 참조한다는 점이다.
+
+실제 기본 구현체는 `RepeatTemplate`이다.
+
+또한 TaskletStep은 `Tasklet` 인터페이스를 통해 비즈니스 로직을 실행한다.
+
+따라서 TaskletStep은 특정 비즈니스 로직에 직접 의존하지 않는다.
+
+개발자가 구현한 다양한 Tasklet을 동일한 실행 구조로 처리할 수 있다.
+
+---
+
+### 왜 사용하는가?
+
+일반적인 Java 애플리케이션에서 특정 작업을 반복 실행한다고 생각해보자.
+
+다음과 같이 반복문을 작성할 수 있다.
+
+```java
+while (true) {
+
+    boolean completed = executeBusinessLogic();
+
+    if (completed) {
+        break;
+    }
+}
+```
+
+하지만 실제 운영 환경에서는 반복 실행만으로 충분하지 않다.
+
+다음과 같은 요구사항도 고려해야 한다.
+
+첫 번째로 작업 실행 전 상태를 기록해야 한다.
+
+두 번째로 작업을 트랜잭션 안에서 실행해야 한다.
+
+세 번째로 작업이 성공하면 커밋해야 한다.
+
+네 번째로 작업이 실패하면 롤백해야 한다.
+
+다섯 번째로 작업의 반복 여부를 결정해야 한다.
+
+여섯 번째로 처리 횟수와 실패 정보를 기록해야 한다.
+
+일곱 번째로 실행 결과를 데이터베이스에 저장해야 한다.
+
+여덟 번째로 장애가 발생했을 때 이전 실행 정보를 확인할 수 있어야 한다.
+
+이러한 기능을 직접 구현한다면 반복문은 상당히 복잡해진다.
+
+Spring Batch의 TaskletStep은 이러한 공통 실행 구조를 제공한다.
+
+```text
+TaskletStep
+    │
+    ▼
+RepeatTemplate
+    │
+    ▼
+TransactionTemplate
+    │
+    ▼
+Tasklet.execute()
+    │
+    ▼
+RepeatStatus
+    │
+    ├── CONTINUABLE → 반복
+    │
+    └── FINISHED → 종료
+```
+
+개발자는 실제 비즈니스 로직을 Tasklet에 구현한다.
+
+그리고 반복 제어, 트랜잭션, 실행 상태 관리 등은 Spring Batch가 담당한다.
+
+이처럼 **비즈니스 로직과 실행 제어 로직을 분리하는 것**이 TaskletStep 설계의 핵심이다.
+
+---
+
+### TaskletStep의 전체 실행 흐름
+
+TaskletStep의 실행 과정은 크게 여덟 단계로 구분할 수 있다.
+
+| 단계 | 주요 동작 | 담당 컴포넌트 |
+|---|---|---|
+| 1 | Step 실행 가능 여부 판단 | SimpleStepHandler |
+| 2 | StepExecution 생성 | JobExecution |
+| 3 | ExecutionContext 준비 | SimpleStepHandler |
+| 4 | STARTED 상태 설정 및 beforeStep 호출 | AbstractStep |
+| 5 | 반복 실행 시작 | TaskletStep, RepeatTemplate |
+| 6 | 트랜잭션 시작 및 Tasklet 실행 | TransactionTemplate |
+| 7 | 반복 종료 및 실행 결과 반영 | TaskletStep |
+| 8 | afterStep 호출 및 최종 상태 저장 | AbstractStep |
+
+전체 흐름을 시퀀스 다이어그램으로 표현하면 다음과 같다.
+
+```mermaid
+sequenceDiagram
+    participant Job as SimpleJob
+    participant Handler as SimpleStepHandler
+    participant Repo as JobRepository
+    participant Step as AbstractStep
+    participant TaskletStep as TaskletStep
+    participant Repeat as RepeatTemplate
+    participant Tx as TransactionTemplate
+    participant Tasklet as Tasklet
+
+    Job->>Handler: handleStep()
+
+    Handler->>Repo: 이전 StepExecution 조회
+    Handler->>Handler: 실행 가능 여부 판단
+
+    Handler->>Handler: StepExecution 생성
+    Handler->>Handler: ExecutionContext 준비
+
+    Handler->>Repo: StepExecution 저장
+
+    Handler->>Step: execute(StepExecution)
+
+    Step->>Step: STARTED 상태 설정
+    Step->>Repo: StepExecution 갱신
+
+    Step->>Step: beforeStep()
+
+    Step->>TaskletStep: doExecute()
+
+    TaskletStep->>Repeat: iterate()
+
+    loop RepeatStatus가 FINISHED가 될 때까지
+        Repeat->>Tx: 트랜잭션 실행
+        Tx->>Tasklet: execute()
+        Tasklet-->>Tx: RepeatStatus
+        Tx-->>Repeat: 커밋 또는 예외
+    end
+
+    TaskletStep-->>Step: 실행 결과 반환
+
+    Step->>Step: BatchStatus와 ExitStatus 결정
+    Step->>Step: afterStep()
+
+    Step->>Repo: ExecutionContext 저장
+    Step->>Repo: StepExecution 최종 갱신
+
+    Step-->>Handler: 실행 종료
+    Handler-->>Job: StepExecution 반환
+```
+
+이 구조는 정상 실행을 기준으로 작성했다.
+
+Tasklet 실행 중 예외가 발생한다면 트랜잭션 롤백 및 실패 상태 처리 경로로 진행된다.
+
+이제 각 단계를 자세히 살펴보자.
+
+---
+
+### 첫 번째 단계: SimpleJob이 Step 실행을 요청한다
+
+Spring Batch에서 Job이 실행되면 SimpleJob은 자신에게 등록된 Step을 순서대로 실행한다.
+
+예를 들어 다음과 같이 Job을 정의했다고 생각해보자.
+
+```java
+@Bean
+public Job settlementJob(
+        JobRepository jobRepository,
+        Step step1,
+        Step step2
+) {
+    return new JobBuilder(
+            "settlementJob",
+            jobRepository
+    )
+            .start(step1)
+            .next(step2)
+            .build();
+}
+```
+
+이 Job에는 두 개의 Step이 등록되어 있다.
+
+```text
+SimpleJob
+    │
+    ├── Step 1
+    └── Step 2
+```
+
+SimpleJob은 내부적으로 Step 목록을 순회한다.
+
+그리고 다음과 같은 메서드를 호출한다.
+
+```java
+handleStep(step, jobExecution);
+```
+
+이때 SimpleJob이 직접 Tasklet의 execute()를 호출하지는 않는다.
+
+Step 실행은 별도의 컴포넌트를 통해 처리된다.
+
+바로 `SimpleStepHandler`다.
+
+호출 관계를 정리하면 다음과 같다.
+
+```text
+SimpleJob.doExecute()
+       │
+       ▼
+AbstractJob.handleStep()
+       │
+       ▼
+SimpleStepHandler.handleStep()
+```
+
+SimpleStepHandler는 Step을 실제로 실행하기 전에 여러 조건을 확인한다.
+
+예를 들어 다음과 같다.
+
+- Job이 중단 요청을 받은 상태인지
+- 이전 StepExecution이 존재하는지
+- 이전 Step이 COMPLETED 상태인지
+- allowStartIfComplete가 설정되어 있는지
+- startLimit을 초과했는지
+
+이러한 검증을 통과하면 새로운 StepExecution을 생성한다.
+
+따라서 **StepExecution은 Tasklet이 실행된 후에 생성되는 객체가 아니라, Step이 실행되기 전에 준비되는 객체**다.
+
+---
+
+### 두 번째 단계: StepExecution 생성
+
+StepExecution은 하나의 Step 실행 시도를 나타내는 도메인 객체다.
+
+StepExecution에는 다음과 같은 정보가 저장된다.
+
+| 속성 | 설명 |
+|---|---|
+| stepName | 실행한 Step 이름 |
+| jobExecution | 소속 JobExecution |
+| status | BatchStatus |
+| exitStatus | ExitStatus |
+| startTime | 실행 시작 시각 |
+| endTime | 실행 종료 시각 |
+| commitCount | 커밋 횟수 |
+| rollbackCount | 롤백 횟수 |
+| readCount | 읽은 Item 수 |
+| writeCount | 저장한 Item 수 |
+| executionContext | Step 수준 실행 상태 |
+| failureExceptions | 실행 중 발생한 예외 정보 |
+
+StepExecution을 생성하는 과정은 SimpleStepHandler에서 시작된다.
+
+핵심 코드는 다음과 같다.
+
+```java
+StepExecution currentStepExecution =
+        jobExecution.createStepExecution(
+                step.getName()
+        );
+```
+
+여기서 `jobExecution`은 현재 실행 중인 JobExecution이다.
+
+JobExecution의 `createStepExecution()`을 호출하면 새로운 StepExecution이 생성된다.
+
+그리고 생성된 StepExecution은 현재 JobExecution과 연결된다.
+
+```text
+JobExecution
+    │
+    └── StepExecution
+            │
+            ├── Step Name
+            ├── BatchStatus
+            ├── ExitStatus
+            └── ExecutionContext
+```
+
+예를 들어 두 개의 Step이 정상적으로 실행되면 다음과 같은 구조가 만들어진다.
+
+```text
+JobExecution 1
+    │
+    ├── StepExecution 1
+    │       └── step1
+    │
+    └── StepExecution 2
+            └── step2
+```
+
+각 StepExecution은 서로 독립적인 실행 상태를 관리한다.
+
+따라서 Step 1이 성공했지만 Step 2가 실패했다면 두 객체의 상태가 다르게 저장될 수 있다.
+
+---
+
+### 세 번째 단계: ExecutionContext 준비
+
+StepExecution에는 ExecutionContext가 존재한다.
+
+ExecutionContext는 실행 중 필요한 상태 정보를 저장하는 객체다.
+
+StepExecution을 생성하면 기본적으로 ExecutionContext 객체가 준비된다.
+
+하지만 실제 Step 실행에 사용할 Context는 최초 실행인지 재시작인지에 따라 달라질 수 있다.
+
+#### 최초 실행
+
+처음 실행하는 Step이라면 새로운 ExecutionContext를 설정한다.
+
+개념적으로 다음과 같다.
+
+```java
+currentStepExecution.setExecutionContext(
+        new ExecutionContext()
+);
+```
+
+#### 실패 후 재시작
+
+이전에 실패한 Step을 재시작한다면 기존 ExecutionContext를 복원한다.
+
+```java
+currentStepExecution.setExecutionContext(
+        lastStepExecution.getExecutionContext()
+);
+```
+
+이 과정이 중요한 이유는 이전 실행에서 저장한 상태를 다음 실행에서 활용할 수 있기 때문이다.
+
+예를 들어 다음과 같은 정보를 저장할 수 있다.
+
+```text
+StepExecutionContext
+    │
+    ├── lastProcessedId = 1500
+    └── processedCount = 1500
+```
+
+Job이 실패한 뒤 재시작하면 해당 정보를 읽어 작업을 이어서 처리하도록 구현할 수 있다.
+
+다만 ExecutionContext에 값이 저장되어 있다고 해서 비즈니스 로직이 자동으로 해당 위치부터 재개되는 것은 아니다.
+
+실제 Tasklet이나 Reader가 해당 값을 읽고 복원하는 로직을 구현해야 한다.
+
+#### SimpleStepHandler의 실제 Context 처리
+
+Spring Batch 5.2.4에서는 이전 StepExecution의 상태를 확인한다.
+
+이전 실행이 존재하고 COMPLETED가 아니라면 재시작으로 판단해 이전 ExecutionContext를 사용한다.
+
+반면 최초 실행이거나 완료된 Step을 다시 시작하는 경우에는 새로운 Context를 설정한다.
+
+따라서 **이전에 완료된 Step을 allowStartIfComplete(true)로 다시 실행하는 것과 실패한 Step을 재시작하는 것은 ExecutionContext 처리 방식도 다를 수 있다.**
+
+---
+
+### 네 번째 단계: StepExecution의 초기 상태
+
+StepExecution이 생성되면 실행 상태를 가진다.
+
+Spring Batch 5.2.4의 StepExecution은 기본적으로 다음 상태로 초기화된다.
+
+```java
+private volatile BatchStatus status =
+        BatchStatus.STARTING;
+```
+
+종료 상태는 다음과 같다.
+
+```java
+private volatile ExitStatus exitStatus =
+        ExitStatus.EXECUTING;
+```
+
+따라서 생성 직후에는 다음과 같은 상태다.
+
+```text
+BatchStatus = STARTING
+
+ExitStatus = EXECUTING
+```
+
+여기서 중요한 점은 BatchStatus와 ExitStatus가 서로 다른 개념이라는 것이다.
+
+`BatchStatus`는 현재 실행 상태를 나타낸다.
+
+`ExitStatus`는 실행 결과를 나타내는 종료 코드다.
+
+두 값은 독립적으로 관리된다.
+
+#### BatchStatus.STARTED는 언제 설정될까?
+
+StepExecution이 실제 Step에 전달되면 `AbstractStep.execute()`가 호출된다.
+
+이때 다음 코드가 실행된다.
+
+```java
+stepExecution.setStatus(
+        BatchStatus.STARTED
+);
+```
+
+그리고 JobRepository에 실행 상태를 반영한다.
+
+```java
+getJobRepository().update(
+        stepExecution
+);
+```
+
+따라서 실제 Step 실행이 시작되면 BatchStatus는 STARTED가 된다.
+
+```text
+StepExecution 생성
+       │
+       ▼
+BatchStatus.STARTING
+       │
+       ▼
+AbstractStep.execute()
+       │
+       ▼
+BatchStatus.STARTED
+```
+
+이 과정은 TaskletStep의 비즈니스 로직이 실행되기 전에 수행된다.
+
+---
+
+### BatchStatus와 ExitStatus의 차이
+
+BatchStatus와 ExitStatus는 이름이 비슷해 혼동하기 쉽다.
+
+하지만 역할이 다르다.
+
+| 구분 | BatchStatus | ExitStatus |
+|---|---|---|
+| 목적 | 실행 상태 표현 | 종료 결과 표현 |
+| 타입 | 열거형 | 종료 코드 객체 |
+| 초기 상태 | STARTING | EXECUTING |
+| 실행 중 | STARTED | EXECUTING |
+| 정상 종료 | COMPLETED | COMPLETED |
+| 일반적인 실패 | FAILED | FAILED |
+| 사용자 정의 코드 | 임의 코드 추가 불가 | 사용자 정의 가능 |
+| 주요 활용 | 실행 및 재시작 판단 | 결과 보고와 흐름 제어 |
+
+여기서 한 가지 더 알아야 한다.
+
+`AbstractStep.execute()` 내부에는 다음과 같은 지역 변수가 존재한다.
+
+```java
+ExitStatus exitStatus =
+        ExitStatus.EXECUTING;
+```
+
+이 변수는 Step의 실행 결과를 계산하는 데 사용된다.
+
+TaskletStep이 정상적으로 종료되면 다음과 같이 ExitStatus를 계산한다.
+
+```java
+exitStatus =
+        ExitStatus.COMPLETED.and(
+                stepExecution.getExitStatus()
+        );
+```
+
+또한 BatchStatus는 다음과 같이 갱신된다.
+
+```java
+stepExecution.upgradeStatus(
+        BatchStatus.COMPLETED
+);
+```
+
+따라서 일반적인 정상 종료에서는 다음과 같은 결과가 만들어진다.
+
+```text
+BatchStatus = COMPLETED
+
+ExitStatus = COMPLETED
+```
+
+다만 두 값이 반드시 같은 의미의 코드로 종료되는 것은 아니다.
+
+ExitStatus는 Listener를 통해 사용자 정의 코드로 변경할 수 있기 때문이다.
+
+---
+
+### 다섯 번째 단계: beforeStep() 호출
+
+Step 실행 상태가 STARTED로 변경되고 JobRepository에 반영되면 Listener 호출 단계로 진행한다.
+
+Spring Batch는 Step 실행 전후에 별도의 처리를 수행할 수 있도록 `StepExecutionListener`를 제공한다.
+
+대표적인 메서드는 다음과 같다.
+
+```java
+void beforeStep(
+        StepExecution stepExecution
+);
+```
+
+```java
+ExitStatus afterStep(
+        StepExecution stepExecution
+);
+```
+
+`beforeStep()`은 Step의 실제 처리 로직이 시작되기 전에 호출된다.
+
+`afterStep()`은 Step의 처리 로직이 종료된 후 호출된다.
+
+#### beforeStep()의 호출 위치
+
+Spring Batch 5.2.4에서는 AbstractStep의 execute() 안에서 다음과 같은 순서로 동작한다.
+
+```text
+AbstractStep.execute()
+       │
+       ▼
+StepExecution STARTED
+       │
+       ▼
+JobRepository.update()
+       │
+       ▼
+beforeStep()
+       │
+       ▼
+open()
+       │
+       ▼
+doExecute()
+```
+
+여기서 중요한 점은 beforeStep()이 Tasklet이 반복될 때마다 호출되는 것이 아니라는 사실이다.
+
+**beforeStep()은 하나의 StepExecution에 대한 Step 실행 시작 시점에 호출된다.**
+
+예를 들어 Tasklet이 세 번 반복되어도 beforeStep()은 일반적으로 한 번 호출된다.
+
+```text
+beforeStep()
+    │
+    ▼
+Tasklet 실행 1
+    │
+    ▼
+Tasklet 실행 2
+    │
+    ▼
+Tasklet 실행 3
+    │
+    ▼
+afterStep()
+```
+
+따라서 StepExecutionListener는 Step 전체의 실행 전후 처리를 담당한다.
+
+반복 실행 단위의 처리까지 관리하는 Listener와는 구분해야 한다.
+
+---
+
+### 여섯 번째 단계: TaskletStep.doExecute() 호출
+
+beforeStep()이 호출된 이후에는 실제 Step 실행으로 진입한다.
+
+이때 호출되는 메서드는 다음과 같다.
+
+```java
+doExecute(stepExecution);
+```
+
+AbstractStep에서 정의한 추상 메서드이며, TaskletStep이 이를 구현한다.
+
+따라서 실제 호출 대상은 다음과 같다.
+
+```java
+TaskletStep.doExecute(
+        stepExecution
+);
+```
+
+이 메서드가 TaskletStep 아키텍처의 핵심이다.
+
+왜냐하면 여기서 반복 실행과 트랜잭션 처리가 시작되기 때문이다.
+
+---
+
+### TaskletStep이 가지고 있는 RepeatTemplate
+
+Spring Batch 5.2.4의 TaskletStep에는 다음과 같은 필드가 존재한다.
+
+```java
+private RepeatOperations stepOperations =
+        new RepeatTemplate();
+```
+
+여기서 `RepeatOperations`는 반복 실행을 위한 인터페이스다.
+
+`RepeatTemplate`은 대표적인 구현체다.
+
+따라서 TaskletStep은 기본적으로 RepeatTemplate을 사용한다.
+
+TaskletStep은 반복 실행을 시작할 때 다음 메서드를 호출한다.
+
+```java
+stepOperations.iterate(...);
+```
+
+이 메서드는 전달받은 Callback을 반복적으로 실행한다.
+
+전체 구조는 다음과 같다.
+
+```text
+TaskletStep
+    │
+    ▼
+RepeatTemplate
+    │
+    ▼
+반복 실행
+    │
+    ├── Tasklet.execute()
+    │
+    ├── Tasklet.execute()
+    │
+    └── Tasklet.execute()
+```
+
+하지만 실제로 RepeatTemplate이 Tasklet을 직접 호출하는 것은 아니다.
+
+그 사이에는 Callback과 트랜잭션 처리 객체가 존재한다.
+
+---
+
+### StepContextRepeatCallback의 역할
+
+TaskletStep의 doExecute()에는 다음과 같은 코드가 존재한다.
+
+```java
+stepOperations.iterate(
+        new StepContextRepeatCallback(stepExecution) {
+
+            @Override
+            public RepeatStatus doInChunkContext(
+                    RepeatContext repeatContext,
+                    ChunkContext chunkContext
+            ) throws Exception {
+
+                // 반복 실행할 작업
+            }
+        }
+);
+```
+
+이 코드는 RepeatTemplate에 반복 실행할 Callback을 전달한다.
+
+여기서 `StepContextRepeatCallback`은 StepExecution을 기반으로 반복 실행에 필요한 Context를 준비한다.
+
+이 Callback은 다음 두 가지 역할을 수행한다.
+
+첫 번째는 반복 실행에 필요한 StepContext와 ChunkContext를 제공하는 것이다.
+
+두 번째는 구체적인 반복 처리 로직을 `doInChunkContext()`에 위임하는 것이다.
+
+따라서 실행 흐름은 다음과 같다.
+
+```text
+RepeatTemplate.iterate()
+       │
+       ▼
+StepContextRepeatCallback
+       │
+       ▼
+doInIteration()
+       │
+       ▼
+doInChunkContext()
+```
+
+여기서 TaskletStep은 doInChunkContext() 안에서 트랜잭션 처리를 시작한다.
+
+---
+
+### 일곱 번째 단계: TransactionTemplate 생성
+
+TaskletStep은 Tasklet의 실행을 트랜잭션으로 처리한다.
+
+이때 사용하는 객체가 `TransactionTemplate`이다.
+
+Spring Batch 5.2.4의 핵심 코드는 다음과 같다.
+
+```java
+new TransactionTemplate(
+        transactionManager,
+        transactionAttribute
+).execute(
+        new ChunkTransactionCallback(
+                chunkContext,
+                semaphore
+        )
+);
+```
+
+이 코드는 매우 중요하다.
+
+왜냐하면 Tasklet이 반복 실행될 때마다 트랜잭션이 적용되는 구조를 보여주기 때문이다.
+
+TransactionTemplate은 Spring Framework에서 제공하는 트랜잭션 실행 도구다.
+
+다음과 같은 기능을 담당한다.
+
+- 트랜잭션 시작
+- 작업 실행
+- 정상 처리 시 커밋
+- 롤백 대상 예외 발생 시 롤백
+- 트랜잭션 상태 관리
+
+TransactionTemplate은 실제 작업을 Callback에 위임한다.
+
+TaskletStep에서는 다음 객체를 사용한다.
+
+```java
+ChunkTransactionCallback
+```
+
+이 객체의 역할은 트랜잭션 안에서 Tasklet을 실행하고, 실행 결과를 StepExecution에 반영하는 것이다.
+
+전체 관계는 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["TaskletStep.doExecute()"]
+    B["RepeatTemplate.iterate()"]
+    C["StepContextRepeatCallback"]
+    D["TransactionTemplate.execute()"]
+    E["트랜잭션 시작"]
+    F["ChunkTransactionCallback"]
+    G["Tasklet.execute()"]
+    H{"실행 결과"}
+    I["Commit"]
+    J["Rollback"]
+    K["RepeatStatus 확인"]
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+    F --> G
+    G --> H
+
+    H -->|정상| I
+    H -->|롤백 대상 예외| J
+
+    I --> K
+    K -->|CONTINUABLE| B
+    K -->|FINISHED| L["반복 종료"]
+
+    J --> M["실패 처리"]
+```
+
+이 구조에서 가장 중요한 사실은 **반복 실행의 내부에 트랜잭션 경계가 존재한다는 점**이다.
+
+Spring Batch 공식 구현에서도 TaskletStep은 반복문 안에서 각 Tasklet 호출을 트랜잭션으로 감싸도록 설계되어 있다.
+
+---
+
+### ChunkTransactionCallback의 역할
+
+`ChunkTransactionCallback`은 TaskletStep 내부에 정의된 Callback이다.
+
+이 객체는 트랜잭션 안에서 Tasklet을 실행한다.
+
+실제 구현에는 다음과 같은 코드가 존재한다.
+
+```java
+RepeatStatus result =
+        RepeatStatus.CONTINUABLE;
+```
+
+그리고 현재 StepExecution을 기반으로 StepContribution을 생성한다.
+
+```java
+StepContribution contribution =
+        stepExecution.createStepContribution();
+```
+
+이후 실제 Tasklet을 호출한다.
+
+```java
+result = tasklet.execute(
+        contribution,
+        chunkContext
+);
+```
+
+여기서 전달되는 객체는 두 개다.
+
+첫 번째는 StepContribution이다.
+
+두 번째는 ChunkContext다.
+
+개발자가 구현한 Tasklet은 이 두 객체를 전달받아 비즈니스 로직을 수행한다.
+
+예를 들어 다음과 같다.
+
+```java
+@Override
+public RepeatStatus execute(
+        StepContribution contribution,
+        ChunkContext chunkContext
+) {
+
+    StepExecution stepExecution =
+            contribution.getStepExecution();
+
+    System.out.println(
+            "현재 Step: "
+                    + stepExecution.getStepName()
+    );
+
+    return RepeatStatus.FINISHED;
+}
+```
+
+여기서 Tasklet이 반환한 RepeatStatus는 이후 반복 여부를 결정하는 데 사용된다.
+
+---
+
+### RepeatStatus.CONTINUABLE의 초기값은 무엇을 의미할까?
+
+TaskletStep 내부 구현에서는 다음과 같이 초기값을 설정한다.
+
+```java
+RepeatStatus result =
+        RepeatStatus.CONTINUABLE;
+```
+
+하지만 이 코드가 **Tasklet이 아무런 값을 반환하지 않아도 무조건 무한 반복한다는 의미는 아니다.**
+
+이 값은 ChunkTransactionCallback 내부에서 사용하는 지역 변수의 초기값이다.
+
+그다음 실제 Tasklet을 실행한다.
+
+```java
+result = tasklet.execute(
+        contribution,
+        chunkContext
+);
+```
+
+따라서 정상적으로 Tasklet이 실행되면 개발자가 반환한 RepeatStatus가 result에 저장된다.
+
+예를 들어 다음과 같이 반환했다면
+
+```java
+return RepeatStatus.FINISHED;
+```
+
+result는 FINISHED가 된다.
+
+반면 다음과 같이 반환했다면
+
+```java
+return RepeatStatus.CONTINUABLE;
+```
+
+result는 CONTINUABLE이 된다.
+
+즉, 실제 반복 여부는 Tasklet의 반환 결과를 기준으로 결정된다.
+
+#### null을 반환한 경우
+
+Tasklet이 null을 반환하면 다음 코드가 실행된다.
+
+```java
+if (result == null) {
+
+    result = RepeatStatus.FINISHED;
+}
+```
+
+따라서 null은 FINISHED로 해석된다.
+
+이것은 Tasklet 인터페이스에서 제공하는 명시적인 동작이다.
+
+정리하면 다음과 같다.
+
+| Tasklet 반환값 | 처리 결과 |
+|---|---|
+| FINISHED | 반복 종료 |
+| CONTINUABLE | 반복 계속 |
+| null | FINISHED로 변경 |
+| 예외 발생 | 실패 처리 경로 진행 |
+
+따라서 반복형 Tasklet에서는 정상적으로 종료할 수 있는 조건을 반드시 구현해야 한다.
+
+---
+
+### RepeatTemplate은 어떤 조건에서 반복을 종료할까?
+
+RepeatTemplate은 Tasklet이 반환한 RepeatStatus를 기반으로 반복을 계속할지 결정한다.
+
+기본적인 동작은 다음과 같다.
+
+```text
+RepeatTemplate
+    │
+    ▼
+Tasklet.execute()
+    │
+    ▼
+RepeatStatus 확인
+    │
+    ├── CONTINUABLE
+    │       │
+    │       └── 다음 반복
+    │
+    └── FINISHED
+            │
+            └── 반복 종료
+```
+
+예를 들어 Tasklet이 다음과 같이 구현되었다고 생각해보자.
+
+```java
+public class RepeatTasklet implements Tasklet {
+
+    private int count = 0;
+
+    @Override
+    public RepeatStatus execute(
+            StepContribution contribution,
+            ChunkContext chunkContext
+    ) {
+
+        count++;
+
+        if (count < 3) {
+            return RepeatStatus.CONTINUABLE;
+        }
+
+        return RepeatStatus.FINISHED;
+    }
+}
+```
+
+실행 결과는 다음과 같다.
+
+```text
+첫 번째 실행 → CONTINUABLE
+
+두 번째 실행 → CONTINUABLE
+
+세 번째 실행 → FINISHED
+```
+
+따라서 총 세 번 실행한 후 반복이 종료된다.
+
+다만 이 예제처럼 Tasklet의 인스턴스 필드에 실행 상태를 저장하는 방식은 운영 환경에서 주의해야 한다.
+
+Singleton Bean을 여러 실행에서 공유하면 상태가 섞일 수 있기 때문이다.
+
+실제 배치에서는 StepExecution의 ExecutionContext 등을 이용해 실행별 상태를 관리하는 것이 적절하다.
+
+---
+
+### 예외가 발생하면 어떻게 될까?
+
+이번에는 Tasklet 실행 중 예외가 발생하는 상황을 생각해보자.
+
+```java
+@Override
+public RepeatStatus execute(
+        StepContribution contribution,
+        ChunkContext chunkContext
+) {
+
+    throw new IllegalStateException(
+            "비즈니스 로직 실행 실패"
+    );
+}
+```
+
+이 경우 Tasklet은 RepeatStatus를 정상적으로 반환하지 못한다.
+
+예외가 발생했기 때문이다.
+
+TaskletStep은 해당 예외를 트랜잭션 처리 과정에서 다룬다.
+
+Spring Batch 5.2.4의 TaskletStep은 기본적으로 Tasklet 실행 중 발생하는 예외에 대해 롤백하도록 설정되어 있다.
+
+따라서 일반적인 예외 발생 시 다음과 같은 흐름이 만들어진다.
+
+```mermaid
+flowchart TD
+    A["RepeatTemplate"]
+    B["TransactionTemplate"]
+    C["Tasklet.execute()"]
+    D["예외 발생"]
+    E["Transaction Rollback"]
+    F["반복 중단"]
+    G["AbstractStep 예외 처리"]
+    H["BatchStatus.FAILED"]
+    I["ExitStatus.FAILED"]
+    J["afterStep()"]
+    K["최종 메타데이터 저장"]
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+    F --> G
+    G --> H
+    H --> I
+    I --> J
+    J --> K
+```
+
+여기서 중요한 점은 TaskletStep에서 발생한 예외가 AbstractStep의 실행 상태 처리로 연결된다는 사실이다.
+
+AbstractStep은 일반적인 처리 실패에 대해 StepExecution의 BatchStatus를 FAILED로 갱신한다.
+
+또한 ExitStatus에도 실패 정보를 반영한다.
+
+다만 중단 요청으로 인해 `JobInterruptedException`이 발생한 경우에는 STOPPED 상태로 처리될 수 있다.
+
+따라서 모든 예외가 무조건 FAILED로 처리된다고 단정해서는 안 된다.
+
+일반적인 비즈니스 처리 예외와 중단 관련 예외를 구분해야 한다.
+
+---
+
+### 여덟 번째 단계: Tasklet 실행 결과를 StepExecution에 반영한다
+
+Tasklet이 정상적으로 실행되면 현재 실행 결과를 StepExecution에 반영한다.
+
+이 과정에서 중요한 객체가 StepContribution이다.
+
+TaskletStep은 다음 코드로 StepContribution을 생성한다.
+
+```java
+StepContribution contribution =
+        stepExecution.createStepContribution();
+```
+
+그리고 Tasklet을 실행한다.
+
+```java
+result = tasklet.execute(
+        contribution,
+        chunkContext
+);
+```
+
+Tasklet이 실행되는 동안 StepContribution의 처리 통계 등이 변경될 수 있다.
+
+이후 TaskletStep은 다음 메서드를 호출한다.
+
+```java
+stepExecution.apply(
+        contribution
+);
+```
+
+이 메서드는 StepContribution의 결과를 StepExecution에 반영한다.
+
+예를 들어 다음 정보가 포함될 수 있다.
+
+- ReadCount
+- WriteCount
+- FilterCount
+- SkipCount
+- ExitStatus
+
+이처럼 Spring Batch는 처리 중 발생한 결과를 StepContribution에 기록하고, 이후 StepExecution에 반영하는 구조를 사용한다.
+
+#### ExecutionContext 갱신
+
+TaskletStep은 실행 과정에서 ExecutionContext도 갱신한다.
+
+대표적인 코드는 다음과 같다.
+
+```java
+stream.update(
+        stepExecution.getExecutionContext()
+);
+```
+
+그리고 ExecutionContext가 변경되었다면 JobRepository를 통해 저장한다.
+
+```java
+if (
+    stepExecution.getExecutionContext().isDirty()
+) {
+
+    getJobRepository().updateExecutionContext(
+            stepExecution
+    );
+}
+```
+
+여기서 `isDirty()`는 ExecutionContext에 변경이 발생했는지 확인하는 데 사용된다.
+
+따라서 ExecutionContext를 변경했다고 해서 임의의 모든 시점에 데이터베이스 저장이 일어나는 것은 아니다.
+
+Spring Batch가 관리하는 체크포인트와 메타데이터 갱신 과정에서 저장된다.
+
+#### CommitCount 갱신
+
+TaskletStep은 정상적인 커밋을 준비하는 과정에서 CommitCount를 증가시킨다.
+
+```java
+stepExecution.incrementCommitCount();
+```
+
+그리고 StepExecution을 JobRepository에 반영한다.
+
+```java
+getJobRepository().update(
+        stepExecution
+);
+```
+
+이후 트랜잭션이 정상적으로 완료되면 커밋된다.
+
+따라서 하나의 Tasklet이 여러 번 반복 실행되었다면 CommitCount가 여러 번 증가할 수 있다.
+
+---
+
+### TaskletStep의 트랜잭션 구조
+
+TaskletStep의 반복 실행을 이해할 때 가장 중요한 부분 중 하나는 트랜잭션 경계다.
+
+예를 들어 Tasklet이 세 번 실행된다고 생각해보자.
+
+```text
+TaskletStep
+    │
+    ▼
+RepeatTemplate
+    │
+    ├── 첫 번째 반복
+    │       │
+    │       ├── Transaction Begin
+    │       ├── Tasklet.execute()
+    │       └── Commit
+    │
+    ├── 두 번째 반복
+    │       │
+    │       ├── Transaction Begin
+    │       ├── Tasklet.execute()
+    │       └── Commit
+    │
+    └── 세 번째 반복
+            │
+            ├── Transaction Begin
+            ├── Tasklet.execute()
+            └── Commit
+```
+
+이 경우 기본적인 TaskletStep 구조에서는 각 Tasklet 호출이 별도의 트랜잭션 경계에서 처리된다.
+
+따라서 첫 번째와 두 번째 실행이 커밋된 이후 세 번째 실행에서 실패했다면 앞선 커밋은 자동으로 취소되지 않는다.
+
+예를 들어 다음과 같은 상황이 가능하다.
+
+```text
+첫 번째 반복
+    │
+    └── 데이터 100건 저장 → Commit
+
+두 번째 반복
+    │
+    └── 데이터 100건 저장 → Commit
+
+세 번째 반복
+    │
+    └── 데이터 저장 중 예외 → Rollback
+```
+
+이 경우 Job은 실패할 수 있다.
+
+하지만 앞선 두 번의 반복에서 커밋된 데이터는 유지될 수 있다.
+
+이 구조를 이해해야 배치 재시작 시 중복 처리를 방지할 수 있다.
+
+**TaskletStep이 트랜잭션을 제공한다는 것은 Step 전체의 모든 반복 실행을 하나의 트랜잭션으로 묶는다는 의미가 아니다.**
+
+---
+
+### StepExecutionListener.afterStep()은 언제 호출될까?
+
+TaskletStep의 반복 실행이 끝나면 제어권은 AbstractStep으로 돌아온다.
+
+AbstractStep은 Step의 실행 결과를 확정하는 과정을 수행한다.
+
+일반적인 정상 종료 흐름은 다음과 같다.
+
+```text
+TaskletStep.doExecute()
+       │
+       ▼
+RepeatTemplate 종료
+       │
+       ▼
+AbstractStep.execute()
+       │
+       ▼
+ExitStatus 계산
+       │
+       ▼
+BatchStatus.COMPLETED 반영
+       │
+       ▼
+종료 시각 설정
+       │
+       ▼
+StepExecutionListener.afterStep()
+       │
+       ▼
+ExecutionContext 저장
+       │
+       ▼
+StepExecution 최종 업데이트
+```
+
+여기서 주의해야 할 점은 `afterStep()`이 최종 메타데이터 저장보다 먼저 호출된다는 사실이다.
+
+따라서 afterStep()에서 반환한 ExitStatus를 최종 종료 코드에 반영할 수 있다.
+
+#### afterStep()에서 ExitStatus 변경하기
+
+예를 들어 다음과 같은 Listener를 작성할 수 있다.
+
+```java
+@Bean
+public StepExecutionListener customExitStatusListener() {
+
+    return new StepExecutionListener() {
+
+        @Override
+        public ExitStatus afterStep(
+                StepExecution stepExecution
+        ) {
+
+            if (
+                stepExecution.getStatus()
+                        == BatchStatus.COMPLETED
+            ) {
+
+                return new ExitStatus(
+                        "VALIDATION_COMPLETED"
+                );
+            }
+
+            return null;
+        }
+    };
+}
+```
+
+이 Listener는 Step이 정상적으로 완료되었을 때 사용자 정의 ExitStatus를 반환한다.
+
+AbstractStep은 이 반환값을 기존 ExitStatus와 결합한다.
+
+관련 핵심 코드는 다음과 같다.
+
+```java
+exitStatus = exitStatus.and(
+        getCompositeListener().afterStep(
+                stepExecution
+        )
+);
+```
+
+따라서 afterStep()에서 반환한 종료 코드는 StepExecution의 최종 ExitStatus에 반영될 수 있다.
+
+다만 중요한 차이가 있다.
+
+**ExitStatus가 변경된다고 해서 BatchStatus까지 자동으로 변경되는 것은 아니다.**
+
+예를 들어 다음과 같은 상태가 가능하다.
+
+```text
+BatchStatus = COMPLETED
+
+ExitStatus = VALIDATION_COMPLETED
+```
+
+이처럼 BatchStatus와 ExitStatus는 서로 다른 목적으로 사용된다.
+
+또한 `ExitStatus.and()`는 두 상태를 결합하는 방식이므로 사용자 정의 코드가 단순 대입처럼 언제나 기존 코드를 덮어쓴다고 이해해서는 안 된다.
+
+---
+
+### afterStep()은 실패했을 때도 호출될까?
+
+일반적인 Tasklet 실행 중 예외가 발생하더라도 afterStep()은 호출된다.
+
+왜냐하면 AbstractStep은 실행 결과 처리를 `finally` 영역에서 수행하기 때문이다.
+
+예를 들어 다음과 같은 Tasklet이 있다고 생각해보자.
+
+```java
+@Override
+public RepeatStatus execute(
+        StepContribution contribution,
+        ChunkContext chunkContext
+) {
+
+    throw new IllegalStateException(
+            "작업 실패"
+    );
+}
+```
+
+이 Tasklet은 정상적으로 종료되지 않는다.
+
+하지만 AbstractStep은 예외를 처리하면서 StepExecution에 실패 상태를 반영한다.
+
+그리고 afterStep()을 호출한다.
+
+```text
+Tasklet.execute()
+       │
+       ▼
+예외 발생
+       │
+       ▼
+Transaction Rollback
+       │
+       ▼
+AbstractStep 예외 처리
+       │
+       ▼
+BatchStatus.FAILED
+       │
+       ▼
+afterStep()
+       │
+       ▼
+StepExecution 최종 저장
+```
+
+따라서 afterStep()은 실패한 Step의 결과를 확인하는 데도 사용할 수 있다.
+
+다만 afterStep()에서 또 다른 예외를 발생시킨 경우에는 해당 예외가 별도로 기록될 수 있으며, 그것만으로 기존 비즈니스 트랜잭션을 다시 롤백할 수 있는 것은 아니다.
+
+이러한 특성 때문에 afterStep()은 실행 결과 기록이나 알림 등 부가 처리에 적합하다.
+
+---
+
+### TaskletStep 전체 클래스 호출 관계
+
+지금까지 살펴본 클래스들의 역할을 정리하면 다음과 같다.
+
+| 클래스 | 주요 메서드 | 역할 |
+|---|---|---|
+| SimpleJob | doExecute() | Step 순차 실행 |
+| SimpleStepHandler | handleStep() | StepExecution 준비 및 실행 |
+| JobExecution | createStepExecution() | StepExecution 생성 |
+| AbstractStep | execute() | Step 공통 실행 처리 |
+| StepExecutionListener | beforeStep() | Step 실행 전 처리 |
+| TaskletStep | doExecute() | Tasklet 반복 실행 |
+| RepeatTemplate | iterate() | 반복 제어 |
+| StepContextRepeatCallback | doInChunkContext() | 반복 실행 Context 제공 |
+| TransactionTemplate | execute() | 트랜잭션 처리 |
+| ChunkTransactionCallback | doInTransaction() | Tasklet 실행 및 결과 반영 |
+| Tasklet | execute() | 비즈니스 로직 실행 |
+| StepExecutionListener | afterStep() | Step 실행 후 처리 |
+| JobRepository | update() | 실행 메타데이터 갱신 |
+
+이 관계를 호출 순서로 표현하면 다음과 같다.
+
+```text
+SimpleJob.doExecute()
+       │
+       ▼
+SimpleStepHandler.handleStep()
+       │
+       ▼
+JobExecution.createStepExecution()
+       │
+       ▼
+StepExecution 생성
+       │
+       ▼
+ExecutionContext 준비
+       │
+       ▼
+AbstractStep.execute()
+       │
+       ▼
+BatchStatus.STARTED
+       │
+       ▼
+beforeStep()
+       │
+       ▼
+TaskletStep.doExecute()
+       │
+       ▼
+RepeatTemplate.iterate()
+       │
+       ▼
+StepContextRepeatCallback
+       │
+       ▼
+TransactionTemplate.execute()
+       │
+       ▼
+ChunkTransactionCallback
+       │
+       ▼
+Tasklet.execute()
+       │
+       ▼
+RepeatStatus 확인
+       │
+       ├── CONTINUABLE → 다시 실행
+       │
+       └── FINISHED → 반복 종료
+       │
+       ▼
+AbstractStep
+       │
+       ▼
+StepExecution 최종 상태 결정
+       │
+       ▼
+afterStep()
+       │
+       ▼
+JobRepository 최종 업데이트
+```
+
+여기서 가장 중요한 구분은 다음과 같다.
+
+`SimpleStepHandler`는 Step을 실행할 수 있는지 판단한다.
+
+`AbstractStep`은 Step 전체의 실행 상태를 관리한다.
+
+`TaskletStep`은 Tasklet의 반복 실행을 처리한다.
+
+`RepeatTemplate`은 반복 여부를 결정한다.
+
+`TransactionTemplate`은 각 반복 작업의 트랜잭션을 관리한다.
+
+그리고 `Tasklet`은 실제 비즈니스 로직을 수행한다.
+
+---
+
+### 예제: TaskletStep 전체 실행 흐름 구현하기
+
+이제 실제 코드를 통해 TaskletStep의 동작을 확인해보자.
+
+이번 예제에서는 다음과 같은 Job을 구현한다.
+
+```text
+taskletArchitectureJob
+       │
+       ├── repeatStep
+       │       │
+       │       ├── Tasklet 1회 실행
+       │       ├── Tasklet 2회 실행
+       │       └── Tasklet 3회 실행
+       │
+       └── writeStep
+               │
+               ├── 정상 실행
+               │
+               └── 설정에 따라 의도적인 예외 발생
+```
+
+첫 번째 Step은 Tasklet을 세 번 반복 실행한다.
+
+두 번째 Step은 JobParameters에 따라 정상 종료하거나 예외를 발생시킨다.
+
+또한 두 Step 모두 StepExecutionListener를 등록한다.
+
+이를 통해 다음 내용을 확인한다.
+
+- StepExecution 생성
+- beforeStep() 호출
+- Tasklet 반복 실행
+- RepeatStatus에 따른 종료
+- 트랜잭션 커밋 횟수
+- 실패 시 롤백
+- afterStep() 호출
+- StepExecution 최종 상태
+
+#### 개발 환경
+
+| 항목 | 기술 |
+|---|---|
+| Java | Java 17 |
+| Spring Boot | 3.4.13 |
+| Spring Batch | 5.2.4 |
+| Build Tool | Maven |
+| Database | H2 |
+| Job | SimpleJob |
+| Step | TaskletStep |
+
+Spring Boot 3.4.13은 Spring Batch 5.2.4를 관리 의존성으로 제공한다.
+
+따라서 별도의 Spring Batch 버전을 명시하지 않고도 해당 조합을 사용할 수 있다.
+
+---
+
+### Maven 의존성 설정
+
+`pom.xml`
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="
+             http://maven.apache.org/POM/4.0.0
+             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.4.13</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.example</groupId>
+    <artifactId>spring-batch-tasklet-architecture</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+
+    <properties>
+        <java.version>17</java.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-batch</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>
+```
+
+이번 예제에서는 Spring Batch와 JDBC를 사용한다.
+
+실제 데이터베이스 INSERT를 수행해 트랜잭션 커밋과 롤백을 확인하기 위해 `spring-boot-starter-jdbc`도 추가했다.
+
+---
+
+### application.yml 설정
+
+`src/main/resources/application.yml`
+
+```yaml
+spring:
+  application:
+    name: spring-batch-tasklet-architecture
+
+  main:
+    web-application-type: none
+
+  datasource:
+    url: jdbc:h2:mem:tasklet_architecture;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+  batch:
+    job:
+      enabled: true
+      name: taskletArchitectureJob
+
+    jdbc:
+      initialize-schema: always
+
+  sql:
+    init:
+      mode: always
+
+logging:
+  level:
+    org.springframework.batch: INFO
+    com.example.batch: INFO
+```
+
+이번에는 인메모리 H2 데이터베이스를 사용한다.
+
+애플리케이션이 실행되면 Spring Batch의 메타데이터 테이블이 생성된다.
+
+또한 비즈니스 데이터를 저장할 테이블도 생성한다.
+
+---
+
+### 비즈니스 테이블 생성
+
+`src/main/resources/schema.sql`
+
+```sql
+CREATE TABLE IF NOT EXISTS TASKLET_AUDIT (
+    ID BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    JOB_EXECUTION_ID BIGINT NOT NULL,
+    STEP_NAME VARCHAR(100) NOT NULL,
+    ITERATION INTEGER NOT NULL
+);
+```
+
+이 테이블은 Tasklet이 실행될 때마다 데이터를 저장하는 데 사용한다.
+
+`JOB_EXECUTION_ID`는 현재 실행을 구분한다.
+
+`STEP_NAME`은 데이터를 저장한 Step을 구분한다.
+
+`ITERATION`은 현재 반복 실행 횟수를 나타낸다.
+
+이 테이블을 사용하면 반복 실행 과정에서 어떤 데이터가 커밋되었는지 확인할 수 있다.
+
+---
+
+### Spring Boot 애플리케이션
+
+`BatchApplication.java`
+
+```java
+package com.example.batch;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class BatchApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(
+                BatchApplication.class,
+                args
+        );
+    }
+}
+```
+
+---
+
+### TaskletArchitectureConfiguration 전체 코드
+
+`TaskletArchitectureConfiguration.java`
+
+```java
+package com.example.batch;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.ExitStatus;
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.Step;
+import org.springframework.batch.core.StepExecution;
+import org.springframework.batch.core.StepExecutionListener;
+
+import org.springframework.batch.core.job.builder.JobBuilder;
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.step.builder.StepBuilder;
+
+import org.springframework.batch.item.ExecutionContext;
+import org.springframework.batch.repeat.RepeatStatus;
+
+import org.springframework.beans.factory.annotation.Qualifier;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import org.springframework.jdbc.core.JdbcTemplate;
+
+import org.springframework.transaction.PlatformTransactionManager;
+
+@Configuration
+public class TaskletArchitectureConfiguration {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(
+                    TaskletArchitectureConfiguration.class
+            );
+
+    // --------------------------------------------------
+    // Job
+    // --------------------------------------------------
+
+    @Bean
+    public Job taskletArchitectureJob(
+            JobRepository jobRepository,
+            @Qualifier("repeatStep") Step repeatStep,
+            @Qualifier("writeStep") Step writeStep
+    ) {
+
+        return new JobBuilder(
+                "taskletArchitectureJob",
+                jobRepository
+        )
+                .start(repeatStep)
+                .next(writeStep)
+                .build();
+    }
+
+    // --------------------------------------------------
+    // Step 1: 세 번 반복 실행
+    // --------------------------------------------------
+
+    @Bean
+    public Step repeatStep(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager,
+            JdbcTemplate jdbcTemplate,
+            @Qualifier("stepTraceListener")
+            StepExecutionListener listener
+    ) {
+
+        return new StepBuilder(
+                "repeatStep",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    StepExecution stepExecution =
+                            contribution.getStepExecution();
+
+                    ExecutionContext context =
+                            stepExecution.getExecutionContext();
+
+                    int iteration =
+                            context.getInt("iteration", 0) + 1;
+
+                    // 현재 반복 횟수 저장
+                    context.putInt(
+                            "iteration",
+                            iteration
+                    );
+
+                    // 실제 DB 작업
+                    jdbcTemplate.update(
+                            """
+                            INSERT INTO TASKLET_AUDIT (
+                                JOB_EXECUTION_ID,
+                                STEP_NAME,
+                                ITERATION
+                            )
+                            VALUES (?, ?, ?)
+                            """,
+                            stepExecution.getJobExecutionId(),
+                            stepExecution.getStepName(),
+                            iteration
+                    );
+
+                    log.info(
+                            "[Tasklet] repeatStep iteration={}",
+                            iteration
+                    );
+
+                    // 세 번째 실행까지 반복
+                    if (iteration < 3) {
+
+                        return RepeatStatus.CONTINUABLE;
+                    }
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .listener(listener)
+                .build();
+    }
+
+    // --------------------------------------------------
+    // Step 2: 정상 실행 또는 예외 발생
+    // --------------------------------------------------
+
+    @Bean
+    public Step writeStep(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager,
+            JdbcTemplate jdbcTemplate,
+            @Qualifier("stepTraceListener")
+            StepExecutionListener listener
+    ) {
+
+        return new StepBuilder(
+                "writeStep",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    StepExecution stepExecution =
+                            contribution.getStepExecution();
+
+                    String failSecond =
+                            stepExecution
+                                    .getJobParameters()
+                                    .getString("failSecond");
+
+                    // DB INSERT
+                    jdbcTemplate.update(
+                            """
+                            INSERT INTO TASKLET_AUDIT (
+                                JOB_EXECUTION_ID,
+                                STEP_NAME,
+                                ITERATION
+                            )
+                            VALUES (?, ?, ?)
+                            """,
+                            stepExecution.getJobExecutionId(),
+                            stepExecution.getStepName(),
+                            1
+                    );
+
+                    log.info(
+                            "[Tasklet] writeStep 실행"
+                    );
+
+                    // 실패 상황 재현
+                    if ("true".equals(failSecond)) {
+
+                        throw new IllegalStateException(
+                                "writeStep 실행 중 예외 발생"
+                        );
+                    }
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .listener(listener)
+                .build();
+    }
+
+    // --------------------------------------------------
+    // StepExecutionListener
+    // --------------------------------------------------
+
+    @Bean
+    public StepExecutionListener stepTraceListener() {
+
+        return new StepExecutionListener() {
+
+            @Override
+            public void beforeStep(
+                    StepExecution stepExecution
+            ) {
+
+                log.info(
+                        "[beforeStep] step={}, status={}, exit={}",
+                        stepExecution.getStepName(),
+                        stepExecution.getStatus(),
+                        stepExecution
+                                .getExitStatus()
+                                .getExitCode()
+                );
+            }
+
+            @Override
+            public ExitStatus afterStep(
+                    StepExecution stepExecution
+            ) {
+
+                log.info(
+                        "[afterStep] step={}, status={}, exit={}",
+                        stepExecution.getStepName(),
+                        stepExecution.getStatus(),
+                        stepExecution
+                                .getExitStatus()
+                                .getExitCode()
+                );
+
+                log.info(
+                        "[afterStep] commitCount={}, rollbackCount={}",
+                        stepExecution.getCommitCount(),
+                        stepExecution.getRollbackCount()
+                );
+
+                return null;
+            }
+        };
+    }
+}
+```
+
+이 코드에서 중요한 구성은 세 가지다.
+
+첫 번째는 반복형 Tasklet이다.
+
+두 번째는 실패 상황을 재현하는 Tasklet이다.
+
+세 번째는 실행 전후의 상태를 확인하는 Listener다.
+
+각각의 동작을 살펴보자.
+
+---
+
+### 예제 분석: RepeatStatus에 따른 반복 실행
+
+repeatStep은 ExecutionContext에 반복 횟수를 저장한다.
+
+```java
+ExecutionContext context =
+        stepExecution.getExecutionContext();
+```
+
+이후 현재 반복 횟수를 가져온다.
+
+```java
+int iteration =
+        context.getInt("iteration", 0) + 1;
+```
+
+그리고 새로운 값을 저장한다.
+
+```java
+context.putInt(
+        "iteration",
+        iteration
+);
+```
+
+이 값은 StepExecution의 ExecutionContext에 저장된다.
+
+따라서 동일한 StepExecution에서 Tasklet이 반복 실행될 때 이전 값을 사용할 수 있다.
+
+이후 다음 조건을 검사한다.
+
+```java
+if (iteration < 3) {
+
+    return RepeatStatus.CONTINUABLE;
+}
+
+return RepeatStatus.FINISHED;
+```
+
+첫 번째 실행에서는 iteration이 1이다.
+
+따라서 CONTINUABLE을 반환한다.
+
+두 번째 실행에서는 iteration이 2다.
+
+이번에도 CONTINUABLE을 반환한다.
+
+세 번째 실행에서는 iteration이 3이다.
+
+따라서 FINISHED를 반환한다.
+
+결과적으로 Tasklet은 세 번 실행된다.
+
+```text
+beforeStep()
+    │
+    ▼
+Tasklet 실행 1
+    │
+    └── CONTINUABLE
+    │
+    ▼
+Tasklet 실행 2
+    │
+    └── CONTINUABLE
+    │
+    ▼
+Tasklet 실행 3
+    │
+    └── FINISHED
+    │
+    ▼
+afterStep()
+```
+
+여기서 beforeStep()과 afterStep()은 각각 한 번 호출된다.
+
+반면 Tasklet의 execute()는 세 번 호출된다.
+
+이 차이를 이해하는 것이 중요하다.
+
+---
+
+### 예제 분석: 트랜잭션 커밋
+
+repeatStep은 Tasklet이 실행될 때마다 데이터베이스에 INSERT를 수행한다.
+
+```java
+jdbcTemplate.update(
+        """
+        INSERT INTO TASKLET_AUDIT (
+            JOB_EXECUTION_ID,
+            STEP_NAME,
+            ITERATION
+        )
+        VALUES (?, ?, ?)
+        """,
+        stepExecution.getJobExecutionId(),
+        stepExecution.getStepName(),
+        iteration
+);
+```
+
+이 코드는 TransactionTemplate이 관리하는 트랜잭션 안에서 실행된다.
+
+따라서 각 반복 실행이 정상적으로 완료되면 해당 INSERT가 커밋된다.
+
+세 번의 반복이 모두 정상적으로 완료되었다면 다음과 같은 데이터가 저장될 수 있다.
+
+| JOB_EXECUTION_ID | STEP_NAME | ITERATION |
+|---|---|---:|
+| 1 | repeatStep | 1 |
+| 1 | repeatStep | 2 |
+| 1 | repeatStep | 3 |
+
+여기서 중요한 사실은 세 개의 INSERT가 하나의 트랜잭션으로 처리되는 것이 아니라는 점이다.
+
+일반적인 TaskletStep 설정에서는 각 Tasklet 호출에 트랜잭션이 적용된다.
+
+따라서 세 번의 호출에 대응하는 커밋이 발생한다.
+
+이러한 구조는 트랜잭션을 작은 단위로 나누어 처리할 수 있다는 장점이 있다.
+
+하지만 중간에 실패하면 앞선 커밋 데이터가 남을 수 있으므로 재시작 정책을 함께 고려해야 한다.
+
+---
+
+### 정상 실행 결과 확인하기
+
+먼저 프로젝트를 빌드한다.
+
+```bash
+mvn clean package
+```
+
+정상적으로 빌드되면 다음과 같은 결과가 출력된다.
+
+```text
+BUILD SUCCESS
+```
+
+이제 Job을 실행한다.
+
+```bash
+java -jar \
+  target/spring-batch-tasklet-architecture-0.0.1-SNAPSHOT.jar \
+  failSecond=false
+```
+
+이번에는 failSecond가 false이므로 두 번째 Step에서 예외가 발생하지 않는다.
+
+#### 예상 실행 로그
+
+```text
+[beforeStep] step=repeatStep, status=STARTED, exit=EXECUTING
+
+[Tasklet] repeatStep iteration=1
+
+[Tasklet] repeatStep iteration=2
+
+[Tasklet] repeatStep iteration=3
+
+[afterStep] step=repeatStep, status=COMPLETED, exit=COMPLETED
+
+[afterStep] commitCount=3, rollbackCount=0
+
+[beforeStep] step=writeStep, status=STARTED, exit=EXECUTING
+
+[Tasklet] writeStep 실행
+
+[afterStep] step=writeStep, status=COMPLETED, exit=COMPLETED
+
+[afterStep] commitCount=1, rollbackCount=0
+```
+
+이 로그에서 확인할 수 있는 사실은 다음과 같다.
+
+첫 번째로 repeatStep의 beforeStep()은 한 번 호출된다.
+
+두 번째로 Tasklet은 세 번 실행된다.
+
+세 번째로 RepeatStatus.FINISHED가 반환되면 반복이 종료된다.
+
+네 번째로 afterStep()이 호출된다.
+
+다섯 번째로 다음 Step인 writeStep이 실행된다.
+
+마지막으로 Job이 정상적으로 완료된다.
+
+---
+
+### 실패 실행 결과 확인하기
+
+이번에는 두 번째 Step에서 의도적으로 예외를 발생시켜보자.
+
+```bash
+java -jar \
+  target/spring-batch-tasklet-architecture-0.0.1-SNAPSHOT.jar \
+  failSecond=true
+```
+
+이번에는 writeStep에서 다음 코드가 실행된다.
+
+```java
+throw new IllegalStateException(
+        "writeStep 실행 중 예외 발생"
+);
+```
+
+따라서 Tasklet이 정상적으로 종료되지 못한다.
+
+TransactionTemplate은 현재 트랜잭션을 롤백한다.
+
+그리고 AbstractStep은 StepExecution의 상태를 FAILED로 갱신한다.
+
+#### 예상 실행 로그
+
+```text
+[beforeStep] step=repeatStep, status=STARTED, exit=EXECUTING
+
+[Tasklet] repeatStep iteration=1
+
+[Tasklet] repeatStep iteration=2
+
+[Tasklet] repeatStep iteration=3
+
+[afterStep] step=repeatStep, status=COMPLETED, exit=COMPLETED
+
+[afterStep] commitCount=3, rollbackCount=0
+
+[beforeStep] step=writeStep, status=STARTED, exit=EXECUTING
+
+[Tasklet] writeStep 실행
+
+IllegalStateException:
+writeStep 실행 중 예외 발생
+
+[afterStep] step=writeStep, status=FAILED, exit=FAILED
+
+[afterStep] commitCount=0, rollbackCount=1
+```
+
+여기서 중요한 것은 writeStep의 트랜잭션이 롤백되더라도 repeatStep의 이전 커밋은 유지될 수 있다는 사실이다.
+
+따라서 전체 결과는 다음과 같다.
+
+```text
+JobExecution
+    │
+    ├── repeatStep
+    │       │
+    │       ├── Tasklet 실행 1 → Commit
+    │       ├── Tasklet 실행 2 → Commit
+    │       ├── Tasklet 실행 3 → Commit
+    │       │
+    │       └── COMPLETED
+    │
+    └── writeStep
+            │
+            ├── INSERT 실행
+            ├── 예외 발생
+            ├── Rollback
+            │
+            └── FAILED
+
+Job → FAILED
+```
+
+이 구조를 통해 Step 단위의 상태 관리와 트랜잭션 경계를 확인할 수 있다.
+
+---
+
+### JUnit으로 실행 상태와 트랜잭션 검증하기
+
+이번에는 실제 JobLauncher를 이용해 다음 내용을 검증해보자.
+
+첫 번째는 정상 실행 시 두 Step이 모두 COMPLETED인지 확인한다.
+
+두 번째는 repeatStep이 세 번 실행되는지 확인한다.
+
+세 번째는 writeStep에서 예외가 발생했을 때 FAILED 상태로 종료되는지 확인한다.
+
+네 번째는 실패한 writeStep의 INSERT가 롤백되는지 확인한다.
+
+다섯 번째는 repeatStep에서 이미 커밋된 데이터가 유지되는지 확인한다.
+
+`TaskletArchitectureTest.java`
+
+```java
+package com.example.batch;
+
+import java.util.UUID;
+
+import org.junit.jupiter.api.Test;
+
+import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobParameters;
+import org.springframework.batch.core.JobParametersBuilder;
+import org.springframework.batch.core.StepExecution;
+
+import org.springframework.batch.core.launch.JobLauncher;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+
+import org.springframework.boot.test.context.SpringBootTest;
+
+import org.springframework.jdbc.core.JdbcTemplate;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+@SpringBootTest(properties = {
+        "spring.batch.job.enabled=false"
+})
+class TaskletArchitectureTest {
+
+    @Autowired
+    private JobLauncher jobLauncher;
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+
+    @Autowired
+    @Qualifier("taskletArchitectureJob")
+    private Job job;
+
+    private JobParameters parameters(
+            boolean failSecond
+    ) {
+
+        return new JobParametersBuilder()
+                .addString(
+                        "testRun",
+                        UUID.randomUUID().toString()
+                )
+                .addString(
+                        "failSecond",
+                        Boolean.toString(failSecond)
+                )
+                .toJobParameters();
+    }
+
+    @Test
+    void 정상_실행하면_두_Step이_완료된다()
+            throws Exception {
+
+        JobExecution execution =
+                jobLauncher.run(
+                        job,
+                        parameters(false)
+                );
+
+        assertEquals(
+                BatchStatus.COMPLETED,
+                execution.getStatus()
+        );
+
+        StepExecution repeatStep =
+                findStep(
+                        execution,
+                        "repeatStep"
+                );
+
+        StepExecution writeStep =
+                findStep(
+                        execution,
+                        "writeStep"
+                );
+
+        assertEquals(
+                BatchStatus.COMPLETED,
+                repeatStep.getStatus()
+        );
+
+        assertEquals(
+                BatchStatus.COMPLETED,
+                writeStep.getStatus()
+        );
+
+        assertEquals(
+                3,
+                repeatStep.getCommitCount()
+        );
+
+        assertEquals(
+                3,
+                repeatStep
+                        .getExecutionContext()
+                        .getInt("iteration")
+        );
+
+        assertEquals(
+                1,
+                writeStep.getCommitCount()
+        );
+    }
+
+    @Test
+    void 두번째_Step이_실패하면_해당_트랜잭션만_롤백된다()
+            throws Exception {
+
+        JobExecution execution =
+                jobLauncher.run(
+                        job,
+                        parameters(true)
+                );
+
+        assertEquals(
+                BatchStatus.FAILED,
+                execution.getStatus()
+        );
+
+        StepExecution repeatStep =
+                findStep(
+                        execution,
+                        "repeatStep"
+                );
+
+        StepExecution writeStep =
+                findStep(
+                        execution,
+                        "writeStep"
+                );
+
+        assertEquals(
+                BatchStatus.COMPLETED,
+                repeatStep.getStatus()
+        );
+
+        assertEquals(
+                BatchStatus.FAILED,
+                writeStep.getStatus()
+        );
+
+        assertEquals(
+                3,
+                repeatStep.getCommitCount()
+        );
+
+        assertEquals(
+                1,
+                writeStep.getRollbackCount()
+        );
+
+        Long jobExecutionId =
+                execution.getId();
+
+        Integer repeatDataCount =
+                countAuditRows(
+                        jobExecutionId,
+                        "repeatStep"
+                );
+
+        Integer writeDataCount =
+                countAuditRows(
+                        jobExecutionId,
+                        "writeStep"
+                );
+
+        assertEquals(
+                3,
+                repeatDataCount
+        );
+
+        assertEquals(
+                0,
+                writeDataCount
+        );
+    }
+
+    private StepExecution findStep(
+            JobExecution execution,
+            String stepName
+    ) {
+
+        return execution.getStepExecutions()
+                .stream()
+                .filter(
+                        stepExecution ->
+                                stepExecution
+                                        .getStepName()
+                                        .equals(stepName)
+                )
+                .findFirst()
+                .orElseThrow();
+    }
+
+    private Integer countAuditRows(
+            Long jobExecutionId,
+            String stepName
+    ) {
+
+        return jdbcTemplate.queryForObject(
+                """
+                SELECT COUNT(*)
+                FROM TASKLET_AUDIT
+                WHERE JOB_EXECUTION_ID = ?
+                  AND STEP_NAME = ?
+                """,
+                Integer.class,
+                jobExecutionId,
+                stepName
+        );
+    }
+}
+```
+
+이 테스트는 JobExecution별로 데이터를 구분해 확인한다.
+
+따라서 서로 다른 테스트 실행 결과가 혼합되지 않도록 구성했다.
+
+#### 정상 실행 검증
+
+정상 실행 테스트에서는 다음 값을 확인한다.
+
+```java
+assertEquals(
+        3,
+        repeatStep.getCommitCount()
+);
+```
+
+repeatStep이 세 번 반복되고 정상적으로 커밋되었다면 CommitCount는 3이 된다.
+
+또한 ExecutionContext의 반복 횟수도 확인한다.
+
+```java
+assertEquals(
+        3,
+        repeatStep
+                .getExecutionContext()
+                .getInt("iteration")
+);
+```
+
+이렇게 하면 Tasklet이 FINISHED를 반환할 때까지 세 번 실행되었는지 확인할 수 있다.
+
+#### 실패 실행 검증
+
+실패 실행 테스트에서는 writeStep의 상태를 확인한다.
+
+```java
+assertEquals(
+        BatchStatus.FAILED,
+        writeStep.getStatus()
+);
+```
+
+또한 롤백 횟수를 확인한다.
+
+```java
+assertEquals(
+        1,
+        writeStep.getRollbackCount()
+);
+```
+
+그리고 실제 데이터베이스에 writeStep의 INSERT 결과가 남아 있는지 확인한다.
+
+```java
+assertEquals(
+        0,
+        writeDataCount
+);
+```
+
+반면 repeatStep에서 커밋된 데이터는 유지되어야 한다.
+
+```java
+assertEquals(
+        3,
+        repeatDataCount
+);
+```
+
+이렇게 하면 **TaskletStep의 반복 실행과 트랜잭션 경계가 어떻게 연결되는지** 직접 검증할 수 있다.
+
+#### 테스트 실행
+
+```bash
+mvn test
+```
+
+정상적으로 실행되면 다음과 유사한 결과가 나타난다.
+
+```text
+Tests run: 2
+
+Failures: 0
+
+Errors: 0
+
+BUILD SUCCESS
+```
+
+---
+
+### 데이터베이스에서 실행 결과 확인하기
+
+Spring Batch는 StepExecution의 실행 정보를 다음 테이블에 저장한다.
+
+```text
+BATCH_STEP_EXECUTION
+```
+
+다음 SQL을 이용해 Step별 실행 결과를 조회할 수 있다.
+
+```sql
+SELECT
+    je.JOB_EXECUTION_ID,
+    se.STEP_EXECUTION_ID,
+    se.STEP_NAME,
+    se.STATUS,
+    se.EXIT_CODE,
+    se.COMMIT_COUNT,
+    se.ROLLBACK_COUNT,
+    se.START_TIME,
+    se.END_TIME
+FROM BATCH_JOB_EXECUTION je
+JOIN BATCH_STEP_EXECUTION se
+    ON je.JOB_EXECUTION_ID = se.JOB_EXECUTION_ID
+ORDER BY
+    je.JOB_EXECUTION_ID,
+    se.STEP_EXECUTION_ID;
+```
+
+이 쿼리를 이용하면 다음 정보를 확인할 수 있다.
+
+| 항목 | 의미 |
+|---|---|
+| JOB_EXECUTION_ID | Job 실행 식별자 |
+| STEP_EXECUTION_ID | Step 실행 식별자 |
+| STEP_NAME | Step 이름 |
+| STATUS | BatchStatus |
+| EXIT_CODE | ExitStatus |
+| COMMIT_COUNT | 커밋 횟수 |
+| ROLLBACK_COUNT | 롤백 횟수 |
+| START_TIME | 실행 시작 시각 |
+| END_TIME | 실행 종료 시각 |
+
+예를 들어 정상 실행에서는 다음과 같은 결과를 확인할 수 있다.
+
+| STEP_NAME | STATUS | COMMIT_COUNT | ROLLBACK_COUNT |
+|---|---|---:|---:|
+| repeatStep | COMPLETED | 3 | 0 |
+| writeStep | COMPLETED | 1 | 0 |
+
+반면 실패 실행에서는 다음과 같은 결과가 나타날 수 있다.
+
+| STEP_NAME | STATUS | COMMIT_COUNT | ROLLBACK_COUNT |
+|---|---|---:|---:|
+| repeatStep | COMPLETED | 3 | 0 |
+| writeStep | FAILED | 0 | 1 |
+
+이 결과를 통해 StepExecution이 반복 실행 및 트랜잭션 정보를 관리한다는 사실을 확인할 수 있다.
+
+단, 실제 커밋 및 롤백 횟수는 트랜잭션 설정과 실행 경로에 따라 달라질 수 있다.
+
+---
+
+### TaskletStep 내부 구현을 분석할 때 확인할 메서드
+
+TaskletStep의 전체 호출 흐름을 추적할 때는 다음 메서드를 중심으로 확인하는 것이 효율적이다.
+
+| 순서 | 클래스 | 메서드 | 확인할 내용 |
+|---|---|---|---|
+| 1 | SimpleJob | doExecute() | Step 순차 실행 |
+| 2 | SimpleStepHandler | handleStep() | Step 실행 가능 여부 |
+| 3 | JobExecution | createStepExecution() | StepExecution 생성 |
+| 4 | SimpleStepHandler | handleStep() | ExecutionContext 준비 |
+| 5 | AbstractStep | execute() | STARTED 상태 설정 |
+| 6 | StepExecutionListener | beforeStep() | Step 실행 전 처리 |
+| 7 | TaskletStep | doExecute() | 반복 실행 시작 |
+| 8 | RepeatTemplate | iterate() | 반복 제어 |
+| 9 | StepContextRepeatCallback | doInChunkContext() | ChunkContext 준비 |
+| 10 | TransactionTemplate | execute() | 트랜잭션 시작 |
+| 11 | ChunkTransactionCallback | doInTransaction() | Tasklet 실행 |
+| 12 | Tasklet | execute() | 비즈니스 로직 |
+| 13 | StepExecution | apply() | StepContribution 반영 |
+| 14 | TaskletStep | doExecute() | 반복 종료 |
+| 15 | AbstractStep | execute() | 실행 상태 결정 |
+| 16 | StepExecutionListener | afterStep() | 종료 후 처리 |
+| 17 | JobRepository | update() | 최종 메타데이터 저장 |
+
+이 순서대로 확인하면 각 객체가 언제 생성되고 어떤 책임을 수행하는지 연결할 수 있다.
+
+특히 TaskletStep과 AbstractStep의 역할을 구분하는 것이 중요하다.
+
+TaskletStep은 실제 반복 작업을 처리한다.
+
+AbstractStep은 Step 전체의 실행 상태를 관리한다.
+
+이처럼 실행 제어와 상태 관리가 분리되어 있기 때문에 다양한 Step 구현체가 공통적인 실행 구조를 사용할 수 있다.
+
+---
+
+### 실무에서 TaskletStep 아키텍처를 활용하는 12가지 방법
+
+TaskletStep의 내부 구조를 이해하면 단순히 배치를 구현하는 것을 넘어 안정적인 운영 및 장애 복구 전략을 설계할 수 있다.
+
+특히 대량 데이터 처리, 결제, 정산, 외부 API 연동처럼 데이터 정합성이 중요한 업무에서 도움이 된다.
+
+#### 1. 반복 실행 횟수를 명확하게 관리한다
+
+Tasklet이 CONTINUABLE을 반환하면 반복이 계속될 수 있다.
+
+따라서 반복 종료 조건을 명확하게 정의해야 한다.
+
+예를 들어 처리 대상 데이터가 없을 때 FINISHED를 반환하도록 구성할 수 있다.
+
+또한 최대 반복 횟수나 처리 시간 제한을 추가로 고려할 수 있다.
+
+#### 2. 반복 상태는 ExecutionContext에 저장한다
+
+반복형 Tasklet에서 실행 횟수나 마지막 처리 위치를 저장해야 한다면 ExecutionContext를 활용할 수 있다.
+
+이렇게 하면 StepExecution별 상태를 구분할 수 있다.
+
+다만 저장한 값을 실제 재시작 과정에서 활용하려면 복원 로직도 필요하다.
+
+#### 3. 트랜잭션 경계를 기준으로 데이터 처리 단위를 설계한다
+
+TaskletStep은 반복 실행마다 트랜잭션을 적용한다.
+
+따라서 한 번의 Tasklet 실행에서 처리할 데이터 양을 적절하게 조정해야 한다.
+
+하나의 트랜잭션에서 너무 많은 데이터를 처리하면 롤백 비용과 데이터베이스 부하가 증가할 수 있다.
+
+#### 4. 이미 커밋한 데이터의 중복 처리를 방지한다
+
+반복형 Tasklet은 일부 반복이 커밋된 이후 실패할 수 있다.
+
+따라서 재시작할 때 이미 처리한 데이터를 다시 처리하지 않도록 설계해야 한다.
+
+데이터베이스 유니크 제약조건, 처리 상태 테이블, 멱등성 키 등을 활용할 수 있다.
+
+#### 5. 외부 API는 별도의 일관성 전략을 적용한다
+
+TaskletStep의 트랜잭션이 외부 API 호출까지 자동으로 롤백하는 것은 아니다.
+
+예를 들어 외부 결제 API 호출이 성공한 이후 데이터베이스 작업이 실패할 수 있다.
+
+이 경우 외부 시스템의 상태와 내부 데이터베이스 상태가 달라질 수 있다.
+
+따라서 외부 API를 호출할 때는 멱등성 키와 상태 조회, 보상 처리 등을 함께 고려해야 한다.
+
+#### 6. StepExecutionListener에는 실행 전후의 공통 처리를 배치한다
+
+beforeStep()과 afterStep()은 Step 전체의 실행 전후에 호출된다.
+
+따라서 실행 로그, 모니터링, 처리 결과 요약 등에 활용하기 적합하다.
+
+반면 핵심 비즈니스 트랜잭션을 Listener에서 수행하는 것은 신중하게 판단해야 한다.
+
+Listener와 Tasklet의 트랜잭션 경계가 동일하지 않을 수 있기 때문이다.
+
+#### 7. BatchStatus와 ExitStatus를 분리해서 관리한다
+
+BatchStatus는 실제 실행 상태를 나타낸다.
+
+ExitStatus는 종료 결과를 표현한다.
+
+따라서 운영 시스템에서는 두 값을 함께 확인하는 것이 좋다.
+
+특히 사용자 정의 ExitStatus를 사용하는 경우에는 BatchStatus만으로 모든 실행 결과를 판단하기 어렵다.
+
+#### 8. StepExecution의 CommitCount와 RollbackCount를 모니터링한다
+
+CommitCount와 RollbackCount는 Step의 실행 특성을 이해하는 데 유용하다.
+
+예를 들어 RollbackCount가 반복적으로 증가한다면 트랜잭션 실패가 발생하고 있을 가능성이 있다.
+
+또한 CommitCount가 예상보다 크다면 불필요한 반복 실행이 발생했는지 확인할 수 있다.
+
+다만 실행 횟수와 커밋 횟수가 모든 상황에서 정확히 일치한다고 가정해서는 안 된다.
+
+#### 9. ExecutionContext의 저장 시점을 고려한다
+
+ExecutionContext는 실행 중 메모리에서 변경된다.
+
+하지만 해당 값이 즉시 데이터베이스에 저장되는 것은 아니다.
+
+TaskletStep은 트랜잭션 처리 및 Step 종료 과정에서 Context를 저장한다.
+
+따라서 장애 복구 설계에서는 마지막으로 영속화된 상태가 무엇인지 확인해야 한다.
+
+#### 10. 데이터베이스 트랜잭션과 JobRepository의 관계를 확인한다
+
+TaskletStep은 JobRepository를 이용해 실행 메타데이터를 저장한다.
+
+하지만 비즈니스 데이터와 메타데이터가 항상 동일한 트랜잭션 자원에 속한다고 단정할 수는 없다.
+
+특히 서로 다른 데이터베이스나 트랜잭션 매니저를 사용하는 경우에는 원자성이 달라질 수 있다.
+
+따라서 실제 운영 환경에서는 어떤 리소스가 동일한 트랜잭션에 참여하는지 명확하게 확인해야 한다.
+
+#### 11. Step 단위 재시작과 Tasklet 반복을 구분한다
+
+Tasklet이 CONTINUABLE을 반환해서 반복되는 것과 Job이 실패한 이후 Step을 재시작하는 것은 다른 개념이다.
+
+Tasklet 반복은 현재 StepExecution 안에서 이루어진다.
+
+반면 Step 재시작은 새로운 JobExecution에서 새로운 StepExecution을 생성하는 과정이다.
+
+따라서 반복 횟수와 재시작 횟수를 혼동해서는 안 된다.
+
+#### 12. 장애가 발생한 계층을 구분해 분석한다
+
+Step 실행 중 오류가 발생했다고 해서 모든 문제가 Tasklet의 비즈니스 로직에서 발생한 것은 아니다.
+
+다음과 같은 계층에서 문제가 발생할 수 있다.
+
+```text
+SimpleStepHandler
+    │
+    └── StepExecution 생성 또는 재시작 판단 오류
+
+AbstractStep
+    │
+    └── 실행 상태 및 Listener 처리 오류
+
+TaskletStep
+    │
+    └── 반복 실행 관련 오류
+
+TransactionTemplate
+    │
+    └── 트랜잭션 시작 및 커밋 오류
+
+Tasklet
+    │
+    └── 비즈니스 로직 오류
+
+JobRepository
+    │
+    └── 메타데이터 저장 오류
+```
+
+이처럼 장애를 계층별로 구분하면 문제의 발생 위치를 더 빠르게 파악할 수 있다.
+
+---
+
+### TaskletStep에서 자주 혼동하는 부분
+
+| 혼동하기 쉬운 내용 | 정확한 이해 |
+|---|---|
+| SimpleJob이 Tasklet을 직접 실행한다 | Step 실행 계층을 통해 Tasklet이 호출된다 |
+| TaskletStep이 StepExecution을 생성한다 | SimpleStepHandler가 JobExecution을 통해 생성한다 |
+| Tasklet이 실행된 후 StepExecution이 생성된다 | 실제 Step 실행 전에 준비된다 |
+| 모든 StepExecution은 새로운 ExecutionContext만 사용한다 | 재시작 시 이전 Context를 복원할 수 있다 |
+| TaskletStep이 BatchStatus를 직접 최종 확정한다 | AbstractStep이 공통 종료 처리를 담당한다 |
+| RepeatTemplate이 트랜잭션을 직접 관리한다 | TransactionTemplate이 트랜잭션을 관리한다 |
+| Tasklet은 기본적으로 무조건 무한 반복한다 | 실제 반환한 RepeatStatus에 따라 결정된다 |
+| CONTINUABLE을 반환하면 종료한다 | 다음 반복을 계속할 수 있다 |
+| FINISHED를 반환하면 반복한다 | 반복을 종료한다 |
+| Tasklet에서 null을 반환하면 실패한다 | FINISHED로 해석된다 |
+| 반복 전체가 하나의 트랜잭션이다 | 기본 구조에서는 각 Tasklet 호출에 트랜잭션이 적용된다 |
+| beforeStep은 Tasklet 반복마다 호출된다 | StepExecution 시작 시 호출된다 |
+| afterStep은 성공했을 때만 호출된다 | 일반적인 실패 경로에서도 호출된다 |
+| afterStep은 최종 DB 업데이트 후 호출된다 | 최종 메타데이터 저장 이전에 호출된다 |
+| ExitStatus를 변경하면 BatchStatus도 자동으로 변경된다 | 서로 독립적으로 관리된다 |
+| 트랜잭션 롤백 시 이전 반복의 커밋도 모두 취소된다 | 이전에 완료된 커밋은 유지될 수 있다 |
+
+---
+
+### TaskletStep 전체 아키텍처 정리
+
+지금까지 살펴본 내용을 하나의 흐름으로 정리해보자.
+
+```mermaid
+flowchart TD
+    A["SimpleJob.doExecute()"]
+    B["SimpleStepHandler.handleStep()"]
+
+    C["StepExecution 생성"]
+    D["ExecutionContext 준비"]
+
+    E["AbstractStep.execute()"]
+    F["BatchStatus.STARTED"]
+    G["beforeStep()"]
+
+    H["TaskletStep.doExecute()"]
+    I["RepeatTemplate.iterate()"]
+
+    J["StepContextRepeatCallback"]
+    K["TransactionTemplate"]
+    L["ChunkTransactionCallback"]
+
+    M["StepContribution 생성"]
+    N["Tasklet.execute()"]
+
+    O{"실행 결과"}
+
+    P["Transaction Rollback"]
+    Q["실패 상태 처리"]
+
+    R["StepContribution 반영"]
+    S["ExecutionContext 갱신"]
+    T["Transaction Commit"]
+
+    U{"RepeatStatus"}
+
+    V["다음 반복"]
+    W["반복 종료"]
+
+    X["AbstractStep 종료 처리"]
+    Y["BatchStatus / ExitStatus 결정"]
+    Z["afterStep()"]
+    AA["JobRepository 최종 저장"]
+
+    A --> B
+    B --> C
+    C --> D
+
+    D --> E
+    E --> F
+    F --> G
+
+    G --> H
+    H --> I
+    I --> J
+    J --> K
+    K --> L
+
+    L --> M
+    M --> N
+    N --> O
+
+    O -->|예외| P
+    P --> Q
+    Q --> X
+
+    O -->|정상| R
+    R --> S
+    S --> T
+    T --> U
+
+    U -->|CONTINUABLE| V
+    V --> I
+
+    U -->|FINISHED| W
+    W --> X
+
+    X --> Y
+    Y --> Z
+    Z --> AA
+```
+
+이 구조에서 가장 중요한 것은 각 컴포넌트의 책임이다.
+
+SimpleJob은 Step의 실행 순서를 관리한다.
+
+SimpleStepHandler는 StepExecution을 준비한다.
+
+AbstractStep은 Step 전체의 실행 상태와 Listener를 관리한다.
+
+TaskletStep은 반복 실행을 시작한다.
+
+RepeatTemplate은 반복 여부를 판단한다.
+
+StepContextRepeatCallback은 반복 실행에 필요한 Context를 제공한다.
+
+TransactionTemplate은 트랜잭션을 관리한다.
+
+ChunkTransactionCallback은 실제 Tasklet을 실행하고 결과를 StepExecution에 반영한다.
+
+Tasklet은 비즈니스 로직을 수행한다.
+
+그리고 AbstractStep은 최종 상태를 결정하고 JobRepository를 통해 메타데이터를 저장한다.
+
+이러한 구조를 통해 Spring Batch는 반복 실행과 트랜잭션, 상태 관리를 분리한다.
+
+---
+
+### 정리
+
+Spring Batch의 `TaskletStep`은 Tasklet을 반복 실행하기 위한 Step 구현체다.
+
+하지만 실제 실행 과정은 단순한 Tasklet 호출보다 복잡하다.
+
+Job이 실행되면 SimpleJob은 Step을 순차적으로 실행한다.
+
+이때 SimpleStepHandler는 이전 실행 이력을 확인하고 새로운 StepExecution을 생성한다.
+
+그리고 ExecutionContext를 준비한다.
+
+이후 AbstractStep은 StepExecution의 BatchStatus를 STARTED로 변경한다.
+
+그리고 StepExecutionListener의 beforeStep()을 호출한다.
+
+그다음 TaskletStep의 doExecute()가 실행된다.
+
+TaskletStep은 RepeatTemplate을 이용해 반복 실행을 시작한다.
+
+반복 과정에서는 StepContextRepeatCallback이 실행에 필요한 Context를 제공한다.
+
+그리고 TransactionTemplate이 트랜잭션을 시작한다.
+
+트랜잭션 내부에서는 ChunkTransactionCallback이 실행된다.
+
+ChunkTransactionCallback은 StepContribution을 생성하고 Tasklet의 execute() 메서드를 호출한다.
+
+Tasklet은 실제 비즈니스 로직을 수행한다.
+
+이후 RepeatStatus를 반환한다.
+
+CONTINUABLE을 반환하면 반복이 계속된다.
+
+FINISHED를 반환하면 반복이 종료된다.
+
+null을 반환하면 FINISHED로 해석된다.
+
+반면 예외가 발생하면 일반적으로 트랜잭션이 롤백되고 Step은 실패 처리 경로로 진행한다.
+
+Tasklet의 반복 실행이 종료되면 제어권은 AbstractStep으로 돌아온다.
+
+AbstractStep은 StepExecution의 BatchStatus와 ExitStatus를 결정한다.
+
+그리고 afterStep()을 호출한다.
+
+마지막으로 ExecutionContext와 StepExecution의 최종 상태를 JobRepository에 저장한다.
+
+전체 실행 흐름은 다음과 같다.
+
+```text
+SimpleJob
+    │
+    ▼
+SimpleStepHandler
+    │
+    ├── StepExecution 생성
+    └── ExecutionContext 준비
+    │
+    ▼
+AbstractStep.execute()
+    │
+    ├── STARTED 설정
+    └── beforeStep()
+    │
+    ▼
+TaskletStep.doExecute()
+    │
+    ▼
+RepeatTemplate.iterate()
+    │
+    ▼
+StepContextRepeatCallback
+    │
+    ▼
+TransactionTemplate.execute()
+    │
+    ▼
+ChunkTransactionCallback
+    │
+    ▼
+Tasklet.execute()
+    │
+    ▼
+RepeatStatus
+    │
+    ├── CONTINUABLE → 반복
+    └── FINISHED → 종료
+    │
+    ▼
+AbstractStep
+    │
+    ├── BatchStatus 결정
+    ├── ExitStatus 결정
+    ├── afterStep()
+    └── JobRepository 최종 저장
+    │
+    ▼
+Step 실행 종료
+```
+
+여기서 반드시 이해해야 할 핵심은 세 가지다.
+
+첫 번째는 **StepExecution이 Tasklet 실행 전에 준비된다는 사실**이다.
+
+두 번째는 **RepeatTemplate의 반복 구조 안에 TransactionTemplate의 트랜잭션 경계가 존재한다는 사실**이다.
+
+세 번째는 **TaskletStep이 실제 작업을 수행하고 AbstractStep이 전체 실행 상태와 종료 처리를 관리한다는 사실**이다.
+
+이러한 구조를 이해하면 단순한 Tasklet 실행뿐 아니라 반복형 작업, 트랜잭션 경계, 장애 발생 시 롤백, ExecutionContext 복원, Listener 호출 순서까지 하나의 흐름으로 이해할 수 있다.
+
+특히 결제나 정산처럼 실행 이력과 데이터 정합성이 중요한 업무에서는 이러한 내부 구조에 대한 이해가 필수적이다.
+
+단순히 Tasklet을 구현하는 것보다 **어떤 시점에 트랜잭션이 시작되고, 언제 데이터가 커밋되며, 실패했을 때 어떤 상태가 저장되는지** 이해하는 것이 안정적인 배치 시스템을 설계하는 데 더 중요하기 때문이다.
+
+#### 한 줄 요약
+
+> Spring Batch의 `TaskletStep`은 `RepeatTemplate`으로 Tasklet을 반복 실행하고, `TransactionTemplate`을 이용해 각 실행의 트랜잭션을 관리한다. Step 실행 전에는 `SimpleStepHandler`가 `StepExecution`과 `ExecutionContext`를 준비하고, `AbstractStep`이 `beforeStep()`을 호출한다. Tasklet이 `FINISHED`를 반환하거나 예외로 중단되면 `AbstractStep`이 실행 결과를 반영하고 `afterStep()`을 호출한 뒤 최종 메타데이터를 저장한다.
+
+## JobStep
+
+
+### Spring Batch JobStep 이해: 부모 Job과 자식 Job의 실행 구조, JobParameters 전달 및 실패 처리 아키텍처
+
+Spring Batch에서 Job은 하나 이상의 Step으로 구성된다.
+
+일반적인 배치 작업은 Job이 여러 Step을 순차적으로 실행하는 구조로 설계된다.
+
+예를 들어 정산 시스템에서는 다음과 같은 Job을 구성할 수 있다.
+
+```text
+SettlementJob
+    │
+    ├── Step 1. 정산 대상 조회
+    │
+    ├── Step 2. 정산 금액 계산
+    │
+    └── Step 3. 정산 결과 저장
+```
+
+각 Step은 자신에게 등록된 Tasklet이나 Chunk 기반 처리 로직을 실행한다.
+
+하지만 실제 배치 시스템에서는 하나의 Job 안에서 단순히 여러 Step을 실행하는 것만으로는 요구사항을 해결하기 어려운 경우가 있다.
+
+예를 들어 다음과 같은 상황을 생각해보자.
+
+정산 시스템에는 가맹점별 수수료 계산을 담당하는 Job이 존재한다.
+
+이 Job은 여러 배치 프로세스에서 공통으로 사용된다.
+
+일별 정산 Job에서도 사용하고, 월별 정산 Job에서도 사용하며, 정산 재처리 Job에서도 사용한다.
+
+이러한 상황에서 각 Job에 동일한 Step들을 반복해서 정의한다면 어떻게 될까?
+
+```text
+DailySettlementJob
+    │
+    ├── 수수료 계산 Step 1
+    └── 수수료 계산 Step 2
+
+MonthlySettlementJob
+    │
+    ├── 수수료 계산 Step 1
+    └── 수수료 계산 Step 2
+
+RetrySettlementJob
+    │
+    ├── 수수료 계산 Step 1
+    └── 수수료 계산 Step 2
+```
+
+이 방식에서는 동일한 비즈니스 로직이 여러 Job의 실행 흐름에 중복으로 포함된다.
+
+물론 Step Bean이나 공통 서비스를 재사용할 수도 있다.
+
+하지만 수수료 계산 자체가 독립적인 실행 이력과 재시작 정책을 가져야 한다면 단순한 Step 재사용만으로는 부족할 수 있다.
+
+이때 사용할 수 있는 것이 **JobStep**이다.
+
+JobStep은 Step 내부에서 별도의 Job을 실행하도록 구성하는 Step 구현체다.
+
+예를 들어 다음과 같은 구조를 만들 수 있다.
+
+```text
+DailySettlementJob
+    │
+    ├── ValidationStep
+    │
+    ├── JobStep
+    │      │
+    │      ▼
+    │   FeeCalculationJob
+    │      │
+    │      ├── CalculateFeeStep
+    │      └── SaveFeeStep
+    │
+    └── CompletionStep
+```
+
+이 구조에서는 DailySettlementJob이 부모 Job이다.
+
+FeeCalculationJob은 자식 Job이다.
+
+부모 Job은 자신에게 등록된 JobStep을 실행한다.
+
+그리고 JobStep은 내부적으로 JobLauncher를 이용해 자식 Job을 실행한다.
+
+따라서 자식 Job은 독립적인 JobExecution을 생성하고 자신에게 등록된 Step들을 실행한다.
+
+여기서 중요한 점이 있다.
+
+**JobStep은 단순히 다른 Job의 메서드를 호출하는 구조가 아니다.**
+
+Spring Batch가 제공하는 Job 실행 체계를 이용해 별도의 Job을 실행하는 구조다.
+
+따라서 부모 Job과 자식 Job은 각각 독립적인 JobInstance, JobExecution, StepExecution을 가진다.
+
+이러한 특징을 이해하면 규모가 큰 배치 시스템을 여러 Job으로 분리하면서도 전체 실행 흐름을 관리할 수 있다.
+
+이번에는 JobStep의 개념부터 생성 API, 내부 실행 구조, JobParametersExtractor, 실행 메타데이터, 실패 전파와 재시작 문제까지 자세히 살펴보자.
+
+---
+
+### 개념
+
+#### JobStep이란?
+
+`JobStep`은 Spring Batch에서 제공하는 Step 구현체로, Step 내부에서 별도의 Job을 실행하는 역할을 담당한다.
+
+일반적인 Step은 Tasklet을 실행한다.
+
+```text
+ParentJob
+    │
+    └── TaskletStep
+            │
+            └── Tasklet.execute()
+```
+
+반면 JobStep은 Job을 실행한다.
+
+```text
+ParentJob
+    │
+    └── JobStep
+            │
+            ▼
+         ChildJob
+            │
+            └── TaskletStep
+                    │
+                    └── Tasklet.execute()
+```
+
+두 방식의 가장 큰 차이는 실행 대상이다.
+
+TaskletStep은 Tasklet을 실행한다.
+
+JobStep은 별도의 Job을 실행한다.
+
+JobStep 내부의 자식 Job 역시 일반적인 Job과 동일하게 여러 Step을 포함할 수 있다.
+
+따라서 다음과 같은 계층 구조를 구성할 수 있다.
+
+```mermaid
+flowchart TD
+    A["ParentJob"]
+    B["JobStep"]
+    C["ChildJob"]
+    D["ChildStep 1"]
+    E["ChildStep 2"]
+    F["ParentStep 2"]
+
+    A --> B
+    B --> C
+
+    C --> D
+    D --> E
+
+    A --> F
+```
+
+이 구조에서 ParentJob이 실행되면 먼저 JobStep을 실행한다.
+
+JobStep은 ChildJob을 실행한다.
+
+ChildJob은 자신에게 등록된 Step들을 실행한다.
+
+ChildJob이 정상적으로 완료되면 JobStep 역시 정상적으로 완료될 수 있다.
+
+이후 ParentJob은 다음 Step으로 진행한다.
+
+반대로 ChildJob이 실패하면 JobStep도 실패한다.
+
+그리고 일반적인 SimpleJob에서는 실패한 Step 이후의 Step을 실행하지 않으므로 ParentJob 역시 실패한다.
+
+#### JobStep의 주요 특징
+
+| 항목 | 설명 |
+|---|---|
+| 구현 클래스 | JobStep |
+| 상위 클래스 | AbstractStep |
+| 생성 Builder | JobStepBuilder |
+| 핵심 API | job(), launcher(), parametersExtractor() |
+| 실행 대상 | 별도의 Job |
+| 자식 Job 실행 | JobLauncher 사용 |
+| 파라미터 전달 | JobParametersExtractor 사용 |
+| 메타데이터 | 부모 Job과 자식 Job 각각 관리 |
+| 실패 처리 | 자식 Job 실패 시 JobStep도 실패 |
+| 주요 활용 | Job 모듈화, 실행 흐름 관리, 독립적인 작업 재사용 |
+
+여기서 중요한 것은 **자식 Job이 부모 Job의 Step이라는 의미가 아니라는 점**이다.
+
+JobStep은 부모 Job에 속한 Step이다.
+
+반면 ChildJob은 별도의 Job이다.
+
+ChildJob은 고유한 JobInstance와 JobExecution을 가진다.
+
+이 차이는 실행 결과를 데이터베이스에서 조회할 때 명확하게 나타난다.
+
+---
+
+### 왜 사용하는가?
+
+JobStep을 사용하는 가장 큰 이유는 복잡한 배치 시스템을 독립적인 Job으로 분리하면서도 실행 순서를 연결할 수 있기 때문이다.
+
+예를 들어 다음과 같은 결제·정산 시스템을 생각해보자.
+
+```text
+SettlementJob
+    │
+    ├── 거래 데이터 검증
+    │
+    ├── 결제 수수료 계산
+    │
+    ├── 정산 금액 계산
+    │
+    ├── 정산 데이터 생성
+    │
+    └── 정산 결과 전송
+```
+
+각 작업이 단순한 로직이라면 하나의 Job 안에 여러 Step을 정의하는 것으로 충분할 수 있다.
+
+하지만 수수료 계산이 다음과 같은 특징을 가진다면 어떨까?
+
+- 여러 정산 Job에서 공통으로 사용된다.
+- 자체적인 JobParameters가 필요하다.
+- 독립적인 실행 이력을 관리해야 한다.
+- 실패했을 때 별도로 재시작할 필요가 있다.
+- 다른 배치 프로세스에서도 직접 실행할 수 있어야 한다.
+
+이 경우 수수료 계산을 별도의 Job으로 분리하는 것이 유리할 수 있다.
+
+```text
+SettlementJob
+    │
+    ├── ValidationStep
+    │
+    ├── FeeCalculationJobStep
+    │         │
+    │         ▼
+    │     FeeCalculationJob
+    │         │
+    │         ├── FeeValidationStep
+    │         ├── FeeCalculationStep
+    │         └── FeeSaveStep
+    │
+    └── SettlementCompletionStep
+```
+
+이렇게 구성하면 FeeCalculationJob을 독립적으로 실행할 수 있다.
+
+동시에 SettlementJob의 실행 흐름 안에서도 사용할 수 있다.
+
+JobStep은 이러한 요구사항을 해결하기 위한 컴포넌트다.
+
+---
+
+### JobStep과 TaskletStep의 차이
+
+JobStep을 이해하기 위해 TaskletStep과 비교해보자.
+
+| 구분 | TaskletStep | JobStep |
+|---|---|---|
+| 실행 대상 | Tasklet | Job |
+| Builder | TaskletStepBuilder | JobStepBuilder |
+| 주요 API | tasklet() | job() |
+| 내부 실행 | Tasklet.execute() | JobLauncher.run() |
+| 자체 JobExecution 생성 | 없음 | 자식 Job의 JobExecution 생성 |
+| 반복 처리 | RepeatTemplate 활용 | 자식 Job의 실행 구조에 위임 |
+| 트랜잭션 | Tasklet 실행 단위 | 부모와 자식의 실행 경계가 구분됨 |
+| 메타데이터 | 해당 StepExecution | 부모 StepExecution과 자식 JobExecution |
+| 주요 목적 | 비즈니스 로직 수행 | Job 실행 및 모듈화 |
+
+TaskletStep은 비즈니스 로직을 직접 실행하는 데 적합하다.
+
+반면 JobStep은 이미 정의된 Job을 실행 흐름에 포함할 때 적합하다.
+
+따라서 단순히 코드가 길다는 이유만으로 JobStep을 선택할 필요는 없다.
+
+**독립적인 Job 실행 이력과 실행 정책이 필요한지**가 중요한 판단 기준이다.
+
+---
+
+### 주요 특징
+
+#### 1. 부모 Job과 자식 Job은 독립적인 Job이다
+
+부모 Job과 자식 Job은 서로 다른 Job 객체다.
+
+각각 고유한 이름을 가진다.
+
+예를 들어 다음과 같다.
+
+```text
+ParentJob
+    │
+    └── JobStep
+            │
+            └── ChildJob
+```
+
+이 구조에서 ParentJob과 ChildJob은 서로 다른 JobInstance를 생성할 수 있다.
+
+JobExecution 역시 별도로 생성된다.
+
+따라서 부모 Job의 실행 이력과 자식 Job의 실행 이력을 독립적으로 조회할 수 있다.
+
+#### 2. JobStep은 JobLauncher를 통해 자식 Job을 실행한다
+
+JobStep은 내부에 JobLauncher를 참조한다.
+
+실제 실행 시에는 다음과 같은 메서드를 호출한다.
+
+```java
+jobLauncher.run(
+        childJob,
+        jobParameters
+);
+```
+
+따라서 자식 Job은 일반적인 Job 실행 과정을 거친다.
+
+JobRepository를 이용해 JobInstance와 JobExecution을 생성하거나 기존 실행 이력을 확인한다.
+
+#### 3. JobParametersExtractor를 이용해 파라미터를 전달할 수 있다
+
+자식 Job을 실행하려면 JobParameters가 필요하다.
+
+JobStep은 부모 Job의 파라미터를 전달하거나 StepExecution의 ExecutionContext에서 필요한 값을 추출할 수 있다.
+
+이때 사용하는 인터페이스가 `JobParametersExtractor`다.
+
+대표적인 구현체는 `DefaultJobParametersExtractor`다.
+
+#### 4. 자식 Job이 실패하면 JobStep도 실패한다
+
+자식 Job이 FAILED 상태로 종료되면 JobStep은 이를 정상적인 완료로 처리하지 않는다.
+
+Spring Batch 5.2.4의 JobStep은 자식 Job이 정상적으로 완료되지 않았을 때 예외를 발생시켜 Step 실패 처리로 연결한다.
+
+따라서 일반적인 SimpleJob에서는 후속 Step이 실행되지 않는다.
+
+#### 5. 자식 Job이 성공해도 부모 Job은 실패할 수 있다
+
+자식 Job이 정상적으로 완료되었다고 해서 부모 Job 전체가 반드시 성공하는 것은 아니다.
+
+부모 Job에는 자식 Job을 실행하는 JobStep 외에도 다른 Step이 존재할 수 있기 때문이다.
+
+예를 들어 다음과 같은 상황이다.
+
+```text
+ParentJob
+    │
+    ├── JobStep → COMPLETED
+    │      │
+    │      └── ChildJob → COMPLETED
+    │
+    └── ParentStep2 → FAILED
+
+ParentJob → FAILED
+```
+
+이 경우 자식 Job은 성공했다.
+
+JobStep도 성공했다.
+
+하지만 ParentStep2가 실패했으므로 부모 Job은 실패한다.
+
+이러한 구조는 부모 Job과 자식 Job의 실행 상태가 각각 관리된다는 점을 보여준다.
+
+---
+
+### JobStep 생성 API
+
+Spring Batch에서는 JobStep을 생성하기 위해 다음 API를 제공한다.
+
+```java
+new StepBuilder(
+        "jobStep",
+        jobRepository
+)
+        .job(childJob)
+        .launcher(jobLauncher)
+        .parametersExtractor(jobParametersExtractor)
+        .build();
+```
+
+각 API의 역할은 다음과 같다.
+
+| API | 역할 |
+|---|---|
+| StepBuilder() | StepBuilder 생성 |
+| job() | JobStep에서 실행할 자식 Job 설정 |
+| launcher() | 자식 Job을 실행할 JobLauncher 설정 |
+| parametersExtractor() | 자식 Job에 전달할 JobParameters 구성 |
+| build() | JobStep 생성 |
+
+여기서 중요한 부분은 `job()`이다.
+
+```java
+.job(childJob)
+```
+
+StepBuilder에서 이 메서드를 호출하면 `JobStepBuilder`가 반환된다.
+
+그리고 build()를 호출하면 최종적으로 `JobStep`이 생성된다.
+
+#### Spring Batch 버전별 차이
+
+기존 Spring Batch에서는 다음과 같이 StepBuilderFactory를 사용했다.
+
+```java
+stepBuilderFactory.get("jobStep")
+        .job(childJob)
+        .launcher(jobLauncher)
+        .parametersExtractor(jobParametersExtractor)
+        .build();
+```
+
+하지만 Spring Batch 5.2에서는 `StepBuilderFactory`가 제거되었다.
+
+따라서 다음과 같이 StepBuilder를 직접 생성해야 한다.
+
+```java
+new StepBuilder("jobStep", jobRepository)
+        .job(childJob)
+        .launcher(jobLauncher)
+        .parametersExtractor(jobParametersExtractor)
+        .build();
+```
+
+변경된 것은 Builder를 생성하는 진입점이다.
+
+JobStepBuilder와 JobStep이 담당하는 핵심 역할은 유지된다.
+
+---
+
+### JobStepBuilder의 생성 과정
+
+JobStep은 다음과 같은 구조를 통해 생성된다.
+
+```text
+StepBuilder
+    │
+    ▼
+job(childJob)
+    │
+    ▼
+JobStepBuilder
+    │
+    ├── ChildJob
+    ├── JobLauncher
+    └── JobParametersExtractor
+    │
+    ▼
+build()
+    │
+    ▼
+JobStep
+```
+
+Spring Batch 5.2.4의 StepBuilder에는 다음 메서드가 존재한다.
+
+```java
+public JobStepBuilder job(Job job) {
+    return new JobStepBuilder(this).job(job);
+}
+```
+
+이 메서드는 JobStepBuilder를 생성한다.
+
+그리고 전달받은 Job 객체를 설정한다.
+
+JobStepBuilder는 다음 필드를 관리한다.
+
+```java
+private Job job;
+
+private JobLauncher jobLauncher;
+
+private JobParametersExtractor jobParametersExtractor;
+```
+
+여기서 각 필드의 역할은 다음과 같다.
+
+`job`은 실제 실행할 자식 Job이다.
+
+`jobLauncher`는 해당 Job을 실행할 객체다.
+
+`jobParametersExtractor`는 자식 Job에 전달할 JobParameters를 생성할 객체다.
+
+이후 build()가 호출되면 JobStep을 생성한다.
+
+핵심적인 생성 흐름을 단순화하면 다음과 같다.
+
+```java
+public Step build() {
+
+    JobStep step = new JobStep();
+
+    step.setName(getName());
+
+    super.enhance(step);
+
+    step.setJob(job);
+
+    step.setJobLauncher(jobLauncher);
+
+    if (jobParametersExtractor != null) {
+        step.setJobParametersExtractor(
+                jobParametersExtractor
+        );
+    }
+
+    return step;
+}
+```
+
+위 코드는 핵심 설정 과정만 정리한 형태다.
+
+실제 구현에서는 JobLauncher 기본값 처리와 객체의 필수 속성 검증도 수행한다.
+
+특히 JobLauncher를 직접 지정하지 않은 경우 `JobStepBuilder`는 내부적으로 기본 JobLauncher를 생성할 수 있다.
+
+하지만 실행 방식과 스레드 정책을 명확하게 관리하려면 사용할 JobLauncher를 직접 지정하는 편이 좋다.
+
+이러한 구조는 Spring Batch 5.2.4의 실제 `JobStepBuilder` 구현에서도 확인할 수 있다.
+
+---
+
+### JobStep의 클래스 구조
+
+JobStep은 AbstractStep을 상속한다.
+
+```java
+public class JobStep extends AbstractStep {
+}
+```
+
+상속 구조는 다음과 같다.
+
+```mermaid
+classDiagram
+    class Step {
+        <<interface>>
+        +execute(StepExecution)
+    }
+
+    class AbstractStep {
+        +execute(StepExecution)
+        #doExecute(StepExecution)
+    }
+
+    class JobStep {
+        -Job job
+        -JobLauncher jobLauncher
+        -JobParametersExtractor jobParametersExtractor
+        #doExecute(StepExecution)
+    }
+
+    class JobLauncher {
+        <<interface>>
+        +run(Job, JobParameters)
+    }
+
+    class JobParametersExtractor {
+        <<interface>>
+        +getJobParameters(Job, StepExecution)
+    }
+
+    Step <|.. AbstractStep
+    AbstractStep <|-- JobStep
+
+    JobStep --> JobLauncher
+    JobStep --> JobParametersExtractor
+```
+
+여기서 중요한 점은 JobStep도 일반적인 Step과 동일하게 AbstractStep의 실행 구조를 사용한다는 것이다.
+
+따라서 JobStep 역시 StepExecution을 가진다.
+
+또한 StepExecutionListener의 beforeStep()과 afterStep()을 사용할 수 있다.
+
+하지만 `doExecute()`의 구현이 TaskletStep과 다르다.
+
+TaskletStep은 RepeatTemplate을 통해 Tasklet을 실행한다.
+
+반면 JobStep은 JobLauncher를 통해 자식 Job을 실행한다.
+
+---
+
+### JobStep의 내부 실행 구조
+
+이번에는 실제 실행 흐름을 살펴보자.
+
+부모 Job이 다음과 같이 구성되어 있다고 가정하자.
+
+```java
+new JobBuilder("parentJob", jobRepository)
+        .start(childJobStep)
+        .next(parentStep2)
+        .build();
+```
+
+그리고 childJobStep은 다음과 같이 정의되어 있다.
+
+```java
+new StepBuilder("childJobStep", jobRepository)
+        .job(childJob)
+        .launcher(jobLauncher)
+        .parametersExtractor(jobParametersExtractor)
+        .build();
+```
+
+이 Job을 실행하면 다음과 같은 흐름이 만들어진다.
+
+```mermaid
+sequenceDiagram
+    participant Launcher as JobLauncher
+    participant Parent as ParentJob
+    participant JobStep as JobStep
+    participant Extractor as JobParametersExtractor
+    participant Child as ChildJob
+    participant ChildStep as ChildStep1
+    participant ParentStep as ParentStep2
+
+    Launcher->>Parent: run(parentJob, parameters)
+
+    Parent->>JobStep: execute()
+
+    JobStep->>Extractor: getJobParameters()
+    Extractor-->>JobStep: childJobParameters
+
+    JobStep->>Launcher: run(childJob, childJobParameters)
+
+    Launcher->>Child: execute()
+    Child->>ChildStep: execute()
+
+    ChildStep-->>Child: COMPLETED
+    Child-->>Launcher: JobExecution(COMPLETED)
+
+    Launcher-->>JobStep: Child JobExecution
+
+    JobStep-->>Parent: COMPLETED
+
+    Parent->>ParentStep: execute()
+    ParentStep-->>Parent: COMPLETED
+
+    Parent-->>Launcher: COMPLETED
+```
+
+여기서 중요한 사실은 두 가지다.
+
+첫 번째는 JobStep이 자식 Job을 직접 실행하지 않고 JobLauncher에 실행을 요청한다는 것이다.
+
+두 번째는 자식 Job 실행 결과를 확인한 뒤 JobStep의 완료 여부가 결정된다는 것이다.
+
+따라서 JobStep은 부모 Job과 자식 Job을 연결하는 역할을 수행한다.
+
+---
+
+### JobParametersExtractor란?
+
+JobStep에서는 자식 Job을 실행할 때 필요한 JobParameters를 준비해야 한다.
+
+이때 사용하는 인터페이스가 `JobParametersExtractor`다.
+
+인터페이스는 다음과 같은 메서드를 제공한다.
+
+```java
+public interface JobParametersExtractor {
+
+    JobParameters getJobParameters(
+            Job job,
+            StepExecution stepExecution
+    );
+}
+```
+
+이 메서드는 두 개의 인자를 전달받는다.
+
+첫 번째는 실행할 자식 Job이다.
+
+두 번째는 현재 JobStep의 StepExecution이다.
+
+그리고 최종적으로 자식 Job에 전달할 JobParameters를 반환한다.
+
+#### JobParametersExtractor의 역할
+
+예를 들어 부모 Job의 JobParameters가 다음과 같다고 생각해보자.
+
+```text
+ParentJobParameters
+
+businessDate = 2026-11-10
+```
+
+그리고 JobStep의 ExecutionContext에 다음 값이 저장되어 있다고 가정하자.
+
+```text
+StepExecutionContext
+
+name = user1
+```
+
+JobParametersExtractor를 이용하면 두 정보를 조합할 수 있다.
+
+```text
+ChildJobParameters
+
+businessDate = 2026-11-10
+
+name = user1
+```
+
+이렇게 구성된 JobParameters를 자식 Job에 전달한다.
+
+전체 구조는 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["Parent JobParameters"]
+    B["businessDate = 2026-11-10"]
+
+    C["JobStep ExecutionContext"]
+    D["name = user1"]
+
+    E["JobParametersExtractor"]
+
+    F["Child JobParameters"]
+    G["businessDate = 2026-11-10"]
+    H["name = user1"]
+
+    A --> B
+    C --> D
+
+    B --> E
+    D --> E
+
+    E --> F
+    F --> G
+    F --> H
+```
+
+여기서 중요한 점은 JobParametersExtractor가 부모 JobParameters 전체를 무조건 변경하는 것은 아니라는 사실이다.
+
+**자식 Job을 실행할 새로운 JobParameters 객체를 구성하는 것**이다.
+
+부모 Job의 기존 JobParameters는 그대로 유지된다.
+
+---
+
+### DefaultJobParametersExtractor의 동작 방식
+
+Spring Batch는 JobParametersExtractor의 기본 구현체인 `DefaultJobParametersExtractor`를 제공한다.
+
+이 클래스는 부모 JobParameters와 StepExecution의 ExecutionContext에서 필요한 값을 추출한다.
+
+대표적인 사용 방법은 다음과 같다.
+
+```java
+@Bean
+public DefaultJobParametersExtractor jobParametersExtractor() {
+
+    DefaultJobParametersExtractor extractor =
+            new DefaultJobParametersExtractor();
+
+    extractor.setKeys(
+            new String[]{"name"}
+    );
+
+    return extractor;
+}
+```
+
+여기서는 `name`이라는 키를 추출하도록 설정했다.
+
+#### setKeys()의 역할
+
+```java
+extractor.setKeys(
+        new String[]{"name"}
+);
+```
+
+이 설정은 ExecutionContext에서 `name`에 해당하는 값을 찾아 자식 JobParameters에 포함하도록 한다.
+
+예를 들어 다음과 같은 ExecutionContext가 있다고 생각해보자.
+
+```text
+StepExecutionContext
+    │
+    ├── name = user1
+    ├── processCount = 100
+    └── lastProcessedId = 500
+```
+
+setKeys()에 name만 설정했다면 name을 추출 대상으로 사용한다.
+
+processCount나 lastProcessedId는 자동으로 추가되지 않는다.
+
+#### 부모 JobParameters는 어떻게 처리될까?
+
+DefaultJobParametersExtractor에는 다음 속성이 존재한다.
+
+```java
+private boolean useAllParentParameters = true;
+```
+
+기본값은 true다.
+
+따라서 기본적으로 부모 JobParameters에 포함된 값들도 자식 JobParameters로 전달한다.
+
+예를 들어 부모 JobParameters가 다음과 같다고 생각해보자.
+
+```text
+businessDate = 2026-11-10
+region = KR
+```
+
+그리고 ExecutionContext에 다음 값이 있다.
+
+```text
+name = user1
+```
+
+최종적으로 자식 JobParameters는 다음과 같이 구성될 수 있다.
+
+```text
+businessDate = 2026-11-10
+region = KR
+name = user1
+```
+
+반면 부모 JobParameters 전체를 전달하고 싶지 않다면 다음과 같이 설정할 수 있다.
+
+```java
+extractor.setUseAllParentParameters(false);
+```
+
+이 경우에는 setKeys()에 지정한 값들을 중심으로 자식 JobParameters를 구성한다.
+
+이러한 기본 동작은 Spring Batch 5.2.4의 `DefaultJobParametersExtractor` 구현에서 확인할 수 있다.
+
+---
+
+### DefaultJobParametersExtractor의 내부 구현
+
+실제 처리 과정을 살펴보자.
+
+Spring Batch 5.2.4의 핵심 로직을 단순화하면 다음과 같다.
+
+```java
+public JobParameters getJobParameters(
+        Job job,
+        StepExecution stepExecution
+) {
+
+    JobParametersBuilder builder =
+            new JobParametersBuilder();
+
+    JobParameters parentParameters =
+            stepExecution.getJobParameters();
+
+    ExecutionContext executionContext =
+            stepExecution.getExecutionContext();
+
+    // 부모 JobParameters 복사
+
+    if (useAllParentParameters) {
+
+        builder.addJobParameters(
+                parentParameters
+        );
+    }
+
+    // ExecutionContext에서 지정된 키 추출
+
+    for (String key : keys) {
+
+        if (executionContext.containsKey(key)) {
+
+            String value =
+                    executionContext.getString(key);
+
+            builder.addString(key, value);
+        }
+    }
+
+    return builder.toJobParameters();
+}
+```
+
+이 코드는 주요 흐름을 설명하기 위한 단순화된 형태다.
+
+실제 구현에서는 부모 JobParameters에 동일한 키가 존재하는 경우의 처리와 `DefaultJobParametersConverter`를 이용한 타입 변환도 수행한다.
+
+핵심 동작은 다음과 같다.
+
+첫 번째로 부모 JobParameters를 가져온다.
+
+두 번째로 JobStep의 ExecutionContext를 가져온다.
+
+세 번째로 부모 JobParameters를 복사한다.
+
+네 번째로 setKeys()에 지정한 키를 ExecutionContext에서 조회한다.
+
+다섯 번째로 해당 값을 새로운 JobParameters에 추가한다.
+
+마지막으로 완성된 JobParameters를 반환한다.
+
+따라서 DefaultJobParametersExtractor는 부모 Job과 자식 Job 사이에서 실행 파라미터를 구성하는 역할을 수행한다.
+
+#### ExecutionContext에 키가 없다면?
+
+예를 들어 다음과 같이 설정했다고 생각해보자.
+
+```java
+extractor.setKeys(
+        new String[]{"name"}
+);
+```
+
+하지만 ExecutionContext에 name이 존재하지 않는다.
+
+이 경우 DefaultJobParametersExtractor는 부모 JobParameters에도 같은 키가 있는지 확인한다.
+
+부모 JobParameters에 존재한다면 해당 값을 사용할 수 있다.
+
+어느 쪽에도 없다면 해당 키는 추가되지 않는다.
+
+따라서 자식 Job이 반드시 필요로 하는 파라미터가 있다면 JobParametersValidator 등을 이용해 검증하는 것이 좋다.
+
+---
+
+### ExecutionContext에 값을 저장하는 시점
+
+JobParametersExtractor가 ExecutionContext에서 값을 가져오려면 해당 값이 먼저 저장되어 있어야 한다.
+
+여기서 사용할 수 있는 기능이 `StepExecutionListener.beforeStep()`이다.
+
+JobStep도 AbstractStep을 상속하기 때문에 StepExecutionListener를 등록할 수 있다.
+
+예를 들어 다음과 같다.
+
+```java
+@Bean
+public StepExecutionListener childParametersListener() {
+
+    return new StepExecutionListener() {
+
+        @Override
+        public void beforeStep(
+                StepExecution stepExecution
+        ) {
+
+            stepExecution
+                    .getExecutionContext()
+                    .putString(
+                            "name",
+                            "user1"
+                    );
+        }
+    };
+}
+```
+
+이 Listener는 JobStep이 실행되기 전에 호출된다.
+
+따라서 JobStep의 ExecutionContext에 name이라는 값을 저장할 수 있다.
+
+이후 JobStep의 doExecute()가 호출되면 JobParametersExtractor가 해당 값을 읽는다.
+
+실행 흐름은 다음과 같다.
+
+```text
+ParentJob
+    │
+    ▼
+JobStep 실행
+    │
+    ▼
+AbstractStep.execute()
+    │
+    ▼
+beforeStep()
+    │
+    └── ExecutionContext
+            │
+            └── name = user1
+    │
+    ▼
+JobStep.doExecute()
+    │
+    ▼
+JobParametersExtractor
+    │
+    └── name 값 추출
+    │
+    ▼
+ChildJobParameters 생성
+    │
+    ▼
+JobLauncher.run()
+    │
+    ▼
+ChildJob 실행
+```
+
+이 구조에서 중요한 점은 **beforeStep()이 JobStep.doExecute()보다 먼저 호출된다는 사실**이다.
+
+따라서 beforeStep()에서 저장한 값을 JobParametersExtractor가 활용할 수 있다.
+
+---
+
+### JobStep은 자식 JobParameters를 재시작 시 어떻게 처리할까?
+
+JobStep을 이해할 때 추가로 알아야 할 중요한 특징이 있다.
+
+JobStep은 자식 JobParameters를 한 번 생성한 후 자신의 ExecutionContext에 저장한다.
+
+Spring Batch 5.2.4의 핵심 구현은 다음과 같다.
+
+```java
+JobParameters jobParameters;
+
+if (executionContext.containsKey(JOB_PARAMETERS_KEY)) {
+
+    jobParameters =
+            (JobParameters) executionContext.get(
+                    JOB_PARAMETERS_KEY
+            );
+
+} else {
+
+    jobParameters =
+            jobParametersExtractor.getJobParameters(
+                    job,
+                    stepExecution
+            );
+
+    executionContext.put(
+            JOB_PARAMETERS_KEY,
+            jobParameters
+    );
+}
+```
+
+이 코드는 중요한 의미를 가진다.
+
+최초 실행에서는 JobParametersExtractor를 이용해 파라미터를 생성한다.
+
+그리고 생성한 파라미터를 ExecutionContext에 저장한다.
+
+반면 실패한 JobStep을 재시작할 때 이전 ExecutionContext가 복원되면 저장된 JobParameters를 다시 사용할 수 있다.
+
+따라서 재시작할 때 자식 Job에 전달하는 식별용 파라미터가 임의로 달라지는 문제를 방지하는 데 도움이 된다.
+
+이러한 구조는 부모 Job과 자식 Job의 재시작 정합성을 유지하기 위한 중요한 기능이다.
+
+실제 `JobStep.doExecute()`에서도 이 로직을 확인할 수 있다.
+
+---
+
+### JobStep의 실제 실행 코드
+
+Spring Batch 5.2.4의 JobStep에서 가장 중요한 메서드는 `doExecute()`다.
+
+주요 로직은 다음과 같다.
+
+```java
+@Override
+protected void doExecute(
+        StepExecution stepExecution
+) throws Exception {
+
+    ExecutionContext executionContext =
+            stepExecution.getExecutionContext();
+
+    JobParameters jobParameters;
+
+    if (executionContext.containsKey(JOB_PARAMETERS_KEY)) {
+
+        jobParameters =
+                (JobParameters) executionContext.get(
+                        JOB_PARAMETERS_KEY
+                );
+
+    } else {
+
+        jobParameters =
+                jobParametersExtractor.getJobParameters(
+                        job,
+                        stepExecution
+                );
+
+        executionContext.put(
+                JOB_PARAMETERS_KEY,
+                jobParameters
+        );
+    }
+
+    JobExecution childExecution =
+            jobLauncher.run(
+                    job,
+                    jobParameters
+            );
+
+    stepExecution.setExitStatus(
+            determineStepExitStatus(
+                    stepExecution,
+                    childExecution
+            )
+    );
+
+    if (childExecution.getStatus().isUnsuccessful()) {
+
+        throw new UnexpectedJobExecutionException(
+                "Step failure: the delegate Job failed in JobStep."
+        );
+    }
+}
+```
+
+위 코드는 핵심 실행 흐름을 중심으로 정리한 것이다.
+
+실제 구현에는 Step 유형 정보 저장과 STOPPED 상태 처리 등이 추가되어 있다.
+
+여기서 중요한 부분은 세 가지다.
+
+첫 번째는 JobParameters를 준비하는 과정이다.
+
+두 번째는 JobLauncher를 호출하는 과정이다.
+
+세 번째는 자식 Job의 실행 결과를 확인하는 과정이다.
+
+각각 자세히 살펴보자.
+
+#### 1. JobParameters 생성
+
+```java
+jobParameters =
+        jobParametersExtractor.getJobParameters(
+                job,
+                stepExecution
+        );
+```
+
+현재 JobStep의 StepExecution을 이용해 자식 JobParameters를 생성한다.
+
+#### 2. 자식 Job 실행
+
+```java
+JobExecution childExecution =
+        jobLauncher.run(
+                job,
+                jobParameters
+        );
+```
+
+JobLauncher를 이용해 자식 Job을 실행한다.
+
+이때 ChildJob에 대한 별도의 JobExecution이 생성된다.
+
+#### 3. 자식 Job의 실행 상태 확인
+
+```java
+if (childExecution.getStatus().isUnsuccessful()) {
+
+    throw new UnexpectedJobExecutionException(
+            "Step failure: the delegate Job failed in JobStep."
+    );
+}
+```
+
+자식 Job이 실패했다면 예외를 발생시킨다.
+
+이 예외는 JobStep의 상위 클래스인 AbstractStep에서 처리된다.
+
+따라서 JobStep도 FAILED 상태로 종료된다.
+
+이후 SimpleJob은 JobStep의 실패 상태를 확인하고 다음 Step으로 진행하지 않는다.
+
+---
+
+### 부모 Job과 자식 Job의 실행 메타데이터
+
+JobStep에서 가장 중요한 특징 중 하나는 실행 메타데이터가 분리된다는 것이다.
+
+예를 들어 다음과 같은 구조가 있다고 생각해보자.
+
+```text
+ParentJob
+    │
+    ├── JobStep
+    │      │
+    │      └── ChildJob
+    │              │
+    │              └── ChildStep1
+    │
+    └── ParentStep2
+```
+
+이 구조가 실행되면 JobInstance가 두 개 생성될 수 있다.
+
+첫 번째는 ParentJob의 JobInstance다.
+
+두 번째는 ChildJob의 JobInstance다.
+
+각 JobInstance에 대한 JobExecution도 각각 생성된다.
+
+```text
+ParentJobInstance
+    │
+    └── ParentJobExecution
+            │
+            ├── JobStepExecution
+            └── ParentStep2Execution
+```
+
+```text
+ChildJobInstance
+    │
+    └── ChildJobExecution
+            │
+            └── ChildStep1Execution
+```
+
+여기서 중요한 점은 ChildStep1Execution이 ParentJobExecution에 직접 속하지 않는다는 사실이다.
+
+ChildStep1Execution은 ChildJobExecution에 속한다.
+
+반면 JobStepExecution은 ParentJobExecution에 속한다.
+
+따라서 메타데이터를 조회할 때도 이러한 관계를 구분해야 한다.
+
+#### 메타데이터 관계
+
+```mermaid
+flowchart TD
+    A["ParentJobInstance"]
+    B["ParentJobExecution"]
+    C["JobStepExecution"]
+    D["ParentStep2Execution"]
+
+    E["ChildJobInstance"]
+    F["ChildJobExecution"]
+    G["ChildStep1Execution"]
+
+    A --> B
+    B --> C
+    B --> D
+
+    E --> F
+    F --> G
+
+    C -.->|"JobLauncher로 실행"| F
+```
+
+이 그림에서 실선은 실제 메타데이터의 소속 관계를 나타낸다.
+
+점선은 JobStep이 ChildJob을 실행하는 관계를 나타낸다.
+
+즉, ChildJob은 ParentJob의 실행 흐름에 포함되어 있지만 실행 메타데이터 자체는 독립적으로 관리된다.
+
+---
+
+### 실제 예제: ParentJob과 ChildJob 구성하기
+
+이번에는 JobStep을 직접 구현해보자.
+
+다음 세 가지 상황을 확인할 수 있도록 구성한다.
+
+첫 번째는 ParentJob과 ChildJob이 모두 정상적으로 완료되는 경우다.
+
+두 번째는 ChildJob이 실패하는 경우다.
+
+세 번째는 ChildJob은 성공했지만 ParentJob의 후속 Step에서 실패하는 경우다.
+
+전체 구조는 다음과 같다.
+
+```text
+parentJob
+    │
+    ├── childJobStep
+    │      │
+    │      ├── JobParametersExtractor
+    │      │
+    │      └── childJob
+    │             │
+    │             └── childStep1
+    │
+    └── parentStep2
+```
+
+여기서 childJobStep은 JobStep이다.
+
+childStep1과 parentStep2는 TaskletStep이다.
+
+#### 개발 환경
+
+| 항목 | 기술 |
+|---|---|
+| Java | Java 17 |
+| Spring Boot | 3.4.13 |
+| Spring Batch | 5.2.4 |
+| Database | H2 |
+| Build Tool | Maven |
+| ParentJob | SimpleJob |
+| ChildJob | SimpleJob |
+| JobStep | JobStep |
+
+---
+
+### Maven 의존성 설정
+
+`pom.xml`
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="
+             http://maven.apache.org/POM/4.0.0
+             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.4.13</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.example</groupId>
+    <artifactId>spring-batch-jobstep</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+
+    <properties>
+        <java.version>17</java.version>
+    </properties>
+
+    <dependencies>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-batch</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>
+```
+
+Spring Batch와 H2 데이터베이스를 사용한다.
+
+별도의 데이터베이스 서버를 구축하지 않고도 JobStep의 실행 구조를 확인할 수 있다.
+
+---
+
+### application.yml 설정
+
+`src/main/resources/application.yml`
+
+```yaml
+spring:
+  application:
+    name: spring-batch-jobstep
+
+  main:
+    web-application-type: none
+
+  datasource:
+    url: jdbc:h2:mem:jobstepdb;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+  batch:
+    job:
+      enabled: true
+      name: parentJob
+
+    jdbc:
+      initialize-schema: always
+
+logging:
+  level:
+    org.springframework.batch: INFO
+    com.example.batch: INFO
+```
+
+이번에는 두 개의 Job을 Bean으로 등록한다.
+
+하나는 parentJob이다.
+
+다른 하나는 childJob이다.
+
+여기서 다음 설정이 중요하다.
+
+```yaml
+spring:
+  batch:
+    job:
+      name: parentJob
+```
+
+애플리케이션 실행 시 parentJob을 자동 실행하도록 지정한다.
+
+따라서 childJob은 애플리케이션 시작 시 독립적으로 자동 실행되지 않는다.
+
+childJob은 parentJob의 JobStep을 통해 실행된다.
+
+---
+
+### Spring Boot 애플리케이션 구성
+
+`BatchApplication.java`
+
+```java
+package com.example.batch;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class BatchApplication {
+
+    public static void main(String[] args) {
+
+        SpringApplication.run(
+                BatchApplication.class,
+                args
+        );
+    }
+}
+```
+
+이제 ParentJob과 ChildJob을 정의한다.
+
+---
+
+### JobStepConfiguration 전체 코드
+
+`JobStepConfiguration.java`
+
+```java
+package com.example.batch;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.Step;
+import org.springframework.batch.core.StepExecution;
+import org.springframework.batch.core.StepExecutionListener;
+
+import org.springframework.batch.core.job.builder.JobBuilder;
+
+import org.springframework.batch.core.launch.JobLauncher;
+
+import org.springframework.batch.core.repository.JobRepository;
+
+import org.springframework.batch.core.step.builder.StepBuilder;
+
+import org.springframework.batch.core.step.job.DefaultJobParametersExtractor;
+
+import org.springframework.batch.repeat.RepeatStatus;
+
+import org.springframework.beans.factory.annotation.Qualifier;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import org.springframework.transaction.PlatformTransactionManager;
+
+@Configuration
+public class JobStepConfiguration {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(
+                    JobStepConfiguration.class
+            );
+
+    // --------------------------------------------------
+    // 1. ParentJob
+    // --------------------------------------------------
+
+    @Bean
+    public Job parentJob(
+            JobRepository jobRepository,
+            @Qualifier("childJobStep") Step childJobStep,
+            @Qualifier("parentStep2") Step parentStep2
+    ) {
+
+        return new JobBuilder(
+                "parentJob",
+                jobRepository
+        )
+                .start(childJobStep)
+                .next(parentStep2)
+                .build();
+    }
+
+    // --------------------------------------------------
+    // 2. JobStep
+    // --------------------------------------------------
+
+    @Bean
+    public Step childJobStep(
+            JobRepository jobRepository,
+            JobLauncher jobLauncher,
+            @Qualifier("childJob") Job childJob,
+            DefaultJobParametersExtractor jobParametersExtractor,
+            @Qualifier("childParametersListener")
+            StepExecutionListener childParametersListener
+    ) {
+
+        Step step = new StepBuilder(
+                "childJobStep",
+                jobRepository
+        )
+                .job(childJob)
+                .launcher(jobLauncher)
+                .parametersExtractor(jobParametersExtractor)
+                .listener(childParametersListener)
+                .build();
+
+        log.info(
+                "생성된 Step 구현체={}",
+                step.getClass().getSimpleName()
+        );
+
+        return step;
+    }
+
+    // --------------------------------------------------
+    // 3. JobParametersExtractor
+    // --------------------------------------------------
+
+    @Bean
+    public DefaultJobParametersExtractor jobParametersExtractor() {
+
+        DefaultJobParametersExtractor extractor =
+                new DefaultJobParametersExtractor();
+
+        extractor.setKeys(
+                new String[]{"name"}
+        );
+
+        return extractor;
+    }
+
+    // --------------------------------------------------
+    // 4. JobStep 실행 전 ExecutionContext 설정
+    // --------------------------------------------------
+
+    @Bean
+    public StepExecutionListener childParametersListener() {
+
+        return new StepExecutionListener() {
+
+            @Override
+            public void beforeStep(
+                    StepExecution stepExecution
+            ) {
+
+                stepExecution
+                        .getExecutionContext()
+                        .putString(
+                                "name",
+                                "user1"
+                        );
+
+                log.info(
+                        "[JobStep beforeStep] name=user1 저장"
+                );
+            }
+        };
+    }
+
+    // --------------------------------------------------
+    // 5. ChildJob
+    // --------------------------------------------------
+
+    @Bean
+    public Job childJob(
+            JobRepository jobRepository,
+            @Qualifier("childStep1") Step childStep1
+    ) {
+
+        return new JobBuilder(
+                "childJob",
+                jobRepository
+        )
+                .start(childStep1)
+                .build();
+    }
+
+    // --------------------------------------------------
+    // 6. ChildJob 내부 Step
+    // --------------------------------------------------
+
+    @Bean
+    public Step childStep1(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+
+        return new StepBuilder(
+                "childStep1",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    StepExecution stepExecution =
+                            contribution.getStepExecution();
+
+                    String businessDate =
+                            stepExecution
+                                    .getJobParameters()
+                                    .getString("businessDate");
+
+                    String name =
+                            stepExecution
+                                    .getJobParameters()
+                                    .getString("name");
+
+                    String failChild =
+                            stepExecution
+                                    .getJobParameters()
+                                    .getString("failChild");
+
+                    log.info(
+                            "[ChildJob] businessDate={}",
+                            businessDate
+                    );
+
+                    log.info(
+                            "[ChildJob] name={}",
+                            name
+                    );
+
+                    log.info(
+                            "[ChildJob] childStep1 실행"
+                    );
+
+                    if ("true".equals(failChild)) {
+
+                        throw new IllegalStateException(
+                                "ChildJob 실행 실패"
+                        );
+                    }
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+
+    // --------------------------------------------------
+    // 7. ParentJob 후속 Step
+    // --------------------------------------------------
+
+    @Bean
+    public Step parentStep2(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+
+        return new StepBuilder(
+                "parentStep2",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    StepExecution stepExecution =
+                            contribution.getStepExecution();
+
+                    String failParent =
+                            stepExecution
+                                    .getJobParameters()
+                                    .getString("failParent");
+
+                    log.info(
+                            "[ParentJob] parentStep2 실행"
+                    );
+
+                    if ("true".equals(failParent)) {
+
+                        throw new IllegalStateException(
+                                "ParentJob 후속 Step 실패"
+                        );
+                    }
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+}
+```
+
+이 코드에서는 총 두 개의 Job을 생성한다.
+
+첫 번째는 parentJob이다.
+
+두 번째는 childJob이다.
+
+그리고 총 세 개의 Step을 생성한다.
+
+| Step | 소속 Job | 구현체 |
+|---|---|---|
+| childJobStep | parentJob | JobStep |
+| parentStep2 | parentJob | TaskletStep |
+| childStep1 | childJob | TaskletStep |
+
+여기서 중요한 점은 childJobStep과 childStep1의 소속이 다르다는 사실이다.
+
+childJobStep은 parentJob의 Step이다.
+
+반면 childStep1은 childJob의 Step이다.
+
+따라서 실행 이력도 서로 다른 JobExecution에 연결된다.
+
+---
+
+### 첫 번째 실행: 부모 Job과 자식 Job이 모두 성공하는 경우
+
+먼저 프로젝트를 빌드한다.
+
+```bash
+mvn clean package
+```
+
+정상적으로 빌드되면 다음과 같은 결과를 확인할 수 있다.
+
+```text
+BUILD SUCCESS
+```
+
+이제 Job을 실행한다.
+
+```bash
+java -jar target/spring-batch-jobstep-0.0.1-SNAPSHOT.jar \
+  businessDate=2026-11-10 \
+  failChild=false \
+  failParent=false
+```
+
+이번에는 두 실패 조건을 모두 false로 설정했다.
+
+따라서 ChildJob과 ParentJob이 모두 정상적으로 완료된다.
+
+#### 실행 흐름
+
+```text
+ParentJob 실행
+    │
+    ▼
+childJobStep 실행
+    │
+    ▼
+beforeStep()
+    │
+    └── name=user1 저장
+    │
+    ▼
+DefaultJobParametersExtractor
+    │
+    ├── businessDate 복사
+    ├── failChild 복사
+    ├── failParent 복사
+    └── name 추가
+    │
+    ▼
+JobLauncher.run(childJob)
+    │
+    ▼
+ChildJob 실행
+    │
+    ▼
+childStep1 실행
+    │
+    ▼
+ChildJob COMPLETED
+    │
+    ▼
+childJobStep COMPLETED
+    │
+    ▼
+parentStep2 실행
+    │
+    ▼
+ParentJob COMPLETED
+```
+
+#### 예상 실행 로그
+
+```text
+생성된 Step 구현체=JobStep
+
+[JobStep beforeStep] name=user1 저장
+
+[ChildJob] businessDate=2026-11-10
+
+[ChildJob] name=user1
+
+[ChildJob] childStep1 실행
+
+[ParentJob] parentStep2 실행
+```
+
+여기서 중요한 점은 ChildJob이 실행되기 전에 JobParametersExtractor가 동작했다는 사실이다.
+
+따라서 ChildJob은 부모 Job에서 전달받은 businessDate와 ExecutionContext에서 추출한 name을 모두 사용할 수 있다.
+
+---
+
+### 정상 실행 시 메타데이터 구조
+
+정상 실행 시에는 다음과 같은 메타데이터가 생성된다.
+
+```text
+BATCH_JOB_INSTANCE
+    │
+    ├── parentJob
+    │
+    └── childJob
+```
+
+```text
+BATCH_JOB_EXECUTION
+    │
+    ├── parentJobExecution
+    │
+    └── childJobExecution
+```
+
+```text
+BATCH_STEP_EXECUTION
+    │
+    ├── childJobStep
+    │
+    ├── childStep1
+    │
+    └── parentStep2
+```
+
+하지만 StepExecution의 소속 관계를 정확하게 보면 다음과 같다.
+
+```text
+parentJobExecution
+    │
+    ├── childJobStep
+    └── parentStep2
+```
+
+```text
+childJobExecution
+    │
+    └── childStep1
+```
+
+따라서 StepExecution이 세 개 생성되더라도 모두 동일한 JobExecution에 속하지는 않는다.
+
+#### 예상 실행 상태
+
+| Job | Step | Step 상태 | Job 상태 |
+|---|---|---|---|
+| parentJob | childJobStep | COMPLETED | COMPLETED |
+| childJob | childStep1 | COMPLETED | COMPLETED |
+| parentJob | parentStep2 | COMPLETED | COMPLETED |
+
+모든 작업이 정상적으로 완료되었으므로 두 Job 모두 COMPLETED 상태가 된다.
+
+---
+
+### 두 번째 실행: ChildJob이 실패하는 경우
+
+이번에는 자식 Job의 Step에서 예외를 발생시켜보자.
+
+실행 명령어는 다음과 같다.
+
+```bash
+java -jar target/spring-batch-jobstep-0.0.1-SNAPSHOT.jar \
+  businessDate=2026-11-10 \
+  failChild=true \
+  failParent=false
+```
+
+이때 childStep1에서는 다음 코드가 실행된다.
+
+```java
+if ("true".equals(failChild)) {
+
+    throw new IllegalStateException(
+            "ChildJob 실행 실패"
+    );
+}
+```
+
+따라서 childStep1이 FAILED 상태로 종료된다.
+
+그리고 ChildJob 역시 FAILED 상태로 종료된다.
+
+#### 실행 흐름
+
+```mermaid
+flowchart TD
+    A["ParentJob"]
+    B["JobStep"]
+    C["ChildJob"]
+    D["ChildStep1"]
+    E["예외 발생"]
+
+    F["ChildStep1 FAILED"]
+    G["ChildJob FAILED"]
+    H["JobStep FAILED"]
+    I["ParentJob FAILED"]
+
+    J["ParentStep2"]
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+
+    E --> F
+    F --> G
+    G --> H
+    H --> I
+
+    H -.->|"실행되지 않음"| J
+```
+
+이 구조에서 자식 Job의 실패가 부모 Job으로 전달되는 과정을 확인할 수 있다.
+
+ChildStep1이 실패한다.
+
+그러면 ChildJob이 실패한다.
+
+JobStep은 ChildJob의 실패 상태를 확인한다.
+
+그리고 JobStep도 실패한다.
+
+마지막으로 ParentJob은 JobStep의 실패 상태를 확인하고 전체 Job을 FAILED로 종료한다.
+
+#### 예상 메타데이터
+
+| Job | Step | Step 상태 | Job 상태 |
+|---|---|---|---|
+| parentJob | childJobStep | FAILED | FAILED |
+| childJob | childStep1 | FAILED | FAILED |
+| parentJob | parentStep2 | 실행되지 않음 | FAILED |
+
+여기서 중요한 점은 **parentStep2의 StepExecution이 생성되지 않는다는 사실**이다.
+
+ParentJob은 JobStep이 실패했으므로 다음 Step을 실행하지 않기 때문이다.
+
+따라서 BATCH_STEP_EXECUTION에는 childJobStep과 childStep1의 실행 이력만 존재한다.
+
+---
+
+### ChildJob의 실패가 ParentJob으로 전달되는 이유
+
+이 부분을 소스 코드 수준에서 이해해보자.
+
+JobStep은 자식 Job을 실행한다.
+
+```java
+JobExecution childExecution =
+        jobLauncher.run(
+                childJob,
+                childParameters
+        );
+```
+
+이후 자식 Job의 상태를 확인한다.
+
+```java
+if (childExecution.getStatus().isUnsuccessful()) {
+
+    throw new UnexpectedJobExecutionException(
+            "Step failure: the delegate Job failed in JobStep."
+    );
+}
+```
+
+자식 Job의 상태가 FAILED라면 예외가 발생한다.
+
+이 예외는 AbstractStep에서 처리된다.
+
+따라서 JobStep의 BatchStatus가 FAILED로 변경된다.
+
+이후 SimpleJob은 Step의 상태를 확인한다.
+
+Spring Batch 5.2.4의 SimpleJob에는 다음과 같은 로직이 존재한다.
+
+```java
+for (Step step : steps) {
+
+    stepExecution =
+            handleStep(
+                    step,
+                    execution
+            );
+
+    if (
+        stepExecution.getStatus()
+                != BatchStatus.COMPLETED
+    ) {
+
+        break;
+    }
+}
+```
+
+여기서 JobStep이 FAILED 상태라면 반복문이 종료된다.
+
+따라서 parentStep2가 실행되지 않는다.
+
+이러한 구조 때문에 ChildJob의 실패가 ParentJob의 실패로 연결된다.
+
+핵심은 **ChildJob이 ParentJob의 상태를 직접 변경하는 것이 아니라, JobStep의 실패 상태를 통해 부모 Job에 영향을 준다는 사실**이다.
+
+---
+
+### 세 번째 실행: ChildJob은 성공하고 ParentJob은 실패하는 경우
+
+이번에는 반대 상황을 확인해보자.
+
+자식 Job은 정상적으로 실행한다.
+
+하지만 부모 Job의 두 번째 Step에서 예외를 발생시킨다.
+
+```bash
+java -jar target/spring-batch-jobstep-0.0.1-SNAPSHOT.jar \
+  businessDate=2026-11-10 \
+  failChild=false \
+  failParent=true
+```
+
+이번에는 ChildJob이 정상적으로 완료된다.
+
+따라서 JobStep도 정상적으로 완료된다.
+
+그다음 ParentJob의 parentStep2가 실행된다.
+
+하지만 parentStep2에서 다음 예외가 발생한다.
+
+```java
+if ("true".equals(failParent)) {
+
+    throw new IllegalStateException(
+            "ParentJob 후속 Step 실패"
+    );
+}
+```
+
+따라서 ParentJob은 FAILED 상태로 종료된다.
+
+#### 실행 흐름
+
+```mermaid
+flowchart TD
+    A["ParentJob"]
+    B["JobStep"]
+    C["ChildJob"]
+    D["ChildStep1"]
+
+    E["ChildStep1 COMPLETED"]
+    F["ChildJob COMPLETED"]
+    G["JobStep COMPLETED"]
+
+    H["ParentStep2"]
+    I["예외 발생"]
+
+    J["ParentStep2 FAILED"]
+    K["ParentJob FAILED"]
+
+    A --> B
+    B --> C
+    C --> D
+
+    D --> E
+    E --> F
+    F --> G
+
+    G --> H
+    H --> I
+    I --> J
+    J --> K
+```
+
+이 구조에서 중요한 사실을 확인할 수 있다.
+
+**자식 Job이 성공했다고 해서 부모 Job까지 반드시 성공하는 것은 아니다.**
+
+부모 Job은 자신에게 등록된 모든 Step의 실행 결과에 따라 최종 상태가 결정되기 때문이다.
+
+#### 예상 메타데이터
+
+| Job | Step | Step 상태 | Job 상태 |
+|---|---|---|---|
+| parentJob | childJobStep | COMPLETED | FAILED |
+| childJob | childStep1 | COMPLETED | COMPLETED |
+| parentJob | parentStep2 | FAILED | FAILED |
+
+여기서 ChildJob은 COMPLETED 상태다.
+
+ChildJob의 실행 이력은 ParentJob과 별도로 관리된다.
+
+따라서 ParentJob의 후속 Step이 실패하더라도 이미 완료된 ChildJob의 JobExecution이 FAILED로 변경되는 것은 아니다.
+
+이러한 구조는 JobStep의 가장 중요한 특징 중 하나다.
+
+---
+
+### 세 가지 실행 결과 비교
+
+지금까지 살펴본 세 가지 상황을 정리해보자.
+
+| 실행 상황 | ChildJob | JobStep | ParentStep2 | ParentJob |
+|---|---|---|---|---|
+| 전체 정상 | COMPLETED | COMPLETED | COMPLETED | COMPLETED |
+| ChildJob 실패 | FAILED | FAILED | 미실행 | FAILED |
+| ParentStep2 실패 | COMPLETED | COMPLETED | FAILED | FAILED |
+
+이 표에서 중요한 사실은 다음과 같다.
+
+첫 번째로 자식 Job이 실패하면 JobStep도 실패한다.
+
+두 번째로 JobStep이 실패하면 일반적인 SimpleJob에서는 후속 Step을 실행하지 않는다.
+
+세 번째로 자식 Job이 성공하더라도 부모 Job의 다른 Step이 실패하면 부모 Job은 FAILED가 된다.
+
+따라서 부모 Job과 자식 Job의 상태는 서로 독립적으로 관리되지만, **JobStep이라는 실행 연결 지점을 통해 실패 결과가 부모 Job의 흐름에 반영된다.**
+
+---
+
+### 데이터베이스에서 JobStep 실행 이력 확인하기
+
+이번에는 실제 메타데이터를 조회해보자.
+
+Spring Batch는 대표적으로 다음 테이블을 사용한다.
+
+| 테이블 | 역할 |
+|---|---|
+| BATCH_JOB_INSTANCE | JobInstance 관리 |
+| BATCH_JOB_EXECUTION | JobExecution 관리 |
+| BATCH_JOB_EXECUTION_PARAMS | JobParameters 저장 |
+| BATCH_STEP_EXECUTION | StepExecution 관리 |
+| BATCH_STEP_EXECUTION_CONTEXT | Step ExecutionContext 저장 |
+
+먼저 JobInstance를 확인한다.
+
+#### JobInstance 조회
+
+```sql
+SELECT
+    JOB_INSTANCE_ID,
+    JOB_NAME,
+    JOB_KEY
+FROM BATCH_JOB_INSTANCE
+WHERE JOB_NAME IN (
+    'parentJob',
+    'childJob'
+)
+ORDER BY JOB_INSTANCE_ID;
+```
+
+예상 결과는 다음과 같다.
+
+| JOB_INSTANCE_ID | JOB_NAME |
+|---|---|
+| 1 | parentJob |
+| 2 | childJob |
+
+여기서 중요한 것은 ParentJob과 ChildJob이 별도의 JobInstance를 가진다는 사실이다.
+
+#### JobExecution 조회
+
+```sql
+SELECT
+    ji.JOB_NAME,
+    ji.JOB_INSTANCE_ID,
+    je.JOB_EXECUTION_ID,
+    je.STATUS,
+    je.EXIT_CODE
+FROM BATCH_JOB_INSTANCE ji
+JOIN BATCH_JOB_EXECUTION je
+    ON ji.JOB_INSTANCE_ID = je.JOB_INSTANCE_ID
+WHERE ji.JOB_NAME IN (
+    'parentJob',
+    'childJob'
+)
+ORDER BY je.JOB_EXECUTION_ID;
+```
+
+정상 실행에서는 다음과 유사한 결과를 확인할 수 있다.
+
+| JOB_NAME | JOB_EXECUTION_ID | STATUS |
+|---|---|---|
+| parentJob | 1 | COMPLETED |
+| childJob | 2 | COMPLETED |
+
+반면 ChildJob이 실패했다면 다음과 같은 결과가 나타날 수 있다.
+
+| JOB_NAME | JOB_EXECUTION_ID | STATUS |
+|---|---|---|
+| parentJob | 1 | FAILED |
+| childJob | 2 | FAILED |
+
+ParentStep2가 실패한 경우에는 다음과 같다.
+
+| JOB_NAME | JOB_EXECUTION_ID | STATUS |
+|---|---|---|
+| parentJob | 1 | FAILED |
+| childJob | 2 | COMPLETED |
+
+이렇게 부모 Job과 자식 Job의 최종 상태를 각각 확인할 수 있다.
+
+---
+
+### JobParameters 전달 결과 확인하기
+
+이번에는 자식 Job에 실제로 어떤 JobParameters가 전달되었는지 확인해보자.
+
+```sql
+SELECT
+    ji.JOB_NAME,
+    je.JOB_EXECUTION_ID,
+    jp.PARAMETER_NAME,
+    jp.PARAMETER_TYPE,
+    jp.PARAMETER_VALUE,
+    jp.IDENTIFYING
+FROM BATCH_JOB_INSTANCE ji
+JOIN BATCH_JOB_EXECUTION je
+    ON ji.JOB_INSTANCE_ID = je.JOB_INSTANCE_ID
+JOIN BATCH_JOB_EXECUTION_PARAMS jp
+    ON je.JOB_EXECUTION_ID = jp.JOB_EXECUTION_ID
+WHERE ji.JOB_NAME IN (
+    'parentJob',
+    'childJob'
+)
+ORDER BY
+    je.JOB_EXECUTION_ID,
+    jp.PARAMETER_NAME;
+```
+
+부모 Job에는 다음과 같은 파라미터가 존재한다.
+
+```text
+businessDate = 2026-11-10
+
+failChild = false
+
+failParent = false
+```
+
+반면 자식 Job에는 다음 값이 추가된다.
+
+```text
+businessDate = 2026-11-10
+
+failChild = false
+
+failParent = false
+
+name = user1
+```
+
+name은 어디에서 생성된 값일까?
+
+바로 JobStep에 등록한 beforeStep()에서 생성한 값이다.
+
+```java
+stepExecution
+        .getExecutionContext()
+        .putString(
+                "name",
+                "user1"
+        );
+```
+
+이후 DefaultJobParametersExtractor가 해당 값을 가져와 자식 JobParameters에 추가한다.
+
+따라서 ChildJob의 JobExecution에는 name이라는 파라미터도 저장된다.
+
+이러한 구조를 이해하면 부모 Job에서 자식 Job으로 업무 파라미터를 전달하는 방법을 명확하게 파악할 수 있다.
+
+---
+
+### StepExecution 소속 관계 확인하기
+
+마지막으로 StepExecution을 조회한다.
+
+```sql
+SELECT
+    ji.JOB_NAME,
+    je.JOB_EXECUTION_ID,
+    se.STEP_EXECUTION_ID,
+    se.STEP_NAME,
+    se.STATUS,
+    se.EXIT_CODE
+FROM BATCH_JOB_INSTANCE ji
+JOIN BATCH_JOB_EXECUTION je
+    ON ji.JOB_INSTANCE_ID = je.JOB_INSTANCE_ID
+JOIN BATCH_STEP_EXECUTION se
+    ON je.JOB_EXECUTION_ID = se.JOB_EXECUTION_ID
+WHERE ji.JOB_NAME IN (
+    'parentJob',
+    'childJob'
+)
+ORDER BY se.STEP_EXECUTION_ID;
+```
+
+정상 실행에서는 다음과 유사한 결과가 나타난다.
+
+| JOB_NAME | STEP_NAME | STATUS |
+|---|---|---|
+| parentJob | childJobStep | COMPLETED |
+| childJob | childStep1 | COMPLETED |
+| parentJob | parentStep2 | COMPLETED |
+
+여기서 중요한 점은 childStep1이 childJob에 속한다는 것이다.
+
+childJobStep은 parentJob에 속한다.
+
+따라서 같은 실행 흐름에서 호출되었더라도 서로 다른 JobExecution에 연결된다.
+
+---
+
+### JUnit으로 JobStep의 실행 구조 검증하기
+
+이번에는 실제 JobLauncher를 사용해 세 가지 상황을 검증해보자.
+
+검증할 내용은 다음과 같다.
+
+첫 번째는 정상 실행 시 ParentJob과 ChildJob이 모두 완료되는지 확인한다.
+
+두 번째는 ChildJob이 실패하면 ParentJob도 실패하는지 확인한다.
+
+세 번째는 ChildJob은 성공했지만 ParentJob의 후속 Step이 실패하는 경우 두 Job의 상태가 서로 다르게 저장되는지 확인한다.
+
+`JobStepTest.java`
+
+```java
+package com.example.batch;
+
+import java.util.Set;
+import java.util.UUID;
+import java.util.stream.Collectors;
+
+import org.junit.jupiter.api.Test;
+
+import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobParameters;
+import org.springframework.batch.core.JobParametersBuilder;
+import org.springframework.batch.core.StepExecution;
+
+import org.springframework.batch.core.launch.JobLauncher;
+import org.springframework.batch.core.repository.JobRepository;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+
+import org.springframework.boot.test.context.SpringBootTest;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+@SpringBootTest(properties = {
+        "spring.batch.job.enabled=false"
+})
+class JobStepTest {
+
+    @Autowired
+    private JobLauncher jobLauncher;
+
+    @Autowired
+    private JobRepository jobRepository;
+
+    @Autowired
+    @Qualifier("parentJob")
+    private Job parentJob;
+
+    // 부모 JobParameters 생성
+
+    private JobParameters parameters(
+            boolean failChild,
+            boolean failParent
+    ) {
+
+        return new JobParametersBuilder()
+                .addString(
+                        "businessDate",
+                        "2026-11-10"
+                )
+                .addString(
+                        "requestId",
+                        UUID.randomUUID().toString()
+                )
+                .addString(
+                        "failChild",
+                        Boolean.toString(failChild)
+                )
+                .addString(
+                        "failParent",
+                        Boolean.toString(failParent)
+                )
+                .toJobParameters();
+    }
+
+    // 자식 JobParameters 생성
+
+    private JobParameters childParameters(
+            JobParameters parentParameters
+    ) {
+
+        return new JobParametersBuilder(
+                parentParameters
+        )
+                .addString(
+                        "name",
+                        "user1"
+                )
+                .toJobParameters();
+    }
+
+    // 자식 JobExecution 조회
+
+    private JobExecution findChildExecution(
+            JobParameters parentParameters
+    ) {
+
+        JobExecution childExecution =
+                jobRepository.getLastJobExecution(
+                        "childJob",
+                        childParameters(parentParameters)
+                );
+
+        assertNotNull(childExecution);
+
+        return childExecution;
+    }
+
+    // 실행된 Step 이름 조회
+
+    private Set<String> stepNames(
+            JobExecution execution
+    ) {
+
+        return execution
+                .getStepExecutions()
+                .stream()
+                .map(StepExecution::getStepName)
+                .collect(Collectors.toSet());
+    }
+
+    // --------------------------------------------------
+    // 1. 전체 정상 실행
+    // --------------------------------------------------
+
+    @Test
+    void ParentJob과_ChildJob이_모두_완료된다()
+            throws Exception {
+
+        JobParameters parameters =
+                parameters(false, false);
+
+        JobExecution parentExecution =
+                jobLauncher.run(
+                        parentJob,
+                        parameters
+                );
+
+        JobExecution childExecution =
+                findChildExecution(parameters);
+
+        assertEquals(
+                BatchStatus.COMPLETED,
+                parentExecution.getStatus()
+        );
+
+        assertEquals(
+                BatchStatus.COMPLETED,
+                childExecution.getStatus()
+        );
+
+        assertEquals(
+                "user1",
+                childExecution
+                        .getJobParameters()
+                        .getString("name")
+        );
+
+        assertEquals(
+                Set.of(
+                        "childJobStep",
+                        "parentStep2"
+                ),
+                stepNames(parentExecution)
+        );
+
+        assertEquals(
+                Set.of("childStep1"),
+                stepNames(childExecution)
+        );
+    }
+
+    // --------------------------------------------------
+    // 2. ChildJob 실패
+    // --------------------------------------------------
+
+    @Test
+    void ChildJob이_실패하면_ParentJob도_실패한다()
+            throws Exception {
+
+        JobParameters parameters =
+                parameters(true, false);
+
+        JobExecution parentExecution =
+                jobLauncher.run(
+                        parentJob,
+                        parameters
+                );
+
+        JobExecution childExecution =
+                findChildExecution(parameters);
+
+        assertEquals(
+                BatchStatus.FAILED,
+                parentExecution.getStatus()
+        );
+
+        assertEquals(
+                BatchStatus.FAILED,
+                childExecution.getStatus()
+        );
+
+        assertEquals(
+                Set.of("childJobStep"),
+                stepNames(parentExecution)
+        );
+
+        assertEquals(
+                Set.of("childStep1"),
+                stepNames(childExecution)
+        );
+    }
+
+    // --------------------------------------------------
+    // 3. ParentJob 후속 Step 실패
+    // --------------------------------------------------
+
+    @Test
+    void ParentJob이_실패해도_ChildJob은_완료상태를_유지한다()
+            throws Exception {
+
+        JobParameters parameters =
+                parameters(false, true);
+
+        JobExecution parentExecution =
+                jobLauncher.run(
+                        parentJob,
+                        parameters
+                );
+
+        JobExecution childExecution =
+                findChildExecution(parameters);
+
+        assertEquals(
+                BatchStatus.FAILED,
+                parentExecution.getStatus()
+        );
+
+        assertEquals(
+                BatchStatus.COMPLETED,
+                childExecution.getStatus()
+        );
+
+        assertEquals(
+                Set.of(
+                        "childJobStep",
+                        "parentStep2"
+                ),
+                stepNames(parentExecution)
+        );
+
+        assertEquals(
+                Set.of("childStep1"),
+                stepNames(childExecution)
+        );
+    }
+}
+```
+
+이 테스트에서는 각 실행마다 새로운 requestId를 생성한다.
+
+따라서 테스트끼리 동일한 JobInstance를 공유하지 않는다.
+
+또한 실제 JobStep이 전달할 자식 JobParameters와 동일한 값을 구성하여 ChildJob의 실행 이력을 조회한다.
+
+#### 정상 실행 검증
+
+```java
+assertEquals(
+        BatchStatus.COMPLETED,
+        parentExecution.getStatus()
+);
+```
+
+부모 Job이 완료되었는지 확인한다.
+
+```java
+assertEquals(
+        BatchStatus.COMPLETED,
+        childExecution.getStatus()
+);
+```
+
+자식 Job이 완료되었는지 확인한다.
+
+또한 JobParametersExtractor가 추가한 name 값을 검증한다.
+
+```java
+assertEquals(
+        "user1",
+        childExecution
+                .getJobParameters()
+                .getString("name")
+);
+```
+
+#### 자식 Job 실패 검증
+
+```java
+assertEquals(
+        BatchStatus.FAILED,
+        childExecution.getStatus()
+);
+```
+
+자식 Job이 실패했는지 확인한다.
+
+이후 부모 Job 상태도 확인한다.
+
+```java
+assertEquals(
+        BatchStatus.FAILED,
+        parentExecution.getStatus()
+);
+```
+
+또한 부모 Job에는 childJobStep만 실행되었는지 확인한다.
+
+```java
+assertEquals(
+        Set.of("childJobStep"),
+        stepNames(parentExecution)
+);
+```
+
+이 검증을 통해 ChildJob이 실패하면 parentStep2가 실행되지 않는다는 사실을 확인할 수 있다.
+
+#### 부모 Job 실패 검증
+
+반대로 자식 Job이 성공하고 부모 Job의 후속 Step이 실패한 경우에는 다음 상태가 만들어진다.
+
+```java
+assertEquals(
+        BatchStatus.FAILED,
+        parentExecution.getStatus()
+);
+```
+
+```java
+assertEquals(
+        BatchStatus.COMPLETED,
+        childExecution.getStatus()
+);
+```
+
+따라서 자식 Job의 상태가 부모 Job의 최종 상태와 독립적으로 유지된다는 점을 확인할 수 있다.
+
+#### 테스트 실행
+
+```bash
+mvn test
+```
+
+정상적으로 수행되면 다음과 유사한 결과를 확인할 수 있다.
+
+```text
+Tests run: 3
+
+Failures: 0
+
+Errors: 0
+
+BUILD SUCCESS
+```
+
+위 결과는 예상되는 테스트 성공 형태이며, 실제 실행 환경과 설정에 따라 로그는 달라질 수 있다.
+
+---
+
+### JobStep의 재시작 시 주의할 점
+
+JobStep은 부모 Job과 자식 Job을 연결하기 때문에 재시작 정책도 함께 고려해야 한다.
+
+특히 두 가지 상황을 구분해야 한다.
+
+#### 1. ChildJob이 실패한 경우
+
+다음과 같은 상황을 생각해보자.
+
+```text
+ParentJob
+    │
+    └── JobStep → FAILED
+            │
+            └── ChildJob → FAILED
+```
+
+이 경우 부모 Job도 실패한다.
+
+이후 같은 JobParameters로 부모 Job을 재시작할 수 있다면 JobStep도 재실행 대상이 된다.
+
+JobStep은 이전 실행에서 저장한 자식 JobParameters를 사용할 수 있다.
+
+그리고 JobLauncher를 통해 ChildJob의 재시작을 요청한다.
+
+따라서 ChildJob도 동일한 JobInstance의 새로운 JobExecution으로 재시작될 수 있다.
+
+이 구조에서는 부모와 자식의 재시작 상태를 함께 관리할 수 있다.
+
+#### 2. ChildJob은 성공하고 ParentJob의 후속 Step이 실패한 경우
+
+이번에는 다음과 같은 상황이다.
+
+```text
+ParentJob → FAILED
+    │
+    ├── JobStep → COMPLETED
+    │      │
+    │      └── ChildJob → COMPLETED
+    │
+    └── ParentStep2 → FAILED
+```
+
+부모 Job을 재시작하면 일반적으로 이미 완료된 JobStep은 실행을 생략한다.
+
+따라서 ChildJob도 다시 실행하지 않는다.
+
+그리고 실패한 parentStep2부터 재실행한다.
+
+이것은 Spring Batch의 기본적인 Step 재시작 동작이다.
+
+하지만 JobStep에 다음 설정이 있다면 주의해야 한다.
+
+```java
+.allowStartIfComplete(true)
+```
+
+이 설정은 완료된 JobStep도 다시 실행하도록 허용한다.
+
+그런데 ChildJob은 이미 COMPLETED 상태다.
+
+따라서 동일한 자식 JobParameters로 다시 실행하려고 하면 `JobInstanceAlreadyCompleteException`이 발생할 수 있다.
+
+즉, **JobStep에 allowStartIfComplete(true)를 무조건 적용하는 것은 위험할 수 있다.**
+
+자식 Job을 다시 실행해야 한다면 새로운 JobInstance를 생성할 것인지, 기존 JobInstance를 재시작할 것인지부터 명확하게 설계해야 한다.
+
+---
+
+### JobStep과 FlowStep의 차이
+
+JobStep을 이해할 때 자주 비교하는 개념이 FlowStep이다.
+
+두 구현체는 모두 복잡한 실행 흐름을 구성하는 데 사용된다.
+
+하지만 실제 실행 구조는 다르다.
+
+#### JobStep
+
+JobStep은 별도의 Job을 실행한다.
+
+```text
+ParentJob
+    │
+    └── JobStep
+            │
+            └── ChildJob
+                    │
+                    ├── Step1
+                    └── Step2
+```
+
+ChildJob은 별도의 JobInstance와 JobExecution을 가진다.
+
+#### FlowStep
+
+FlowStep은 Flow를 실행한다.
+
+```text
+ParentJob
+    │
+    └── FlowStep
+            │
+            └── Flow
+                  │
+                  ├── Step1
+                  └── Step2
+```
+
+FlowStep은 내부 Flow를 실행하지만 별도의 자식 Job을 생성하지는 않는다.
+
+따라서 일반적으로 내부 Step들은 부모 Job의 실행 흐름 안에서 관리된다.
+
+#### 비교
+
+| 구분 | JobStep | FlowStep |
+|---|---|---|
+| 실행 대상 | Job | Flow |
+| Builder | JobStepBuilder | FlowStepBuilder |
+| 최종 구현체 | JobStep | FlowStep |
+| 별도 JobInstance | 생성 가능 | 생성하지 않음 |
+| 별도 JobExecution | 생성 | 생성하지 않음 |
+| 실행 위임 | JobLauncher | Flow 실행 엔진 |
+| JobParametersExtractor | 사용 가능 | 일반적으로 사용하지 않음 |
+| 주요 목적 | 독립적인 Job 모듈화 | Step 실행 흐름 재사용 |
+
+따라서 여러 Step의 실행 흐름만 재사용하고 싶다면 FlowStep을 고려할 수 있다.
+
+반면 해당 작업을 독립적인 Job으로 실행하고 별도의 JobExecution까지 관리해야 한다면 JobStep이 적합할 수 있다.
+
+---
+
+### 실무에서 JobStep을 활용할 때 고려할 12가지 사항
+
+JobStep은 복잡한 배치 시스템을 모듈화할 수 있는 기능이다.
+
+하지만 모든 작업을 JobStep으로 분리하는 것이 반드시 좋은 설계는 아니다.
+
+업무의 독립성, 실행 이력, 재시작 정책, 트랜잭션 경계 등을 함께 고려해야 한다.
+
+#### 1. 독립적인 실행 이력이 필요한 작업에 활용한다
+
+특정 작업의 성공과 실패를 별도의 JobExecution으로 관리해야 한다면 JobStep을 활용할 수 있다.
+
+예를 들어 공통 수수료 계산 Job을 여러 정산 배치에서 사용하는 경우다.
+
+이렇게 하면 수수료 계산 자체의 실행 이력을 독립적으로 조회할 수 있다.
+
+#### 2. 단순한 코드 재사용과 Job 재사용을 구분한다
+
+단순히 동일한 비즈니스 메서드를 여러 곳에서 사용하려는 목적이라면 서비스 클래스를 재사용하는 것으로 충분할 수 있다.
+
+JobStep은 별도의 Job 실행 이력이 필요한 경우에 더 적합하다.
+
+따라서 단순한 코드 중복 제거만을 위해 JobStep을 도입하는 것은 신중하게 판단해야 한다.
+
+#### 3. 부모와 자식의 JobParameters를 명확하게 구분한다
+
+JobParameters는 JobInstance를 식별하는 중요한 정보다.
+
+부모 JobParameters를 그대로 전달하면 자식 Job의 식별 정책에도 영향을 줄 수 있다.
+
+특히 실행 ID나 날짜 같은 식별용 파라미터가 자식 Job에서 어떤 의미를 가지는지 확인해야 한다.
+
+#### 4. 자식 JobParameters의 필수값을 검증한다
+
+DefaultJobParametersExtractor는 지정된 키가 존재하지 않으면 해당 값을 추가하지 않을 수 있다.
+
+따라서 자식 Job이 특정 파라미터를 반드시 필요로 한다면 검증 로직을 구성해야 한다.
+
+JobParametersValidator 등을 활용할 수 있다.
+
+#### 5. 자식 Job의 실행이 완료될 때까지 기다리는 구조를 사용한다
+
+JobStep은 자식 Job의 실행 결과를 확인하여 자신의 성공 여부를 결정한다.
+
+따라서 일반적으로 자식 Job의 실행이 완료된 후 JobExecution을 반환하는 동기식 JobLauncher 구성이 적합하다.
+
+비동기 JobLauncher를 사용한다면 JobStep이 자식 Job의 최종 상태를 확인하기 전에 제어권을 돌려받을 수 있으므로 실행 상태 처리에 주의해야 한다.
+
+#### 6. 자식 Job의 실패를 부모 Job에서 어떻게 처리할지 결정한다
+
+일반적인 SimpleJob에서는 ChildJob이 실패하면 JobStep도 실패하고 후속 Step이 실행되지 않는다.
+
+하지만 어떤 업무에서는 자식 Job의 실패 이후에도 오류 처리 Step을 실행해야 할 수 있다.
+
+이런 요구사항이 있다면 조건부 흐름을 지원하는 FlowJob 등을 함께 고려할 수 있다.
+
+#### 7. 부모와 자식의 트랜잭션 경계를 구분한다
+
+JobStep은 별도의 Job을 실행한다.
+
+따라서 부모 Job의 전체 실행과 자식 Job의 전체 실행이 하나의 데이터베이스 트랜잭션으로 묶인다고 이해해서는 안 된다.
+
+자식 Job의 Step들이 커밋한 데이터는 부모 Job의 후속 Step이 실패하더라도 자동으로 롤백되지 않을 수 있다.
+
+따라서 업무 전체의 정합성을 보장하려면 별도의 복구 전략이 필요하다.
+
+#### 8. 자식 Job이 성공한 이후 부모 Job이 실패하는 상황을 고려한다
+
+자식 Job이 성공했더라도 부모 Job은 실패할 수 있다.
+
+이 경우 부모 Job을 재시작하면 완료된 JobStep은 일반적으로 실행을 생략한다.
+
+따라서 후속 Step만 재실행하는 구조가 적절한지 확인해야 한다.
+
+#### 9. 완료된 JobStep의 재실행 설정에 주의한다
+
+JobStep에 allowStartIfComplete(true)를 설정하면 이미 완료된 자식 Job을 다시 실행하려고 할 수 있다.
+
+하지만 자식 JobInstance가 이미 완료되었다면 동일한 JobParameters로 다시 실행할 수 없다.
+
+따라서 해당 설정을 사용할 때는 자식 JobInstance의 식별 정책까지 함께 고려해야 한다.
+
+#### 10. 부모와 자식의 실행 이력을 함께 모니터링한다
+
+운영 환경에서는 ParentJob이 FAILED 상태라고 해서 ChildJob도 반드시 FAILED라고 판단해서는 안 된다.
+
+반대로 ChildJob이 COMPLETED라고 해서 ParentJob 전체가 성공했다고 판단해서도 안 된다.
+
+따라서 두 Job의 상태를 함께 확인할 수 있는 모니터링 구조가 필요하다.
+
+#### 11. Job 이름과 Step 이름을 안정적으로 유지한다
+
+Spring Batch는 Job 이름과 JobParameters를 기준으로 JobInstance를 식별한다.
+
+또한 Step 이름을 기준으로 StepExecution의 이전 실행 이력을 확인한다.
+
+따라서 운영 중 이름을 변경하면 재시작 동작에 영향을 줄 수 있다.
+
+특히 JobStep으로 연결된 여러 Job에서는 이름 변경의 영향 범위를 함께 검토해야 한다.
+
+#### 12. Job 계층을 지나치게 깊게 만들지 않는다
+
+JobStep을 사용하면 다음과 같이 여러 단계의 Job 계층을 구성할 수도 있다.
+
+```text
+ParentJob
+    │
+    └── JobStep
+            │
+            └── ChildJob
+                    │
+                    └── JobStep
+                            │
+                            └── GrandChildJob
+```
+
+기술적으로 가능하지만 계층이 깊어질수록 실행 흐름과 장애 원인을 추적하기 어려워질 수 있다.
+
+따라서 실제 업무에서 독립적인 Job 실행 단위가 필요한지 명확하게 판단하고 모듈화 수준을 결정하는 것이 좋다.
+
+---
+
+### JobStep에서 자주 혼동하는 부분
+
+| 혼동하기 쉬운 내용 | 정확한 이해 |
+|---|---|
+| JobStep은 Tasklet을 실행한다 | 별도의 Job을 실행한다 |
+| JobStep과 ChildJob은 같은 객체다 | JobStep은 Step이고 ChildJob은 Job이다 |
+| ChildJob은 ParentJob의 JobExecution을 공유한다 | 별도의 JobExecution을 생성한다 |
+| JobStep 내부의 ChildStep은 부모 Job에 속한다 | ChildJob에 속한다 |
+| JobStep은 자식 Job을 직접 실행한다 | JobLauncher에 실행을 위임한다 |
+| JobParametersExtractor는 부모 JobParameters를 변경한다 | 자식 Job에 전달할 JobParameters를 생성한다 |
+| DefaultJobParametersExtractor는 부모 파라미터를 전달하지 않는다 | 기본적으로 부모 JobParameters를 함께 전달한다 |
+| ChildJob이 실패해도 JobStep은 성공할 수 있다 | 일반적인 JobStep에서는 자식 Job의 실패가 Step 실패로 이어진다 |
+| ChildJob이 성공하면 ParentJob도 반드시 성공한다 | 부모 Job의 후속 Step이 실패할 수 있다 |
+| ParentJob이 실패하면 ChildJob도 FAILED가 된다 | 이미 완료된 ChildJob은 COMPLETED를 유지할 수 있다 |
+| 부모와 자식의 트랜잭션은 하나로 묶인다 | 실행 및 트랜잭션 경계를 구분해야 한다 |
+| JobStep과 FlowStep은 동일하다 | JobStep은 별도 Job을 실행하고 FlowStep은 Flow를 실행한다 |
+| 완료된 JobStep은 언제든 재실행할 수 있다 | 자식 JobInstance의 완료 여부와 재시작 정책을 함께 고려해야 한다 |
+
+---
+
+### JobStep 전체 아키텍처
+
+지금까지 살펴본 내용을 하나의 흐름으로 정리해보자.
+
+```mermaid
+flowchart TD
+    A["JobLauncher.run(parentJob)"]
+
+    B["ParentJob"]
+    C["SimpleStepHandler"]
+    D["JobStep"]
+
+    E["AbstractStep.execute()"]
+    F["beforeStep()"]
+
+    G["ExecutionContext에 name 저장"]
+
+    H["JobStep.doExecute()"]
+
+    I["JobParametersExtractor"]
+    J["Parent JobParameters"]
+    K["Step ExecutionContext"]
+
+    L["Child JobParameters"]
+
+    M["JobLauncher.run(childJob)"]
+    N["ChildJob"]
+    O["ChildStep1"]
+
+    P{"ChildJob 실행 결과"}
+
+    Q["ChildJob COMPLETED"]
+    R["ChildJob FAILED"]
+
+    S["JobStep COMPLETED"]
+    T["JobStep FAILED"]
+
+    U["ParentStep2"]
+    V["ParentJob COMPLETED"]
+    W["ParentJob FAILED"]
+
+    A --> B
+    B --> C
+    C --> D
+
+    D --> E
+    E --> F
+    F --> G
+    G --> H
+
+    H --> I
+
+    J --> I
+    K --> I
+
+    I --> L
+    L --> M
+
+    M --> N
+    N --> O
+    O --> P
+
+    P -->|성공| Q
+    P -->|실패| R
+
+    Q --> S
+    R --> T
+
+    S --> U
+
+    U -->|성공| V
+    U -->|실패| W
+
+    T --> W
+```
+
+이 구조에서 중요한 것은 각 컴포넌트의 역할이다.
+
+ParentJob은 전체 실행 흐름을 관리한다.
+
+JobStep은 자식 Job의 실행을 연결한다.
+
+JobParametersExtractor는 자식 Job에 전달할 파라미터를 생성한다.
+
+JobLauncher는 실제 ChildJob을 실행한다.
+
+ChildJob은 자신에게 등록된 Step을 수행한다.
+
+그리고 ChildJob의 실행 결과가 JobStep의 상태에 반영된다.
+
+마지막으로 ParentJob은 JobStep과 후속 Step의 상태를 바탕으로 전체 실행 결과를 결정한다.
+
+---
+
+### 정리
+
+Spring Batch의 `JobStep`은 Step 내부에서 별도의 Job을 실행하는 Step 구현체다.
+
+일반적인 TaskletStep은 Tasklet을 실행한다.
+
+반면 JobStep은 JobLauncher를 통해 자식 Job을 실행한다.
+
+따라서 JobStep을 사용하면 다음과 같은 구조를 구성할 수 있다.
+
+```text
+ParentJob
+    │
+    ├── JobStep
+    │      │
+    │      └── ChildJob
+    │              │
+    │              └── ChildStep1
+    │
+    └── ParentStep2
+```
+
+JobStep은 StepBuilder의 job() API를 이용해 생성한다.
+
+```java
+new StepBuilder("jobStep", jobRepository)
+        .job(childJob)
+        .launcher(jobLauncher)
+        .parametersExtractor(jobParametersExtractor)
+        .build();
+```
+
+이때 StepBuilder의 job() 메서드는 JobStepBuilder를 반환한다.
+
+JobStepBuilder의 build()를 호출하면 최종적으로 JobStep이 생성된다.
+
+JobStep은 실행 시 JobParametersExtractor를 이용해 자식 JobParameters를 준비한다.
+
+DefaultJobParametersExtractor는 부모 JobParameters와 StepExecution의 ExecutionContext를 활용해 자식 Job에 전달할 파라미터를 구성할 수 있다.
+
+이후 JobLauncher를 통해 ChildJob을 실행한다.
+
+ChildJob은 일반적인 Job과 동일하게 JobInstance와 JobExecution을 생성한다.
+
+또한 자신에게 등록된 Step들을 실행하고 StepExecution을 생성한다.
+
+따라서 부모 Job과 자식 Job은 서로 독립적인 실행 메타데이터를 가진다.
+
+여기서 중요한 특징은 실행 상태의 관계다.
+
+ChildJob이 FAILED 상태로 종료되면 JobStep도 실패한다.
+
+그리고 일반적인 SimpleJob에서는 JobStep이 실패하면 다음 Step을 실행하지 않으므로 ParentJob도 실패한다.
+
+반면 ChildJob이 정상적으로 완료되었더라도 ParentJob의 후속 Step에서 실패가 발생할 수 있다.
+
+이 경우 ChildJob은 COMPLETED 상태를 유지하지만 ParentJob은 FAILED 상태로 종료된다.
+
+따라서 부모 Job과 자식 Job의 실행 결과를 구분해서 이해해야 한다.
+
+또한 JobStep을 사용할 때는 재시작 정책도 함께 고려해야 한다.
+
+특히 자식 Job이 이미 완료된 상황에서 JobStep을 다시 실행하면 동일한 JobParameters로 자식 Job을 재실행할 수 없는 문제가 발생할 수 있다.
+
+따라서 JobStep은 단순히 여러 Job을 연결하는 기능이 아니다.
+
+**독립적인 Job 실행 단위와 실행 이력을 유지하면서 부모 Job의 전체 흐름 안에서 자식 Job을 실행하고, 실행 결과를 상위 Job의 상태에 반영하는 구조**다.
+
+이러한 특징을 이해하면 복잡한 배치 작업을 여러 Job으로 분리하고 재사용하면서도 실행 순서와 실패 상태를 체계적으로 관리할 수 있다.
+
+#### 한 줄 요약
+
+> Spring Batch의 `JobStep`은 `JobStepBuilder`로 생성되며, `JobLauncher`를 통해 별도의 `ChildJob`을 실행하는 Step 구현체다. `JobParametersExtractor`를 이용해 부모 JobParameters와 StepExecution의 ExecutionContext를 자식 JobParameters로 전달할 수 있으며, 부모 Job과 자식 Job은 독립적인 JobInstance와 JobExecution을 가진다. 자식 Job이 실패하면 JobStep과 부모 Job도 실패하지만, 자식 Job이 성공한 후 부모 Job의 다른 Step에서 실패하면 자식 Job은 COMPLETED 상태를 유지한다.
