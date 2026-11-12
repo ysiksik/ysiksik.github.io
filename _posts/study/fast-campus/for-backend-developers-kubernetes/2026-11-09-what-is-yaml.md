@@ -3014,3 +3014,2005 @@ flowchart LR
 #### 한 줄 요약
 
 > YAML은 Key-Value, 들여쓰기, 목록 등을 이용해 구조화된 데이터를 사람이 읽기 쉬운 형태로 표현하는 데이터 직렬화 언어이며, 서로 다른 애플리케이션과 프로그래밍 언어 사이에서 데이터를 저장하고 전달하는 데 활용된다.
+
+## 02. Yaml vs JSON
+
+### YAML과 JSON 비교: 문법, 구조, 장단점과 실무 활용
+
+애플리케이션을 개발하다 보면 데이터를 저장하거나 다른 시스템에 전달하기 위해 일정한 형식으로 표현해야 하는 상황이 자주 발생한다.
+
+대표적으로 REST API를 개발할 때는 JSON을 사용하고, Kubernetes나 Spring Boot의 설정 파일을 작성할 때는 YAML을 사용하는 경우가 많다.
+
+두 형식은 모두 데이터를 저장하고 교환하는 데 사용할 수 있는 **텍스트 기반 데이터 직렬화 형식(Data Serialization Format)** 이다.
+
+하지만 데이터를 표현하는 문법과 설계 목적에는 차이가 있다.
+
+JSON은 간결하고 명확한 문법을 기반으로 데이터를 표현하는 데 중점을 두고, YAML은 사람이 데이터를 쉽게 읽고 작성할 수 있도록 가독성과 표현력을 높이는 데 중점을 둔다.
+
+예를 들어 사용자 정보를 표현한다고 가정하자.
+
+**JSON**
+
+```json
+{
+  "name": "Hong",
+  "age": 30,
+  "favorites": {
+    "food": "Steak",
+    "musician": "The Weeknd"
+  }
+}
+```
+
+**YAML**
+
+```yaml
+name: Hong
+age: 30
+
+favorites:
+  food: Steak
+  musician: The Weeknd
+```
+
+두 데이터는 동일한 정보를 표현하지만 작성 방식은 다르다.
+
+JSON은 중괄호와 큰따옴표를 이용해 데이터의 구조를 명시적으로 표현한다.
+
+반면 YAML은 들여쓰기를 사용해 데이터의 계층 구조를 표현한다.
+
+그렇다면 두 형식 중 어떤 것이 더 좋은 형식일까?
+
+단순히 가독성만 비교하면 YAML이 유리해 보일 수 있다. 하지만 JSON은 단순한 문법 덕분에 파싱과 데이터 교환 측면에서 장점을 가진다.
+
+또한 YAML은 다양한 표현 기능을 제공하지만, 이러한 기능이 복잡한 설정 파일에서는 오히려 가독성을 떨어뜨리는 원인이 되기도 한다.
+
+따라서 두 형식을 정확하게 이해하려면 문법뿐 아니라 설계 목적, 데이터 구조, 파싱 방식, 실제 사용 환경까지 함께 비교해야 한다.
+
+---
+
+### JSON이란?
+
+JSON은 **JavaScript Object Notation**의 약자로, 구조화된 데이터를 표현하고 교환하기 위한 가벼운 텍스트 기반 데이터 형식이다.
+
+이름에서 알 수 있듯이 JavaScript의 객체 표기법에서 유래했다.
+
+하지만 JSON은 JavaScript에서만 사용하는 형식이 아니다.
+
+현재는 Java, Python, Go, JavaScript 등 거의 모든 주요 프로그래밍 언어에서 JSON을 처리할 수 있다.
+
+특히 웹 애플리케이션과 REST API에서 데이터를 교환하는 대표적인 형식으로 사용된다.
+
+예를 들어 사용자 정보를 조회하는 API가 있다고 가정하자.
+
+```http
+GET /api/users/100
+```
+
+서버는 다음과 같은 JSON 데이터를 응답할 수 있다.
+
+```json
+{
+  "id": 100,
+  "name": "Hong",
+  "email": "hong@example.com",
+  "active": true
+}
+```
+
+클라이언트는 JSON 데이터를 역직렬화하여 자신의 프로그래밍 언어에서 사용하는 객체로 변환할 수 있다.
+
+```mermaid
+flowchart LR
+    A["Client"] -->|"HTTP Request"| B["Backend API"]
+    B --> C["Java 객체"]
+    C --> D["JSON 직렬화"]
+    D -->|"HTTP Response"| A
+    A --> E["JSON 역직렬화"]
+    E --> F["JavaScript 객체"]
+```
+
+이처럼 JSON은 프로그래밍 언어와 관계없이 구조화된 데이터를 전달할 수 있다는 장점을 가진다.
+
+---
+
+### JSON의 기본 문법
+
+JSON은 비교적 적은 수의 문법 요소를 사용한다.
+
+대표적인 구성 요소는 다음과 같다.
+
+| 문법 요소 | 의미 |
+|---|---|
+| `{ }` | 객체(Object) |
+| `[ ]` | 배열(Array) |
+| `:` | Key와 Value 구분 |
+| `,` | 객체의 멤버 또는 배열 요소 구분 |
+| `" "` | 문자열 표현 |
+| `true`, `false` | Boolean |
+| `null` | 값이 없음을 표현 |
+
+이 요소들을 조합하면 복잡한 데이터 구조도 표현할 수 있다.
+
+#### 객체는 중괄호로 표현한다
+
+JSON에서 객체는 중괄호(`{ }`)로 표현한다.
+
+```json
+{
+  "name": "Hong",
+  "age": 30,
+  "city": "Seoul"
+}
+```
+
+객체 내부에는 여러 개의 Key-Value 쌍이 존재한다.
+
+```text
+"Key": Value
+```
+
+예를 들어 다음 항목을 살펴보자.
+
+```json
+{
+  "age": 30
+}
+```
+
+`age`는 Key이고 `30`은 Value이다.
+
+JSON 객체의 Key는 반드시 문자열이어야 하며, 큰따옴표로 감싸야 한다.
+
+반면 Value는 문자열뿐 아니라 숫자, Boolean, 배열, 객체 등 다양한 타입을 사용할 수 있다.
+
+#### 문자열은 큰따옴표로 표현한다
+
+JSON에서 문자열은 반드시 큰따옴표(`" "`)로 감싸야 한다.
+
+```json
+{
+  "name": "Hong",
+  "city": "Seoul"
+}
+```
+
+문자열 대신 숫자나 Boolean을 사용하는 경우에는 큰따옴표를 사용하지 않는다.
+
+```json
+{
+  "name": "Hong",
+  "age": 30,
+  "active": true
+}
+```
+
+각 필드의 데이터 타입은 다음과 같다.
+
+| 필드 | 값 | 데이터 타입 |
+|---|---|---|
+| `name` | `"Hong"` | String |
+| `age` | `30` | Number |
+| `active` | `true` | Boolean |
+
+반면 다음과 같이 작성하면 데이터 타입이 달라진다.
+
+```json
+{
+  "age": "30",
+  "active": "true"
+}
+```
+
+이 경우 두 값은 모두 문자열이다.
+
+화면에 표시되는 값이 비슷하더라도 데이터 타입은 다르게 처리되므로 주의해야 한다.
+
+#### 쉼표로 데이터를 구분한다
+
+JSON은 객체의 각 Key-Value 쌍을 쉼표(`,`)로 구분한다.
+
+```json
+{
+  "name": "Hong",
+  "age": 30,
+  "city": "Seoul"
+}
+```
+
+쉼표는 각 항목의 끝에 작성하지만 마지막 항목 뒤에는 작성하지 않는다.
+
+이 점은 JSON에서 자주 발생하는 문법 오류와 관련이 있다.
+
+#### 배열은 대괄호로 표현한다
+
+JSON에서 배열은 대괄호(`[ ]`)를 사용한다.
+
+```json
+{
+  "skills": [
+    "Java",
+    "Spring Boot",
+    "Kubernetes"
+  ]
+}
+```
+
+`skills`의 Value는 문자열 하나가 아니라 여러 문자열을 포함하는 배열이다.
+
+배열 안에는 문자열뿐 아니라 객체도 포함할 수 있다.
+
+```json
+{
+  "jobs": [
+    {
+      "company": "Company A",
+      "position": "Backend Developer"
+    },
+    {
+      "company": "Company B",
+      "position": "Software Engineer"
+    }
+  ]
+}
+```
+
+이처럼 JSON에서는 객체와 배열을 조합해 복잡한 데이터 구조를 표현할 수 있다.
+
+```mermaid
+flowchart TD
+    A["JSON Object"] --> B["name: Hong"]
+    A --> C["jobs: Array"]
+
+    C --> D["Object 1"]
+    C --> E["Object 2"]
+
+    D --> F["company: Company A"]
+    D --> G["position: Backend Developer"]
+
+    E --> H["company: Company B"]
+    E --> I["position: Software Engineer"]
+```
+
+---
+
+### JSON은 반드시 중괄호로 시작해야 할까?
+
+JSON을 사용하다 보면 대부분 중괄호로 시작하는 데이터를 접하게 된다.
+
+```json
+{
+  "name": "Hong"
+}
+```
+
+하지만 **JSON은 반드시 중괄호로 시작할 필요가 없다.**
+
+JSON 문서의 최상위 값은 객체뿐 아니라 배열도 될 수 있다.
+
+예를 들어 다음 JSON은 올바른 형식이다.
+
+```json
+[
+  {
+    "id": 1,
+    "name": "Hong"
+  },
+  {
+    "id": 2,
+    "name": "Kim"
+  }
+]
+```
+
+이 데이터는 최상위에 객체가 아니라 배열이 존재한다.
+
+배열 안에 사용자 객체가 포함된 구조이다.
+
+또한 현재 JSON 규격에서는 문자열, 숫자, Boolean, `null` 같은 값도 최상위 JSON 값으로 사용할 수 있다.
+
+```json
+"Hello World"
+```
+
+```json
+100
+```
+
+```json
+true
+```
+
+따라서 JSON의 최상위 구조가 반드시 `{ }`라는 설명은 정확하지 않다.
+
+다만 실제 REST API에서는 데이터를 구조화하고 확장하기 쉬운 객체나 배열 형태를 사용하는 경우가 일반적이다.
+
+---
+
+### JSON은 한 줄로 작성할 수 있다
+
+JSON에서는 중괄호, 대괄호, 쉼표 등을 이용해 데이터의 구조를 표현한다.
+
+따라서 줄바꿈이나 들여쓰기가 없어도 데이터를 해석할 수 있다.
+
+예를 들어 다음 JSON을 살펴보자.
+
+```json
+{
+  "name": "Hong",
+  "age": 30,
+  "skills": [
+    "Java",
+    "Kubernetes"
+  ]
+}
+```
+
+동일한 데이터를 다음과 같이 한 줄로 작성할 수도 있다.
+
+```json
+{"name":"Hong","age":30,"skills":["Java","Kubernetes"]}
+```
+
+두 JSON은 같은 데이터를 표현한다.
+
+JSON에서는 구조를 구분하는 기호가 명확하기 때문에 이러한 표현이 가능하다.
+
+이 특징은 네트워크 통신에서도 활용할 수 있다.
+
+예를 들어 서버가 JSON 데이터를 응답할 때 불필요한 공백과 줄바꿈을 제거하면 전송할 텍스트 크기를 줄일 수 있다.
+
+다만 데이터의 크기는 필드명과 문자열 값의 길이에도 영향을 받기 때문에 단순히 한 줄로 작성했다고 해서 항상 큰 성능 차이가 발생하는 것은 아니다.
+
+또한 읽기 쉬운 형태로 출력한 JSON을 Pretty JSON이라고 부르기도 한다.
+
+```json
+{
+  "message": "success",
+  "data": {
+    "id": 100,
+    "name": "Hong"
+  }
+}
+```
+
+개발과 디버깅 과정에서는 Pretty JSON이 유리하지만, 실제 데이터 교환에서는 공백을 제거한 JSON을 사용할 수 있다.
+
+---
+
+### JSON에서 자주 발생하는 문법 오류
+
+JSON은 문법이 단순하지만 그만큼 작은 기호 하나가 잘못되어도 파싱 오류가 발생할 수 있다.
+
+대표적인 사례가 쉼표와 큰따옴표 관련 오류이다.
+
+#### 마지막 항목 뒤에 쉼표를 작성한 경우
+
+다음 JSON을 살펴보자.
+
+```json
+{
+  "name": "Hong",
+  "age": 30,
+  "city": "Seoul",
+}
+```
+
+위 JSON에는 문법 오류가 있다.
+
+마지막 항목인 `"city": "Seoul"` 뒤에 쉼표가 존재하기 때문이다.
+
+JSON에서는 마지막 항목 뒤에 쉼표를 작성할 수 없다.
+
+올바른 JSON은 다음과 같다.
+
+```json
+{
+  "name": "Hong",
+  "age": 30,
+  "city": "Seoul"
+}
+```
+
+이처럼 마지막에 불필요하게 추가된 쉼표를 **Trailing Comma**라고 한다.
+
+JavaScript의 객체 리터럴에서는 일부 상황에서 Trailing Comma를 사용할 수 있지만, 표준 JSON에서는 허용되지 않는다.
+
+따라서 JavaScript 객체 리터럴과 JSON을 완전히 동일한 문법으로 생각해서는 안 된다.
+
+#### Key에 큰따옴표를 사용하지 않은 경우
+
+다음 데이터도 JSON 문법에 맞지 않는다.
+
+```javascript
+{
+  name: "Hong",
+  age: 30
+}
+```
+
+JavaScript 객체 리터럴에서는 사용할 수 있는 형태이지만, JSON에서는 객체의 Key에 큰따옴표가 필요하다.
+
+올바른 JSON은 다음과 같다.
+
+```json
+{
+  "name": "Hong",
+  "age": 30
+}
+```
+
+#### 문자열에 작은따옴표를 사용한 경우
+
+다음 데이터도 표준 JSON이 아니다.
+
+```javascript
+{
+  'name': 'Hong'
+}
+```
+
+JSON에서 문자열은 큰따옴표를 사용해야 한다.
+
+```json
+{
+  "name": "Hong"
+}
+```
+
+#### 문자열 내부의 큰따옴표를 이스케이프하지 않은 경우
+
+다음 JSON은 잘못된 형식이다.
+
+```json
+{
+  "message": "He said "Hello""
+}
+```
+
+문자열 안에서 큰따옴표를 사용하려면 이스케이프 문자가 필요하다.
+
+```json
+{
+  "message": "He said \"Hello\""
+}
+```
+
+JSON을 직접 작성할 때는 이러한 문법 오류를 주의해야 한다.
+
+다만 실제 백엔드 개발에서는 JSON 문자열을 수작업으로 연결하기보다는 Jackson과 같은 직렬화 라이브러리를 사용하는 것이 안전하다.
+
+---
+
+### JSON은 주석을 지원하지 않는다
+
+JSON의 특징 중 하나는 표준 문법에 주석이 포함되어 있지 않다는 점이다.
+
+예를 들어 다음과 같은 데이터는 표준 JSON으로 처리할 수 없다.
+
+```javascript
+{
+  // 애플리케이션 이름
+  "name": "my-app",
+
+  // 서버 포트
+  "port": 8080
+}
+```
+
+JavaScript에서는 `//` 주석을 사용할 수 있지만 JSON에서는 허용되지 않는다.
+
+다음과 같은 주석도 마찬가지이다.
+
+```javascript
+{
+  /* 서버 설정 */
+  "port": 8080
+}
+```
+
+일부 개발 도구에서는 JSONC(JSON with Comments)나 JSON5 같은 확장 형식을 지원한다.
+
+그러나 이러한 형식은 표준 JSON과 구분해야 한다.
+
+즉 특정 편집기에서 주석이 포함된 파일이 정상적으로 열리더라도 모든 JSON 파서가 이를 처리할 수 있는 것은 아니다.
+
+이 때문에 사람이 직접 작성하고 관리해야 하는 복잡한 설정 파일에서는 주석을 지원하는 YAML이 유리할 수 있다.
+
+---
+
+### YAML과 JSON의 문법 비교
+
+JSON의 기본 구조를 이해했다면 이제 동일한 데이터를 YAML과 JSON으로 각각 표현해보자.
+
+다음과 같은 애플리케이션 설정이 있다고 가정하자.
+
+- 애플리케이션 이름은 `payment-service`
+- 실행 포트는 `8080`
+- 운영 환경 여부는 `true`
+- 개발자는 두 명
+- 배치 작업은 두 개
+- 데이터베이스는 MySQL 사용
+
+먼저 JSON으로 표현하면 다음과 같다.
+
+#### JSON으로 작성한 설정
+
+```json
+{
+  "application": {
+    "name": "payment-service",
+    "port": 8080,
+    "production": true,
+    "developers": [
+      "Hong",
+      "Kim"
+    ],
+    "jobs": [
+      {
+        "name": "payment-reconciliation",
+        "enabled": true
+      },
+      {
+        "name": "settlement",
+        "enabled": false
+      }
+    ],
+    "database": {
+      "type": "mysql",
+      "host": "localhost",
+      "port": 3306
+    }
+  }
+}
+```
+
+동일한 설정을 YAML로 표현하면 다음과 같다.
+
+#### YAML로 작성한 설정
+
+```yaml
+application:
+  name: payment-service
+  port: 8080
+  production: true
+
+  developers:
+    - Hong
+    - Kim
+
+  jobs:
+    - name: payment-reconciliation
+      enabled: true
+
+    - name: settlement
+      enabled: false
+
+  database:
+    type: mysql
+    host: localhost
+    port: 3306
+```
+
+두 형식 모두 동일한 데이터 구조를 표현한다.
+
+하지만 표현 방식에는 명확한 차이가 있다.
+
+| 비교 항목 | JSON | YAML |
+|---|---|---|
+| 객체 표현 | `{ }` | 들여쓰기 기반 Mapping |
+| 배열 표현 | `[ ]` | 하이픈(`-`) |
+| Key 표현 | 큰따옴표 필수 | 일반적으로 생략 가능 |
+| 문자열 표현 | 큰따옴표 필수 | 상황에 따라 생략 가능 |
+| 항목 구분 | 쉼표(`,`) | 줄바꿈과 들여쓰기 |
+| 계층 구조 | 중괄호와 대괄호 | 들여쓰기 |
+| 주석 | 표준 문법에서 미지원 | `#` 지원 |
+| 마지막 쉼표 | 허용하지 않음 | 블록 스타일에서는 쉼표가 필요 없음 |
+| 복잡한 설정 | 기호가 많아질 수 있음 | 상대적으로 간결하게 표현 가능 |
+
+이처럼 단순한 설정 파일에서는 YAML이 더 읽기 쉬운 형태로 보일 수 있다.
+
+특히 중첩된 객체나 배열이 여러 개 존재하는 경우에는 중괄호와 쉼표가 없어 전체 구조를 비교적 직관적으로 파악할 수 있다.
+
+하지만 여기서 한 가지 중요한 점이 있다.
+
+**YAML이 항상 JSON보다 읽기 쉬운 것은 아니다.**
+
+YAML에는 JSON에 없는 다양한 표현 기능이 존재하고, 이러한 기능을 복합적으로 사용하면 오히려 설정 파일의 의미를 이해하기 어려워질 수 있다.
+
+---
+
+### YAML은 JSON보다 다양한 표현 기능을 제공한다
+
+JSON은 객체, 배열, 문자열, 숫자, Boolean, Null 등의 기본 데이터 타입을 중심으로 구성된다.
+
+반면 YAML은 이러한 데이터 구조 외에도 설정 파일을 간결하게 작성하기 위한 다양한 표현 기능을 제공한다.
+
+대표적으로 다음과 같은 기능이 있다.
+
+- Anchor
+- Alias
+- Merge Key
+- 여러 줄 문자열
+- 여러 YAML 문서 구분
+- 명시적인 데이터 타입 표현
+
+이러한 기능들은 반복되는 설정을 줄이고 복잡한 데이터를 표현하는 데 도움이 된다.
+
+하지만 문법을 이해하지 못하면 설정의 실제 값을 파악하기 어려울 수도 있다.
+
+---
+
+### YAML의 Anchor와 Alias
+
+YAML에서는 특정 데이터에 이름을 부여하고 다른 위치에서 참조할 수 있다.
+
+이를 위해 사용하는 기능이 Anchor와 Alias이다.
+
+#### Anchor란?
+
+Anchor는 YAML 데이터에 이름을 부여하는 기능이다.
+
+앰퍼샌드(`&`)를 사용한다.
+
+```yaml
+defaults: &common
+  timeout: 30
+  retries: 3
+```
+
+여기서 다음 부분이 Anchor이다.
+
+```yaml
+&common
+```
+
+`defaults`라는 Mapping에 `common`이라는 Anchor 이름을 부여한 것이다.
+
+Anchor는 YAML 문서 내부에서 해당 데이터를 다시 참조할 수 있도록 한다.
+
+#### Alias란?
+
+Alias는 앞에서 정의한 Anchor를 참조하는 기능이다.
+
+별표(`*`)를 사용한다.
+
+```yaml
+defaults: &common
+  timeout: 30
+  retries: 3
+
+backup: *common
+```
+
+여기서 `*common`은 앞에서 정의한 `&common`을 참조한다.
+
+따라서 `backup`에는 `defaults`와 동일한 Mapping 데이터가 연결된다.
+
+이를 개념적으로 풀어 쓰면 다음과 같은 형태이다.
+
+```yaml
+defaults:
+  timeout: 30
+  retries: 3
+
+backup:
+  timeout: 30
+  retries: 3
+```
+
+이러한 기능은 반복되는 설정을 줄이는 데 도움이 된다.
+
+```mermaid
+flowchart TD
+    A["defaults Anchor: common"] --> B["timeout: 30"]
+    A --> C["retries: 3"]
+
+    D["backup Alias: common"] --> A
+```
+
+다만 Anchor와 Alias는 프로그래밍 언어의 변수처럼 값을 동적으로 계산하는 기능은 아니다.
+
+YAML 문서 내부에서 이미 정의된 노드를 참조하는 기능이다.
+
+또한 역직렬화 과정에서 참조 대상의 동일성이 유지되는지는 사용하는 라이브러리와 데이터 구조에 따라 달라질 수 있다.
+
+---
+
+### YAML의 Merge Key
+
+Anchor와 Alias를 사용하면 데이터 전체를 참조할 수 있다.
+
+그런데 기존 설정의 일부를 재사용하면서 특정 값만 변경하고 싶을 수도 있다.
+
+이러한 상황에서는 일부 YAML 처리기가 지원하는 Merge Key 기능을 활용할 수 있다.
+
+Merge Key는 `<<`로 표현한다.
+
+다음 예시를 살펴보자.
+
+```yaml
+defaults: &defaults
+  timeout: 30
+  retries: 3
+  enabled: true
+
+development:
+  <<: *defaults
+  timeout: 10
+
+production:
+  <<: *defaults
+  retries: 5
+```
+
+여기서 `defaults`에는 공통 설정이 정의되어 있다.
+
+```yaml
+defaults: &defaults
+  timeout: 30
+  retries: 3
+  enabled: true
+```
+
+`development`에서는 공통 설정을 가져오면서 `timeout`만 변경한다.
+
+```yaml
+development:
+  <<: *defaults
+  timeout: 10
+```
+
+`production`에서는 `retries`만 변경한다.
+
+```yaml
+production:
+  <<: *defaults
+  retries: 5
+```
+
+Merge Key를 지원하는 파서에서 이를 해석하면 개념적으로 다음과 같은 데이터가 된다.
+
+```yaml
+defaults:
+  timeout: 30
+  retries: 3
+  enabled: true
+
+development:
+  timeout: 10
+  retries: 3
+  enabled: true
+
+production:
+  timeout: 30
+  retries: 5
+  enabled: true
+```
+
+이 구조를 Mermaid로 표현하면 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["공통 설정"] --> B["timeout: 30"]
+    A --> C["retries: 3"]
+    A --> D["enabled: true"]
+
+    A --> E["Development"]
+    A --> F["Production"]
+
+    E --> G["timeout을 10으로 재정의"]
+    F --> H["retries를 5로 재정의"]
+```
+
+이를 통해 여러 환경에서 공통으로 사용하는 설정을 중복해서 작성하지 않을 수 있다.
+
+#### Merge Key 사용 시 주의사항
+
+여기서 중요한 차이점이 있다.
+
+Anchor와 Alias는 YAML의 기본 문법에 포함되지만, `<<` Merge Key는 YAML 1.1에서 별도로 정의되었던 확장 기능이다.
+
+YAML 1.2의 핵심 규격에는 Merge Key가 포함되어 있지 않다.
+
+따라서 사용하는 YAML 파서에 따라 `<<`가 Mapping 병합 기능으로 동작하지 않거나 일반적인 Key로 처리될 수 있다.
+
+특히 여러 도구가 동일한 YAML 파일을 처리하는 환경에서는 Merge Key 지원 여부를 확인해야 한다.
+
+실무에서는 반복 설정을 줄이는 장점뿐 아니라 파서 호환성과 설정의 명확성도 함께 고려하는 것이 좋다.
+
+---
+
+### YAML의 고급 기능이 오히려 단점이 되는 이유
+
+Anchor, Alias, Merge Key는 설정을 간결하게 작성하는 데 유용하다.
+
+하지만 너무 많이 사용하면 실제 설정값을 파악하기 어려워진다.
+
+예를 들어 다음 YAML을 살펴보자.
+
+```yaml
+common: &common
+  replicas: 3
+  timeout: 30
+
+database: &database
+  host: mysql
+  port: 3306
+
+production:
+  <<: *common
+
+  database:
+    <<: *database
+    host: production-mysql
+```
+
+이 설정을 처음 본 개발자는 다음 내용을 추가로 확인해야 한다.
+
+- `&common`이 무엇을 의미하는가?
+- `*common`은 어떤 데이터를 참조하는가?
+- `<<`는 어떤 동작을 수행하는가?
+- `production`의 최종 replicas는 몇 개인가?
+- `database.host`는 어떤 값으로 결정되는가?
+
+반면 같은 결과를 명시적으로 작성하면 다음과 같다.
+
+```yaml
+production:
+  replicas: 3
+  timeout: 30
+
+  database:
+    host: production-mysql
+    port: 3306
+```
+
+파일의 길이는 늘어날 수 있지만 최종 설정을 바로 이해할 수 있다.
+
+즉 YAML의 고급 기능은 중복을 줄이는 장점과 설정의 의미를 추적하기 어렵게 만드는 단점을 동시에 가진다.
+
+이러한 특성 때문에 다음 두 가지를 구분하는 것이 중요하다.
+
+**설정 파일이 짧다는 것과 설정 파일을 이해하기 쉽다는 것은 같은 의미가 아니다.**
+
+반복을 줄이는 것도 중요하지만, 운영 환경에서는 실제로 어떤 설정이 적용되는지를 빠르게 파악할 수 있어야 한다.
+
+특히 장애 대응 과정에서는 명시적인 설정이 유지보수에 유리할 수 있다.
+
+---
+
+### YAML은 여러 줄 문자열을 지원한다
+
+YAML에는 여러 줄로 이루어진 문자열을 간편하게 작성하는 기능도 있다.
+
+대표적으로 `|`와 `>`를 사용한다.
+
+#### Literal Block Scalar: `|`
+
+파이프(`|`)를 사용하면 줄바꿈을 유지하는 여러 줄 문자열을 작성할 수 있다.
+
+```yaml
+message: |
+  Hello
+  Kubernetes
+  YAML
+```
+
+이 값은 개념적으로 다음 문자열에 해당한다.
+
+```text
+Hello\nKubernetes\nYAML\n
+```
+
+기본적으로 각 줄의 줄바꿈이 유지되고 마지막 줄바꿈도 포함된다.
+
+이러한 기능은 Shell Script나 긴 설정 문자열을 작성할 때 유용하다.
+
+예를 들어 다음과 같이 작성할 수 있다.
+
+```yaml
+script: |
+  #!/bin/sh
+  echo "Application started"
+  echo "Environment: production"
+```
+
+#### Folded Block Scalar: `>`
+
+꺾쇠(`>`)를 사용하면 일반적인 줄바꿈을 공백으로 접어서 하나의 문자열처럼 표현할 수 있다.
+
+```yaml
+description: >
+  This application
+  provides payment
+  processing APIs.
+```
+
+기본적인 결과는 다음과 같다.
+
+```text
+This application provides payment processing APIs.\n
+```
+
+일반적인 줄바꿈은 공백으로 변환되며, 빈 줄이나 들여쓰기된 줄 등에서는 별도의 규칙이 적용된다.
+
+#### `|`와 `>`의 비교
+
+| 문법 | 기능 | 대표 사용처 |
+|---|---|---|
+| `|` | 줄바꿈 유지 | Shell Script, 인증서, 여러 줄 메시지 |
+| `>` | 일반적인 줄바꿈을 공백으로 변환 | 긴 설명, 긴 명령어 |
+
+JSON에서도 여러 줄 문자열을 표현할 수 있지만, 문자열 내부의 줄바꿈은 `\n` 등으로 이스케이프해야 한다.
+
+따라서 사람이 직접 작성하는 여러 줄 텍스트에서는 YAML이 더 편리할 수 있다.
+
+---
+
+### YAML은 여러 문서를 하나의 파일에 작성할 수 있다
+
+YAML은 `---`를 사용해 여러 문서를 구분할 수 있다.
+
+예를 들어 다음과 같이 작성할 수 있다.
+
+```yaml
+name: application-a
+port: 8080
+
+---
+name: application-b
+port: 9090
+```
+
+이 파일에는 두 개의 YAML 문서가 존재한다.
+
+첫 번째 문서는 다음과 같다.
+
+```yaml
+name: application-a
+port: 8080
+```
+
+두 번째 문서는 다음과 같다.
+
+```yaml
+name: application-b
+port: 9090
+```
+
+이러한 기능은 Kubernetes에서 여러 리소스를 하나의 파일로 관리할 때 활용할 수 있다.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: application-config
+data:
+  APP_ENV: production
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: application-service
+spec:
+  selector:
+    app: my-app
+  ports:
+    - port: 80
+      targetPort: 8080
+```
+
+이 파일을 적용하면 ConfigMap과 Service를 함께 생성하거나 수정할 수 있다.
+
+```bash
+kubectl apply -f application.yaml
+```
+
+정상적으로 적용되면 다음과 같은 메시지가 출력될 수 있다.
+
+```text
+configmap/application-config created
+service/application-service created
+```
+
+JSON은 하나의 JSON 텍스트에 하나의 최상위 값을 표현한다.
+
+여러 객체를 하나의 JSON 문서로 묶고 싶다면 배열 등의 구조를 사용해야 한다.
+
+물론 NDJSON처럼 여러 JSON 데이터를 줄 단위로 나열하는 별도의 형식도 존재하지만, 이는 일반적인 단일 JSON 문서와는 구분된다.
+
+이처럼 YAML의 다중 문서 기능은 여러 설정을 함께 관리하는 데 유용하다.
+
+---
+
+### YAML과 JSON의 데이터 타입 비교
+
+두 형식은 모두 문자열, 숫자, Boolean, Null, 객체, 배열에 해당하는 구조를 표현할 수 있다.
+
+다만 데이터 타입을 표현하는 방식에는 차이가 있다.
+
+| 데이터 타입 | JSON | YAML |
+|---|---|---|
+| 문자열 | `"hello"` | `hello` 또는 `"hello"` |
+| 정수 | `30` | `30` |
+| 실수 | `3.14` | `3.14` |
+| Boolean | `true`, `false` | `true`, `false` |
+| Null | `null` | `null`, `~` 등 |
+| 객체 | `{ }` | Mapping |
+| 배열 | `[ ]` | Sequence |
+| 명시적 타입 태그 | 지원하지 않음 | 지원 |
+| Anchor / Alias | 지원하지 않음 | 지원 |
+
+YAML은 다양한 타입 표현 기능을 제공하지만 그만큼 값이 어떤 타입으로 해석되는지 주의해야 한다.
+
+예를 들어 다음 데이터를 살펴보자.
+
+```yaml
+version: 1.0
+enabled: true
+code: 00123
+```
+
+이 값들은 파서와 스키마에 따라 개발자가 의도한 문자열이 아니라 숫자나 Boolean 등의 타입으로 해석될 수 있다.
+
+따라서 문자열로 처리해야 하는 값은 따옴표를 사용하는 것이 안전하다.
+
+```yaml
+version: "1.0"
+enabled: "true"
+code: "00123"
+```
+
+특히 YAML 1.1과 YAML 1.2 사이에는 일부 타입 해석 규칙에 차이가 있다.
+
+예를 들어 YAML 1.1 계열의 일부 파서는 `yes`, `no`, `on`, `off` 같은 값을 Boolean으로 해석한다.
+
+반면 YAML 1.2의 기본적인 Core Schema에서는 이러한 값들을 문자열로 취급한다.
+
+이처럼 동일한 YAML 파일이라도 처리하는 파서의 버전과 스키마에 따라 값의 타입이 달라질 수 있다.
+
+이 문제는 Kubernetes, Helm, Spring Boot처럼 서로 다른 YAML 처리기가 사용되는 환경에서 주의할 필요가 있다.
+
+---
+
+### YAML과 JSON의 파싱 성능 차이
+
+YAML과 JSON을 비교할 때 자주 언급되는 내용 중 하나가 파싱 성능이다.
+
+일반적으로 JSON은 YAML보다 문법이 단순하기 때문에 빠른 파서를 구현하기 유리하다.
+
+JSON은 객체, 배열, 문자열, 숫자, Boolean, Null 등으로 구성되며 문법이 비교적 제한적이다.
+
+반면 YAML은 다음과 같은 기능을 추가로 처리해야 할 수 있다.
+
+- 들여쓰기를 통한 계층 구조
+- 다양한 문자열 표현 방식
+- Anchor와 Alias
+- 여러 줄 문자열
+- 명시적인 타입 정보
+- 여러 문서로 구성된 데이터
+
+따라서 YAML 파서는 JSON 파서보다 처리해야 하는 문법 요소가 많을 수 있다.
+
+```mermaid
+flowchart TD
+    A["입력 데이터"] --> B["JSON Parser"]
+    A --> C["YAML Parser"]
+
+    B --> D["객체와 배열 구조 해석"]
+    C --> E["들여쓰기와 확장 문법 해석"]
+
+    D --> F["애플리케이션 데이터"]
+    E --> F
+```
+
+하지만 여기서 주의해야 할 점이 있다.
+
+**JSON이 항상 YAML보다 빠르다고 단정할 수는 없다.**
+
+실제 파싱 성능은 다음 요소에 따라 달라진다.
+
+- 사용하는 프로그래밍 언어
+- JSON/YAML 파서 구현체
+- 데이터 크기
+- 중첩 구조의 깊이
+- Anchor와 Alias 사용 여부
+- 타입 변환 및 객체 매핑 방식
+
+예를 들어 최적화된 JSON 파서와 일반적인 YAML 파서를 비교하면 JSON이 빠른 경우가 많다.
+
+반대로 단순한 YAML 문서를 효율적인 파서로 처리하는 경우에는 차이가 크지 않을 수도 있다.
+
+따라서 성능이 중요한 시스템에서는 형식의 일반적인 특성뿐 아니라 실제 사용하는 라이브러리와 데이터를 기준으로 측정해야 한다.
+
+#### 데이터 처리 목적에 따른 차이
+
+설정 파일과 API 응답은 데이터 처리 방식부터 다르다.
+
+애플리케이션 설정 파일은 일반적으로 시작할 때 읽거나 설정을 갱신할 때만 읽는다.
+
+반면 API 요청과 응답 데이터는 수많은 요청마다 반복적으로 직렬화하고 역직렬화할 수 있다.
+
+```mermaid
+flowchart TD
+    A["데이터 처리 목적"] --> B["설정 파일"]
+    A --> C["API 데이터 교환"]
+
+    B --> D["읽기 쉬운 구조 중요"]
+    B --> E["변경과 유지보수 중요"]
+
+    C --> F["반복적인 직렬화와 역직렬화"]
+    C --> G["파싱 비용과 호환성 중요"]
+
+    D --> H["YAML 활용"]
+    G --> I["JSON 활용"]
+```
+
+이러한 사용 패턴의 차이도 YAML과 JSON이 서로 다른 영역에서 널리 활용되는 이유 중 하나이다.
+
+---
+
+### YAML과 JSON의 장단점 비교
+
+지금까지 살펴본 특징을 바탕으로 두 형식의 장단점을 정리해보자.
+
+#### YAML의 장점
+
+**1. 사람이 읽기 쉽다.**
+
+중괄호와 쉼표 대신 들여쓰기를 사용하기 때문에 복잡한 설정을 비교적 간결하게 표현할 수 있다.
+
+**2. 작성해야 할 문법 요소가 적다.**
+
+일반적인 문자열에서는 큰따옴표를 생략할 수 있고, 배열은 하이픈으로 표현할 수 있다.
+
+**3. 주석을 지원한다.**
+
+설정의 목적이나 주의사항을 파일 내부에 작성할 수 있다.
+
+**4. 반복되는 데이터를 재사용할 수 있다.**
+
+Anchor와 Alias를 이용해 동일한 데이터를 여러 위치에서 참조할 수 있다.
+
+**5. 여러 줄 문자열을 편리하게 작성할 수 있다.**
+
+`|`와 `>`를 사용해 긴 문자열을 읽기 쉬운 형태로 표현할 수 있다.
+
+**6. 여러 문서를 하나의 파일에 포함할 수 있다.**
+
+`---`를 사용해 여러 YAML 문서를 구분할 수 있다.
+
+#### YAML의 단점
+
+**1. 들여쓰기에 민감하다.**
+
+공백 하나가 잘못되면 문법 오류가 발생하거나 데이터 구조가 달라질 수 있다.
+
+**2. 데이터 타입 해석이 모호할 수 있다.**
+
+따옴표를 생략한 문자열이 숫자나 Boolean으로 해석될 수 있다.
+
+**3. 고급 문법이 복잡해질 수 있다.**
+
+Anchor, Alias, Merge Key 등을 과도하게 사용하면 실제 설정을 이해하기 어려워질 수 있다.
+
+**4. 파서의 버전과 구현체에 따라 차이가 발생할 수 있다.**
+
+특히 YAML 1.1과 YAML 1.2의 타입 처리 방식에는 차이가 있다.
+
+**5. JSON보다 처리 비용이 커질 수 있다.**
+
+지원하는 문법이 복잡하므로 동일한 조건에서 파싱 비용이 더 크게 발생할 가능성이 있다.
+
+---
+
+#### JSON의 장점
+
+**1. 문법이 단순하고 명확하다.**
+
+객체, 배열, 문자열 등의 구조를 제한된 문법으로 표현한다.
+
+**2. 프로그래밍 언어 간 데이터 교환에 적합하다.**
+
+다양한 언어에서 JSON 파서를 제공하기 때문에 호환성이 높다.
+
+**3. 빠른 파서 구현에 유리하다.**
+
+문법이 단순하기 때문에 고성능 파서를 구현하고 활용하기 쉽다.
+
+**4. 데이터 구조가 명시적이다.**
+
+객체는 중괄호, 배열은 대괄호로 구분되므로 들여쓰기와 관계없이 구조를 파악할 수 있다.
+
+**5. 한 줄로 압축할 수 있다.**
+
+불필요한 공백과 줄바꿈을 제거해 데이터를 간결하게 표현할 수 있다.
+
+**6. REST API에서 널리 사용된다.**
+
+브라우저와 백엔드 프레임워크에서 JSON을 쉽게 처리할 수 있다.
+
+#### JSON의 단점
+
+**1. 중괄호와 대괄호가 많아질 수 있다.**
+
+중첩 구조가 복잡할수록 문법 기호의 비중이 증가한다.
+
+**2. 큰따옴표와 쉼표를 정확하게 작성해야 한다.**
+
+작은 문법 실수로도 파싱 오류가 발생할 수 있다.
+
+**3. 표준 문법에서 주석을 지원하지 않는다.**
+
+설정 파일에 설명을 추가하기 어렵다.
+
+**4. 데이터 재사용을 위한 Anchor나 Alias 기능이 없다.**
+
+동일한 설정을 여러 위치에서 사용하려면 중복해서 작성하거나 애플리케이션에서 별도로 처리해야 한다.
+
+**5. 여러 줄 문자열을 직접 작성하기 불편할 수 있다.**
+
+줄바꿈을 이스케이프 문자로 표현해야 한다.
+
+---
+
+### YAML과 JSON 전체 비교
+
+| 비교 항목 | YAML | JSON |
+|---|---|---|
+| 정식 명칭 | YAML Ain't Markup Language | JavaScript Object Notation |
+| 주요 목적 | 사람이 읽기 쉬운 데이터 표현 | 간결하고 명확한 데이터 교환 |
+| 직렬화 형식 | 지원 | 지원 |
+| 언어 독립성 | 지원 | 지원 |
+| 가독성 | 설정 파일에 유리 | 단순 데이터 구조에 유리 |
+| 객체 표현 | Mapping | Object |
+| 배열 표현 | Sequence | Array |
+| 계층 구조 | 들여쓰기 중심 | 중괄호와 대괄호 |
+| 문자열 따옴표 | 생략 가능 | 큰따옴표 필요 |
+| 주석 | 지원 | 표준 문법에서 미지원 |
+| 여러 줄 문자열 | `\|`, `>` 지원 | 이스케이프 문자 사용 |
+| Anchor / Alias | 지원 | 미지원 |
+| Merge Key | 일부 파서에서 지원 | 미지원 |
+| 여러 문서 | `---`로 구분 가능 | 단일 JSON 텍스트는 하나의 최상위 값 |
+| 문법 복잡도 | 상대적으로 높음 | 상대적으로 낮음 |
+| 파싱 성능 | 구현에 따라 추가 비용 가능 | 일반적으로 최적화에 유리 |
+| 타입 해석 | 파서와 스키마에 따른 차이 가능 | 비교적 명확 |
+| 대표 사용처 | Kubernetes, Spring Boot, Docker Compose | REST API, 웹 애플리케이션 |
+| 설정 파일 적합성 | 높음 | 사용 가능 |
+| API 데이터 교환 | 사용 가능 | 매우 널리 사용 |
+
+두 형식은 서로 다른 장점을 가지고 있기 때문에 특정 형식이 모든 상황에서 우월하다고 판단하기는 어렵다.
+
+중요한 것은 데이터를 어떤 목적으로 사용하느냐이다.
+
+---
+
+### Kubernetes는 YAML만 지원할까?
+
+Kubernetes를 사용하다 보면 대부분 YAML 파일로 리소스를 정의한다.
+
+그렇다면 Kubernetes는 YAML만 지원할까?
+
+그렇지 않다.
+
+**Kubernetes는 YAML과 JSON 형식의 Manifest를 모두 사용할 수 있다.**
+
+예를 들어 다음과 같은 ConfigMap을 생성한다고 가정하자.
+
+#### YAML Manifest
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: application-config
+data:
+  APP_ENV: production
+  LOG_LEVEL: INFO
+```
+
+동일한 리소스를 JSON으로 작성할 수도 있다.
+
+#### JSON Manifest
+
+```json
+{
+  "apiVersion": "v1",
+  "kind": "ConfigMap",
+  "metadata": {
+    "name": "application-config"
+  },
+  "data": {
+    "APP_ENV": "production",
+    "LOG_LEVEL": "INFO"
+  }
+}
+```
+
+두 파일 모두 Kubernetes에 적용할 수 있다.
+
+YAML 파일을 사용하는 경우:
+
+```bash
+kubectl apply -f configmap.yaml
+```
+
+JSON 파일을 사용하는 경우:
+
+```bash
+kubectl apply -f configmap.json
+```
+
+새로운 리소스를 생성하면 다음과 같은 메시지가 출력될 수 있다.
+
+```text
+configmap/application-config created
+```
+
+즉 Kubernetes가 YAML만 이해하는 것은 아니다.
+
+YAML을 사용하는 경우 Kubernetes 클라이언트는 Manifest를 해석해 Kubernetes API가 처리할 수 있는 형태로 전달한다.
+
+Kubernetes의 리소스 구조는 YAML 문법 자체가 아니라 API의 데이터 모델과 스키마로 정의된다.
+
+따라서 같은 Kubernetes 리소스를 YAML과 JSON 양쪽으로 표현할 수 있다.
+
+---
+
+### kubectl을 이용해 YAML과 JSON 출력 비교하기
+
+Kubernetes에 이미 생성된 리소스를 조회할 때도 원하는 출력 형식을 지정할 수 있다.
+
+예를 들어 Deployment를 조회한다고 가정하자.
+
+```bash
+kubectl get deployment my-app -o yaml
+```
+
+이 명령어는 Deployment 정보를 YAML 형식으로 출력한다.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+spec:
+  replicas: 3
+```
+
+반대로 JSON 형식으로 조회할 수도 있다.
+
+```bash
+kubectl get deployment my-app -o json
+```
+
+출력 형식은 다음과 같다.
+
+```json
+{
+  "apiVersion": "apps/v1",
+  "kind": "Deployment",
+  "metadata": {
+    "name": "my-app"
+  },
+  "spec": {
+    "replicas": 3
+  }
+}
+```
+
+위 출력은 주요 필드만 간추린 예시이며, 실제 `kubectl get` 결과에는 더 많은 메타데이터와 상태 정보가 포함된다.
+
+두 명령어는 동일한 Kubernetes 리소스를 조회하지만 출력 형식이 다르다.
+
+| 명령어 | 출력 형식 |
+|---|---|
+| `kubectl get deployment my-app -o yaml` | YAML |
+| `kubectl get deployment my-app -o json` | JSON |
+
+이 기능을 이해하면 Kubernetes 리소스를 사람이 읽기 쉬운 형태로 확인하거나, 자동화 프로그램에서 처리하기 쉬운 형태로 가져올 수 있다.
+
+---
+
+### YAML과 JSON의 변환
+
+YAML과 JSON은 기본적인 자료구조가 유사하기 때문에 서로 변환할 수 있다.
+
+예를 들어 다음 YAML이 있다고 가정하자.
+
+```yaml
+application:
+  name: my-app
+  port: 8080
+
+  features:
+    - login
+    - payment
+```
+
+이를 JSON으로 변환하면 다음과 같다.
+
+```json
+{
+  "application": {
+    "name": "my-app",
+    "port": 8080,
+    "features": [
+      "login",
+      "payment"
+    ]
+  }
+}
+```
+
+두 데이터는 동일한 구조를 표현한다.
+
+다만 YAML의 모든 기능을 JSON에서 그대로 보존할 수 있는 것은 아니다.
+
+예를 들어 YAML에는 다음과 같은 정보가 포함될 수 있다.
+
+- 주석
+- Anchor 이름
+- Alias
+- 여러 문서 구분
+- 명시적인 타입 태그
+- 문자열 표현 스타일
+
+이 중 일부는 JSON에 직접 대응하는 문법이 없다.
+
+따라서 YAML을 JSON으로 변환할 때는 실제 데이터의 값은 유지하더라도 YAML 고유의 표현 정보가 사라질 수 있다.
+
+예를 들어 다음 YAML을 살펴보자.
+
+```yaml
+# 애플리케이션 설정
+application:
+  name: my-app
+```
+
+JSON으로 변환하면 일반적으로 다음과 같이 표현된다.
+
+```json
+{
+  "application": {
+    "name": "my-app"
+  }
+}
+```
+
+YAML에 작성된 주석은 JSON에 포함되지 않는다.
+
+따라서 변환 과정에서는 데이터 자체와 표현 방식이 서로 다르다는 점을 이해해야 한다.
+
+---
+
+### YAML과 JSON을 변환하는 방법
+
+YAML을 JSON으로 변환할 때는 yq를 사용할 수 있다.
+
+예를 들어 다음 파일이 있다고 가정하자.
+
+**application.yaml**
+
+```yaml
+application:
+  name: payment-service
+  port: 8080
+  enabled: true
+```
+
+다음 명령어를 실행한다.
+
+```bash
+yq -o=json '.' application.yaml
+```
+
+여기서 각 요소의 의미는 다음과 같다.
+
+| 요소 | 의미 |
+|---|---|
+| `yq` | YAML 처리 도구 |
+| `-o=json` | JSON 형식으로 출력 |
+| `.` | 전체 문서 선택 |
+| `application.yaml` | 입력 파일 |
+
+출력 결과는 다음과 같다.
+
+```json
+{
+  "application": {
+    "name": "payment-service",
+    "port": 8080,
+    "enabled": true
+  }
+}
+```
+
+반대로 JSON을 YAML로 변환할 수도 있다.
+
+**application.json**
+
+```json
+{
+  "application": {
+    "name": "payment-service",
+    "port": 8080,
+    "enabled": true
+  }
+}
+```
+
+다음 명령어를 실행한다.
+
+```bash
+yq -P -o=yaml '.' application.json
+```
+
+출력 결과는 다음과 같다.
+
+```yaml
+application:
+  name: payment-service
+  port: 8080
+  enabled: true
+```
+
+이러한 변환 기능은 다음과 같은 상황에서 유용하다.
+
+- JSON으로 제공되는 설정을 YAML로 관리하고 싶은 경우
+- YAML 설정을 JSON 기반 프로그램에 전달해야 하는 경우
+- Kubernetes Manifest를 다른 형식으로 분석해야 하는 경우
+- CI/CD에서 서로 다른 설정 형식을 처리해야 하는 경우
+
+다만 사용하는 yq의 종류와 버전에 따라 명령어 문법이 다를 수 있다.
+
+위 예시는 Mike Farah의 yq v4 계열을 기준으로 작성한 것이다.
+
+---
+
+### JSON과 YAML을 Java에서 처리하는 방법
+
+백엔드 개발 관점에서는 두 형식이 객체와 어떻게 연결되는지도 중요하다.
+
+Java에서는 Jackson을 사용해 JSON을 직렬화하고 역직렬화할 수 있다.
+
+또한 Jackson YAML 모듈을 사용하면 YAML도 객체로 변환할 수 있다.
+
+#### Java 객체 정의
+
+먼저 간단한 설정 객체를 정의하자.
+
+```java
+public record ApplicationConfig(
+    String name,
+    int port,
+    boolean enabled
+) {
+}
+```
+
+다음 객체를 생성한다.
+
+```java
+ApplicationConfig config = new ApplicationConfig(
+    "payment-service",
+    8080,
+    true
+);
+```
+
+#### JSON 직렬화
+
+Jackson의 `ObjectMapper`를 사용하면 객체를 JSON으로 변환할 수 있다.
+
+```java
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+public class JsonExample {
+
+    public static void main(String[] args) throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+
+        ApplicationConfig config = new ApplicationConfig(
+            "payment-service",
+            8080,
+            true
+        );
+
+        String json = mapper
+                .writerWithDefaultPrettyPrinter()
+                .writeValueAsString(config);
+
+        System.out.println(json);
+    }
+}
+```
+
+출력 결과:
+
+```json
+{
+  "name": "payment-service",
+  "port": 8080,
+  "enabled": true
+}
+```
+
+#### YAML 직렬화
+
+Jackson YAML 모듈을 사용하면 `YAMLFactory`를 통해 YAML을 처리할 수 있다.
+
+프로젝트에는 `jackson-dataformat-yaml` 의존성이 필요하다.
+
+```java
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
+
+public class YamlExample {
+
+    public static void main(String[] args) throws Exception {
+        ObjectMapper mapper = new ObjectMapper(
+            new YAMLFactory()
+        );
+
+        ApplicationConfig config = new ApplicationConfig(
+            "payment-service",
+            8080,
+            true
+        );
+
+        String yaml = mapper.writeValueAsString(config);
+
+        System.out.println(yaml);
+    }
+}
+```
+
+출력 형식은 Jackson 버전과 설정에 따라 차이가 있을 수 있지만 다음과 같은 구조가 된다.
+
+```yaml
+---
+name: "payment-service"
+port: 8080
+enabled: true
+```
+
+JSON과 YAML 모두 동일한 Java 객체를 기반으로 직렬화할 수 있다는 점을 확인할 수 있다.
+
+```mermaid
+flowchart TD
+    A["Java ApplicationConfig 객체"] --> B["Jackson ObjectMapper"]
+
+    B --> C["JSON Serializer"]
+    B --> D["YAML Serializer"]
+
+    C --> E["JSON 데이터"]
+    D --> F["YAML 데이터"]
+```
+
+즉 JSON과 YAML은 서로 다른 데이터 표현 방식이지만, 애플리케이션에서는 동일한 객체 모델을 사용해 처리할 수 있다.
+
+---
+
+### 실무에서는 YAML과 JSON 중 무엇을 선택해야 할까?
+
+두 형식의 특징을 이해했다면 실제 개발 환경에서 어떤 기준으로 선택해야 하는지 살펴보자.
+
+#### 1. REST API에서는 JSON이 일반적으로 적합하다
+
+REST API에서는 요청과 응답 데이터를 반복적으로 처리한다.
+
+예를 들어 다음과 같은 API가 있다고 가정하자.
+
+```http
+POST /api/payments
+Content-Type: application/json
+```
+
+요청 데이터:
+
+```json
+{
+  "orderId": 1001,
+  "amount": 50000,
+  "currency": "KRW"
+}
+```
+
+이러한 환경에서는 JSON이 유리하다.
+
+주요 이유는 다음과 같다.
+
+- 대부분의 웹 프레임워크에서 기본적으로 지원한다.
+- 클라이언트와 서버에서 쉽게 직렬화하고 역직렬화할 수 있다.
+- 단순한 문법으로 데이터를 표현할 수 있다.
+- 브라우저와 JavaScript 환경에서 처리하기 편리하다.
+- OpenAPI 등 API 생태계에서 널리 사용된다.
+
+따라서 일반적인 HTTP API의 요청과 응답에는 JSON을 우선적으로 고려할 수 있다.
+
+#### 2. 애플리케이션 설정 파일에서는 YAML이 유리할 수 있다
+
+Spring Boot의 설정 파일을 생각해보자.
+
+```yaml
+server:
+  port: 8080
+
+spring:
+  application:
+    name: payment-service
+
+  datasource:
+    url: jdbc:mysql://localhost:3306/payment
+    username: payment_user
+    password: ${DB_PASSWORD}
+```
+
+이러한 설정은 개발자가 직접 읽고 수정하는 경우가 많다.
+
+또한 설정 항목이 계층 구조로 이루어져 있다.
+
+이때 YAML을 사용하면 데이터의 구조를 비교적 간결하게 표현할 수 있다.
+
+주석을 통해 설정의 의도를 설명할 수도 있다.
+
+따라서 설정 파일에서는 YAML이 좋은 선택이 될 수 있다.
+
+#### 3. Kubernetes Manifest에서는 YAML이 일반적이다
+
+Kubernetes는 JSON과 YAML을 모두 지원하지만, 실제로 리소스를 정의할 때는 YAML을 많이 사용한다.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-service
+spec:
+  replicas: 3
+
+  selector:
+    matchLabels:
+      app: payment-service
+
+  template:
+    metadata:
+      labels:
+        app: payment-service
+
+    spec:
+      containers:
+        - name: payment-service
+          image: example/payment-service:1.0.0
+```
+
+Kubernetes Manifest는 사람이 구조를 이해하고 설정을 변경해야 하는 경우가 많다.
+
+특히 Deployment, Service, ConfigMap, Secret 등을 함께 관리하는 환경에서는 YAML의 가독성과 다중 문서 기능이 유용하다.
+
+#### 4. 자동화 프로그램에서 생성하는 데이터는 JSON이 편리할 수 있다
+
+프로그램이 데이터를 생성하고 다른 프로그램이 이를 처리하는 환경에서는 사람이 직접 읽기 쉬운가보다 데이터 형식의 단순성과 호환성이 중요할 수 있다.
+
+예를 들어 다음과 같은 상황이다.
+
+```mermaid
+flowchart LR
+    A["Backend Service"] --> B["JSON 직렬화"]
+    B --> C["HTTP API"]
+    C --> D["JSON 역직렬화"]
+    D --> E["Client Application"]
+```
+
+이러한 환경에서는 JSON이 실용적인 선택인 경우가 많다.
+
+반면 사람이 직접 작성하고 변경하는 설정에서는 YAML이 유리할 수 있다.
+
+따라서 데이터를 사용하는 주체에 따라 선택 기준이 달라진다.
+
+---
+
+### YAML과 JSON을 선택하는 기준
+
+| 사용 환경 | 권장 형식 | 주요 이유 |
+|---|---|---|
+| REST API 요청·응답 | JSON | 높은 호환성, 단순한 파싱 |
+| Spring Boot 설정 파일 | YAML | 계층 구조 표현과 가독성 |
+| Kubernetes Manifest | YAML | 선언적 리소스 설정 관리 |
+| Docker Compose | YAML | 복잡한 컨테이너 구성 표현 |
+| GitHub Actions | YAML | Workflow 설정과 주석 지원 |
+| 프로그램 간 데이터 교환 | JSON | 넓은 라이브러리 지원 |
+| 사람이 수정하는 복잡한 설정 | YAML | 간결한 문법과 주석 |
+| 외부 시스템으로 전달하는 데이터 | JSON | 명확한 데이터 구조와 호환성 |
+| 자동 생성되는 대량의 데이터 | JSON | 파서 지원과 처리 효율 |
+| 반복적인 공통 설정 | YAML | Anchor와 Alias 활용 가능 |
+
+물론 이 표가 절대적인 기준은 아니다.
+
+예를 들어 Kubernetes에서도 JSON Manifest를 사용할 수 있고, 애플리케이션의 설정을 JSON으로 관리할 수도 있다.
+
+중요한 것은 다음과 같은 관점이다.
+
+**사람이 자주 읽고 수정하는 데이터인가, 아니면 프로그램이 반복적으로 교환하고 처리하는 데이터인가?**
+
+이 질문을 기준으로 형식을 선택하면 대부분의 상황에서 합리적인 판단을 내릴 수 있다.
+
+---
+
+### 실무에서 주의해야 할 YAML과 JSON의 공통 문제
+
+YAML과 JSON은 문법이 다르지만 공통적으로 주의해야 하는 문제도 있다.
+
+#### 1. 중복된 Key
+
+다음 JSON을 살펴보자.
+
+```json
+{
+  "port": 8080,
+  "port": 9090
+}
+```
+
+동일한 Key가 두 번 등장한다.
+
+일부 JSON 파서는 마지막 값을 사용하기도 하지만, 중복 Key 처리 방식은 구현체마다 다를 수 있다.
+
+따라서 중복된 Key를 작성하지 않아야 한다.
+
+YAML에서도 마찬가지이다.
+
+```yaml
+port: 8080
+port: 9090
+```
+
+YAML Mapping에서도 Key는 고유해야 한다.
+
+하지만 실제 파서의 오류 처리 방식에는 차이가 있을 수 있으므로 설정 검증 과정에서 중복 Key를 확인하는 것이 좋다.
+
+#### 2. 데이터 타입 불일치
+
+다음 JSON을 살펴보자.
+
+```json
+{
+  "port": "8080"
+}
+```
+
+이 값은 문자열이다.
+
+반면 다음 값은 숫자이다.
+
+```json
+{
+  "port": 8080
+}
+```
+
+YAML에서도 동일한 문제가 발생할 수 있다.
+
+```yaml
+port: "8080"
+```
+
+```yaml
+port: 8080
+```
+
+두 값은 타입이 다르다.
+
+특히 애플리케이션의 설정이나 API 요청에서 타입이 다르면 역직렬화 오류가 발생할 수 있다.
+
+따라서 데이터 형식뿐 아니라 애플리케이션이 기대하는 타입을 함께 확인해야 한다.
+
+#### 3. 깊은 중첩 구조
+
+JSON과 YAML 모두 중첩된 객체와 배열을 표현할 수 있다.
+
+하지만 중첩 구조가 지나치게 깊어지면 사람이 읽기 어려워진다.
+
+```yaml
+application:
+  server:
+    connection:
+      pool:
+        settings:
+          timeout:
+            value: 30
+```
+
+JSON도 마찬가지이다.
+
+```json
+{
+  "application": {
+    "server": {
+      "connection": {
+        "pool": {
+          "settings": {
+            "timeout": {
+              "value": 30
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+중첩 구조가 지나치게 복잡하다면 데이터 모델 자체를 단순화하는 것이 좋다.
+
+단순히 YAML을 JSON으로 변경하거나 JSON을 YAML로 변경한다고 구조적 복잡성이 사라지는 것은 아니다.
+
+#### 4. 외부에서 전달받은 데이터 검증
+
+YAML과 JSON 모두 외부에서 전달받은 데이터를 처리할 수 있다.
+
+하지만 데이터를 역직렬화했다고 해서 그 값이 안전하거나 올바르다는 의미는 아니다.
+
+예를 들어 다음 값이 들어올 수 있다.
+
+```json
+{
+  "amount": -10000,
+  "quantity": 0
+}
+```
+
+문법적으로는 올바른 JSON이지만 비즈니스 규칙에서는 허용되지 않을 수 있다.
+
+따라서 역직렬화 이후에도 데이터 검증이 필요하다.
+
+또한 YAML은 Alias나 사용자 정의 타입 같은 기능을 지원하므로, 신뢰할 수 없는 YAML 데이터를 처리할 때는 안전한 로딩 방식과 파서의 보안 설정을 고려해야 한다.
+
+---
+
+### 정리
+
+YAML과 JSON은 모두 구조화된 데이터를 표현하고 교환하기 위한 대표적인 텍스트 기반 데이터 직렬화 형식이다.
+
+하지만 두 형식은 서로 다른 방향으로 설계되었다.
+
+JSON은 JavaScript 객체 표기법에서 유래했으며, 중괄호와 대괄호를 사용해 데이터 구조를 명시적으로 표현한다.
+
+문법이 단순하고 대부분의 프로그래밍 언어에서 지원하기 때문에 REST API나 애플리케이션 간 데이터 교환에 널리 사용된다.
+
+반면 YAML은 사람이 데이터를 쉽게 읽고 작성할 수 있도록 설계되었다.
+
+들여쓰기로 계층 구조를 표현하고, 하이픈으로 배열을 작성하며, 주석을 통해 설정의 의미를 설명할 수 있다.
+
+또한 Anchor, Alias, 여러 줄 문자열, 다중 문서 등의 기능을 제공하므로 복잡한 설정을 간결하게 작성할 수 있다.
+
+다만 YAML의 다양한 기능은 장점인 동시에 단점이 될 수 있다.
+
+복잡한 참조 구조와 타입 해석 규칙 때문에 실제 설정값을 이해하기 어려워질 수 있으며, 사용하는 파서와 스키마에 따라 처리 결과가 달라질 수 있기 때문이다.
+
+두 형식의 핵심적인 차이를 정리하면 다음과 같다.
+
+| 핵심 관점 | YAML | JSON |
+|---|---|---|
+| 설계 방향 | 사람 중심의 가독성 | 단순하고 명확한 데이터 교환 |
+| 데이터 구조 | Mapping, Sequence, Scalar | Object, Array, Primitive Value |
+| 문법 특징 | 들여쓰기 중심 | 중괄호, 대괄호, 쉼표 중심 |
+| 주요 장점 | 가독성, 주석, 다양한 표현 기능 | 단순성, 호환성, 파싱 효율 |
+| 주요 단점 | 복잡한 문법과 타입 해석 | 주석 미지원, 반복적인 기호 |
+| 대표 활용 | 설정 파일 및 Kubernetes | REST API 및 시스템 간 통신 |
+
+결국 YAML과 JSON 중 어느 형식이 더 좋은지를 결정하기보다는, **데이터의 사용 목적에 따라 적절한 형식을 선택하는 것이 중요하다.**
+
+사람이 자주 읽고 수정하는 설정 파일이라면 YAML이 유리할 수 있다.
+
+반면 프로그램이 빈번하게 데이터를 교환하고 처리해야 한다면 JSON이 실용적인 선택인 경우가 많다.
+
+또한 Kubernetes에서는 두 형식을 모두 사용할 수 있지만, 사람이 관리하기 쉬운 YAML을 일반적으로 사용한다.
+
+따라서 Kubernetes 환경에서 YAML을 이해하는 것은 단순히 설정 파일의 문법을 배우는 것을 넘어, Kubernetes 리소스의 구조와 설정 관리 방식을 이해하는 데 도움이 된다.
+
+#### 한 줄 요약
+
+> YAML은 사람이 읽고 작성하기 쉬운 데이터 직렬화 형식이고, JSON은 단순하고 명확한 문법으로 시스템 간 데이터를 교환하기에 적합한 형식이다. 두 형식은 우열의 관계가 아니라 사용 목적에 따라 선택해야 하는 상호 보완적인 기술이다.
