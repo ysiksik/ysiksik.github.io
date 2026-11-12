@@ -1329,7 +1329,7 @@ sequenceDiagram
     participant Service as CustomUserDetailsService
     participant Repository as UserRepository
     participant DB as MySQL
-    participant Details as CustomUserDetails
+    participant UD as CustomUserDetails
 
     Provider->>Service: loadUserByUsername(username)
 
@@ -1340,17 +1340,17 @@ sequenceDiagram
     DB-->>Repository: 사용자 정보
     Repository-->>Service: UserEntity
 
-    Service->>Details: new CustomUserDetails(userEntity)
+    Service->>UD: new CustomUserDetails(userEntity)
 
-    Details-->>Service: UserDetails
+    UD-->>Service: UserDetails
 
     Service-->>Provider: UserDetails 반환
 
-    Provider->>Details: getPassword()
-    Details-->>Provider: BCrypt Hash
+    Provider->>UD: getPassword()
+    UD-->>Provider: BCrypt Hash
 
-    Provider->>Details: getAuthorities()
-    Details-->>Provider: ROLE_USER
+    Provider->>UD: getAuthorities()
+    UD-->>Provider: ROLE_USER
 ```
 
 여기서 `UserDetailsService`는 사용자 정보를 반환한다.

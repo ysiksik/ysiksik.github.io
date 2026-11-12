@@ -5016,3 +5016,1836 @@ JSON은 JavaScript 객체 표기법에서 유래했으며, 중괄호와 대괄�
 #### 한 줄 요약
 
 > YAML은 사람이 읽고 작성하기 쉬운 데이터 직렬화 형식이고, JSON은 단순하고 명확한 문법으로 시스템 간 데이터를 교환하기에 적합한 형식이다. 두 형식은 우열의 관계가 아니라 사용 목적에 따라 선택해야 하는 상호 보완적인 기술이다.
+
+## 03. Yaml in Kubernetes
+
+### Kubernetes YAML과 선언형 리소스 관리
+
+Kubernetes는 Pod, Deployment, Service, ConfigMap, Secret 등 다양한 리소스를 통해 애플리케이션을 실행하고 관리한다.
+
+이러한 리소스를 생성하는 방법은 크게 두 가지로 구분할 수 있다.
+
+바로 **명령형(Imperative) 관리 방식**과 **선언형(Declarative) 관리 방식**이다.
+
+명령형 방식은 Kubernetes에 수행해야 할 작업을 직접 명령하는 방식이고, 선언형 방식은 시스템이 유지해야 하는 원하는 상태를 정의하는 방식이다.
+
+예를 들어 Nginx 컨테이너를 실행하는 Pod를 생성한다고 가정하자.
+
+명령형 방식에서는 다음과 같이 명령어를 실행할 수 있다.
+
+```bash
+kubectl run nginx --image=nginx:1.27
+```
+
+반면 선언형 방식에서는 다음과 같이 YAML 파일을 작성할 수 있다.
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx
+spec:
+  containers:
+    - name: nginx
+      image: nginx:1.27
+```
+
+그리고 다음 명령어로 Kubernetes에 적용한다.
+
+```bash
+kubectl apply -f pod.yaml
+```
+
+두 방식 모두 Nginx Pod를 생성할 수 있다.
+
+하지만 리소스를 관리하는 관점에는 중요한 차이가 있다.
+
+명령형 방식은 **어떤 작업을 수행할 것인가(How)** 에 초점을 맞춘다.
+
+반면 선언형 방식은 **어떤 상태가 되어야 하는가(What)** 에 초점을 맞춘다.
+
+이러한 차이는 리소스를 처음 생성할 때보다, 이미 존재하는 리소스를 수정하거나 동일한 설정을 반복해서 적용할 때 더욱 명확하게 드러난다.
+
+이번에는 Kubernetes Manifest의 구조를 살펴보고, 실제 Pod를 생성하면서 명령형 방식과 선언형 방식의 차이를 알아본다.
+
+---
+
+### Kubernetes와 YAML의 관계
+
+Kubernetes에서는 다양한 리소스를 YAML 파일로 정의할 수 있다.
+
+대표적인 리소스는 다음과 같다.
+
+| 리소스 | 주요 역할 |
+|---|---|
+| Pod | 하나 이상의 컨테이너를 실행하는 기본 단위 |
+| Deployment | 애플리케이션 배포와 업데이트 관리 |
+| ReplicaSet | 지정한 수량의 Pod 유지 |
+| StatefulSet | 안정적인 식별자와 스토리지가 필요한 애플리케이션 관리 |
+| DaemonSet | 특정 Node에 Pod 실행 |
+| Service | Pod에 대한 네트워크 접근 제공 |
+| ConfigMap | 애플리케이션의 일반 설정 관리 |
+| Secret | 비밀번호나 토큰 등의 민감한 데이터 관리 |
+| PersistentVolumeClaim | 스토리지 사용 요청 |
+| HorizontalPodAutoscaler | Pod 수량 자동 조정 |
+
+이러한 리소스는 각각 다른 목적을 가지고 있지만, Kubernetes API를 통해 생성하고 관리한다는 공통점이 있다.
+
+Kubernetes Manifest는 이러한 리소스의 구성 정보를 파일로 표현한 것이다.
+
+```mermaid
+flowchart TD
+    A["Kubernetes Manifest"] --> B["Pod"]
+    A --> C["Deployment"]
+    A --> D["Service"]
+    A --> E["ConfigMap"]
+    A --> F["Secret"]
+
+    B --> G["컨테이너 실행"]
+    C --> H["애플리케이션 배포 관리"]
+    D --> I["네트워크 연결"]
+    E --> J["일반 설정 제공"]
+    F --> K["민감한 설정 제공"]
+```
+
+YAML은 Kubernetes 전용 언어가 아니다.
+
+YAML 자체는 구조화된 데이터를 표현하기 위한 데이터 직렬화 형식이다.
+
+Kubernetes는 이 형식을 사용하여 리소스의 원하는 상태를 표현할 수 있도록 한다.
+
+따라서 다음 두 개념을 구분해야 한다.
+
+**YAML은 데이터를 표현하는 형식이고, Kubernetes Manifest는 Kubernetes 리소스를 정의한 설정이다.**
+
+실제로 Kubernetes는 YAML뿐 아니라 JSON 형식의 Manifest도 지원한다.
+
+다만 사람이 직접 읽고 작성하기 쉬운 특성 때문에 YAML을 일반적으로 많이 사용한다.
+
+---
+
+### Kubernetes Manifest의 기본 구조
+
+Kubernetes에서 사용하는 Manifest에는 여러 리소스에서 공통으로 등장하는 필드들이 있다.
+
+대표적인 필드는 다음과 같다.
+
+```yaml
+apiVersion: v1
+kind: Pod
+
+metadata:
+  name: nginx
+
+spec:
+  containers:
+    - name: nginx
+      image: nginx:1.27
+```
+
+여기서 핵심적인 필드는 다음 네 가지이다.
+
+| 필드 | 의미 |
+|---|---|
+| `apiVersion` | 리소스를 처리할 Kubernetes API 버전 |
+| `kind` | 생성할 리소스의 종류 |
+| `metadata` | 리소스의 이름과 부가 정보 |
+| `spec` | 리소스의 원하는 상태 |
+
+Pod나 Deployment처럼 `spec`을 사용하는 리소스에서는 이 네 가지 필드를 중심으로 Manifest를 이해할 수 있다.
+
+다만 모든 Kubernetes 리소스에 `spec`이 필수로 존재하는 것은 아니다.
+
+예를 들어 ConfigMap에서는 다음과 같이 `data`를 사용한다.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+
+metadata:
+  name: application-config
+
+data:
+  APP_ENV: production
+  LOG_LEVEL: INFO
+```
+
+따라서 Kubernetes Manifest의 공통적인 구조를 이해하되, 실제 필드 구성은 리소스 종류에 따라 달라질 수 있다는 점을 알아두어야 한다.
+
+---
+
+### apiVersion: 리소스의 API 버전
+
+`apiVersion`은 해당 리소스를 어떤 Kubernetes API 버전으로 처리할 것인지 지정한다.
+
+예를 들어 Pod는 다음과 같이 정의한다.
+
+```yaml
+apiVersion: v1
+```
+
+Deployment는 다음과 같이 정의한다.
+
+```yaml
+apiVersion: apps/v1
+```
+
+HorizontalPodAutoscaler는 다음과 같이 정의할 수 있다.
+
+```yaml
+apiVersion: autoscaling/v2
+```
+
+같은 Kubernetes 리소스라도 API 버전에 따라 지원하는 필드나 동작이 달라질 수 있다.
+
+또한 리소스의 종류에 따라 사용해야 하는 API Group과 버전이 다르다.
+
+| 리소스 | 대표적인 apiVersion |
+|---|---|
+| Pod | `v1` |
+| Service | `v1` |
+| ConfigMap | `v1` |
+| Secret | `v1` |
+| Deployment | `apps/v1` |
+| StatefulSet | `apps/v1` |
+| DaemonSet | `apps/v1` |
+| Job | `batch/v1` |
+| CronJob | `batch/v1` |
+| HorizontalPodAutoscaler | `autoscaling/v2` |
+
+예를 들어 Deployment를 생성하면서 다음과 같이 작성하면 올바르지 않다.
+
+```yaml
+apiVersion: v1
+kind: Deployment
+```
+
+Deployment는 `apps/v1` API를 사용해야 하기 때문이다.
+
+올바른 설정은 다음과 같다.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+```
+
+사용하는 클러스터에서 어떤 API 리소스를 지원하는지 확인하려면 다음 명령어를 사용할 수 있다.
+
+```bash
+kubectl api-resources
+```
+
+특정 API 버전에 속한 리소스를 조회할 수도 있다.
+
+```bash
+kubectl api-resources --api-group=apps
+```
+
+이러한 명령어는 새로운 Kubernetes 리소스를 사용하거나 기존 Manifest를 업데이트할 때 유용하다.
+
+---
+
+### kind: 생성할 리소스의 종류
+
+`kind`는 Kubernetes에서 생성하거나 관리할 리소스의 종류를 나타낸다.
+
+예를 들어 다음 설정은 Pod를 의미한다.
+
+```yaml
+kind: Pod
+```
+
+다음 설정은 Deployment를 의미한다.
+
+```yaml
+kind: Deployment
+```
+
+Kubernetes는 `apiVersion`과 `kind`를 함께 사용하여 어떤 종류의 객체를 생성하거나 수정할 것인지 판단한다.
+
+```mermaid
+flowchart TD
+    A["Kubernetes Manifest"] --> B["apiVersion"]
+    A --> C["kind"]
+
+    B --> D["API 버전 결정"]
+    C --> E["리소스 종류 결정"]
+
+    D --> F["Kubernetes API Server"]
+    E --> F
+
+    F --> G["해당 리소스의 API 규칙에 따라 처리"]
+```
+
+따라서 같은 YAML 문법을 사용하더라도 `kind`에 따라 의미가 완전히 달라질 수 있다.
+
+---
+
+### metadata: 리소스의 메타데이터
+
+`metadata`에는 리소스의 이름, Namespace, Label, Annotation 등 리소스를 식별하고 관리하는 데 필요한 정보를 작성한다.
+
+```yaml
+metadata:
+  name: nginx
+  namespace: default
+
+  labels:
+    app: nginx
+    environment: development
+```
+
+각 필드의 의미는 다음과 같다.
+
+| 필드 | 설명 |
+|---|---|
+| `name` | 리소스의 이름 |
+| `namespace` | 리소스가 속하는 Namespace |
+| `labels` | 리소스를 분류하고 선택하기 위한 정보 |
+| `annotations` | 추가적인 메타데이터 |
+
+예를 들어 다음 설정을 살펴보자.
+
+```yaml
+metadata:
+  name: nginx
+```
+
+이 설정은 `nginx`라는 이름으로 리소스를 생성하겠다는 의미이다.
+
+Kubernetes에서는 일반적으로 같은 Namespace 안에서 동일한 종류의 리소스가 같은 이름을 가질 수 없다.
+
+따라서 동일한 Namespace에 `nginx`라는 Pod가 이미 존재한다면 같은 이름으로 또 다른 Pod를 생성할 수 없다.
+
+이러한 특성은 이후 명령형과 선언형 방식의 차이를 이해할 때 중요하게 작용한다.
+
+---
+
+### spec: 리소스의 원하는 상태
+
+`spec`에는 Kubernetes가 유지하거나 구현해야 하는 원하는 상태를 정의한다.
+
+예를 들어 Pod에서 사용할 컨테이너 이미지, DNS 정책, 재시작 정책 등을 작성할 수 있다.
+
+```yaml
+spec:
+  containers:
+    - name: nginx
+      image: nginx:1.27
+
+  dnsPolicy: ClusterFirst
+  restartPolicy: Always
+```
+
+이 설정의 의미는 다음과 같다.
+
+**containers**
+
+Pod 내부에서 실행할 컨테이너를 정의한다.
+
+**dnsPolicy**
+
+Pod가 사용할 DNS 정책을 정의한다.
+
+**restartPolicy**
+
+컨테이너가 종료되었을 때 재시작할지 결정하는 정책이다.
+
+Kubernetes는 이러한 설정을 기반으로 Pod의 실행 환경을 구성한다.
+
+여기서 `spec`과 함께 알아두면 좋은 개념이 `status`이다.
+
+`spec`은 원하는 상태를 나타내고, `status`는 현재 관찰된 실제 상태를 나타낸다.
+
+```mermaid
+flowchart TD
+    A["Kubernetes Resource"] --> B["spec"]
+    A --> C["status"]
+
+    B --> D["원하는 상태"]
+    C --> E["현재 관찰된 상태"]
+
+    D --> F["Kubernetes Controller"]
+    E --> F
+
+    F --> G["상태 차이를 확인하고 필요한 작업 수행"]
+```
+
+예를 들어 Deployment의 `spec.replicas`가 3이라면 Pod 3개를 유지하려는 의도를 의미한다.
+
+반면 `status.readyReplicas`가 2라면 현재 Ready 상태인 Pod가 2개라는 의미이다.
+
+```yaml
+spec:
+  replicas: 3
+
+status:
+  readyReplicas: 2
+```
+
+이 경우 Kubernetes는 Deployment의 원하는 상태와 현재 상태 사이에 차이가 있음을 확인할 수 있다.
+
+다만 `status`는 일반적으로 Controller 등 Kubernetes의 구성 요소가 갱신하므로 사용자가 작성하는 기본 Manifest에는 포함하지 않는다.
+
+---
+
+### Pod YAML 전체 예제
+
+이제 실제로 Nginx Pod를 생성할 수 있는 YAML 파일을 작성해보자.
+
+파일 이름은 `nginx-pod.yaml`로 지정한다.
+
+```yaml
+apiVersion: v1
+kind: Pod
+
+metadata:
+  name: nginx
+  namespace: default
+
+  labels:
+    app: nginx
+    environment: development
+
+spec:
+  containers:
+    - name: nginx
+      image: nginx:1.27
+
+      imagePullPolicy: IfNotPresent
+
+      ports:
+        - containerPort: 80
+          name: http
+
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "64Mi"
+
+        limits:
+          cpu: "500m"
+          memory: "128Mi"
+
+  dnsPolicy: ClusterFirst
+  restartPolicy: Always
+```
+
+이 설정은 다음과 같은 Pod를 생성한다.
+
+```text
+Pod 이름: nginx
+Namespace: default
+
+Container
+ ├── 이름: nginx
+ ├── 이미지: nginx:1.27
+ ├── Container Port: 80
+ ├── CPU requests: 100m
+ ├── Memory requests: 64Mi
+ ├── CPU limits: 500m
+ └── Memory limits: 128Mi
+
+DNS Policy: ClusterFirst
+Restart Policy: Always
+```
+
+주요 설정을 조금 더 자세히 살펴보자.
+
+#### containers
+
+```yaml
+containers:
+  - name: nginx
+    image: nginx:1.27
+```
+
+Pod 내부에서 실행할 컨테이너의 이름과 이미지를 지정한다.
+
+`containers`는 배열이므로 하나의 Pod 안에 여러 컨테이너를 정의할 수도 있다.
+
+#### imagePullPolicy
+
+```yaml
+imagePullPolicy: IfNotPresent
+```
+
+Node에 필요한 이미지가 이미 존재한다면 이를 사용하고, 이미지가 없다면 Container Registry에서 다운로드하는 정책이다.
+
+대표적인 이미지 Pull 정책은 다음과 같다.
+
+| 정책 | 설명 |
+|---|---|
+| `Always` | 컨테이너를 시작할 때 이미지 참조를 확인 |
+| `IfNotPresent` | 이미지가 로컬에 없을 때 다운로드 |
+| `Never` | 이미지를 다운로드하지 않고 로컬 이미지만 사용 |
+
+`Always`라고 해서 반드시 이미지의 모든 레이어를 매번 새로 다운로드하는 것은 아니다. 이미지 캐시를 재사용할 수 있다.
+
+#### ports
+
+```yaml
+ports:
+  - containerPort: 80
+    name: http
+```
+
+컨테이너가 사용하는 포트를 선언한다.
+
+다만 `containerPort`를 80으로 작성한다고 해서 애플리케이션이 자동으로 80번 포트에서 실행되는 것은 아니다.
+
+실제 애플리케이션이 해당 포트에서 요청을 수신하도록 설정되어 있어야 한다.
+
+Nginx의 기본 HTTP 포트는 일반적으로 80번이다.
+
+#### dnsPolicy
+
+```yaml
+dnsPolicy: ClusterFirst
+```
+
+`ClusterFirst`는 Kubernetes 클러스터 DNS를 우선적으로 사용하는 정책이다.
+
+이를 통해 Pod는 클러스터 내부 Service 이름을 DNS로 조회할 수 있다.
+
+예를 들어 같은 Namespace의 Service에 다음과 같이 접근할 수 있다.
+
+```text
+http://payment-service:8080
+```
+
+#### restartPolicy
+
+```yaml
+restartPolicy: Always
+```
+
+Pod 내부의 일반 애플리케이션 컨테이너가 종료되면 재시작하도록 설정한다.
+
+대표적인 정책은 다음과 같다.
+
+| 정책 | 설명 |
+|---|---|
+| `Always` | 종료 상태와 관계없이 재시작 |
+| `OnFailure` | 오류로 종료되었을 때 재시작 |
+| `Never` | 자동 재시작하지 않음 |
+
+여기서 주의할 점은 `restartPolicy`가 **Pod 객체 자체를 다시 생성하는 기능은 아니라는 것**이다.
+
+이 정책은 기본적으로 kubelet이 Pod 내부 컨테이너를 재시작하는 방식에 적용된다.
+
+Pod 객체가 삭제되었을 때 새로운 Pod를 다시 생성하려면 Deployment나 ReplicaSet과 같은 상위 Controller가 필요하다.
+
+---
+
+### 선언형 관리란?
+
+선언형 관리(Declarative Management)는 시스템이 도달해야 하는 원하는 상태를 정의하는 방식이다.
+
+사용자는 Kubernetes에 무엇을 유지해야 하는지 선언하고, Kubernetes는 해당 설정을 해석하여 필요한 작업을 수행한다.
+
+예를 들어 다음 YAML을 살펴보자.
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx
+spec:
+  containers:
+    - name: nginx
+      image: nginx:1.27
+```
+
+이 파일에는 다음과 같은 의도가 담겨 있다.
+
+> `nginx`라는 이름의 Pod가 존재하고, 그 안에서 Nginx 컨테이너가 실행되도록 구성한다.
+
+선언형 관리에서는 이를 구현하기 위해 어떤 API 요청을 보내야 하는지 사용자가 일일이 명령하지 않는다.
+
+대신 Kubernetes에 원하는 상태를 전달한다.
+
+```mermaid
+flowchart TD
+    A["사용자가 원하는 상태 정의"] --> B["YAML Manifest"]
+    B --> C["kubectl apply"]
+    C --> D["Kubernetes API Server"]
+
+    D --> E{"리소스가 존재하는가?"}
+
+    E -->|"존재하지 않음"| F["리소스 생성"]
+    E -->|"이미 존재함"| G{"설정에 차이가 있는가?"}
+
+    G -->|"차이 없음"| H["설정 변경 없음"]
+    G -->|"차이 있음"| I["필요한 필드 업데이트"]
+```
+
+이 방식의 핵심은 기존 리소스가 존재하는지와 어떤 설정이 달라졌는지를 고려하여 필요한 작업을 수행한다는 것이다.
+
+따라서 같은 Manifest를 반복해서 적용하더라도 설정이 동일하다면 불필요한 변경을 발생시키지 않을 수 있다.
+
+---
+
+### 선언형 방식으로 Pod 생성하기
+
+앞서 작성한 `nginx-pod.yaml`을 사용해 Pod를 생성해보자.
+
+#### 1. YAML 파일 작성
+
+다음 명령어로 파일을 생성한다.
+
+```bash
+vi nginx-pod.yaml
+```
+
+파일에는 앞서 작성한 Pod Manifest를 저장한다.
+
+#### 2. Pod 생성
+
+```bash
+kubectl apply -f nginx-pod.yaml
+```
+
+여기서 각 요소의 의미는 다음과 같다.
+
+| 항목 | 의미 |
+|---|---|
+| `kubectl` | Kubernetes API와 통신하는 CLI |
+| `apply` | 원하는 설정을 리소스에 적용 |
+| `-f` | 파일을 입력으로 사용 |
+| `nginx-pod.yaml` | 적용할 Manifest 파일 |
+
+리소스가 존재하지 않는다면 Kubernetes에 새로운 Pod가 생성된다.
+
+예상 출력:
+
+```text
+pod/nginx created
+```
+
+여기서 `created`는 새로운 리소스가 생성되었다는 의미이다.
+
+#### 3. Pod 상태 확인
+
+```bash
+kubectl get pods
+```
+
+예상 출력:
+
+```text
+NAME    READY   STATUS    RESTARTS   AGE
+nginx   1/1     Running   0          15s
+```
+
+`Running` 상태는 Pod가 Node에 배치되어 컨테이너가 실행되고 있음을 나타낸다.
+
+다만 명령어를 실행한 직후에는 이미지 다운로드나 컨테이너 생성이 진행 중이어서 `Pending` 또는 `ContainerCreating` 상태가 나타날 수 있다.
+
+Pod가 준비될 때까지 기다리려면 다음 명령어를 사용할 수 있다.
+
+```bash
+kubectl wait \
+  --for=condition=Ready \
+  pod/nginx \
+  --timeout=120s
+```
+
+정상적으로 Ready 상태가 되면 다음과 같은 메시지가 출력된다.
+
+```text
+pod/nginx condition met
+```
+
+#### 4. 생성된 리소스 확인
+
+현재 Kubernetes에 저장된 Pod 설정을 확인할 수 있다.
+
+```bash
+kubectl get pod nginx -o yaml
+```
+
+이 명령어는 API Server에 저장된 Pod 객체를 YAML 형식으로 출력한다.
+
+출력에는 사용자가 작성한 설정뿐 아니라 Kubernetes가 자동으로 추가한 정보도 포함될 수 있다.
+
+대표적으로 다음과 같은 항목이 있다.
+
+- Pod UID
+- 생성 시간
+- Node 정보
+- Container 상태
+- Pod IP
+- 실행 상태
+
+이러한 정보는 Kubernetes가 실제 리소스를 관리하면서 생성하거나 갱신하는 값이다.
+
+---
+
+### 선언형 방식으로 Pod 삭제하기
+
+생성한 Pod를 삭제하려면 다음 명령어를 사용할 수 있다.
+
+```bash
+kubectl delete -f nginx-pod.yaml
+```
+
+이 명령어는 YAML 파일에 정의된 리소스를 식별하여 Kubernetes에서 삭제한다.
+
+예상 출력:
+
+```text
+pod "nginx" deleted
+```
+
+Pod 상태를 확인한다.
+
+```bash
+kubectl get pods
+```
+
+Pod가 삭제되었다면 더 이상 목록에 나타나지 않는다.
+
+여기서 중요한 점이 있다.
+
+**YAML 파일을 사용했다고 해서 모든 명령어가 선언형 명령이 되는 것은 아니다.**
+
+`kubectl delete -f`는 파일을 이용해 삭제 대상을 지정하지만, 실제 수행하는 작업은 명시적인 삭제 명령이다.
+
+즉 삭제 자체는 명령형 작업에 해당한다.
+
+또한 YAML 파일을 삭제하거나 해당 파일을 디렉터리에서 제거한다고 해서 Kubernetes의 리소스가 자동으로 삭제되는 것은 아니다.
+
+`kubectl apply`는 일반적으로 명령이 실행되는 시점에 파일의 내용을 적용한다.
+
+이 차이는 이후 선언형 관리와 지속적인 상태 동기화를 구분할 때 중요하다.
+
+---
+
+### 명령형 관리란?
+
+명령형 관리(Imperative Management)는 Kubernetes에 수행할 작업을 직접 명령하는 방식이다.
+
+예를 들어 다음과 같은 작업이 있다.
+
+- Pod 생성
+- Deployment 수량 변경
+- 특정 리소스 삭제
+- 컨테이너 이미지 변경
+
+명령형 방식에서는 원하는 상태를 파일로 선언하는 대신, 실행할 작업을 명령어의 형태로 전달한다.
+
+```mermaid
+flowchart TD
+    A["사용자"] --> B["kubectl 명령어"]
+    B --> C["Kubernetes API Server"]
+
+    C --> D["명령에 해당하는 작업 수행"]
+
+    D --> E["리소스 생성"]
+    D --> F["리소스 수정"]
+    D --> G["리소스 삭제"]
+```
+
+대표적인 명령형 명령어는 다음과 같다.
+
+| 명령어 | 역할 |
+|---|---|
+| `kubectl run` | 이미지로 Pod 생성 |
+| `kubectl create` | 리소스 생성 |
+| `kubectl delete` | 리소스 삭제 |
+| `kubectl scale` | replicas 변경 |
+| `kubectl set image` | 컨테이너 이미지 변경 |
+| `kubectl edit` | 리소스 직접 편집 |
+
+명령형 방식은 특정 작업을 빠르게 수행해야 할 때 유용하다.
+
+다만 명령어만으로 관리하면 어떤 설정이 최종적으로 적용되어야 하는지 추적하기 어려워질 수 있다.
+
+---
+
+### 명령형 방식으로 Pod 생성하기
+
+이번에는 YAML 파일을 사용하지 않고 명령어만으로 Pod를 생성해보자.
+
+#### 1. kubectl run 실행
+
+```bash
+kubectl run nginx-imperative \
+  --image=nginx:1.27 \
+  --port=80
+```
+
+각 옵션의 의미는 다음과 같다.
+
+| 옵션 | 설명 |
+|---|---|
+| `nginx-imperative` | 생성할 Pod 이름 |
+| `--image=nginx:1.27` | 사용할 컨테이너 이미지 |
+| `--port=80` | 컨테이너 포트 선언 |
+
+정상적으로 실행되면 다음과 같은 메시지가 출력된다.
+
+```text
+pod/nginx-imperative created
+```
+
+여기서 `--port=80`은 컨테이너의 포트 정보를 선언하는 옵션이다.
+
+이 옵션만으로 Service가 생성되거나 외부에서 접근할 수 있는 네트워크 경로가 만들어지는 것은 아니다.
+
+#### 2. Pod 상태 확인
+
+```bash
+kubectl get pods
+```
+
+예상 출력:
+
+```text
+NAME               READY   STATUS    RESTARTS   AGE
+nginx-imperative   1/1     Running   0          10s
+```
+
+YAML 파일을 사용하지 않았지만 Kubernetes에 Pod가 정상적으로 생성되었다.
+
+이처럼 명령형 방식은 간단한 리소스를 빠르게 생성할 수 있다.
+
+---
+
+### 동일한 명령형 명령을 다시 실행하면 어떻게 될까?
+
+앞에서 실행한 명령어를 다시 실행해보자.
+
+```bash
+kubectl run nginx-imperative \
+  --image=nginx:1.27 \
+  --port=80
+```
+
+이번에는 다음과 같은 오류가 발생한다.
+
+```text
+Error from server (AlreadyExists): pods "nginx-imperative" already exists
+```
+
+이 오류가 발생하는 이유는 무엇일까?
+
+`kubectl run`은 지정한 이름의 새로운 Pod를 생성하는 명령이기 때문이다.
+
+첫 번째 실행에서 이미 `nginx-imperative`라는 Pod가 생성되었다.
+
+동일한 이름으로 새로운 Pod를 생성하려고 하면 Kubernetes API Server는 해당 이름의 Pod가 이미 존재한다는 사실을 확인한다.
+
+따라서 새로운 Pod를 생성하지 않고 오류를 반환한다.
+
+```mermaid
+flowchart TD
+    A["kubectl run nginx-imperative"] --> B["Kubernetes API Server"]
+
+    B --> C{"동일한 이름의 Pod 존재?"}
+
+    C -->|"아니오"| D["Pod 생성"]
+    C -->|"예"| E["AlreadyExists 오류"]
+```
+
+이것이 명령형 생성 명령의 대표적인 특징이다.
+
+**사용자가 새로운 리소스를 생성하라고 명령했기 때문에, 이미 해당 리소스가 존재하면 생성 작업이 실패할 수 있다.**
+
+다만 모든 명령형 명령이 반복 실행할 때 반드시 오류를 발생시키는 것은 아니다.
+
+명령형 방식에도 작업 종류에 따라 반복 실행 가능한 명령이 있다.
+
+여기서는 `kubectl run`과 같은 명시적인 생성 명령을 기준으로 비교하고 있다.
+
+---
+
+### 선언형 방식으로 동일한 설정을 다시 적용하면 어떻게 될까?
+
+이번에는 같은 상황을 선언형 방식으로 확인해보자.
+
+먼저 앞에서 사용한 `nginx-pod.yaml`을 다시 적용한다.
+
+```bash
+kubectl apply -f nginx-pod.yaml
+```
+
+Pod가 존재하지 않는다면 새로운 Pod가 생성된다.
+
+```text
+pod/nginx created
+```
+
+이제 동일한 명령어를 다시 실행한다.
+
+```bash
+kubectl apply -f nginx-pod.yaml
+```
+
+예상 출력:
+
+```text
+pod/nginx unchanged
+```
+
+이번에는 `AlreadyExists` 오류가 발생하지 않는다.
+
+대신 `unchanged`라는 결과가 나타난다.
+
+그 이유는 `kubectl apply`가 단순한 생성 명령이 아니기 때문이다.
+
+`kubectl apply`는 현재 Kubernetes에 존재하는 객체와 적용하려는 설정을 비교하여 필요한 변경을 반영한다.
+
+이미 같은 설정이 적용되어 있다면 추가로 수정할 필요가 없다.
+
+따라서 변경하지 않았다는 결과를 반환한다.
+
+```mermaid
+flowchart TD
+    A["kubectl apply -f nginx-pod.yaml"] --> B["Kubernetes API Server"]
+
+    B --> C{"Pod가 존재하는가?"}
+
+    C -->|"아니오"| D["Pod 생성"]
+    C -->|"예"| E{"설정에 변경 사항이 있는가?"}
+
+    E -->|"아니오"| F["unchanged"]
+    E -->|"예"| G["변경 가능한 필드 업데이트"]
+```
+
+이러한 특징은 선언형 관리의 중요한 장점이다.
+
+동일한 설정을 반복해서 적용해도 불필요한 리소스 변경을 최소화할 수 있다.
+
+---
+
+### created, configured, unchanged의 차이
+
+`kubectl apply`를 사용하다 보면 다음 세 가지 결과를 자주 확인하게 된다.
+
+```text
+created
+configured
+unchanged
+```
+
+각각의 의미는 다음과 같다.
+
+| 결과 | 의미 |
+|---|---|
+| `created` | 새로운 리소스를 생성함 |
+| `configured` | 기존 리소스의 설정을 변경함 |
+| `unchanged` | 적용할 설정에 변경 사항이 없음 |
+
+예를 들어 다음과 같은 Pod Manifest가 있다고 가정하자.
+
+```yaml
+apiVersion: v1
+kind: Pod
+
+metadata:
+  name: nginx
+
+  labels:
+    app: nginx
+
+spec:
+  containers:
+    - name: nginx
+      image: nginx:1.27
+```
+
+#### 첫 번째 적용
+
+```bash
+kubectl apply -f nginx-pod.yaml
+```
+
+결과:
+
+```text
+pod/nginx created
+```
+
+#### 두 번째 적용
+
+```bash
+kubectl apply -f nginx-pod.yaml
+```
+
+결과:
+
+```text
+pod/nginx unchanged
+```
+
+#### 설정 변경 후 적용
+
+이제 `metadata.labels`에 새로운 Label을 추가해보자.
+
+```yaml
+metadata:
+  name: nginx
+
+  labels:
+    app: nginx
+    team: backend
+```
+
+다시 적용한다.
+
+```bash
+kubectl apply -f nginx-pod.yaml
+```
+
+결과:
+
+```text
+pod/nginx configured
+```
+
+기존 Pod가 존재하지만 Label이 변경되었으므로 필요한 설정이 업데이트된 것이다.
+
+이 과정을 정리하면 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["Manifest 작성"] --> B["첫 번째 apply"]
+    B --> C["created"]
+
+    C --> D["동일한 Manifest 재적용"]
+    D --> E["unchanged"]
+
+    E --> F["Manifest의 Label 변경"]
+    F --> G["다시 apply"]
+    G --> H["configured"]
+```
+
+이처럼 선언형 방식은 생성과 수정을 별도의 명령으로 구분하지 않고 원하는 상태를 적용하는 방식으로 관리할 수 있다.
+
+단, `apply`로 모든 필드를 자유롭게 변경할 수 있는 것은 아니다.
+
+Kubernetes에서는 리소스 종류에 따라 변경할 수 없는 필드가 존재하며, 이 경우에는 `apply`도 오류를 반환할 수 있다.
+
+---
+
+### 선언형 방식의 핵심: 멱등성
+
+지금까지 살펴본 선언형 관리의 특징은 멱등성(Idempotency)과 밀접하게 관련되어 있다.
+
+멱등성이란 **같은 작업을 여러 번 수행하더라도 최종 결과가 한 번 수행한 결과와 동일하게 유지되는 성질**이다.
+
+예를 들어 다음과 같은 작업을 생각해보자.
+
+```text
+원하는 상태: nginx Pod가 존재해야 한다.
+```
+
+처음 적용했을 때는 Pod가 생성된다.
+
+```text
+첫 번째 apply
+→ Pod 생성
+```
+
+두 번째 적용했을 때는 이미 원하는 상태가 충족되어 있으므로 설정 변경이 필요하지 않다.
+
+```text
+두 번째 apply
+→ 변경 없음
+```
+
+세 번째 적용해도 마찬가지이다.
+
+```text
+세 번째 apply
+→ 변경 없음
+```
+
+```mermaid
+flowchart TD
+    A["원하는 상태: nginx Pod 존재"] --> B["apply 1회"]
+    B --> C["Pod 생성"]
+
+    C --> D["apply 2회"]
+    D --> E["동일한 상태 유지"]
+
+    E --> F["apply 3회"]
+    F --> G["동일한 상태 유지"]
+```
+
+이러한 성질은 자동화 시스템에서 중요하다.
+
+예를 들어 CI/CD 파이프라인이 네트워크 오류나 일시적인 문제로 인해 같은 배포 작업을 다시 수행할 수 있다.
+
+이때 선언형 관리 방식에서는 기존에 같은 설정이 적용되어 있다면 불필요한 변경을 최소화할 수 있다.
+
+반면 단순 생성 명령을 반복 실행하면 이미 존재하는 리소스를 다시 생성하려다가 오류가 발생할 수 있다.
+
+단, 멱등성은 최종 상태에 관한 개념이다.
+
+`kubectl apply`를 반복 실행할 때 Kubernetes API 요청 자체가 생략되는 것은 아니며, 설정 충돌이나 권한 오류 등으로 실패할 수도 있다.
+
+---
+
+### 명령형과 선언형 관리 방식 비교
+
+두 방식을 정리하면 다음과 같다.
+
+| 비교 항목 | 명령형 방식 | 선언형 방식 |
+|---|---|---|
+| 핵심 관점 | 무엇을 실행할 것인가 | 어떤 상태를 유지할 것인가 |
+| 대표 명령어 | `kubectl run`, `kubectl create` | `kubectl apply` |
+| 설정 관리 | 명령어와 옵션 중심 | Manifest 중심 |
+| 리소스 생성 | 명시적으로 생성 요청 | 존재하지 않으면 생성 |
+| 리소스 수정 | 별도의 수정 명령 사용 가능 | 차이를 계산해 필요한 변경 반영 |
+| 반복 실행 | 명령 종류에 따라 오류 가능 | 동일 설정이면 변경 최소화 |
+| 변경 이력 관리 | 명령 실행 기록에 의존할 수 있음 | Git으로 Manifest 관리 가능 |
+| 자동화 | 단순 작업에 편리 | 반복 배포와 구성 관리에 유리 |
+| 대표 사용 상황 | 테스트, 일회성 작업 | 운영 환경, CI/CD, GitOps |
+
+각 방식의 특징을 조금 더 구체적으로 살펴보자.
+
+#### 명령형 방식이 유리한 경우
+
+명령형 방식은 특정 작업을 빠르게 수행해야 할 때 유용하다.
+
+예를 들어 테스트용 Pod를 하나 생성하고 싶다면 다음 명령어를 사용할 수 있다.
+
+```bash
+kubectl run test-nginx \
+  --image=nginx:1.27
+```
+
+또는 Deployment의 replicas를 즉시 변경할 수도 있다.
+
+```bash
+kubectl scale deployment/my-app --replicas=5
+```
+
+이러한 방식은 간단하고 빠르다.
+
+반면 장기간 운영할 애플리케이션을 여러 명이 관리해야 한다면 변경 이력을 추적하거나 동일한 환경을 재현하기 어려워질 수 있다.
+
+#### 선언형 방식이 유리한 경우
+
+선언형 방식에서는 원하는 구성을 YAML 파일로 관리할 수 있다.
+
+예를 들어 다음과 같은 Deployment를 정의한다고 가정하자.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: my-app
+
+spec:
+  replicas: 3
+
+  selector:
+    matchLabels:
+      app: my-app
+
+  template:
+    metadata:
+      labels:
+        app: my-app
+
+    spec:
+      containers:
+        - name: my-app
+          image: nginx:1.27
+
+          ports:
+            - containerPort: 80
+```
+
+이 파일을 Git에 저장하면 다음과 같은 이점을 얻을 수 있다.
+
+- 애플리케이션의 원하는 구성을 코드처럼 관리할 수 있다.
+- 설정 변경 이력을 확인할 수 있다.
+- 코드 리뷰를 통해 변경 내용을 검토할 수 있다.
+- 동일한 설정을 다른 환경에 적용할 수 있다.
+- 자동화된 배포 파이프라인과 연결할 수 있다.
+
+이 때문에 운영 환경에서는 일반적으로 선언형 관리 방식이 널리 활용된다.
+
+---
+
+### YAML을 사용하면 무조건 선언형 방식일까?
+
+여기서 혼동하기 쉬운 개념이 있다.
+
+YAML 파일을 사용하면 선언형 방식이고, 명령어를 사용하면 명령형 방식이라고 생각할 수 있다.
+
+하지만 정확히는 그렇지 않다.
+
+**YAML은 데이터 표현 형식이고, 명령형과 선언형은 리소스를 관리하는 방식이다.**
+
+예를 들어 다음 명령어를 살펴보자.
+
+```bash
+kubectl create -f nginx-pod.yaml
+```
+
+이 명령어는 YAML 파일을 사용한다.
+
+하지만 `create`는 새로운 리소스를 생성하라는 명시적인 명령이다.
+
+따라서 명령형 관리 방식에 해당한다.
+
+반면 다음 명령어는 선언형 관리 방식에 해당한다.
+
+```bash
+kubectl apply -f nginx-pod.yaml
+```
+
+두 명령어 모두 같은 YAML 파일을 사용하지만 동작 방식이 다르다.
+
+이를 표로 비교하면 다음과 같다.
+
+| 명령어 | YAML 사용 | 관리 방식 |
+|---|---|---|
+| `kubectl run nginx --image=nginx` | 사용하지 않음 | 명령형 |
+| `kubectl create -f pod.yaml` | 사용 | 명령형 |
+| `kubectl delete -f pod.yaml` | 사용 | 명령형 삭제 |
+| `kubectl apply -f pod.yaml` | 사용 | 선언형 |
+| `kubectl scale deployment/my-app --replicas=3` | 사용하지 않음 | 명령형 |
+
+따라서 **YAML 사용 여부가 아니라 Kubernetes에 어떤 방식으로 변경을 요청하는지가 핵심적인 차이**이다.
+
+---
+
+### kubectl create와 kubectl apply의 차이
+
+두 명령어 모두 YAML 파일을 사용할 수 있기 때문에 자주 혼동된다.
+
+#### kubectl create
+
+```bash
+kubectl create -f nginx-pod.yaml
+```
+
+`create`는 새로운 Kubernetes 리소스를 생성한다.
+
+이미 같은 이름의 리소스가 존재한다면 다음과 같은 오류가 발생할 수 있다.
+
+```text
+Error from server (AlreadyExists): pods "nginx" already exists
+```
+
+#### kubectl apply
+
+```bash
+kubectl apply -f nginx-pod.yaml
+```
+
+`apply`는 Manifest에 정의된 원하는 상태를 적용한다.
+
+리소스가 없다면 생성하고, 이미 존재한다면 필요한 변경을 반영한다.
+
+설정이 동일하다면 다음과 같은 결과가 나타난다.
+
+```text
+pod/nginx unchanged
+```
+
+따라서 `create`와 `apply`는 다음과 같이 구분할 수 있다.
+
+```mermaid
+flowchart TD
+    A["Kubernetes 리소스 관리"] --> B["kubectl create"]
+    A --> C["kubectl apply"]
+
+    B --> D["새로운 리소스 생성 요청"]
+    D --> E{"이미 존재하는가?"}
+    E -->|"예"| F["AlreadyExists 오류"]
+    E -->|"아니오"| G["created"]
+
+    C --> H["원하는 상태 적용"]
+    H --> I{"이미 존재하는가?"}
+    I -->|"아니오"| J["created"]
+    I -->|"예"| K["설정 차이 확인"]
+
+    K --> L["configured 또는 unchanged"]
+```
+
+이러한 차이를 이해하면 동일한 Kubernetes 리소스를 반복적으로 관리하는 자동화 작업을 더 안정적으로 구성할 수 있다.
+
+---
+
+### 선언형 관리와 Reconciliation의 관계
+
+Kubernetes의 핵심 특징 중 하나는 Reconciliation이다.
+
+Reconciliation은 원하는 상태와 실제 상태를 비교하고, 둘 사이의 차이를 줄이기 위해 필요한 작업을 수행하는 과정이다.
+
+예를 들어 다음과 같은 Deployment를 생성했다고 가정하자.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: nginx-deployment
+
+spec:
+  replicas: 3
+
+  selector:
+    matchLabels:
+      app: nginx
+
+  template:
+    metadata:
+      labels:
+        app: nginx
+
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.27
+```
+
+이 설정의 핵심은 다음과 같다.
+
+```yaml
+replicas: 3
+```
+
+Kubernetes는 Nginx Pod 3개가 유지되도록 Deployment와 ReplicaSet을 관리한다.
+
+```mermaid
+flowchart TD
+    A["Deployment"] --> B["원하는 상태: replicas 3"]
+    B --> C["ReplicaSet"]
+
+    C --> D["Pod A"]
+    C --> E["Pod B"]
+    C --> F["Pod C"]
+```
+
+이 상태에서 Pod 하나가 삭제되었다고 가정하자.
+
+```text
+원하는 Pod 수량: 3
+실제 Pod 수량: 2
+```
+
+ReplicaSet Controller는 부족한 Pod를 다시 생성한다.
+
+```mermaid
+flowchart TD
+    A["Deployment replicas: 3"] --> B["ReplicaSet Controller"]
+    B --> C["현재 Pod 수량 확인"]
+
+    C --> D{"현재 Pod 수량이 3인가?"}
+
+    D -->|"예"| E["상태 유지"]
+    D -->|"아니오"| F["부족한 Pod 생성"]
+
+    F --> C
+```
+
+이것이 Kubernetes의 Reconciliation 동작이다.
+
+다만 여기서는 중요한 차이를 이해해야 한다.
+
+`kubectl apply`가 지속적으로 상태를 감시하는 것은 아니다.
+
+`kubectl apply`는 실행하는 시점에 원하는 설정을 API Server에 적용한다.
+
+이후 Pod 수량을 지속적으로 감시하고 조정하는 것은 Deployment Controller나 ReplicaSet Controller와 같은 Kubernetes의 Controller이다.
+
+즉 다음 두 가지는 서로 다른 역할이다.
+
+**kubectl apply**
+
+Manifest에 정의된 원하는 상태를 Kubernetes API에 전달한다.
+
+**Kubernetes Controller**
+
+자신이 관리하는 리소스의 원하는 상태와 실제 상태를 지속적으로 비교하고 필요한 조치를 수행한다.
+
+---
+
+### Pod를 직접 생성하는 경우와 Deployment를 사용하는 경우
+
+앞에서 `nginx-pod.yaml`을 이용해 Pod를 직접 생성했다.
+
+그렇다면 이 Pod를 삭제하면 어떻게 될까?
+
+```bash
+kubectl delete pod nginx
+```
+
+Pod를 직접 생성한 경우에는 일반적으로 해당 Pod를 다시 생성해 주는 상위 Controller가 존재하지 않는다.
+
+따라서 Pod가 삭제되면 그대로 사라진다.
+
+반면 Deployment가 생성한 Pod는 다르다.
+
+Deployment가 원하는 수량을 유지하도록 관리하기 때문이다.
+
+```mermaid
+flowchart TD
+    A["Pod 생성 방식"] --> B["직접 생성한 Pod"]
+    A --> C["Deployment가 관리하는 Pod"]
+
+    B --> D["Pod 삭제"]
+    D --> E["Pod가 사라짐"]
+
+    C --> F["Pod 삭제"]
+    F --> G["ReplicaSet이 수량 부족 감지"]
+    G --> H["새로운 Pod 생성"]
+```
+
+이러한 차이 때문에 실제 운영 환경에서는 일반적인 API 서버를 Pod 객체 하나로 직접 실행하기보다 Deployment를 사용하는 경우가 많다.
+
+또한 Pod를 직접 생성하는 것과 Deployment를 선언형으로 관리하는 것은 서로 다른 개념이다.
+
+Pod도 YAML을 이용해 선언형으로 생성할 수 있다.
+
+하지만 Pod 객체 자체를 선언형으로 생성했다고 해서 삭제된 Pod를 자동으로 다시 생성하는 Controller까지 생기는 것은 아니다.
+
+이는 **선언형 관리와 Self-Healing이 서로 연결되어 있지만 동일한 개념은 아니라는 점**을 보여준다.
+
+---
+
+### kubectl apply는 YAML 변경 사항을 자동으로 감지할까?
+
+선언형 관리에서 자주 혼동하는 부분이 하나 더 있다.
+
+YAML 파일을 작성하고 `kubectl apply`를 실행한 다음, 로컬 YAML 파일의 내용을 수정하면 Kubernetes가 이를 자동으로 감지할까?
+
+그렇지 않다.
+
+예를 들어 다음 Deployment를 적용했다고 가정하자.
+
+```yaml
+spec:
+  replicas: 3
+```
+
+```bash
+kubectl apply -f deployment.yaml
+```
+
+이후 로컬 파일의 설정을 다음과 같이 변경한다.
+
+```yaml
+spec:
+  replicas: 5
+```
+
+하지만 파일만 수정하고 `kubectl apply`를 다시 실행하지 않았다면 Kubernetes의 Deployment 설정은 자동으로 변경되지 않는다.
+
+변경 사항을 반영하려면 다시 적용해야 한다.
+
+```bash
+kubectl apply -f deployment.yaml
+```
+
+```mermaid
+flowchart TD
+    A["로컬 YAML 작성"] --> B["kubectl apply"]
+    B --> C["Kubernetes에 원하는 상태 반영"]
+
+    C --> D["로컬 YAML 수정"]
+    D --> E{"다시 apply 실행했는가?"}
+
+    E -->|"아니오"| F["클러스터 설정은 변경되지 않음"]
+    E -->|"예"| G["변경된 설정 반영"]
+```
+
+즉 `kubectl apply`는 실행하는 시점에 선언된 상태를 적용하는 도구이다.
+
+로컬 파일 자체를 지속적으로 감시하는 기능은 아니다.
+
+---
+
+### 지속적인 선언형 관리를 위한 GitOps
+
+앞서 살펴본 것처럼 `kubectl apply`는 사용자가 실행해야 변경 사항이 반영된다.
+
+그렇다면 Git 저장소에 정의된 YAML과 Kubernetes의 실제 설정을 지속적으로 비교하여 자동으로 동기화하고 싶다면 어떻게 해야 할까?
+
+이러한 목적에는 GitOps 방식이 활용된다.
+
+대표적인 도구로 Argo CD와 Flux가 있다.
+
+GitOps 환경에서는 Git 저장소에 Kubernetes Manifest를 보관하고, 별도의 Controller가 저장소의 설정과 클러스터 상태를 비교한다.
+
+```mermaid
+flowchart TD
+    A["Developer"] --> B["Git Repository"]
+    B --> C["GitOps Controller"]
+
+    C --> D["Kubernetes API Server"]
+    D --> E["Deployment"]
+    E --> F["ReplicaSet"]
+    F --> G["Pod"]
+
+    C --> H["설정 차이 감지"]
+    H --> C
+```
+
+예를 들어 Git 저장소에 다음 설정이 있다고 가정하자.
+
+```yaml
+spec:
+  replicas: 3
+```
+
+클러스터에서 누군가 직접 replicas를 5로 변경했다고 가정해보자.
+
+```bash
+kubectl scale deployment/nginx-deployment --replicas=5
+```
+
+일반적으로 이 명령만 실행했다면 Deployment의 replicas는 5로 변경된다.
+
+하지만 GitOps Controller가 해당 필드를 Git에 선언된 상태로 동기화하도록 구성되어 있다면, 다시 3으로 되돌릴 수 있다.
+
+```text
+Git의 원하는 상태: 3
+클러스터의 실제 설정: 5
+
+GitOps 동기화
+→ replicas를 3으로 복구
+```
+
+단, 실제 동작은 GitOps 도구의 자동 동기화 설정과 관리 대상 필드, HPA 연동 방식 등에 따라 달라질 수 있다.
+
+이러한 방식은 선언형 관리의 장점을 더욱 확장한다.
+
+특히 여러 개발자가 동일한 Kubernetes 클러스터를 관리하는 환경에서 설정 변경 이력을 추적하고 운영 환경의 구성 일관성을 유지하는 데 도움이 된다.
+
+---
+
+### 실무에서 선언형 관리가 중요한 이유
+
+Kubernetes의 선언형 관리가 중요한 이유는 단순히 YAML 파일을 작성하기 편리하기 때문이 아니다.
+
+핵심은 **운영 환경의 구성을 명시적으로 정의하고 반복적으로 재현할 수 있다는 점**이다.
+
+#### 1. 동일한 설정을 반복 적용할 수 있다
+
+CI/CD에서는 배포 과정이 실패하거나 재시도되는 상황이 발생할 수 있다.
+
+이때 선언형 방식은 동일한 Manifest를 다시 적용해도 불필요한 리소스 변경을 줄일 수 있다.
+
+예를 들어 다음과 같이 실행한다.
+
+```bash
+kubectl apply -f deployment.yaml
+```
+
+이미 동일한 설정이 적용되어 있다면 변경 없이 종료될 수 있다.
+
+이를 통해 자동화 작업을 비교적 안정적으로 구성할 수 있다.
+
+#### 2. 환경 구성을 Git으로 관리할 수 있다
+
+YAML 파일을 Git 저장소에 보관하면 설정 변경 이력을 관리할 수 있다.
+
+예를 들어 다음과 같은 구조로 관리할 수 있다.
+
+```text
+kubernetes/
+├── development/
+│   ├── deployment.yaml
+│   ├── service.yaml
+│   └── configmap.yaml
+│
+└── production/
+    ├── deployment.yaml
+    ├── service.yaml
+    └── configmap.yaml
+```
+
+환경별 설정을 분리하면 개발 환경과 운영 환경에서 어떤 차이가 있는지 확인하기 쉬워진다.
+
+다만 실제 운영에서는 환경별 설정 중복을 줄이기 위해 Kustomize나 Helm을 활용할 수도 있다.
+
+#### 3. 장애 복구에 활용할 수 있다
+
+운영 환경에서 특정 리소스의 설정이 잘못 변경되었다면 Git에 저장된 정상적인 Manifest를 다시 적용하는 방식으로 복구할 수 있다.
+
+```bash
+kubectl apply -f deployment.yaml
+```
+
+하지만 모든 문제를 단순히 다시 적용하는 것만으로 해결할 수 있는 것은 아니다.
+
+예를 들어 Deployment의 변경 불가능한 필드를 수정하거나, 외부 데이터베이스 상태가 변경된 경우에는 별도의 복구 절차가 필요하다.
+
+따라서 선언형 관리의 장점을 활용하면서도 각 리소스의 동작 특성을 이해해야 한다.
+
+#### 4. 코드 리뷰를 통해 변경 사항을 검토할 수 있다
+
+운영 환경의 Deployment에 다음과 같은 변경이 발생했다고 가정하자.
+
+```yaml
+spec:
+  replicas: 3
+```
+
+이를 다음과 같이 변경한다.
+
+```yaml
+spec:
+  replicas: 10
+```
+
+명령형 방식에서는 변경 명령을 즉시 실행할 수 있다.
+
+반면 Git에 Manifest를 보관하는 방식에서는 Pull Request를 통해 변경 이유와 영향을 검토할 수 있다.
+
+특히 replicas, requests, limits, 환경 변수, Volume 등 운영에 영향을 주는 설정은 변경 전 검토 과정이 중요하다.
+
+---
+
+### 실무에서 주의해야 할 사항
+
+#### kubectl apply가 항상 성공하는 것은 아니다
+
+`apply`는 이미 존재하는 리소스를 인식하고 필요한 변경을 수행할 수 있다.
+
+하지만 다음과 같은 상황에서는 오류가 발생할 수 있다.
+
+- YAML 문법이 잘못된 경우
+- Kubernetes API가 지원하지 않는 필드를 사용한 경우
+- 리소스 생성 또는 수정 권한이 부족한 경우
+- 변경할 수 없는 필드를 수정하려는 경우
+- Admission 정책을 위반한 경우
+- 서버 측 필드 소유권 충돌이 발생한 경우
+
+특히 Pod는 생성 후 일부 필드를 자유롭게 수정할 수 없다.
+
+따라서 Pod에 대한 모든 설정이 `kubectl apply`로 즉시 변경된다고 생각해서는 안 된다.
+
+일반적인 애플리케이션에서는 Deployment를 사용해 새로운 Pod Template을 선언하고 Rolling Update를 수행하는 방식이 적절하다.
+
+#### 선언형 방식에서도 리소스 삭제는 별도로 관리해야 한다
+
+Manifest 파일에서 리소스 정의를 삭제했다고 해서 클러스터에 존재하는 해당 리소스가 자동으로 제거되지는 않는다.
+
+일반적인 `kubectl apply -f`는 파일에 없는 기존 리소스를 일괄적으로 삭제하는 명령이 아니기 때문이다.
+
+리소스를 삭제하려면 다음과 같이 명시적으로 요청할 수 있다.
+
+```bash
+kubectl delete -f nginx-pod.yaml
+```
+
+여러 리소스의 추가·변경·삭제를 지속적으로 동기화하려면 GitOps 도구의 Prune 기능과 같은 별도 관리 방식도 고려할 수 있다.
+
+다만 자동 삭제 기능은 의도하지 않은 리소스까지 제거할 수 있으므로 적용 범위와 권한을 신중하게 관리해야 한다.
+
+#### 명령형과 선언형 변경을 혼합하면 설정 충돌이 발생할 수 있다
+
+예를 들어 선언형으로 관리하는 Deployment의 replicas가 다음과 같다고 가정하자.
+
+```yaml
+replicas: 3
+```
+
+운영자가 다음 명령어로 replicas를 변경한다.
+
+```bash
+kubectl scale deployment/my-app --replicas=5
+```
+
+이후 관리 중인 YAML 파일을 다시 적용하는 경우, `apply` 방식과 필드 소유권, 기존 적용 이력에 따라 설정이 변경되거나 유지될 수 있다.
+
+이처럼 여러 도구나 관리자가 같은 필드를 수정하면 실제 적용되는 값이 예상과 달라질 수 있다.
+
+따라서 운영 환경에서는 특정 필드를 누가 관리하는지 명확하게 정의하는 것이 중요하다.
+
+예를 들어 HPA가 replicas를 관리하는 환경에서는 Deployment YAML에 지정된 replicas와 HPA 설정 사이의 관계도 고려해야 한다.
+
+---
+
+### Kubernetes YAML을 작성할 때 유용한 명령어
+
+Kubernetes Manifest를 작성하고 적용할 때는 다음 명령어들을 함께 알아두면 좋다.
+
+#### 적용 전 변경 사항 확인
+
+```bash
+kubectl diff -f nginx-pod.yaml
+```
+
+현재 클러스터에 저장된 설정과 Manifest 사이의 차이를 확인한다.
+
+설정에 변경 사항이 있다면 해당 차이가 출력된다.
+
+`kubectl diff`는 차이가 있으면 종료 코드 1을 반환할 수 있으므로 Shell Script에서 사용할 때는 이 점을 고려해야 한다.
+
+#### 서버 측 검증
+
+```bash
+kubectl apply \
+  --dry-run=server \
+  -f nginx-pod.yaml
+```
+
+실제로 리소스를 변경하지 않고 API Server에서 적용 가능 여부를 확인한다.
+
+다만 Dry Run으로 모든 런타임 오류나 스케줄링 문제까지 검증할 수 있는 것은 아니다.
+
+#### 리소스 구조 확인
+
+```bash
+kubectl explain pod
+```
+
+Pod 리소스의 기본 구조를 확인할 수 있다.
+
+특정 필드의 구조도 확인할 수 있다.
+
+```bash
+kubectl explain pod.spec
+```
+
+```bash
+kubectl explain pod.spec.containers
+```
+
+이 명령어를 사용하면 각 필드의 의미와 사용할 수 있는 구조를 확인할 수 있다.
+
+#### 명령형 명령으로 YAML 생성
+
+`kubectl run`을 이용해 YAML의 기본 구조를 생성할 수도 있다.
+
+```bash
+kubectl run nginx \
+  --image=nginx:1.27 \
+  --port=80 \
+  --dry-run=client \
+  -o yaml
+```
+
+`--dry-run=client`는 실제 Kubernetes 클러스터에 리소스를 생성하지 않고 로컬에서 생성 결과를 확인하는 옵션이다.
+
+`-o yaml`은 해당 결과를 YAML 형식으로 출력한다.
+
+파일로 저장하려면 다음과 같이 사용할 수 있다.
+
+```bash
+kubectl run nginx \
+  --image=nginx:1.27 \
+  --port=80 \
+  --dry-run=client \
+  -o yaml > nginx-pod.yaml
+```
+
+이후 생성된 파일을 수정하고 적용할 수 있다.
+
+```bash
+kubectl apply -f nginx-pod.yaml
+```
+
+이러한 방식은 Kubernetes Manifest의 기본 구조를 빠르게 생성할 때 유용하다.
+
+---
+
+### 명령형과 선언형 관리 실습 전체 흐름
+
+지금까지 살펴본 과정을 정리하면 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["Kubernetes Pod 생성"] --> B["명령형 방식"]
+    A --> C["선언형 방식"]
+
+    B --> D["kubectl run"]
+    D --> E["Pod 생성 성공"]
+    E --> F["동일 명령 재실행"]
+    F --> G["AlreadyExists 오류"]
+
+    C --> H["YAML Manifest 작성"]
+    H --> I["kubectl apply"]
+    I --> J["Pod 생성 성공"]
+
+    J --> K["동일 Manifest 재적용"]
+    K --> L["unchanged"]
+
+    L --> M["Manifest 설정 변경"]
+    M --> N["kubectl apply"]
+    N --> O["configured"]
+```
+
+여기서 가장 중요한 차이는 다음과 같다.
+
+명령형 방식에서는 사용자가 명령한 작업을 실행하려고 한다.
+
+반면 선언형 방식에서는 사용자가 정의한 원하는 상태를 기준으로 필요한 작업을 수행한다.
+
+이 차이 때문에 선언형 관리에서는 동일한 설정을 반복해서 적용하거나 Git으로 설정 변경 이력을 관리하기가 편리하다.
+
+---
+
+### 정리
+
+Kubernetes에서는 YAML을 이용해 Pod, Deployment, Service, ConfigMap 등 다양한 리소스의 원하는 상태를 정의할 수 있다.
+
+이때 YAML은 데이터를 표현하는 형식이고, Manifest는 Kubernetes 리소스의 구성 정보를 나타낸다.
+
+Pod와 Deployment를 비롯한 여러 Kubernetes 리소스에서는 `apiVersion`, `kind`, `metadata`, `spec`을 중심으로 설정을 작성한다.
+
+각 필드는 다음 의미를 가진다.
+
+| 필드 | 역할 |
+|---|---|
+| `apiVersion` | Kubernetes API 버전 정의 |
+| `kind` | 리소스 종류 정의 |
+| `metadata` | 리소스 이름과 메타데이터 정의 |
+| `spec` | 리소스의 원하는 상태 정의 |
+
+Kubernetes 리소스를 관리하는 방식은 명령형과 선언형으로 구분할 수 있다.
+
+**명령형 관리 방식**은 수행할 작업을 직접 명령하는 방식이다.
+
+예를 들어 `kubectl run`이나 `kubectl create`를 사용하여 리소스를 생성할 수 있다.
+
+이미 같은 이름의 리소스가 존재하는데 새로운 리소스를 생성하려고 하면 `AlreadyExists` 오류가 발생할 수 있다.
+
+반면 **선언형 관리 방식**은 원하는 상태를 정의하고 이를 Kubernetes에 적용하는 방식이다.
+
+대표적으로 `kubectl apply`를 사용한다.
+
+리소스가 존재하지 않으면 생성하고, 기존 리소스의 설정이 달라졌다면 필요한 변경을 반영한다.
+
+설정이 동일하다면 `unchanged` 결과가 나타날 수 있다.
+
+두 방식의 핵심 차이를 정리하면 다음과 같다.
+
+| 구분 | 명령형 | 선언형 |
+|---|---|---|
+| 관심사 | 어떤 작업을 수행할 것인가 | 어떤 상태를 유지할 것인가 |
+| 대표 명령 | `kubectl run`, `kubectl create` | `kubectl apply` |
+| 기존 리소스 존재 | 생성 명령은 오류 가능 | 기존 설정을 확인하고 필요한 변경 반영 |
+| 반복 적용 | 명령에 따라 결과가 달라짐 | 동일 설정의 불필요한 변경 최소화 |
+| 운영 관리 | 일회성 작업에 편리 | 반복 배포와 설정 관리에 적합 |
+
+또한 선언형 관리를 이해할 때는 Kubernetes의 Reconciliation 구조도 함께 이해해야 한다.
+
+`kubectl apply`는 사용자가 정의한 원하는 상태를 Kubernetes API에 전달한다.
+
+이후 Deployment나 ReplicaSet 같은 Controller는 자신의 관리 대상에 대해 원하는 상태와 실제 상태를 지속적으로 비교하고 필요한 작업을 수행한다.
+
+이것이 Kubernetes가 선언적 상태를 기반으로 리소스를 관리할 수 있는 핵심적인 이유이다.
+
+실무에서는 이러한 특징을 활용해 Kubernetes Manifest를 Git으로 관리하고, CI/CD 또는 GitOps 도구와 연결하여 반복 가능하고 추적 가능한 배포 환경을 구성할 수 있다.
+
+다만 선언형 방식이라고 해서 모든 설정을 자유롭게 변경할 수 있거나 장애가 자동으로 해결되는 것은 아니다.
+
+각 리소스의 API 구조와 변경 가능한 필드, Controller의 동작 방식까지 함께 이해해야 Kubernetes를 안정적으로 운영할 수 있다.
+
+#### 한 줄 요약
+
+> Kubernetes의 선언형 관리는 YAML 등으로 리소스의 원하는 상태를 정의하고 `kubectl apply`를 통해 적용하는 방식이며, 명령형 관리와 달리 동일한 설정을 반복 적용하고 변경 사항을 체계적으로 관리하는 데 유리하다.
