@@ -11895,3 +11895,5868 @@ ExitStatus = COMPLETED
 #### 한 줄 요약
 
 > Spring Batch의 `Transition`은 Step이나 Flow의 `ExitStatus`를 기준으로 실행 경로를 결정하는 기능이다. `on()`으로 패턴을 정의하고 `to()`로 다음 실행 대상을 지정하며, `from()`으로 추가적인 분기를 구성한다. 또한 `stop()`, `fail()`, `end()`, `stopAndRestart()`를 이용해 Job의 최종 상태와 재시작 정책을 제어할 수 있다. Transition은 패턴의 구체성을 기준으로 우선순위가 적용되며, 실패한 Step이 존재하더라도 설정한 종료 정책에 따라 Job은 COMPLETED, FAILED 또는 STOPPED 상태로 종료될 수 있다.
+
+## 사용자 정의 ExitStatus
+
+
+### Spring Batch 사용자 정의 ExitStatus 이해: StepExecutionListener와 FlowJob 조건부 실행 아키텍처
+
+Spring Batch에서 Job과 Step은 실행 결과를 관리하기 위해 `BatchStatus`와 `ExitStatus`를 사용한다.
+
+일반적으로 Step이 정상적으로 완료되면 다음과 같은 상태를 가진다.
+
+```text
+BatchStatus = COMPLETED
+
+ExitStatus = COMPLETED
+```
+
+반대로 Step 실행 중 예외가 발생하면 다음과 같이 종료된다.
+
+```text
+BatchStatus = FAILED
+
+ExitStatus = FAILED
+```
+
+이처럼 대부분의 상황에서는 BatchStatus와 ExitStatus가 동일한 값을 가진다.
+
+하지만 실제 비즈니스에서는 단순히 성공과 실패만으로 작업 결과를 표현하기 어려운 경우가 있다.
+
+예를 들어 결제 대사 시스템을 생각해보자.
+
+결제 대사 작업은 내부 데이터베이스에 저장된 결제 내역과 외부 PG사의 결제 내역을 비교하는 작업이다.
+
+이때 다음과 같은 결과가 발생할 수 있다.
+
+| 처리 결과 | 의미 |
+|---|---|
+| COMPLETED | 결제 내역이 모두 일치 |
+| FAILED | 시스템 오류로 대사 작업 실패 |
+| NO_DATA | 대사 대상 데이터가 없음 |
+| DISCREPANCY_FOUND | 결제 내역에 불일치 존재 |
+| REVIEW_REQUIRED | 운영자의 추가 확인 필요 |
+| PASS | 별도 검증 조건을 통과 |
+
+여기서 중요한 점은 `DISCREPANCY_FOUND`나 `REVIEW_REQUIRED` 같은 상태가 반드시 시스템 장애를 의미하지는 않는다는 것이다.
+
+시스템은 정상적으로 데이터를 조회하고 비교했지만, 비즈니스 규칙에 따라 추가 처리가 필요할 수 있다.
+
+따라서 다음과 같은 상태 표현이 필요하다.
+
+```text
+StepExecution
+    │
+    ├── BatchStatus = COMPLETED
+    │
+    └── ExitStatus = REVIEW_REQUIRED
+```
+
+실제 Step 실행은 정상적으로 완료되었다.
+
+하지만 비즈니스 처리 결과는 추가 검증이 필요한 상태다.
+
+이러한 차이를 표현하기 위해 Spring Batch는 사용자 정의 ExitStatus를 지원한다.
+
+예를 들어 다음과 같이 새로운 종료 코드를 생성할 수 있다.
+
+```java
+ExitStatus customExitStatus =
+        new ExitStatus("REVIEW_REQUIRED");
+```
+
+이렇게 생성한 종료 코드는 FlowJob의 Transition에서 사용할 수 있다.
+
+```java
+.start(validationStep)
+    .on("REVIEW_REQUIRED").to(reviewStep)
+```
+
+즉, Step의 실제 실행 상태는 COMPLETED로 유지하면서도 비즈니스 결과에 따라 다음 실행 경로를 변경할 수 있다.
+
+특히 Spring Batch에서는 `StepExecutionListener`의 `afterStep()` 메서드를 이용해 Step 실행 이후 사용자 정의 ExitStatus를 적용할 수 있다.
+
+이번에는 사용자 정의 ExitStatus의 개념부터 Listener의 실행 시점, 내부 상태 결합 과정, Transition과의 연결 및 실제 구현 방법까지 자세히 살펴보자.
+
+---
+
+### 개념
+
+#### 사용자 정의 ExitStatus란?
+
+사용자 정의 ExitStatus는 Spring Batch에서 기본적으로 제공하는 종료 코드 이외에 개발자가 직접 정의한 종료 코드를 의미한다.
+
+Spring Batch의 `ExitStatus`는 Enum이 아닌 클래스다.
+
+따라서 정해진 상수 외에도 새로운 종료 코드를 생성할 수 있다.
+
+Spring Batch 5.2.4에서는 다음 여섯 가지 기본 상수를 제공한다.
+
+```java
+public static final ExitStatus UNKNOWN =
+        new ExitStatus("UNKNOWN");
+
+public static final ExitStatus EXECUTING =
+        new ExitStatus("EXECUTING");
+
+public static final ExitStatus COMPLETED =
+        new ExitStatus("COMPLETED");
+
+public static final ExitStatus NOOP =
+        new ExitStatus("NOOP");
+
+public static final ExitStatus FAILED =
+        new ExitStatus("FAILED");
+
+public static final ExitStatus STOPPED =
+        new ExitStatus("STOPPED");
+```
+
+각 상태의 의미는 다음과 같다.
+
+| ExitStatus | 의미 |
+|---|---|
+| UNKNOWN | 종료 결과를 확정하기 어려움 |
+| EXECUTING | 실행 중인 상태 |
+| COMPLETED | 정상 완료 |
+| NOOP | 실제 처리를 수행하지 않음 |
+| FAILED | 실패 종료 |
+| STOPPED | 중단 종료 |
+
+하지만 이러한 기본 상태만으로는 모든 비즈니스 결과를 표현하기 어렵다.
+
+이때 다음과 같이 새로운 종료 코드를 정의할 수 있다.
+
+```java
+new ExitStatus("PASS");
+```
+
+```java
+new ExitStatus("NO_DATA");
+```
+
+```java
+new ExitStatus("PARTIAL_SUCCESS");
+```
+
+```java
+new ExitStatus("REVIEW_REQUIRED");
+```
+
+사용자 정의 ExitStatus는 개발자가 임의의 문자열로 생성할 수 있다.
+
+이렇게 생성한 종료 코드는 StepExecution에 반영할 수 있으며, FlowJob의 Transition 조건으로 사용할 수 있다.
+
+---
+
+### BatchStatus와 ExitStatus의 차이
+
+사용자 정의 ExitStatus를 이해하려면 먼저 두 상태의 역할을 구분해야 한다.
+
+| 구분 | BatchStatus | ExitStatus |
+|---|---|---|
+| 타입 | Enum | Class |
+| 역할 | 실제 실행 상태 | 종료 코드 |
+| 기본값 | COMPLETED, FAILED 등 | COMPLETED, FAILED 등 |
+| 사용자 정의 | 새로운 Enum 값 추가 불가 | 사용자 정의 코드 생성 가능 |
+| 주요 활용 | 실행 상태 및 재시작 판단 | 처리 결과 표현 및 Flow 분기 |
+| 저장 위치 | STATUS | EXIT_CODE |
+
+예를 들어 다음과 같은 Tasklet이 있다고 생각해보자.
+
+```java
+.tasklet((contribution, chunkContext) -> {
+
+    contribution.setExitStatus(
+            new ExitStatus("PASS")
+    );
+
+    return RepeatStatus.FINISHED;
+
+}, transactionManager)
+```
+
+이 Tasklet은 예외 없이 정상적으로 종료된다.
+
+따라서 일반적으로 BatchStatus는 COMPLETED가 된다.
+
+하지만 ExitStatus는 PASS로 설정된다.
+
+결과는 다음과 같다.
+
+```text
+StepExecution
+    │
+    ├── BatchStatus = COMPLETED
+    │
+    └── ExitStatus = PASS
+```
+
+여기서 중요한 사실은 다음과 같다.
+
+**ExitStatus를 사용자 정의 코드로 변경했다고 해서 BatchStatus까지 자동으로 변경되는 것은 아니다.**
+
+BatchStatus는 작업의 실제 실행 상태를 나타낸다.
+
+반면 ExitStatus는 비즈니스 결과를 표현할 수 있다.
+
+이러한 구분을 이용하면 시스템 오류와 비즈니스 처리 결과를 분리할 수 있다.
+
+---
+
+### 왜 사용하는가?
+
+사용자 정의 ExitStatus를 사용하는 대표적인 이유는 비즈니스 처리 결과에 따라 배치의 실행 흐름을 변경하기 위해서다.
+
+예를 들어 데이터 검증 Step이 있다고 생각해보자.
+
+```text
+ValidationStep
+    │
+    ▼
+검증 로직 실행
+    │
+    ▼
+검증 결과 생성
+```
+
+검증 결과는 크게 세 가지로 구분할 수 있다.
+
+첫 번째는 모든 검증을 통과한 경우다.
+
+두 번째는 일부 데이터에 문제가 있어 추가 확인이 필요한 경우다.
+
+세 번째는 시스템 오류로 검증을 완료하지 못한 경우다.
+
+이를 다음과 같이 표현할 수 있다.
+
+```mermaid
+flowchart TD
+    A["ValidationStep"]
+    B{"검증 결과"}
+
+    C["PASS"]
+    D["REVIEW_REQUIRED"]
+    E["FAILED"]
+
+    F["SettlementStep"]
+    G["ReviewStep"]
+    H["Job FAILED"]
+
+    A --> B
+
+    B -->|검증 통과| C
+    B -->|추가 검증 필요| D
+    B -->|시스템 오류| E
+
+    C --> F
+    D --> G
+    E --> H
+```
+
+이 구조에서는 동일한 Step이 실행되더라도 결과에 따라 서로 다른 Step을 실행할 수 있다.
+
+사용자 정의 ExitStatus를 적용하면 다음과 같이 구현할 수 있다.
+
+```java
+.start(validationStep)
+    .on("PASS").to(settlementStep)
+
+.from(validationStep)
+    .on("REVIEW_REQUIRED").to(reviewStep)
+
+.from(validationStep)
+    .on("FAILED").fail()
+
+.end()
+.build();
+```
+
+이러한 방식은 다음과 같은 장점이 있다.
+
+첫 번째로 실제 비즈니스 로직과 실행 흐름을 분리할 수 있다.
+
+두 번째로 정상 처리와 추가 검증, 시스템 장애를 구분할 수 있다.
+
+세 번째로 실행 결과에 따라 서로 다른 후속 작업을 수행할 수 있다.
+
+네 번째로 StepExecution의 실제 실행 상태를 유지하면서 종료 코드를 확장할 수 있다.
+
+다섯 번째로 복잡한 비즈니스 조건을 FlowJob의 Transition으로 표현할 수 있다.
+
+따라서 사용자 정의 ExitStatus는 단순히 새로운 문자열을 추가하는 기능이 아니다.
+
+**Step의 실행 결과를 비즈니스 상태로 확장하고, 그 결과를 Flow의 실행 경로와 연결하는 기능**이다.
+
+---
+
+### 주요 특징
+
+#### 1. ExitStatus는 사용자 정의 코드를 생성할 수 있다
+
+ExitStatus는 클래스로 제공된다.
+
+따라서 생성자를 이용해 새로운 종료 코드를 정의할 수 있다.
+
+```java
+ExitStatus pass =
+        new ExitStatus("PASS");
+```
+
+여기서 PASS는 Spring Batch에서 기본적으로 제공하는 상수가 아니다.
+
+개발자가 직접 정의한 문자열이다.
+
+#### 2. StepExecutionListener에서 종료 코드를 변경할 수 있다
+
+StepExecutionListener는 Step의 실행 전후에 특정 로직을 수행할 수 있도록 제공하는 인터페이스다.
+
+주요 메서드는 다음과 같다.
+
+```java
+public interface StepExecutionListener {
+
+    default void beforeStep(
+            StepExecution stepExecution
+    ) {
+    }
+
+    default ExitStatus afterStep(
+            StepExecution stepExecution
+    ) {
+        return null;
+    }
+}
+```
+
+`beforeStep()`은 Step 실행 전에 호출된다.
+
+`afterStep()`은 Step의 처리 로직이 종료된 후 호출된다.
+
+사용자 정의 ExitStatus는 일반적으로 afterStep()에서 생성할 수 있다.
+
+#### 3. afterStep()은 ExitStatus를 반환한다
+
+afterStep()의 반환 타입은 ExitStatus다.
+
+따라서 다음과 같이 구현할 수 있다.
+
+```java
+@Override
+public ExitStatus afterStep(
+        StepExecution stepExecution
+) {
+
+    return new ExitStatus("PASS");
+}
+```
+
+이렇게 반환한 ExitStatus는 기존 StepExecution의 ExitStatus와 결합된다.
+
+#### 4. 기존 ExitStatus와 결합된다
+
+afterStep()에서 반환한 ExitStatus가 기존 상태를 단순히 무조건 덮어쓰는 것은 아니다.
+
+Spring Batch는 `ExitStatus.and()`를 사용해 두 상태를 결합한다.
+
+예를 들어 다음과 같다.
+
+```java
+ExitStatus result =
+        ExitStatus.COMPLETED.and(
+                new ExitStatus("PASS")
+        );
+```
+
+이 경우 PASS가 최종 종료 코드로 선택된다.
+
+그 이유는 ExitStatus가 종료 코드의 우선순위를 비교하기 때문이다.
+
+#### 5. FlowJob의 Transition에서 사용할 수 있다
+
+Step의 최종 ExitStatus가 PASS라면 다음 Transition을 사용할 수 있다.
+
+```java
+.on("PASS").to(nextStep)
+```
+
+또는 다음과 같이 Job을 중단할 수 있다.
+
+```java
+.on("PASS").stop()
+```
+
+즉, 사용자 정의 ExitStatus는 후속 실행 경로를 결정하는 조건으로 사용할 수 있다.
+
+---
+
+### StepExecutionListener란?
+
+StepExecutionListener는 Step의 실행 전후에 특정 로직을 수행하기 위한 인터페이스다.
+
+다음과 같은 두 개의 주요 메서드를 제공한다.
+
+| 메서드 | 호출 시점 | 역할 |
+|---|---|---|
+| beforeStep() | Step 처리 로직 실행 전 | 사전 작업 |
+| afterStep() | Step 처리 로직 실행 후 | 종료 상태 확인 및 변경 |
+
+사용자 정의 ExitStatus를 생성할 때는 일반적으로 afterStep()을 사용한다.
+
+예를 들어 다음과 같은 Listener를 만들 수 있다.
+
+```java
+public class PassCheckingListener
+        implements StepExecutionListener {
+
+    @Override
+    public ExitStatus afterStep(
+            StepExecution stepExecution
+    ) {
+
+        String exitCode =
+                stepExecution
+                        .getExitStatus()
+                        .getExitCode();
+
+        if (!ExitStatus.FAILED
+                .getExitCode()
+                .equals(exitCode)) {
+
+            return new ExitStatus("PASS");
+        }
+
+        return null;
+    }
+}
+```
+
+이 코드는 현재 Step의 종료 코드를 확인한다.
+
+그리고 종료 코드가 FAILED가 아니라면 PASS라는 사용자 정의 ExitStatus를 반환한다.
+
+반대로 FAILED라면 null을 반환한다.
+
+여기서 null은 새로운 ExitStatus를 적용하지 않겠다는 의미다.
+
+따라서 기존 ExitStatus가 유지된다.
+
+다만 위 구현은 동작 원리를 이해하기 위한 단순한 예제다.
+
+실제 운영 환경에서는 FAILED 이외에도 STOPPED, UNKNOWN, 사용자 정의 실패 코드 등을 고려해야 한다.
+
+따라서 단순히 FAILED가 아니라는 이유만으로 PASS를 반환하는 것은 위험할 수 있다.
+
+이 문제는 이후 실무 설계에서 자세히 살펴보자.
+
+---
+
+### Listener를 Step에 등록하는 방법
+
+StepExecutionListener를 생성했다면 Step에 등록해야 한다.
+
+Spring Batch 5.2.4에서는 StepBuilder의 `listener()` API를 사용할 수 있다.
+
+```java
+@Bean
+public Step validationStep(
+        JobRepository jobRepository,
+        PlatformTransactionManager transactionManager
+) {
+
+    return new StepBuilder(
+            "validationStep",
+            jobRepository
+    )
+            .tasklet((contribution, chunkContext) -> {
+
+                return RepeatStatus.FINISHED;
+
+            }, transactionManager)
+            .listener(new PassCheckingListener())
+            .build();
+}
+```
+
+이 코드에서는 TaskletStep을 생성한다.
+
+그리고 PassCheckingListener를 등록한다.
+
+이후 Step이 실행되면 Spring Batch가 Listener를 호출한다.
+
+실행 순서는 다음과 같다.
+
+```text
+Step 실행
+    │
+    ▼
+StepExecutionListener.beforeStep()
+    │
+    ▼
+Tasklet.execute()
+    │
+    ▼
+Tasklet 종료
+    │
+    ▼
+StepExecutionListener.afterStep()
+    │
+    ▼
+사용자 정의 ExitStatus 반환
+    │
+    ▼
+StepExecution의 ExitStatus 반영
+    │
+    ▼
+FlowJob Transition
+```
+
+여기서 중요한 점은 afterStep()이 Tasklet 실행 이후에 호출된다는 사실이다.
+
+따라서 Tasklet의 실행 결과를 확인한 뒤 종료 코드를 변경할 수 있다.
+
+---
+
+### afterStep()에서 사용자 정의 ExitStatus가 반영되는 원리
+
+이번에는 실제 Spring Batch의 내부 구현을 살펴보자.
+
+사용자 정의 ExitStatus를 이해할 때 가장 중요한 클래스는 `AbstractStep`이다.
+
+TaskletStep은 AbstractStep을 상속한다.
+
+따라서 TaskletStep의 공통적인 실행 과정은 AbstractStep에서 관리한다.
+
+전체 구조는 다음과 같다.
+
+```mermaid
+classDiagram
+    class Step {
+        <<interface>>
+        +execute(StepExecution)
+    }
+
+    class AbstractStep {
+        +execute(StepExecution)
+        #doExecute(StepExecution)
+        +registerStepExecutionListener()
+    }
+
+    class TaskletStep {
+        -Tasklet tasklet
+        #doExecute(StepExecution)
+    }
+
+    class StepExecutionListener {
+        <<interface>>
+        +beforeStep(StepExecution)
+        +afterStep(StepExecution) ExitStatus
+    }
+
+    class PassCheckingListener {
+        +afterStep(StepExecution) ExitStatus
+    }
+
+    Step <|.. AbstractStep
+    AbstractStep <|-- TaskletStep
+
+    StepExecutionListener <|.. PassCheckingListener
+
+    AbstractStep --> StepExecutionListener
+```
+
+TaskletStep은 실제 비즈니스 로직을 실행한다.
+
+AbstractStep은 Step의 전체 실행 상태를 관리한다.
+
+그리고 StepExecutionListener를 통해 Step 실행 전후의 확장 기능을 제공한다.
+
+따라서 사용자 정의 ExitStatus가 적용되는 과정은 AbstractStep의 실행 흐름 안에서 이루어진다.
+
+---
+
+### AbstractStep.execute() 내부 분석
+
+Spring Batch 5.2.4의 AbstractStep에서는 Step 실행 과정에서 Listener를 호출한다.
+
+핵심 실행 구조를 단순화하면 다음과 같다.
+
+```java
+public final void execute(
+        StepExecution stepExecution
+) {
+
+    ExitStatus exitStatus =
+            ExitStatus.EXECUTING;
+
+    try {
+
+        getCompositeListener()
+                .beforeStep(stepExecution);
+
+        doExecute(stepExecution);
+
+        exitStatus =
+                ExitStatus.COMPLETED.and(
+                        stepExecution.getExitStatus()
+                );
+
+        stepExecution.upgradeStatus(
+                BatchStatus.COMPLETED
+        );
+
+    } catch (Throwable e) {
+
+        stepExecution.upgradeStatus(
+                BatchStatus.FAILED
+        );
+
+        exitStatus =
+                exitStatus.and(
+                        ExitStatus.FAILED
+                );
+
+    } finally {
+
+        exitStatus =
+                exitStatus.and(
+                        stepExecution.getExitStatus()
+                );
+
+        stepExecution.setExitStatus(
+                exitStatus
+        );
+
+        exitStatus =
+                exitStatus.and(
+                        getCompositeListener()
+                                .afterStep(stepExecution)
+                );
+
+        stepExecution.setExitStatus(
+                exitStatus
+        );
+
+        getJobRepository().update(
+                stepExecution
+        );
+    }
+}
+```
+
+위 코드는 Listener와 ExitStatus 처리에 필요한 핵심 부분만 정리한 설명용 코드다.
+
+실제 Spring Batch 5.2.4 구현에서는 실행 시간 기록, ExecutionContext 저장, 예외 유형별 상태 결정, 관측 정보 처리 등도 수행한다.
+
+여기서 중요한 부분은 finally 블록이다.
+
+```java
+exitStatus =
+        exitStatus.and(
+                getCompositeListener()
+                        .afterStep(stepExecution)
+        );
+```
+
+바로 이 코드에서 사용자가 등록한 StepExecutionListener의 afterStep()이 호출된다.
+
+그리고 반환된 ExitStatus가 기존 ExitStatus와 결합된다.
+
+이 과정이 사용자 정의 ExitStatus를 적용하는 핵심이다.
+
+---
+
+### 첫 번째 단계: Tasklet 실행
+
+먼저 Tasklet이 실행된다.
+
+```java
+doExecute(stepExecution);
+```
+
+TaskletStep에서는 이 과정에서 Tasklet의 execute() 메서드가 호출된다.
+
+예를 들어 다음과 같다.
+
+```java
+@Override
+public RepeatStatus execute(
+        StepContribution contribution,
+        ChunkContext chunkContext
+) {
+
+    System.out.println("비즈니스 로직 실행");
+
+    return RepeatStatus.FINISHED;
+}
+```
+
+이 Tasklet은 예외 없이 정상적으로 종료된다.
+
+따라서 Spring Batch는 Step의 정상 완료 처리를 진행한다.
+
+---
+
+### 두 번째 단계: 기본 ExitStatus 생성
+
+Tasklet이 정상적으로 완료되면 다음과 같은 코드가 실행된다.
+
+```java
+exitStatus =
+        ExitStatus.COMPLETED.and(
+                stepExecution.getExitStatus()
+        );
+```
+
+여기서 Step이 특별한 종료 코드를 설정하지 않았다면 일반적으로 COMPLETED가 적용된다.
+
+따라서 다음 상태가 만들어진다.
+
+```text
+StepExecution
+
+BatchStatus = COMPLETED
+
+ExitStatus = COMPLETED
+```
+
+이 시점까지는 사용자 정의 ExitStatus가 적용되지 않았다.
+
+---
+
+### 세 번째 단계: afterStep() 호출
+
+이후 AbstractStep의 finally 블록에서 Listener를 호출한다.
+
+```java
+getCompositeListener()
+        .afterStep(stepExecution);
+```
+
+이 호출은 등록된 StepExecutionListener의 afterStep()으로 전달된다.
+
+예를 들어 다음과 같은 Listener가 있다고 생각해보자.
+
+```java
+@Override
+public ExitStatus afterStep(
+        StepExecution stepExecution
+) {
+
+    return new ExitStatus("PASS");
+}
+```
+
+이 경우 PASS라는 ExitStatus가 반환된다.
+
+---
+
+### 네 번째 단계: ExitStatus.and() 호출
+
+AbstractStep은 반환된 ExitStatus를 기존 종료 코드와 결합한다.
+
+```java
+exitStatus =
+        exitStatus.and(
+                new ExitStatus("PASS")
+        );
+```
+
+기존 ExitStatus는 COMPLETED다.
+
+새로운 ExitStatus는 PASS다.
+
+```text
+기존 ExitStatus = COMPLETED
+
+새로운 ExitStatus = PASS
+```
+
+ExitStatus.and()는 종료 코드의 우선순위를 비교한다.
+
+Spring Batch 5.2.4에서는 사용자 정의 종료 코드가 일반적인 기본 종료 코드보다 높은 우선순위를 가진다.
+
+따라서 최종 결과는 다음과 같다.
+
+```text
+ExitStatus = PASS
+```
+
+---
+
+### 다섯 번째 단계: StepExecution에 반영
+
+마지막으로 StepExecution의 ExitStatus를 변경한다.
+
+```java
+stepExecution.setExitStatus(
+        exitStatus
+);
+```
+
+따라서 최종 StepExecution은 다음과 같은 상태를 가진다.
+
+```text
+StepExecution
+    │
+    ├── BatchStatus = COMPLETED
+    │
+    └── ExitStatus = PASS
+```
+
+이 과정에서 BatchStatus는 변경되지 않는다.
+
+실제 Step은 정상적으로 완료되었기 때문이다.
+
+반면 ExitStatus는 PASS로 변경된다.
+
+따라서 이후 FlowJob은 PASS라는 종료 코드를 기준으로 Transition을 선택할 수 있다.
+
+---
+
+### ExitStatus.and()의 우선순위
+
+사용자 정의 ExitStatus를 정확하게 이해하려면 `ExitStatus.and()`의 동작을 알아야 한다.
+
+Spring Batch 5.2.4의 ExitStatus는 다음과 같은 우선순위를 사용한다.
+
+| 종료 코드 접두어 | 우선순위 |
+|---|---:|
+| EXECUTING | 1 |
+| COMPLETED | 2 |
+| NOOP | 3 |
+| STOPPED | 4 |
+| FAILED | 5 |
+| UNKNOWN | 6 |
+| 사용자 정의 코드 | 7 |
+
+숫자가 클수록 높은 우선순위를 가진다.
+
+예를 들어 다음과 같다.
+
+```java
+ExitStatus result =
+        ExitStatus.COMPLETED.and(
+                new ExitStatus("PASS")
+        );
+```
+
+PASS는 사용자 정의 종료 코드다.
+
+따라서 COMPLETED보다 높은 우선순위를 가진다.
+
+결과는 다음과 같다.
+
+```text
+PASS
+```
+
+하지만 여기서 주의할 점이 있다.
+
+다음과 같은 코드도 생각해보자.
+
+```java
+ExitStatus result =
+        ExitStatus.FAILED.and(
+                new ExitStatus("PASS")
+        );
+```
+
+이 경우에도 PASS가 선택될 수 있다.
+
+왜냐하면 사용자 정의 종료 코드의 우선순위가 FAILED보다 높기 때문이다.
+
+따라서 afterStep()에서 무조건 PASS를 반환하는 것은 위험할 수 있다.
+
+실제 비즈니스 로직이 실패했는데 종료 코드가 PASS로 변경될 수 있기 때문이다.
+
+이러한 문제를 방지하려면 현재 BatchStatus와 ExitStatus를 모두 확인해야 한다.
+
+---
+
+### 안전한 사용자 정의 ExitStatus 구현
+
+실제 운영 환경에서는 다음과 같이 구현하는 것이 더 안전하다.
+
+```java
+public class PassCheckingListener
+        implements StepExecutionListener {
+
+    @Override
+    public ExitStatus afterStep(
+            StepExecution stepExecution
+    ) {
+
+        if (stepExecution.getStatus()
+                != BatchStatus.COMPLETED) {
+
+            return null;
+        }
+
+        String exitCode =
+                stepExecution
+                        .getExitStatus()
+                        .getExitCode();
+
+        if (!ExitStatus.COMPLETED
+                .getExitCode()
+                .equals(exitCode)) {
+
+            return null;
+        }
+
+        return new ExitStatus("PASS");
+    }
+}
+```
+
+이 코드에서는 두 가지 조건을 확인한다.
+
+첫 번째는 Step의 BatchStatus가 COMPLETED인지 확인한다.
+
+두 번째는 현재 ExitStatus도 COMPLETED인지 확인한다.
+
+두 조건이 모두 만족하는 경우에만 PASS를 반환한다.
+
+따라서 FAILED, STOPPED, UNKNOWN 또는 다른 사용자 정의 종료 코드가 존재하는 경우에는 기존 상태를 유지한다.
+
+여기서 null을 반환하는 것은 오류가 아니다.
+
+**afterStep()에서 null을 반환하면 기존 ExitStatus에 새로운 종료 코드를 결합하지 않는다.**
+
+이러한 방식은 기존 실패 상태가 사용자 정의 종료 코드로 잘못 변경되는 문제를 방지하는 데 도움이 된다.
+
+---
+
+### 사용자 정의 ExitStatus와 FlowJob의 관계
+
+이제 사용자 정의 ExitStatus가 FlowJob에서 어떻게 사용되는지 살펴보자.
+
+다음과 같은 Job을 생각해보자.
+
+```text
+CustomExitStatusJob
+    │
+    ▼
+Step 1
+    │
+    └── ExitStatus = FAILED
+            │
+            ▼
+          Step 2
+            │
+            └── ExitStatus = PASS
+                    │
+                    ▼
+                Job STOPPED
+```
+
+이 Job은 다음과 같이 구성할 수 있다.
+
+```java
+@Bean
+public Job customExitStatusJob(
+        JobRepository jobRepository,
+        Step step1,
+        Step step2
+) {
+
+    return new JobBuilder(
+            "customExitStatusJob",
+            jobRepository
+    )
+            .start(step1)
+                .on("FAILED").to(step2)
+                .on("PASS").stop()
+            .end()
+            .build();
+}
+```
+
+이 코드에서는 Step 1의 ExitStatus가 FAILED일 때 Step 2를 실행한다.
+
+그리고 Step 2의 ExitStatus가 PASS라면 Job을 STOPPED 상태로 종료한다.
+
+여기서 중요한 점은 Step 2의 ExitStatus를 PASS로 만드는 작업을 별도로 구현해야 한다는 것이다.
+
+Step 2가 정상적으로 완료되었다고 해서 자동으로 PASS가 되는 것은 아니다.
+
+기본적으로는 COMPLETED가 된다.
+
+따라서 StepExecutionListener를 등록하지 않았다면 다음과 같은 상황이 발생한다.
+
+```text
+Step 2
+
+BatchStatus = COMPLETED
+
+ExitStatus = COMPLETED
+```
+
+하지만 Transition은 다음 조건을 확인한다.
+
+```java
+.on("PASS").stop()
+```
+
+COMPLETED와 PASS는 서로 다르다.
+
+따라서 해당 Transition은 매칭되지 않는다.
+
+이때 Job이 어떻게 종료되는지를 이해하려면 FlowBuilder의 내부 동작을 알아야 한다.
+
+---
+
+### 사용자 정의 ExitStatus가 없으면 Job이 FAILED가 되는 이유
+
+다음과 같은 FlowJob을 생각해보자.
+
+```java
+new JobBuilder(
+        "customExitStatusJob",
+        jobRepository
+)
+        .start(step1)
+            .on("FAILED").to(step2)
+            .on("PASS").stop()
+        .end()
+        .build();
+```
+
+Step 1은 ExitStatus.FAILED로 종료되도록 설정했다고 가정한다.
+
+따라서 Step 2가 실행된다.
+
+하지만 Step 2에는 사용자 정의 ExitStatus를 적용하지 않았다.
+
+따라서 Step 2는 COMPLETED로 종료된다.
+
+```text
+Step 1
+    │
+    ├── BatchStatus = COMPLETED
+    └── ExitStatus = FAILED
+
+Step 2
+    │
+    ├── BatchStatus = COMPLETED
+    └── ExitStatus = COMPLETED
+```
+
+그런데 FlowJob의 최종 상태는 FAILED가 될 수 있다.
+
+왜 이러한 현상이 발생할까?
+
+원인은 Step 2의 실제 실행 실패가 아니다.
+
+**FlowBuilder가 자동으로 생성하는 기본 실패 Transition에 있다.**
+
+---
+
+### FlowBuilder.addDanglingEndStates()의 역할
+
+Spring Batch 5.2.4의 FlowBuilder에는 다음 메서드가 존재한다.
+
+```java
+private void addDanglingEndStates()
+```
+
+이 메서드는 Flow를 구성하는 과정에서 종료 Transition이 명확하지 않은 State들을 확인한다.
+
+그리고 필요한 기본 종료 경로를 추가한다.
+
+핵심 로직을 단순화하면 다음과 같다.
+
+```java
+if (!hasFail(from)) {
+
+    addTransition(
+            "*",
+            failedState
+    );
+}
+
+if (!hasCompleted(from)) {
+
+    addTransition(
+            "*",
+            completedState
+    );
+}
+```
+
+이 코드는 각 State에 대해 실패 또는 정상 완료를 처리할 경로가 있는지 확인한다.
+
+그리고 필요한 경우 기본 Transition을 추가한다.
+
+예를 들어 다음 설정을 생각해보자.
+
+```java
+.on("PASS").stop()
+```
+
+이 조건은 PASS에 대해서만 명시적인 종료 경로를 정의한다.
+
+따라서 FAILED 또는 COMPLETED에 대한 경로가 별도로 정의되어 있지 않다.
+
+이때 FlowBuilder는 기본 종료 규칙을 추가할 수 있다.
+
+해당 상황에서는 다음과 같은 실행 경로가 구성된다.
+
+```text
+Step 2
+    │
+    ├── PASS → Job STOPPED
+    │
+    └── * → Job FAILED
+```
+
+여기서 `*`는 모든 종료 코드에 매칭할 수 있다.
+
+하지만 PASS라는 구체적인 패턴이 더 높은 우선순위를 가지므로 PASS인 경우에는 STOPPED 경로가 선택된다.
+
+반면 COMPLETED는 PASS에 매칭되지 않는다.
+
+따라서 기본 실패 경로가 선택된다.
+
+결과는 다음과 같다.
+
+```text
+Step 2
+
+BatchStatus = COMPLETED
+
+ExitStatus = COMPLETED
+```
+
+```text
+JobExecution
+
+BatchStatus = FAILED
+
+ExitStatus = FAILED
+```
+
+여기서 반드시 구분해야 할 사실이 있다.
+
+**Step 2가 FAILED로 변경된 것이 아니다.**
+
+Step 2는 실제로 정상 완료되었다.
+
+다만 Flow의 Transition에서 FAILED 종료 경로가 선택되었기 때문에 Job이 FAILED로 종료된 것이다.
+
+이러한 차이를 이해해야 JobExecution과 StepExecution의 상태가 서로 다른 이유를 정확하게 파악할 수 있다.
+
+---
+
+### Transition 매칭 실패와 기본 실패 Transition의 차이
+
+관련해서 한 가지를 더 구분할 필요가 있다.
+
+Spring Batch에서 Transition이 매칭되지 않는 상황은 두 가지로 나누어 이해할 수 있다.
+
+첫 번째는 FlowBuilder가 기본 실패 Transition을 추가한 경우다.
+
+이 경우 일치하는 명시적 패턴이 없어도 자동 생성된 실패 경로가 선택될 수 있다.
+
+두 번째는 실제 SimpleFlow에 현재 종료 코드와 매칭되는 Transition이 전혀 존재하지 않는 경우다.
+
+이 경우 SimpleFlow는 다음 State를 결정할 수 없다.
+
+따라서 `FlowExecutionException`을 발생시킨다.
+
+예를 들어 다음과 같은 오류 메시지가 발생할 수 있다.
+
+```text
+Next state not found in flow=...
+```
+
+따라서 두 상황은 구분해야 한다.
+
+| 상황 | 내부 처리 | 결과 |
+|---|---|---|
+| 기본 실패 Transition 존재 | 실패 종료 경로 선택 | Job FAILED |
+| 매칭 가능한 Transition 없음 | FlowExecutionException 발생 | Job FAILED |
+| 사용자 정의 코드가 매칭됨 | 지정된 Transition 실행 | 설정에 따라 결정 |
+
+이번 예제에서 PASS가 설정되지 않아 Job이 FAILED로 종료되는 것은 일반적으로 첫 번째 상황으로 이해하는 것이 정확하다.
+
+---
+
+### 전체 실행 구조
+
+사용자 정의 ExitStatus가 적용되는 전체 흐름을 정리하면 다음과 같다.
+
+```mermaid
+sequenceDiagram
+    participant Job as FlowJob
+    participant Flow as SimpleFlow
+    participant Step as TaskletStep
+    participant Abstract as AbstractStep
+    participant Listener as PassCheckingListener
+    participant Repository as JobRepository
+
+    Job->>Flow: Flow 실행
+    Flow->>Step: Step 실행
+
+    Step->>Abstract: execute()
+    Abstract->>Listener: beforeStep()
+
+    Abstract->>Step: doExecute()
+    Step-->>Abstract: 정상 완료
+
+    Abstract->>Abstract: 기본 ExitStatus COMPLETED 설정
+
+    Abstract->>Listener: afterStep(stepExecution)
+    Listener-->>Abstract: ExitStatus PASS 반환
+
+    Abstract->>Abstract: ExitStatus.and(PASS)
+    Abstract->>Abstract: StepExecution ExitStatus PASS 설정
+
+    Abstract->>Repository: StepExecution 저장
+
+    Abstract-->>Flow: Step 실행 완료
+
+    Flow->>Flow: on(PASS) 매칭
+
+    Flow->>Flow: stop() Transition 선택
+
+    Flow-->>Job: FlowExecutionStatus STOPPED
+
+    Job->>Repository: JobExecution STOPPED 저장
+```
+
+여기서 핵심은 다음과 같다.
+
+Tasklet이 정상적으로 완료된 후 afterStep()이 호출된다.
+
+afterStep()은 새로운 ExitStatus를 반환한다.
+
+AbstractStep은 반환된 ExitStatus를 기존 종료 코드와 결합한다.
+
+StepExecution에는 최종 ExitStatus가 저장된다.
+
+이후 SimpleFlow는 해당 종료 코드를 이용해 Transition을 선택한다.
+
+따라서 사용자 정의 ExitStatus는 단순히 메타데이터에 저장되는 값이 아니다.
+
+**FlowJob의 다음 실행 경로를 결정하는 입력값**으로 사용된다.
+
+---
+
+### 예제: 사용자 정의 ExitStatus 적용하기
+
+이번에는 실제로 사용자 정의 ExitStatus를 적용하는 예제를 구현해보자.
+
+다음 세 가지 시나리오를 비교한다.
+
+첫 번째는 사용자 정의 ExitStatus가 없는 경우다.
+
+두 번째는 사용자 정의 ExitStatus를 생성하고 Job을 STOPPED로 종료하는 경우다.
+
+세 번째는 사용자 정의 ExitStatus를 생성하고 다른 Step으로 이동하는 경우다.
+
+각 시나리오의 실행 구조는 다음과 같다.
+
+```text
+시나리오 1. 사용자 정의 ExitStatus 없음
+
+Step 1
+    │
+    └── FAILED
+            │
+            ▼
+          Step 2
+            │
+            └── COMPLETED
+                    │
+                    ▼
+                Job FAILED
+```
+
+```text
+시나리오 2. 사용자 정의 ExitStatus 적용
+
+Step 1
+    │
+    └── FAILED
+            │
+            ▼
+          Step 2
+            │
+            └── PASS
+                  │
+                  ▼
+              Job STOPPED
+```
+
+```text
+시나리오 3. 사용자 정의 ExitStatus로 다음 Step 실행
+
+Step 1
+    │
+    └── FAILED
+            │
+            ▼
+          Step 2
+            │
+            └── PASS
+                  │
+                  ▼
+                Step 3
+                  │
+                  ▼
+              Job COMPLETED
+```
+
+여기서 Step 1은 실제 예외를 발생시키지 않는다.
+
+ExitStatus만 FAILED로 설정한다.
+
+따라서 Step 1의 BatchStatus는 COMPLETED로 유지된다.
+
+---
+
+### 개발 환경
+
+이번 예제는 다음 환경을 기준으로 작성한다.
+
+| 항목 | 기술 |
+|---|---|
+| Java | Java 17 |
+| Spring Boot | Spring Boot 3.4.13 |
+| Spring Batch | Spring Batch 5.2.4 |
+| Database | H2 |
+| Build Tool | Maven |
+| Job 구현체 | FlowJob |
+| Step 구현체 | TaskletStep |
+
+---
+
+### Maven 의존성 설정
+
+`pom.xml`
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="
+             http://maven.apache.org/POM/4.0.0
+             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.4.13</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.example</groupId>
+    <artifactId>spring-batch-custom-exit</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+
+    <properties>
+        <java.version>17</java.version>
+        <spring-batch.version>5.2.4</spring-batch.version>
+    </properties>
+
+    <dependencies>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-batch</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>
+```
+
+Spring Batch와 H2 데이터베이스를 사용한다.
+
+이번에는 사용자 정의 ExitStatus와 JobExecution의 상태를 확인하는 것이 목적이므로 인메모리 H2를 사용한다.
+
+---
+
+### application.yml 설정
+
+`src/main/resources/application.yml`
+
+```yaml
+spring:
+  application:
+    name: spring-batch-custom-exit
+
+  main:
+    web-application-type: none
+
+  datasource:
+    url: jdbc:h2:mem:customExitDb;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+  batch:
+    job:
+      enabled: true
+      name: ${JOB_NAME:baselineJob}
+
+    jdbc:
+      initialize-schema: always
+
+logging:
+  level:
+    org.springframework.batch: INFO
+    com.example.batch: INFO
+```
+
+이번에는 세 개의 Job을 등록한다.
+
+따라서 환경변수 `JOB_NAME`으로 실행할 Job을 선택한다.
+
+기본 실행 Job은 baselineJob이다.
+
+---
+
+### Spring Boot 애플리케이션 구성
+
+`BatchApplication.java`
+
+```java
+package com.example.batch;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class BatchApplication {
+
+    public static void main(String[] args) {
+
+        SpringApplication.run(
+                BatchApplication.class,
+                args
+        );
+    }
+}
+```
+
+---
+
+### PassCheckingListener 구현
+
+먼저 사용자 정의 ExitStatus를 생성하는 Listener를 구현한다.
+
+`PassCheckingListener.java`
+
+```java
+package com.example.batch;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.ExitStatus;
+import org.springframework.batch.core.StepExecution;
+import org.springframework.batch.core.StepExecutionListener;
+
+public class PassCheckingListener
+        implements StepExecutionListener {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(
+                    PassCheckingListener.class
+            );
+
+    @Override
+    public ExitStatus afterStep(
+            StepExecution stepExecution
+    ) {
+
+        BatchStatus batchStatus =
+                stepExecution.getStatus();
+
+        String currentExitCode =
+                stepExecution
+                        .getExitStatus()
+                        .getExitCode();
+
+        log.info(
+                "[PassCheckingListener] BatchStatus={}",
+                batchStatus
+        );
+
+        log.info(
+                "[PassCheckingListener] ExitStatus={}",
+                currentExitCode
+        );
+
+        // 실제 실행이 정상 완료되지 않았다면
+        // 사용자 정의 ExitStatus를 적용하지 않는다.
+
+        if (batchStatus != BatchStatus.COMPLETED) {
+
+            return null;
+        }
+
+        // 기존 종료 코드가 COMPLETED인 경우에만
+        // PASS로 변경한다.
+
+        if (!ExitStatus.COMPLETED
+                .getExitCode()
+                .equals(currentExitCode)) {
+
+            return null;
+        }
+
+        log.info(
+                "[PassCheckingListener] PASS 상태 생성"
+        );
+
+        return new ExitStatus("PASS");
+    }
+}
+```
+
+이 Listener는 afterStep()에서 현재 StepExecution을 확인한다.
+
+Step이 정상적으로 완료되었고 종료 코드 역시 COMPLETED라면 PASS를 반환한다.
+
+반면 실제 실행에 실패했다면 null을 반환한다.
+
+따라서 기존 실패 상태가 사용자 정의 코드로 변경되는 것을 방지한다.
+
+---
+
+### CustomExitStatusConfiguration 전체 코드
+
+이제 세 개의 FlowJob과 각 Step을 구성한다.
+
+`CustomExitStatusConfiguration.java`
+
+```java
+package com.example.batch;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.batch.core.ExitStatus;
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.Step;
+
+import org.springframework.batch.core.job.builder.JobBuilder;
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.step.builder.StepBuilder;
+
+import org.springframework.batch.repeat.RepeatStatus;
+
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import org.springframework.transaction.PlatformTransactionManager;
+
+@Configuration
+public class CustomExitStatusConfiguration {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(
+                    CustomExitStatusConfiguration.class
+            );
+
+    // ---------------------------------------------
+    // 1. Listener가 없는 Job
+    // ---------------------------------------------
+
+    @Bean
+    public Job baselineJob(
+            JobRepository jobRepository,
+            @Qualifier("firstStep") Step firstStep,
+            @Qualifier("plainStep") Step plainStep
+    ) {
+
+        return new JobBuilder(
+                "baselineJob",
+                jobRepository
+        )
+                .start(firstStep)
+                    .on("FAILED").to(plainStep)
+                    .on("PASS").stop()
+                .end()
+                .build();
+    }
+
+    // ---------------------------------------------
+    // 2. 사용자 정의 ExitStatus 적용 후 중단
+    // ---------------------------------------------
+
+    @Bean
+    public Job customPassJob(
+            JobRepository jobRepository,
+            @Qualifier("firstStep") Step firstStep,
+            @Qualifier("checkedStep") Step checkedStep
+    ) {
+
+        return new JobBuilder(
+                "customPassJob",
+                jobRepository
+        )
+                .start(firstStep)
+                    .on("FAILED").to(checkedStep)
+                    .on("PASS").stop()
+                .end()
+                .build();
+    }
+
+    // ---------------------------------------------
+    // 3. 사용자 정의 ExitStatus 적용 후 다음 Step
+    // ---------------------------------------------
+
+    @Bean
+    public Job customRouteJob(
+            JobRepository jobRepository,
+            @Qualifier("firstStep") Step firstStep,
+            @Qualifier("checkedStep") Step checkedStep,
+            @Qualifier("routeStep") Step routeStep
+    ) {
+
+        return new JobBuilder(
+                "customRouteJob",
+                jobRepository
+        )
+                .start(firstStep)
+                    .on("FAILED").to(checkedStep)
+                    .on("PASS").to(routeStep)
+                .end()
+                .build();
+    }
+
+    // ---------------------------------------------
+    // 4. 첫 번째 Step
+    // ---------------------------------------------
+
+    @Bean
+    public Step firstStep(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+
+        return new StepBuilder(
+                "firstStep",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    log.info("[firstStep] 실행");
+
+                    // 실제 예외는 발생시키지 않는다.
+                    // 종료 코드만 FAILED로 설정한다.
+
+                    contribution.setExitStatus(
+                            ExitStatus.FAILED
+                    );
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+
+    // ---------------------------------------------
+    // 5. Listener가 없는 Step
+    // ---------------------------------------------
+
+    @Bean
+    public Step plainStep(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+
+        return new StepBuilder(
+                "plainStep",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    log.info("[plainStep] 정상 실행");
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+
+    // ---------------------------------------------
+    // 6. Listener가 있는 Step
+    // ---------------------------------------------
+
+    @Bean
+    public Step checkedStep(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+
+        return new StepBuilder(
+                "checkedStep",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    log.info("[checkedStep] 정상 실행");
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .listener(new PassCheckingListener())
+                .build();
+    }
+
+    // ---------------------------------------------
+    // 7. PASS 이후 실행하는 Step
+    // ---------------------------------------------
+
+    @Bean
+    public Step routeStep(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+
+        return new StepBuilder(
+                "routeStep",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    log.info(
+                            "[routeStep] PASS 조건으로 실행"
+                    );
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+}
+```
+
+이 코드에서는 총 세 개의 Job을 정의한다.
+
+각 Job은 서로 다른 종료 흐름을 가진다.
+
+| Job | Listener | PASS 처리 | 예상 Job 상태 |
+|---|---|---|---|
+| baselineJob | 없음 | PASS가 생성되지 않음 | FAILED |
+| customPassJob | 있음 | PASS → stop() | STOPPED |
+| customRouteJob | 있음 | PASS → routeStep | COMPLETED |
+
+세 Job의 실행 결과를 비교하면 사용자 정의 ExitStatus가 FlowJob에 미치는 영향을 확인할 수 있다.
+
+---
+
+### 첫 번째 실행: 사용자 정의 ExitStatus가 없는 경우
+
+먼저 프로젝트를 빌드한다.
+
+```bash
+mvn clean package
+```
+
+정상적으로 빌드되면 다음과 유사한 결과가 출력된다.
+
+```text
+BUILD SUCCESS
+```
+
+이제 baselineJob을 실행한다.
+
+```bash
+JOB_NAME=baselineJob \
+java -jar target/spring-batch-custom-exit-0.0.1-SNAPSHOT.jar \
+  requestId=baseline-001
+```
+
+이 Job은 다음과 같은 구조를 가진다.
+
+```text
+baselineJob
+    │
+    ▼
+firstStep
+    │
+    └── FAILED
+            │
+            ▼
+          plainStep
+            │
+            └── COMPLETED
+                    │
+                    ▼
+                Job FAILED
+```
+
+실행 로그는 다음과 유사하다.
+
+```text
+[firstStep] 실행
+
+[plainStep] 정상 실행
+```
+
+firstStep은 실제 예외 없이 종료되었으므로 BatchStatus가 COMPLETED다.
+
+하지만 ExitStatus는 FAILED다.
+
+따라서 다음 Transition이 선택된다.
+
+```java
+.on("FAILED").to(plainStep)
+```
+
+이후 plainStep이 실행된다.
+
+plainStep은 정상적으로 완료된다.
+
+하지만 별도의 Listener가 없으므로 ExitStatus는 COMPLETED다.
+
+따라서 PASS 조건에는 매칭되지 않는다.
+
+```java
+.on("PASS").stop()
+```
+
+결국 기본 실패 Transition이 선택되어 Job은 FAILED로 종료된다.
+
+#### 실행 결과
+
+| 실행 대상 | BatchStatus | ExitStatus |
+|---|---|---|
+| firstStep | COMPLETED | FAILED |
+| plainStep | COMPLETED | COMPLETED |
+| baselineJob | FAILED | FAILED |
+
+여기서 가장 중요한 사실은 다음과 같다.
+
+**Job은 FAILED지만 실제 실행된 두 Step은 모두 COMPLETED 상태다.**
+
+이는 Step의 실행 실패 때문에 Job이 실패한 것이 아니라, Flow의 최종 종료 규칙에 의해 Job이 FAILED가 되었기 때문이다.
+
+---
+
+### 두 번째 실행: 사용자 정의 ExitStatus를 적용한 경우
+
+이번에는 customPassJob을 실행한다.
+
+```bash
+JOB_NAME=customPassJob \
+java -jar target/spring-batch-custom-exit-0.0.1-SNAPSHOT.jar \
+  requestId=pass-001
+```
+
+이 Job은 다음과 같은 구조다.
+
+```text
+customPassJob
+    │
+    ▼
+firstStep
+    │
+    └── FAILED
+            │
+            ▼
+          checkedStep
+            │
+            └── PASS
+                  │
+                  ▼
+              Job STOPPED
+```
+
+firstStep은 ExitStatus.FAILED로 종료된다.
+
+따라서 checkedStep이 실행된다.
+
+checkedStep은 정상적으로 완료된다.
+
+하지만 이번에는 PassCheckingListener가 등록되어 있다.
+
+따라서 Step 실행 이후 afterStep()이 호출된다.
+
+#### 예상 실행 로그
+
+```text
+[firstStep] 실행
+
+[checkedStep] 정상 실행
+
+[PassCheckingListener] BatchStatus=COMPLETED
+
+[PassCheckingListener] ExitStatus=COMPLETED
+
+[PassCheckingListener] PASS 상태 생성
+```
+
+checkedStep의 기본 종료 코드는 COMPLETED다.
+
+하지만 afterStep()에서 PASS를 반환한다.
+
+따라서 AbstractStep은 기존 COMPLETED와 PASS를 결합한다.
+
+최종 ExitStatus는 PASS가 된다.
+
+```text
+checkedStep
+
+BatchStatus = COMPLETED
+
+ExitStatus = PASS
+```
+
+이후 SimpleFlow는 PASS에 해당하는 Transition을 선택한다.
+
+```java
+.on("PASS").stop()
+```
+
+따라서 Job은 STOPPED 상태로 종료된다.
+
+#### 실행 결과
+
+| 실행 대상 | BatchStatus | ExitStatus |
+|---|---|---|
+| firstStep | COMPLETED | FAILED |
+| checkedStep | COMPLETED | PASS |
+| customPassJob | STOPPED | STOPPED |
+
+첫 번째 실행과 비교하면 차이가 명확하다.
+
+plainStep을 실행했을 때는 사용자 정의 종료 코드가 없었으므로 Job이 FAILED였다.
+
+반면 checkedStep에서는 PASS가 생성되었으므로 stop() Transition이 정상적으로 선택되었다.
+
+따라서 Job이 STOPPED로 종료되었다.
+
+---
+
+### 세 번째 실행: PASS를 이용해 다음 Step 실행하기
+
+이번에는 사용자 정의 ExitStatus를 이용해 다른 Step으로 이동해보자.
+
+customRouteJob은 다음과 같이 구성되어 있다.
+
+```java
+.start(firstStep)
+    .on("FAILED").to(checkedStep)
+    .on("PASS").to(routeStep)
+.end()
+.build();
+```
+
+이번에는 PASS가 생성되면 Job을 중단하지 않는다.
+
+대신 routeStep을 실행한다.
+
+실행 명령어는 다음과 같다.
+
+```bash
+JOB_NAME=customRouteJob \
+java -jar target/spring-batch-custom-exit-0.0.1-SNAPSHOT.jar \
+  requestId=route-001
+```
+
+실행 흐름은 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["customRouteJob"]
+    B["firstStep"]
+    C["checkedStep"]
+    D["PassCheckingListener"]
+    E["ExitStatus PASS"]
+    F["routeStep"]
+    G["Job COMPLETED"]
+
+    A --> B
+    B -->|FAILED| C
+    C --> D
+    D --> E
+    E -->|PASS| F
+    F --> G
+```
+
+예상 실행 로그는 다음과 같다.
+
+```text
+[firstStep] 실행
+
+[checkedStep] 정상 실행
+
+[PassCheckingListener] BatchStatus=COMPLETED
+
+[PassCheckingListener] ExitStatus=COMPLETED
+
+[PassCheckingListener] PASS 상태 생성
+
+[routeStep] PASS 조건으로 실행
+```
+
+이 경우 checkedStep은 PASS로 종료된다.
+
+따라서 routeStep이 실행된다.
+
+routeStep도 정상적으로 완료되므로 전체 Job은 COMPLETED 상태가 된다.
+
+#### 실행 결과
+
+| 실행 대상 | BatchStatus | ExitStatus |
+|---|---|---|
+| firstStep | COMPLETED | FAILED |
+| checkedStep | COMPLETED | PASS |
+| routeStep | COMPLETED | COMPLETED |
+| customRouteJob | COMPLETED | COMPLETED |
+
+여기서 중요한 사실은 다음과 같다.
+
+**checkedStep의 사용자 정의 종료 코드 PASS는 다음 Step을 결정하는 데 사용되지만, 최종 Job의 ExitStatus가 반드시 PASS로 유지되는 것은 아니다.**
+
+FlowJob의 최종 상태는 전체 Flow의 종료 결과에 따라 결정되기 때문이다.
+
+따라서 checkedStep은 PASS로 종료되었지만 전체 Job은 COMPLETED로 종료될 수 있다.
+
+---
+
+### 세 가지 실행 결과 비교
+
+지금까지 살펴본 결과를 비교해보자.
+
+| 시나리오 | 첫 번째 Step | 두 번째 Step | 후속 Step | Job |
+|---|---|---|---|---|
+| 사용자 정의 코드 없음 | COMPLETED / FAILED | COMPLETED / COMPLETED | 없음 | FAILED |
+| PASS → stop() | COMPLETED / FAILED | COMPLETED / PASS | 없음 | STOPPED |
+| PASS → 다음 Step | COMPLETED / FAILED | COMPLETED / PASS | COMPLETED | COMPLETED |
+
+각 셀의 Step 상태는 `BatchStatus / ExitStatus` 순서다.
+
+여기서 중요한 차이는 두 번째 Step의 ExitStatus다.
+
+첫 번째 시나리오에서는 COMPLETED다.
+
+두 번째와 세 번째 시나리오에서는 PASS다.
+
+이러한 차이로 인해 최종 Job의 실행 상태가 달라진다.
+
+결국 **사용자 정의 ExitStatus는 FlowJob의 실행 경로를 변경할 수 있는 중요한 입력값**이다.
+
+---
+
+### 데이터베이스에서 실행 결과 확인하기
+
+Spring Batch는 Job과 Step의 실행 상태를 메타데이터 테이블에 저장한다.
+
+대표적으로 다음 테이블을 사용한다.
+
+| 테이블 | 역할 |
+|---|---|
+| BATCH_JOB_INSTANCE | JobInstance 관리 |
+| BATCH_JOB_EXECUTION | JobExecution 관리 |
+| BATCH_STEP_EXECUTION | StepExecution 관리 |
+| BATCH_JOB_EXECUTION_PARAMS | JobParameters 관리 |
+
+특히 사용자 정의 ExitStatus를 확인할 때는 다음 두 컬럼이 중요하다.
+
+```text
+STATUS
+
+EXIT_CODE
+```
+
+STATUS는 BatchStatus를 나타낸다.
+
+EXIT_CODE는 ExitStatus의 종료 코드를 나타낸다.
+
+#### JobExecution 조회
+
+```sql
+SELECT
+    ji.JOB_NAME,
+    je.JOB_EXECUTION_ID,
+    je.STATUS,
+    je.EXIT_CODE,
+    je.EXIT_MESSAGE
+FROM BATCH_JOB_INSTANCE ji
+JOIN BATCH_JOB_EXECUTION je
+    ON ji.JOB_INSTANCE_ID = je.JOB_INSTANCE_ID
+ORDER BY
+    je.JOB_EXECUTION_ID;
+```
+
+예상 결과는 다음과 같다.
+
+| JOB_NAME | STATUS | EXIT_CODE |
+|---|---|---|
+| baselineJob | FAILED | FAILED |
+| customPassJob | STOPPED | STOPPED |
+| customRouteJob | COMPLETED | COMPLETED |
+
+각 Job은 서로 다른 Transition을 선택했으므로 최종 상태도 다르다.
+
+#### StepExecution 조회
+
+```sql
+SELECT
+    ji.JOB_NAME,
+    se.STEP_NAME,
+    se.STATUS,
+    se.EXIT_CODE,
+    se.EXIT_MESSAGE
+FROM BATCH_JOB_INSTANCE ji
+JOIN BATCH_JOB_EXECUTION je
+    ON ji.JOB_INSTANCE_ID = je.JOB_INSTANCE_ID
+JOIN BATCH_STEP_EXECUTION se
+    ON je.JOB_EXECUTION_ID = se.JOB_EXECUTION_ID
+ORDER BY
+    je.JOB_EXECUTION_ID,
+    se.STEP_EXECUTION_ID;
+```
+
+예상 결과는 다음과 같다.
+
+| JOB_NAME | STEP_NAME | STATUS | EXIT_CODE |
+|---|---|---|---|
+| baselineJob | firstStep | COMPLETED | FAILED |
+| baselineJob | plainStep | COMPLETED | COMPLETED |
+| customPassJob | firstStep | COMPLETED | FAILED |
+| customPassJob | checkedStep | COMPLETED | PASS |
+| customRouteJob | firstStep | COMPLETED | FAILED |
+| customRouteJob | checkedStep | COMPLETED | PASS |
+| customRouteJob | routeStep | COMPLETED | COMPLETED |
+
+여기서 확인해야 할 것은 checkedStep의 상태다.
+
+```text
+STATUS = COMPLETED
+
+EXIT_CODE = PASS
+```
+
+사용자 정의 ExitStatus가 정상적으로 반영되었다는 사실을 확인할 수 있다.
+
+또한 customPassJob의 JobExecution은 STOPPED 상태다.
+
+따라서 StepExecution의 종료 코드와 JobExecution의 최종 종료 상태가 서로 다르게 관리된다는 점도 확인할 수 있다.
+
+---
+
+### JUnit으로 사용자 정의 ExitStatus 검증하기
+
+이번에는 실제 JobLauncher를 이용해 세 가지 시나리오를 검증해보자.
+
+검증할 내용은 다음과 같다.
+
+첫 번째는 Listener가 없는 경우 Job이 FAILED로 종료되는지 확인한다.
+
+두 번째는 Listener가 PASS를 반환하는지 확인한다.
+
+세 번째는 PASS 조건에서 Job이 STOPPED로 종료되는지 확인한다.
+
+네 번째는 PASS 조건에서 다른 Step을 실행할 수 있는지 확인한다.
+
+`CustomExitStatusTest.java`
+
+```java
+package com.example.batch;
+
+import java.util.Set;
+import java.util.UUID;
+import java.util.stream.Collectors;
+
+import org.junit.jupiter.api.Test;
+
+import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobParameters;
+import org.springframework.batch.core.JobParametersBuilder;
+import org.springframework.batch.core.StepExecution;
+
+import org.springframework.batch.core.launch.JobLauncher;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+
+import org.springframework.boot.test.context.SpringBootTest;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+@SpringBootTest(properties = {
+        "spring.batch.job.enabled=false"
+})
+class CustomExitStatusTest {
+
+    @Autowired
+    private JobLauncher jobLauncher;
+
+    @Autowired
+    @Qualifier("baselineJob")
+    private Job baselineJob;
+
+    @Autowired
+    @Qualifier("customPassJob")
+    private Job customPassJob;
+
+    @Autowired
+    @Qualifier("customRouteJob")
+    private Job customRouteJob;
+
+    private JobParameters parameters() {
+
+        return new JobParametersBuilder()
+                .addString(
+                        "requestId",
+                        UUID.randomUUID().toString()
+                )
+                .toJobParameters();
+    }
+
+    private StepExecution findStep(
+            JobExecution execution,
+            String stepName
+    ) {
+
+        return execution
+                .getStepExecutions()
+                .stream()
+                .filter(
+                        step -> step.getStepName()
+                                .equals(stepName)
+                )
+                .findFirst()
+                .orElseThrow();
+    }
+
+    private Set<String> stepNames(
+            JobExecution execution
+    ) {
+
+        return execution
+                .getStepExecutions()
+                .stream()
+                .map(StepExecution::getStepName)
+                .collect(Collectors.toSet());
+    }
+
+    // -------------------------------------------
+    // 1. 사용자 정의 ExitStatus 없음
+    // -------------------------------------------
+
+    @Test
+    void 사용자정의_ExitStatus가_없으면_Job은_FAILED로_종료된다()
+            throws Exception {
+
+        JobExecution execution =
+                jobLauncher.run(
+                        baselineJob,
+                        parameters()
+                );
+
+        assertEquals(
+                BatchStatus.FAILED,
+                execution.getStatus()
+        );
+
+        StepExecution plainStep =
+                findStep(
+                        execution,
+                        "plainStep"
+                );
+
+        assertEquals(
+                BatchStatus.COMPLETED,
+                plainStep.getStatus()
+        );
+
+        assertEquals(
+                "COMPLETED",
+                plainStep
+                        .getExitStatus()
+                        .getExitCode()
+        );
+    }
+
+    // -------------------------------------------
+    // 2. 사용자 정의 ExitStatus 적용
+    // -------------------------------------------
+
+    @Test
+    void Listener가_PASS를_반환한다()
+            throws Exception {
+
+        JobExecution execution =
+                jobLauncher.run(
+                        customPassJob,
+                        parameters()
+                );
+
+        StepExecution checkedStep =
+                findStep(
+                        execution,
+                        "checkedStep"
+                );
+
+        assertEquals(
+                BatchStatus.COMPLETED,
+                checkedStep.getStatus()
+        );
+
+        assertEquals(
+                "PASS",
+                checkedStep
+                        .getExitStatus()
+                        .getExitCode()
+        );
+    }
+
+    // -------------------------------------------
+    // 3. PASS → STOPPED
+    // -------------------------------------------
+
+    @Test
+    void PASS_조건에서_Job이_STOPPED로_종료된다()
+            throws Exception {
+
+        JobExecution execution =
+                jobLauncher.run(
+                        customPassJob,
+                        parameters()
+                );
+
+        assertEquals(
+                BatchStatus.STOPPED,
+                execution.getStatus()
+        );
+
+        assertEquals(
+                "STOPPED",
+                execution
+                        .getExitStatus()
+                        .getExitCode()
+        );
+
+        assertEquals(
+                Set.of(
+                        "firstStep",
+                        "checkedStep"
+                ),
+                stepNames(execution)
+        );
+    }
+
+    // -------------------------------------------
+    // 4. PASS → 다음 Step
+    // -------------------------------------------
+
+    @Test
+    void PASS_조건에서_다음_Step을_실행한다()
+            throws Exception {
+
+        JobExecution execution =
+                jobLauncher.run(
+                        customRouteJob,
+                        parameters()
+                );
+
+        assertEquals(
+                BatchStatus.COMPLETED,
+                execution.getStatus()
+        );
+
+        assertEquals(
+                Set.of(
+                        "firstStep",
+                        "checkedStep",
+                        "routeStep"
+                ),
+                stepNames(execution)
+        );
+
+        assertEquals(
+                "PASS",
+                findStep(
+                        execution,
+                        "checkedStep"
+                )
+                        .getExitStatus()
+                        .getExitCode()
+        );
+    }
+}
+```
+
+이 테스트에서는 실행할 때마다 새로운 requestId를 생성한다.
+
+따라서 테스트끼리 동일한 JobInstance를 공유하지 않는다.
+
+#### 첫 번째 테스트
+
+첫 번째 테스트에서는 사용자 정의 ExitStatus가 적용되지 않는다.
+
+따라서 plainStep은 COMPLETED로 종료된다.
+
+하지만 PASS 조건에 해당하지 않으므로 Job은 FAILED로 종료된다.
+
+#### 두 번째 테스트
+
+두 번째 테스트에서는 PassCheckingListener가 등록된다.
+
+따라서 checkedStep의 ExitStatus가 PASS로 변경되는지 확인한다.
+
+#### 세 번째 테스트
+
+세 번째 테스트에서는 PASS 조건에 따라 stop() Transition이 실행되는지 확인한다.
+
+따라서 JobExecution의 BatchStatus와 ExitStatus가 STOPPED인지 확인한다.
+
+#### 네 번째 테스트
+
+네 번째 테스트에서는 PASS 조건에서 routeStep이 실행되는지 확인한다.
+
+따라서 사용자 정의 종료 코드가 FlowJob의 실행 경로를 변경할 수 있다는 사실을 검증한다.
+
+#### 테스트 실행
+
+```bash
+mvn test
+```
+
+테스트가 모두 성공하면 다음과 유사한 결과를 확인할 수 있다.
+
+```text
+Tests run: 4
+
+Failures: 0
+
+Errors: 0
+
+BUILD SUCCESS
+```
+
+위 결과는 예상되는 성공 형태이며 실제 실행 환경에 따라 로그는 달라질 수 있다.
+
+---
+
+### 사용자 정의 ExitStatus를 직접 설정하는 방법과 Listener의 차이
+
+사용자 정의 ExitStatus는 반드시 StepExecutionListener에서만 생성할 수 있는 것은 아니다.
+
+대표적으로 두 가지 방법이 있다.
+
+첫 번째는 Tasklet 내부에서 직접 ExitStatus를 설정하는 것이다.
+
+두 번째는 StepExecutionListener의 afterStep()에서 ExitStatus를 반환하는 것이다.
+
+#### 방법 1. Tasklet 내부에서 직접 설정
+
+```java
+.tasklet((contribution, chunkContext) -> {
+
+    contribution.setExitStatus(
+            new ExitStatus("PASS")
+    );
+
+    return RepeatStatus.FINISHED;
+
+}, transactionManager)
+```
+
+이 방식은 비즈니스 로직을 수행하는 도중 결과를 알고 있는 경우에 사용할 수 있다.
+
+예를 들어 데이터 검증 결과가 이미 PASS로 결정되었다면 Tasklet 내부에서 직접 종료 코드를 설정할 수 있다.
+
+#### 방법 2. StepExecutionListener에서 설정
+
+```java
+@Override
+public ExitStatus afterStep(
+        StepExecution stepExecution
+) {
+
+    if (stepExecution.getStatus()
+            == BatchStatus.COMPLETED) {
+
+        return new ExitStatus("PASS");
+    }
+
+    return null;
+}
+```
+
+이 방식은 Step의 전체 실행 결과를 확인한 뒤 최종 종료 코드를 결정할 때 적합하다.
+
+예를 들어 다음과 같은 정보를 확인할 수 있다.
+
+```java
+stepExecution.getReadCount();
+```
+
+```java
+stepExecution.getWriteCount();
+```
+
+```java
+stepExecution.getSkipCount();
+```
+
+이러한 값을 이용해 사용자 정의 종료 코드를 결정할 수 있다.
+
+#### 두 방식 비교
+
+| 구분 | Tasklet 내부 설정 | StepExecutionListener |
+|---|---|---|
+| 적용 시점 | 비즈니스 로직 수행 중 | Step 처리 이후 |
+| 주요 API | StepContribution.setExitStatus() | afterStep() |
+| 장점 | 비즈니스 결과를 직접 표현 | 최종 실행 결과 기반 판단 |
+| 활용 | 검증 결과, 업무 상태 | SkipCount, 실패 여부, 최종 집계 |
+| 책임 | 비즈니스 로직과 연결 | 종료 상태 정책 분리 |
+
+두 방식 중 어떤 방법이 항상 우수한 것은 아니다.
+
+비즈니스 로직에서 직접 결정할 수 있는 결과라면 Tasklet 내부 설정이 단순할 수 있다.
+
+반면 Step 전체의 실행 결과를 종합해야 한다면 StepExecutionListener가 더 적합할 수 있다.
+
+---
+
+### 실무에서의 활용
+
+사용자 정의 ExitStatus를 실제 운영 환경에 적용할 때는 단순히 새로운 문자열을 생성하는 것보다 비즈니스 상태와 실행 상태를 어떻게 구분할 것인지가 중요하다.
+
+다음과 같은 설계 방법을 고려할 수 있다.
+
+#### 1. 비즈니스 상태와 시스템 오류를 분리한다
+
+데이터 검증 결과가 실패했다고 해서 반드시 시스템 오류는 아니다.
+
+예를 들어 정산 금액이 예상 값과 다르다면 이는 비즈니스 검증 결과일 수 있다.
+
+이때 BatchStatus는 COMPLETED로 유지하고 ExitStatus를 REVIEW_REQUIRED로 설정할 수 있다.
+
+반면 데이터베이스 연결 오류로 검증 자체를 완료하지 못했다면 실제 실패로 처리해야 한다.
+
+#### 2. ExitStatus를 문자열 상수로 관리한다
+
+사용자 정의 ExitStatus는 문자열 기반으로 동작한다.
+
+따라서 오타가 발생하면 Transition이 매칭되지 않을 수 있다.
+
+예를 들어 다음과 같이 상수로 관리할 수 있다.
+
+```java
+public final class BatchExitCodes {
+
+    public static final String PASS = "PASS";
+
+    public static final String REVIEW_REQUIRED =
+            "REVIEW_REQUIRED";
+
+    public static final String NO_DATA = "NO_DATA";
+
+    private BatchExitCodes() {
+    }
+}
+```
+
+이후 다음과 같이 사용할 수 있다.
+
+```java
+new ExitStatus(BatchExitCodes.PASS);
+```
+
+Transition에서도 동일한 상수를 사용할 수 있다.
+
+```java
+.on(BatchExitCodes.PASS).to(nextStep)
+```
+
+이렇게 하면 종료 코드의 오타를 줄일 수 있다.
+
+#### 3. 실패 상태를 사용자 정의 코드로 덮어쓰지 않는다
+
+ExitStatus.and()에서 사용자 정의 종료 코드는 높은 우선순위를 가진다.
+
+따라서 기존 ExitStatus가 FAILED여도 PASS 같은 사용자 정의 코드가 선택될 수 있다.
+
+이 때문에 afterStep()에서는 BatchStatus와 ExitStatus를 모두 확인하는 것이 좋다.
+
+특히 결제와 정산 시스템에서는 실제 장애가 성공 상태처럼 표현되지 않도록 주의해야 한다.
+
+#### 4. StepExecutionListener의 책임을 명확하게 분리한다
+
+Listener에 모든 비즈니스 로직을 구현하는 것은 적절하지 않을 수 있다.
+
+일반적으로 실제 데이터 처리와 검증은 Tasklet이나 서비스 계층에서 수행한다.
+
+Listener는 실행 결과를 확인하고 종료 코드를 결정하는 역할에 집중하는 것이 좋다.
+
+#### 5. 사용자 정의 ExitStatus를 FlowJob의 분기 조건으로 사용한다
+
+사용자 정의 ExitStatus는 FlowJob에서 특히 유용하다.
+
+예를 들어 다음과 같이 구성할 수 있다.
+
+```java
+.start(validationStep)
+    .on("PASS").to(settlementStep)
+
+.from(validationStep)
+    .on("REVIEW_REQUIRED").to(reviewStep)
+
+.from(validationStep)
+    .on("FAILED").fail()
+
+.end()
+.build();
+```
+
+이렇게 하면 비즈니스 결과에 따라 서로 다른 실행 경로를 구성할 수 있다.
+
+#### 6. 예상하지 못한 종료 코드에 대한 기본 경로를 정의한다
+
+사용자 정의 ExitStatus를 사용하는 경우에는 예상하지 못한 종료 코드가 반환될 수 있다.
+
+따라서 기본 처리 경로를 정의하는 것이 좋다.
+
+예를 들어 다음과 같다.
+
+```java
+.start(validationStep)
+    .on("PASS").to(settlementStep)
+
+.from(validationStep)
+    .on("FAILED").fail()
+
+.from(validationStep)
+    .on("*").to(reviewStep)
+
+.end()
+.build();
+```
+
+다만 와일드카드는 모든 종료 코드에 매칭할 수 있으므로 실제 업무 요구사항에 맞게 사용해야 한다.
+
+특히 STOPPED나 UNKNOWN 같은 상태를 일반적인 검토 대상으로 처리하는 것이 적절한지 확인해야 한다.
+
+#### 7. JobExecution과 StepExecution의 종료 코드를 구분한다
+
+사용자 정의 ExitStatus는 StepExecution에 저장된다.
+
+하지만 FlowJob의 최종 ExitStatus는 별도로 결정된다.
+
+따라서 StepExecution이 PASS로 종료되었다고 해서 JobExecution도 PASS로 종료되는 것은 아니다.
+
+실제 운영 모니터링에서는 두 실행 객체의 종료 코드를 함께 확인해야 한다.
+
+#### 8. afterStep()에서 예외를 이용해 실패 처리하지 않는다
+
+Spring Batch의 StepExecutionListener.afterStep()에서 발생한 예외는 일반적으로 로그로 기록되며, 그 예외만으로 Step의 실패 상태가 변경되도록 설계된 것은 아니다.
+
+따라서 afterStep()에서 필수 비즈니스 작업을 수행하다가 예외가 발생했을 때 Job이 자동으로 FAILED가 될 것이라고 가정해서는 안 된다.
+
+실패가 반드시 Job에 반영되어야 하는 작업이라면 Tasklet이나 별도의 Step에서 수행하도록 설계하는 것이 적절하다.
+
+#### 9. 재시작 정책을 함께 고려한다
+
+사용자 정의 ExitStatus가 PASS이면서 BatchStatus가 COMPLETED인 경우를 생각해보자.
+
+이 Step은 실제로 정상 완료되었다.
+
+따라서 Job이 실패한 후 재시작하더라도 해당 Step은 일반적으로 다시 실행되지 않는다.
+
+반면 같은 사용자 정의 ExitStatus를 가진 Step이라도 BatchStatus가 FAILED라면 재시작 정책이 달라질 수 있다.
+
+따라서 종료 코드만으로 재시작 가능 여부를 판단해서는 안 된다.
+
+#### 10. 대량 데이터 배치의 SkipCount를 활용한다
+
+Chunk 기반 배치에서는 일부 데이터가 처리되지 않고 건너뛰어질 수 있다.
+
+이때 SkipCount를 기준으로 사용자 정의 ExitStatus를 생성할 수 있다.
+
+예를 들어 다음과 같다.
+
+```java
+@Override
+public ExitStatus afterStep(
+        StepExecution stepExecution
+) {
+
+    if (stepExecution.getStatus()
+            != BatchStatus.COMPLETED) {
+
+        return null;
+    }
+
+    if (stepExecution.getSkipCount() > 0) {
+
+        return new ExitStatus(
+                "COMPLETED_WITH_SKIPS"
+        );
+    }
+
+    return null;
+}
+```
+
+이렇게 하면 일부 데이터가 Skip되었지만 Step은 정상 완료된 경우를 구분할 수 있다.
+
+이후 다음과 같이 처리할 수 있다.
+
+```java
+.on("COMPLETED_WITH_SKIPS").to(reportStep)
+```
+
+#### 11. 사용자 정의 종료 코드에 대한 테스트를 작성한다
+
+사용자 정의 ExitStatus는 Transition의 실행 경로를 변경한다.
+
+따라서 단순히 Listener가 PASS를 반환하는지만 확인해서는 충분하지 않다.
+
+실제로 PASS 조건에서 올바른 Step이 실행되는지 확인해야 한다.
+
+또한 PASS가 생성되지 않았을 때의 기본 처리 경로도 검증해야 한다.
+
+#### 12. 운영 모니터링에서 사용자 정의 종료 코드를 활용한다
+
+사용자 정의 ExitStatus는 비즈니스 상태를 표현하는 데 유용하다.
+
+예를 들어 다음과 같은 종료 코드를 생각해보자.
+
+```text
+PASS
+
+REVIEW_REQUIRED
+
+NO_DATA
+
+PARTIAL_SUCCESS
+```
+
+운영 모니터링에서 이러한 상태를 함께 확인하면 단순한 성공·실패보다 상세한 업무 결과를 파악할 수 있다.
+
+다만 JobExecution과 StepExecution의 BatchStatus를 함께 조회해야 실제 실행 실패를 놓치지 않을 수 있다.
+
+---
+
+### 사용자 정의 ExitStatus에서 자주 혼동하는 부분
+
+| 혼동하기 쉬운 내용 | 정확한 이해 |
+|---|---|
+| ExitStatus는 정해진 값만 사용할 수 있다 | 사용자 정의 종료 코드를 생성할 수 있다 |
+| 사용자 정의 ExitStatus는 Enum이다 | ExitStatus는 클래스다 |
+| ExitStatus를 변경하면 BatchStatus도 변경된다 | 두 상태는 독립적으로 관리된다 |
+| afterStep()은 Step 실행 전에 호출된다 | Step 처리 로직 실행 이후 호출된다 |
+| afterStep()은 새로운 ExitStatus를 무조건 덮어쓴다 | ExitStatus.and()로 결합한다 |
+| 사용자 정의 종료 코드는 항상 FAILED보다 낮은 우선순위다 | 일반적인 사용자 정의 코드는 높은 우선순위를 가진다 |
+| null을 반환하면 오류가 발생한다 | 기존 ExitStatus가 유지된다 |
+| Listener가 없으면 Step이 FAILED가 된다 | Step 자체는 COMPLETED일 수 있다 |
+| Transition이 매칭되지 않으면 Step이 FAILED로 변경된다 | Flow가 실패해도 Step 상태는 그대로 유지될 수 있다 |
+| StepExecution이 PASS면 JobExecution도 PASS다 | Flow의 최종 종료 정책에 따라 달라진다 |
+| PASS는 특별한 Spring Batch 기본 상수다 | 개발자가 정의한 사용자 정의 코드다 |
+| afterStep()에서 예외를 던지면 Job이 실패한다 | 해당 예외만으로 실패 처리가 보장되지 않는다 |
+
+---
+
+### 전체 아키텍처 정리
+
+지금까지 살펴본 내용을 하나의 구조로 정리해보자.
+
+```mermaid
+flowchart TD
+    A["FlowJob 실행"]
+
+    B["SimpleFlow"]
+    C["StepState"]
+
+    D["TaskletStep"]
+    E["AbstractStep.execute()"]
+
+    F["beforeStep()"]
+    G["Tasklet.execute()"]
+
+    H["기본 ExitStatus COMPLETED"]
+
+    I["afterStep()"]
+
+    J{"실행 상태 확인"}
+
+    K["ExitStatus PASS 반환"]
+    L["null 반환"]
+
+    M["ExitStatus.and()"]
+
+    N["StepExecution ExitStatus 반영"]
+
+    O["FlowExecutionStatus 생성"]
+
+    P{"Transition 매칭"}
+
+    Q["PASS → 다음 Step"]
+    R["PASS → STOPPED"]
+    S["기본 실패 경로"]
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+
+    E --> F
+    F --> G
+    G --> H
+
+    H --> I
+    I --> J
+
+    J -->|정상 완료| K
+    J -->|그 외| L
+
+    K --> M
+    L --> M
+
+    M --> N
+    N --> O
+    O --> P
+
+    P --> Q
+    P --> R
+    P --> S
+```
+
+이 구조에서 가장 중요한 것은 사용자 정의 ExitStatus가 반영되는 시점이다.
+
+Tasklet이 실행된다.
+
+Tasklet이 정상적으로 완료되면 기본 ExitStatus가 설정된다.
+
+그다음 AbstractStep의 finally 블록에서 afterStep()을 호출한다.
+
+afterStep()에서 새로운 ExitStatus를 반환하면 기존 종료 코드와 결합한다.
+
+이후 StepExecution에 최종 종료 코드가 반영된다.
+
+SimpleFlow는 이 종료 코드를 기준으로 Transition을 선택한다.
+
+따라서 사용자 정의 ExitStatus는 Tasklet의 실제 실행 결과와 FlowJob의 실행 경로를 연결한다.
+
+---
+
+### 정리
+
+Spring Batch의 `ExitStatus`는 Job과 Step의 종료 결과를 표현하는 객체다.
+
+ExitStatus는 Enum이 아닌 클래스이므로 사용자 정의 종료 코드를 생성할 수 있다.
+
+예를 들어 다음과 같다.
+
+```java
+new ExitStatus("PASS");
+```
+
+이렇게 생성한 종료 코드는 StepExecution에 반영할 수 있다.
+
+대표적인 방법은 StepExecutionListener의 afterStep()을 사용하는 것이다.
+
+```java
+@Override
+public ExitStatus afterStep(
+        StepExecution stepExecution
+) {
+
+    return new ExitStatus("PASS");
+}
+```
+
+이렇게 반환한 ExitStatus는 AbstractStep의 finally 블록에서 처리된다.
+
+```java
+exitStatus =
+        exitStatus.and(
+                getCompositeListener()
+                        .afterStep(stepExecution)
+        );
+```
+
+이 과정에서 기존 ExitStatus와 새로운 ExitStatus가 결합된다.
+
+예를 들어 기존 종료 코드가 COMPLETED이고 afterStep()에서 PASS를 반환했다면 최종 ExitStatus는 PASS가 된다.
+
+따라서 StepExecution은 다음과 같은 상태를 가질 수 있다.
+
+```text
+BatchStatus = COMPLETED
+
+ExitStatus = PASS
+```
+
+이후 FlowJob은 PASS라는 종료 코드를 기준으로 Transition을 선택할 수 있다.
+
+```java
+.on("PASS").to(nextStep)
+```
+
+또는 다음과 같이 Job을 중단할 수 있다.
+
+```java
+.on("PASS").stop()
+```
+
+이때 중요한 사실은 사용자 정의 ExitStatus가 없으면 해당 Transition이 선택되지 않는다는 것이다.
+
+특히 Spring Batch 5.2.4의 FlowBuilder는 필요한 기본 종료 Transition을 자동으로 생성할 수 있다.
+
+따라서 사용자 정의 ExitStatus가 없으면 Step 자체는 COMPLETED로 종료되었더라도 Job이 FAILED로 종료될 수 있다.
+
+이때 StepExecution의 BatchStatus가 자동으로 FAILED가 되는 것은 아니다.
+
+Flow의 종료 상태와 Step의 실제 실행 상태는 구분해서 관리되기 때문이다.
+
+또한 사용자 정의 ExitStatus는 기본 ExitStatus보다 높은 우선순위를 가질 수 있으므로, afterStep()에서 무조건 사용자 정의 코드를 반환하는 것은 주의해야 한다.
+
+실제 Step 실행이 FAILED인데 PASS가 반환되면 오류 상태를 잘못 표현할 수 있다.
+
+따라서 현재 BatchStatus와 ExitStatus를 확인한 뒤 사용자 정의 종료 코드를 결정하는 것이 좋다.
+
+이러한 구조를 이용하면 단순한 성공과 실패뿐 아니라 NO_DATA, REVIEW_REQUIRED, PARTIAL_SUCCESS, PASS 등 다양한 비즈니스 결과를 표현할 수 있다.
+
+그리고 FlowJob의 Transition과 연결해 실행 결과에 따른 후속 작업을 구성할 수 있다.
+
+결국 **사용자 정의 ExitStatus는 Step의 실제 실행 상태를 유지하면서 비즈니스 결과를 확장하고, 해당 결과를 FlowJob의 조건부 실행에 반영하는 기능**이다.
+
+#### 한 줄 요약
+
+> Spring Batch에서는 `new ExitStatus("PASS")`와 같이 사용자 정의 종료 코드를 생성할 수 있다. `StepExecutionListener.afterStep()`에서 새로운 ExitStatus를 반환하면 `AbstractStep.execute()`의 finally 블록에서 `ExitStatus.and()`를 통해 기존 종료 코드와 결합된다. 이렇게 결정된 최종 ExitStatus는 StepExecution에 저장되며, FlowJob은 `on("PASS")`와 같은 Transition 조건을 이용해 다음 Step을 실행하거나 Job을 중단할 수 있다. 이때 BatchStatus와 ExitStatus는 독립적으로 관리되므로, 사용자 정의 종료 코드를 적용하더라도 실제 Step의 실행 상태가 자동으로 변경되는 것은 아니다.
+
+## JobExecutionDecider
+
+
+### Spring Batch JobExecutionDecider 이해: 조건부 실행 분리와 DecisionState 아키텍처
+
+Spring Batch에서 `FlowJob`은 Step의 실행 결과에 따라 다음 실행 경로를 변경할 수 있는 Job 구현체다.
+
+일반적인 FlowJob에서는 다음과 같이 `on()`, `to()`, `from()` API를 이용해 조건부 실행을 구성한다.
+
+```java
+new JobBuilder("flowJob", jobRepository)
+        .start(step1)
+            .on("COMPLETED").to(step2)
+        .from(step1)
+            .on("FAILED").to(step3)
+        .end()
+        .build();
+```
+
+이 코드는 Step 1의 종료 상태에 따라 서로 다른 Step을 실행한다.
+
+Step 1이 정상적으로 완료되면 Step 2를 실행한다.
+
+반면 Step 1이 실패하면 Step 3을 실행한다.
+
+```mermaid
+flowchart TD
+    A["Step 1"]
+    B{"ExitStatus"}
+    C["Step 2"]
+    D["Step 3"]
+
+    A --> B
+    B -->|COMPLETED| C
+    B -->|FAILED| D
+```
+
+이러한 방식은 간단한 조건부 실행을 구현할 때 적합하다.
+
+하지만 실제 비즈니스 요구사항이 복잡해지면 단순한 ExitStatus 비교만으로 실행 경로를 결정하기 어려운 상황이 발생한다.
+
+예를 들어 주문 처리 배치를 생각해보자.
+
+주문 데이터를 조회하는 Step이 정상적으로 완료되었다고 가정한다.
+
+그런데 주문 처리 방식은 주문번호에 따라 달라져야 한다.
+
+- 홀수 주문번호라면 OddStep을 실행한다.
+- 짝수 주문번호라면 EvenStep을 실행한다.
+
+이러한 요구사항을 처리하기 위해 Step 내부에서 ExitStatus를 변경할 수도 있다.
+
+```java
+if (orderNumber % 2 == 0) {
+
+    contribution.setExitStatus(
+            new ExitStatus("EVEN")
+    );
+
+} else {
+
+    contribution.setExitStatus(
+            new ExitStatus("ODD")
+    );
+}
+```
+
+이렇게 구현하면 Step에서 비즈니스 로직을 수행하면서 다음 실행 경로를 결정하기 위한 종료 코드까지 설정하게 된다.
+
+물론 이러한 방식도 정상적으로 동작한다.
+
+하지만 Step이 담당하는 책임이 증가한다.
+
+Step은 원래 비즈니스 작업을 실행하는 단위인데, 다음 실행 경로를 결정하기 위한 로직까지 포함하게 되는 것이다.
+
+실제 업무에서는 다음과 같은 복잡한 조건이 추가될 수도 있다.
+
+```text
+주문 유형 확인
+    │
+    ├── 일반 주문
+    │      │
+    │      ▼
+    │   일반 정산
+    │
+    ├── 정기 구독
+    │      │
+    │      ▼
+    │   구독 정산
+    │
+    ├── 해외 주문
+    │      │
+    │      ▼
+    │   해외 결제 정산
+    │
+    └── 검증 필요
+           │
+           ▼
+       수동 검토
+```
+
+이러한 조건을 모두 Step 내부의 ExitStatus 변경 로직으로 구현하면 비즈니스 처리와 실행 흐름 판단이 결합될 수 있다.
+
+또한 조건이 변경될 때마다 Step의 구현을 수정해야 할 수 있다.
+
+Spring Batch에서는 이러한 문제를 해결하기 위해 `JobExecutionDecider`를 제공한다.
+
+`JobExecutionDecider`는 Step의 ExitStatus를 직접 변경하지 않고도 다음 실행 경로를 결정할 수 있도록 지원하는 인터페이스다.
+
+개발자는 Decider 내부에서 실행 조건을 판단한다.
+
+그리고 판단 결과를 `FlowExecutionStatus`로 반환한다.
+
+Spring Batch는 반환된 상태를 기준으로 Transition을 선택한다.
+
+```mermaid
+flowchart TD
+    A["StartStep"]
+    B["JobExecutionDecider"]
+    C{"FlowExecutionStatus"}
+    D["OddStep"]
+    E["EvenStep"]
+
+    A -->|COMPLETED| B
+    B --> C
+    C -->|ODD| D
+    C -->|EVEN| E
+```
+
+이러한 구조에서는 StartStep이 다음 실행 경로를 알 필요가 없다.
+
+StartStep은 자신의 비즈니스 로직만 수행한다.
+
+반면 Decider는 다음에 어떤 Step을 실행할 것인지 판단한다.
+
+따라서 비즈니스 처리와 실행 흐름에 대한 판단을 분리할 수 있다.
+
+이번에는 JobExecutionDecider의 기본 개념부터 API 사용 방법, 내부 아키텍처, 상태 전이 과정 및 실무 활용 방법까지 살펴보자.
+
+---
+
+### 개념
+
+#### JobExecutionDecider란?
+
+`JobExecutionDecider`는 Spring Batch에서 조건에 따른 실행 경로를 결정하기 위해 제공하는 인터페이스다.
+
+Spring Batch 5.2.4에서는 다음과 같이 정의되어 있다.
+
+```java
+@FunctionalInterface
+public interface JobExecutionDecider {
+
+    FlowExecutionStatus decide(
+            JobExecution jobExecution,
+            StepExecution stepExecution
+    );
+}
+```
+
+이 인터페이스에는 `decide()`라는 추상 메서드가 하나 존재한다.
+
+따라서 개발자는 JobExecutionDecider를 구현하고 decide()에 실행 조건을 작성하면 된다.
+
+decide()는 최종적으로 FlowExecutionStatus를 반환해야 한다.
+
+예를 들어 다음과 같이 구현할 수 있다.
+
+```java
+public class OddEvenDecider
+        implements JobExecutionDecider {
+
+    @Override
+    public FlowExecutionStatus decide(
+            JobExecution jobExecution,
+            StepExecution stepExecution
+    ) {
+
+        String value = jobExecution
+                .getJobParameters()
+                .getString("orderNumber");
+
+        long orderNumber = Long.parseLong(value);
+
+        if (orderNumber % 2 == 0) {
+
+            return new FlowExecutionStatus("EVEN");
+        }
+
+        return new FlowExecutionStatus("ODD");
+    }
+}
+```
+
+이 코드는 JobParameters에서 주문번호를 조회한다.
+
+그리고 주문번호가 짝수라면 EVEN을 반환한다.
+
+홀수라면 ODD를 반환한다.
+
+여기서 중요한 점은 다음과 같다.
+
+**Decider는 StepExecution의 ExitStatus를 변경하지 않는다.**
+
+대신 새로운 FlowExecutionStatus를 반환한다.
+
+따라서 이전 Step의 실제 종료 상태를 유지하면서도 다음 실행 경로를 결정할 수 있다.
+
+---
+
+### JobExecutionDecider의 주요 특징
+
+JobExecutionDecider는 다음과 같은 특징을 가진다.
+
+| 특징 | 설명 |
+|---|---|
+| 실행 흐름 판단 | 다음 실행 경로를 결정하기 위한 전용 인터페이스 |
+| 비즈니스 로직 분리 | Step의 실제 처리 로직과 분기 판단 로직 분리 |
+| 상태 반환 | FlowExecutionStatus 반환 |
+| ExitStatus 변경 | 필수 아님 |
+| StepExecutionListener | 등록할 필요 없음 |
+| JobExecution 접근 | 가능 |
+| StepExecution 접근 | 가능 |
+| 사용자 정의 상태 | EVEN, ODD 등 생성 가능 |
+| FlowJob 통합 | next(), from(), on(), to()와 함께 사용 |
+| 내부 구현 | DecisionState를 통해 실행 |
+| 실행 이력 | Decider 자체의 StepExecution은 생성되지 않음 |
+| 활용 | 업무 조건, 파라미터, 데이터 상태에 따른 분기 |
+
+여기서 가장 중요한 것은 **Decider가 Step과 서로 다른 역할을 담당한다는 사실**이다.
+
+Step은 실제 비즈니스 작업을 수행한다.
+
+반면 Decider는 다음에 실행할 작업을 결정한다.
+
+이러한 책임 분리는 배치 시스템의 구조를 명확하게 만드는 데 도움이 된다.
+
+---
+
+### 왜 사용하는가?
+
+JobExecutionDecider가 필요한 이유를 이해하려면 기존의 사용자 정의 ExitStatus 방식과 비교해보는 것이 좋다.
+
+#### 기존 방식: StepExecutionListener로 ExitStatus 변경
+
+다음과 같은 요구사항이 있다고 가정하자.
+
+주문번호가 홀수라면 OddStep을 실행한다.
+
+반면 짝수라면 EvenStep을 실행한다.
+
+StepExecutionListener를 이용하면 다음과 같이 구현할 수 있다.
+
+```java
+public class OrderStatusListener
+        implements StepExecutionListener {
+
+    @Override
+    public ExitStatus afterStep(
+            StepExecution stepExecution
+    ) {
+
+        if (stepExecution.getStatus()
+                != BatchStatus.COMPLETED) {
+
+            return null;
+        }
+
+        String value = stepExecution
+                .getJobParameters()
+                .getString("orderNumber");
+
+        long orderNumber = Long.parseLong(value);
+
+        if (orderNumber % 2 == 0) {
+
+            return new ExitStatus("EVEN");
+        }
+
+        return new ExitStatus("ODD");
+    }
+}
+```
+
+이 Listener를 특정 Step에 등록한다.
+
+```java
+new StepBuilder("startStep", jobRepository)
+        .tasklet(tasklet, transactionManager)
+        .listener(new OrderStatusListener())
+        .build();
+```
+
+이후 FlowJob에서 종료 코드를 기준으로 분기한다.
+
+```java
+.start(startStep)
+    .on("ODD").to(oddStep)
+
+.from(startStep)
+    .on("EVEN").to(evenStep)
+
+.end()
+.build();
+```
+
+이 방식에서는 startStep의 ExitStatus가 EVEN 또는 ODD로 변경된다.
+
+그리고 Spring Batch는 변경된 ExitStatus를 기준으로 Transition을 선택한다.
+
+동작 자체에는 문제가 없다.
+
+하지만 다음 실행 경로를 결정하는 정책이 startStep에 등록된 Listener에 포함된다.
+
+따라서 startStep은 직접적인 비즈니스 처리뿐 아니라 실행 흐름을 결정하기 위한 구성과도 연결된다.
+
+#### 개선 방식: JobExecutionDecider 이용
+
+JobExecutionDecider를 사용하면 실행 흐름 판단을 별도의 객체로 분리할 수 있다.
+
+```java
+public class OrderDecider
+        implements JobExecutionDecider {
+
+    @Override
+    public FlowExecutionStatus decide(
+            JobExecution jobExecution,
+            StepExecution stepExecution
+    ) {
+
+        String value = jobExecution
+                .getJobParameters()
+                .getString("orderNumber");
+
+        long orderNumber = Long.parseLong(value);
+
+        if (orderNumber % 2 == 0) {
+
+            return new FlowExecutionStatus("EVEN");
+        }
+
+        return new FlowExecutionStatus("ODD");
+    }
+}
+```
+
+그리고 FlowJob에서는 다음과 같이 구성한다.
+
+```java
+.start(startStep)
+.next(orderDecider)
+    .on("ODD").to(oddStep)
+
+.from(orderDecider)
+    .on("EVEN").to(evenStep)
+
+.end()
+.build();
+```
+
+이 구조에서는 startStep이 다음 실행 경로를 알 필요가 없다.
+
+Decider가 직접 실행 조건을 판단하기 때문이다.
+
+따라서 startStep의 비즈니스 로직을 수정하지 않아도 분기 정책을 변경할 수 있다.
+
+#### 두 방식의 차이
+
+| 구분 | StepExecutionListener | JobExecutionDecider |
+|---|---|---|
+| 주요 역할 | Step 실행 전후 처리 | Flow 실행 경로 판단 |
+| 실행 시점 | Step 실행 전후 | Flow에서 DecisionState에 도달했을 때 |
+| 반환값 | ExitStatus | FlowExecutionStatus |
+| Step 종료 코드 변경 | 가능 | 필요 없음 |
+| Step과의 관계 | 특정 Step에 등록 | 독립적인 Flow State |
+| 조건 판단 | afterStep() | decide() |
+| 주요 정보 | StepExecution | JobExecution, StepExecution |
+| 재사용성 | 특정 Step 실행과 연관 | 여러 Job에서 정책 재사용 가능 |
+| 적합한 상황 | Step 처리 결과에 따른 종료 코드 변경 | 독립적인 업무 조건에 따른 경로 결정 |
+
+두 방식이 완전히 대체 관계에 있는 것은 아니다.
+
+실제 Step의 처리 결과를 종료 코드로 표현해야 한다면 StepExecutionListener가 적합할 수 있다.
+
+반면 특정 Step의 종료 코드와 무관하게 독립적인 비즈니스 조건을 판단해야 한다면 JobExecutionDecider가 적합할 수 있다.
+
+---
+
+### JobExecutionDecider API 구조
+
+JobExecutionDecider는 다음 메서드를 제공한다.
+
+```java
+FlowExecutionStatus decide(
+        JobExecution jobExecution,
+        StepExecution stepExecution
+);
+```
+
+각 요소의 역할을 살펴보자.
+
+#### 첫 번째 매개변수: JobExecution
+
+`JobExecution`은 현재 Job의 실행 정보를 가진 객체다.
+
+Decider는 이 객체를 통해 Job의 실행 상태와 파라미터 등을 확인할 수 있다.
+
+대표적으로 다음과 같은 정보를 조회할 수 있다.
+
+```java
+jobExecution.getId();
+```
+
+```java
+jobExecution.getStatus();
+```
+
+```java
+jobExecution.getJobParameters();
+```
+
+```java
+jobExecution.getExecutionContext();
+```
+
+이러한 정보를 이용하면 Job 전체의 실행 조건을 판단할 수 있다.
+
+예를 들어 JobParameters를 통해 실행 대상 국가를 확인할 수 있다.
+
+```java
+String countryCode = jobExecution
+        .getJobParameters()
+        .getString("countryCode");
+```
+
+이후 국가별 처리 경로를 결정할 수 있다.
+
+```java
+if ("KR".equals(countryCode)) {
+
+    return new FlowExecutionStatus("KOREA");
+}
+
+return new FlowExecutionStatus("GLOBAL");
+```
+
+이러한 방식은 국가별로 다른 결제나 정산 프로세스를 수행해야 하는 배치에서 활용할 수 있다.
+
+#### 두 번째 매개변수: StepExecution
+
+`StepExecution`은 이전에 실행된 Step의 정보를 가진 객체다.
+
+Decider는 다음과 같은 정보를 확인할 수 있다.
+
+```java
+stepExecution.getStatus();
+```
+
+```java
+stepExecution.getExitStatus();
+```
+
+```java
+stepExecution.getReadCount();
+```
+
+```java
+stepExecution.getWriteCount();
+```
+
+```java
+stepExecution.getSkipCount();
+```
+
+따라서 이전 Step의 처리 결과를 기반으로 다음 실행 경로를 결정할 수 있다.
+
+예를 들어 다음과 같다.
+
+```java
+@Override
+public FlowExecutionStatus decide(
+        JobExecution jobExecution,
+        StepExecution stepExecution
+) {
+
+    if (stepExecution != null
+            && stepExecution.getSkipCount() > 0) {
+
+        return new FlowExecutionStatus(
+                "COMPLETED_WITH_SKIPS"
+        );
+    }
+
+    return FlowExecutionStatus.COMPLETED;
+}
+```
+
+이 코드는 이전 Step에서 Skip된 데이터가 존재한다면 별도의 상태를 반환한다.
+
+이후 다음과 같은 Transition을 구성할 수 있다.
+
+```java
+.next(decider)
+    .on("COMPLETED_WITH_SKIPS").to(reportStep)
+
+.from(decider)
+    .on("COMPLETED").to(nextStep)
+```
+
+다만 StepExecution 매개변수에는 주의할 점이 있다.
+
+**StepExecution은 null일 수 있다.**
+
+예를 들어 Decider가 Job의 첫 번째 실행 대상으로 등록된다면 아직 실행한 Step이 없을 수 있다.
+
+따라서 이전 StepExecution에 접근하기 전에 null 여부를 확인해야 한다.
+
+---
+
+### FlowExecutionStatus란?
+
+JobExecutionDecider는 `FlowExecutionStatus`를 반환한다.
+
+FlowExecutionStatus는 Flow의 실행 상태를 나타내는 객체다.
+
+대표적인 기본 상수는 다음과 같다.
+
+```java
+FlowExecutionStatus.COMPLETED
+```
+
+```java
+FlowExecutionStatus.FAILED
+```
+
+```java
+FlowExecutionStatus.STOPPED
+```
+
+```java
+FlowExecutionStatus.UNKNOWN
+```
+
+하지만 반드시 이러한 기본 상태만 사용해야 하는 것은 아니다.
+
+다음과 같이 사용자 정의 상태를 생성할 수 있다.
+
+```java
+new FlowExecutionStatus("EVEN");
+```
+
+```java
+new FlowExecutionStatus("ODD");
+```
+
+```java
+new FlowExecutionStatus("REVIEW_REQUIRED");
+```
+
+```java
+new FlowExecutionStatus("NO_DATA");
+```
+
+이처럼 사용자 정의 FlowExecutionStatus를 반환하면 Spring Batch가 해당 상태를 기준으로 Transition을 선택한다.
+
+여기서 중요한 것은 Step의 ExitStatus와 Decider의 FlowExecutionStatus가 서로 다르다는 사실이다.
+
+#### ExitStatus와 FlowExecutionStatus 비교
+
+| 구분 | ExitStatus | FlowExecutionStatus |
+|---|---|---|
+| 주요 목적 | Step과 Job의 종료 결과 표현 | Flow 실행 상태 표현 |
+| 생성 방식 | new ExitStatus("CODE") | new FlowExecutionStatus("CODE") |
+| StepExecution 저장 | 가능 | 별도 저장되지 않음 |
+| 사용자 정의 | 가능 | 가능 |
+| 대표 사용 위치 | Tasklet, StepExecutionListener | JobExecutionDecider |
+| Flow 분기 활용 | StepState를 통해 전달 | Decider가 직접 반환 |
+| 변경 대상 | StepExecution의 종료 코드 | Flow의 현재 상태 |
+
+예를 들어 이전 Step이 다음과 같이 종료되었다고 생각해보자.
+
+```text
+StartStep
+
+BatchStatus = COMPLETED
+
+ExitStatus = COMPLETED
+```
+
+이후 Decider가 실행된다.
+
+Decider는 EVEN이라는 상태를 반환한다.
+
+```text
+JobExecutionDecider
+
+FlowExecutionStatus = EVEN
+```
+
+이 과정에서 이전 Step의 ExitStatus가 EVEN으로 변경되는 것은 아니다.
+
+StartStep의 종료 코드는 여전히 COMPLETED다.
+
+대신 Flow의 현재 상태가 EVEN으로 설정되어 다음 Transition을 선택하는 데 사용된다.
+
+이 차이가 JobExecutionDecider의 핵심이다.
+
+---
+
+### 주요 API 설정
+
+JobExecutionDecider를 FlowJob에 연결할 때는 다음 API를 사용한다.
+
+| API | 역할 |
+|---|---|
+| start(decider) | Decider를 최초 실행 대상으로 지정 |
+| next(decider) | 이전 실행 대상이 정상 완료되면 Decider 실행 |
+| from(decider) | 이미 등록한 Decider에 새로운 분기 추가 |
+| on(pattern) | Decider가 반환한 상태와 비교할 패턴 설정 |
+| to(step) | 패턴이 일치하면 Step 실행 |
+| to(flow) | 패턴이 일치하면 Flow 실행 |
+| end() | Flow 구성 완료 또는 조건별 정상 종료 |
+
+대표적인 코드는 다음과 같다.
+
+```java
+@Bean
+public Job oddEvenJob(
+        JobRepository jobRepository,
+        Step startStep,
+        Step oddStep,
+        Step evenStep,
+        JobExecutionDecider oddEvenDecider
+) {
+
+    return new JobBuilder(
+            "oddEvenJob",
+            jobRepository
+    )
+            .start(startStep)
+            .next(oddEvenDecider)
+                .on("ODD").to(oddStep)
+            .from(oddEvenDecider)
+                .on("EVEN").to(evenStep)
+            .end()
+            .build();
+}
+```
+
+이 코드를 단계별로 살펴보자.
+
+#### start(startStep)
+
+```java
+.start(startStep)
+```
+
+가장 먼저 startStep을 실행한다.
+
+startStep이 정상적으로 완료되어야 다음 실행 대상으로 이동한다.
+
+#### next(oddEvenDecider)
+
+```java
+.next(oddEvenDecider)
+```
+
+startStep이 정상적으로 완료되면 oddEvenDecider를 실행한다.
+
+여기서 중요한 점은 `next(decider)`가 이전 실행 대상의 정상 완료를 전제로 연결된다는 사실이다.
+
+따라서 startStep에서 실제 예외가 발생해 실패했다면 Decider까지 진행하지 못할 수 있다.
+
+#### on("ODD").to(oddStep)
+
+```java
+.on("ODD").to(oddStep)
+```
+
+Decider가 ODD를 반환하면 oddStep을 실행한다.
+
+이때 on()이 확인하는 값은 startStep의 ExitStatus가 아니다.
+
+**바로 앞에서 실행한 Decider가 반환한 FlowExecutionStatus다.**
+
+#### from(oddEvenDecider)
+
+```java
+.from(oddEvenDecider)
+```
+
+이미 등록한 Decider를 기준으로 추가적인 Transition을 정의한다.
+
+이 메서드는 Decider를 즉시 다시 실행하는 것이 아니다.
+
+Decider가 반환할 수 있는 또 다른 상태에 대한 실행 경로를 추가하는 것이다.
+
+#### on("EVEN").to(evenStep)
+
+```java
+.on("EVEN").to(evenStep)
+```
+
+Decider가 EVEN을 반환하면 evenStep을 실행한다.
+
+#### end().build()
+
+```java
+.end()
+.build();
+```
+
+정의한 Flow를 완성하고 FlowJob을 생성한다.
+
+따라서 전체 실행 경로는 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["FlowJob"]
+    B["StartStep"]
+    C{"StartStep 완료?"}
+    D["Job FAILED"]
+    E["OddEvenDecider"]
+    F{"FlowExecutionStatus"}
+    G["OddStep"]
+    H["EvenStep"]
+    I["Job COMPLETED"]
+
+    A --> B
+    B --> C
+
+    C -->|NO| D
+    C -->|YES| E
+
+    E --> F
+
+    F -->|ODD| G
+    F -->|EVEN| H
+
+    G --> I
+    H --> I
+```
+
+---
+
+### JobExecutionDecider의 내부 아키텍처
+
+이번에는 Spring Batch의 내부 실행 구조를 살펴보자.
+
+JobExecutionDecider는 독립적인 Step 구현체가 아니다.
+
+Spring Batch는 Decider를 Flow의 State로 관리한다.
+
+이때 사용하는 클래스가 `DecisionState`다.
+
+전체 구조는 다음과 같다.
+
+```text
+FlowJob
+    │
+    ▼
+SimpleFlow
+    │
+    ├── StepState
+    │      │
+    │      ▼
+    │   StartStep
+    │
+    └── DecisionState
+           │
+           ▼
+       JobExecutionDecider
+           │
+           ▼
+       decide()
+           │
+           ▼
+       FlowExecutionStatus
+```
+
+여기서 중요한 객체는 다음과 같다.
+
+| 객체 | 역할 |
+|---|---|
+| FlowJob | Job 실행 관리 |
+| SimpleFlow | 실행 상태와 Transition 관리 |
+| StepState | 실제 Step 실행 |
+| DecisionState | JobExecutionDecider 호출 |
+| JobExecutionDecider | 실행 조건 판단 |
+| FlowExecutionStatus | 판단 결과 표현 |
+| StateTransition | 다음 State 결정 |
+
+각 클래스의 역할을 이해하면 Decider의 실제 실행 과정을 파악할 수 있다.
+
+---
+
+### FlowBuilder는 Decider를 어떻게 관리할까?
+
+FlowJob을 생성할 때 다음 API를 사용했다.
+
+```java
+.next(oddEvenDecider)
+```
+
+이때 Spring Batch는 Decider 자체를 Step으로 변환하지 않는다.
+
+대신 FlowBuilder 내부에서 `DecisionState`를 생성한다.
+
+Spring Batch 5.2.4의 FlowBuilder에는 전달받은 객체의 타입에 따라 State를 생성하는 로직이 존재한다.
+
+핵심 구조를 단순화하면 다음과 같다.
+
+```java
+private State createState(Object input) {
+
+    if (input instanceof Step) {
+
+        return new StepState(
+                stateName,
+                (Step) input
+        );
+    }
+
+    if (input instanceof JobExecutionDecider) {
+
+        return new DecisionState(
+                (JobExecutionDecider) input,
+                stateName
+        );
+    }
+
+    if (input instanceof Flow) {
+
+        return new FlowState(
+                (Flow) input,
+                stateName
+        );
+    }
+
+    throw new IllegalArgumentException();
+}
+```
+
+위 코드는 State 생성 원리를 설명하기 위해 단순화한 것이다.
+
+실제 구현에서는 이미 생성된 State를 재사용하기 위한 Map과 고유 State 이름 생성 로직도 사용한다.
+
+여기서 중요한 부분은 다음과 같다.
+
+```java
+new DecisionState(
+        (JobExecutionDecider) input,
+        stateName
+);
+```
+
+JobExecutionDecider 타입의 객체가 전달되면 DecisionState를 생성한다.
+
+따라서 다음과 같은 관계가 형성된다.
+
+```mermaid
+flowchart TD
+    A["FlowBuilder"]
+    B["next(decider)"]
+    C["createState()"]
+    D["DecisionState 생성"]
+    E["JobExecutionDecider 보관"]
+    F["SimpleFlow 생성"]
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+```
+
+이후 FlowJob이 실행되면 SimpleFlow가 해당 DecisionState를 호출한다.
+
+---
+
+### DecisionState란?
+
+DecisionState는 JobExecutionDecider를 실행하기 위한 State 구현체다.
+
+Spring Batch 5.2.4의 DecisionState는 AbstractState를 상속한다.
+
+주요 구조는 다음과 같다.
+
+```java
+public class DecisionState extends AbstractState {
+
+    private final JobExecutionDecider decider;
+
+    // 생성자 및 메서드
+}
+```
+
+DecisionState는 JobExecutionDecider를 필드로 가진다.
+
+그리고 다음 메서드를 제공한다.
+
+```java
+@Override
+public FlowExecutionStatus handle(
+        FlowExecutor executor
+) throws Exception {
+
+    return decider.decide(
+            executor.getJobExecution(),
+            executor.getStepExecution()
+    );
+}
+```
+
+이 메서드는 매우 중요하다.
+
+실제 JobExecutionDecider의 decide()가 호출되는 지점이기 때문이다.
+
+하나씩 살펴보자.
+
+#### 첫 번째: FlowExecutor 전달
+
+```java
+public FlowExecutionStatus handle(
+        FlowExecutor executor
+)
+```
+
+DecisionState는 FlowExecutor를 전달받는다.
+
+FlowExecutor는 Flow 실행 과정에서 JobExecution과 StepExecution 등의 정보에 접근할 수 있도록 지원한다.
+
+#### 두 번째: JobExecution 조회
+
+```java
+executor.getJobExecution()
+```
+
+현재 JobExecution을 조회한다.
+
+#### 세 번째: StepExecution 조회
+
+```java
+executor.getStepExecution()
+```
+
+최근 StepExecution을 조회한다.
+
+다만 앞서 설명한 것처럼 StepExecution은 null일 수 있다.
+
+#### 네 번째: Decider 실행
+
+```java
+decider.decide(
+        executor.getJobExecution(),
+        executor.getStepExecution()
+);
+```
+
+사용자가 구현한 decide()를 호출한다.
+
+그리고 반환된 FlowExecutionStatus를 그대로 반환한다.
+
+따라서 DecisionState는 비즈니스 분기 조건을 직접 판단하지 않는다.
+
+실제 조건 판단은 JobExecutionDecider 구현체에 위임한다.
+
+이 구조는 Strategy 패턴과 유사한 역할 분리로 이해할 수 있다.
+
+Spring Batch는 실행 시점과 호출 구조를 관리한다.
+
+반면 개발자는 JobExecutionDecider 구현체에서 판단 정책을 작성한다.
+
+---
+
+### SimpleFlow는 DecisionState를 어떻게 실행할까?
+
+FlowJob이 실행되면 내부적으로 SimpleFlow가 실행된다.
+
+대표적인 호출 구조는 다음과 같다.
+
+```text
+FlowJob.doExecute()
+       │
+       ▼
+SimpleFlow.start()
+       │
+       ▼
+SimpleFlow.resume()
+       │
+       ▼
+State.handle()
+       │
+       ▼
+DecisionState.handle()
+       │
+       ▼
+JobExecutionDecider.decide()
+       │
+       ▼
+FlowExecutionStatus 반환
+       │
+       ▼
+SimpleFlow.nextState()
+       │
+       ▼
+Transition 매칭
+       │
+       ▼
+다음 State 실행
+```
+
+SimpleFlow는 여러 State를 반복적으로 실행한다.
+
+그리고 현재 State의 실행 결과를 이용해 다음 State를 결정한다.
+
+Spring Batch 5.2.4의 SimpleFlow에서는 다음과 같은 실행 구조를 사용한다.
+
+```java
+FlowExecutionStatus status =
+        FlowExecutionStatus.UNKNOWN;
+
+while (isFlowContinued(
+        state,
+        status,
+        stepExecution
+)) {
+
+    stateName = state.getName();
+
+    status = state.handle(executor);
+
+    stepExecution = executor.getStepExecution();
+
+    state = nextState(
+            stateName,
+            status,
+            stepExecution
+    );
+}
+```
+
+위 코드는 실행 흐름을 이해하기 위한 핵심 부분이다.
+
+#### 첫 번째: 초기 상태
+
+```java
+FlowExecutionStatus status =
+        FlowExecutionStatus.UNKNOWN;
+```
+
+SimpleFlow는 resume()을 시작할 때 상태를 UNKNOWN으로 초기화한다.
+
+여기서 UNKNOWN은 Flow 실행 과정에서 사용하는 초기 상태다.
+
+JobExecution의 BatchStatus가 반드시 UNKNOWN이라는 의미는 아니다.
+
+#### 두 번째: 현재 State 실행
+
+```java
+status = state.handle(executor);
+```
+
+현재 State를 실행한다.
+
+State가 StepState라면 실제 Step을 실행한다.
+
+State가 DecisionState라면 Decider를 호출한다.
+
+#### 세 번째: FlowExecutionStatus 반환
+
+DecisionState는 decide()를 호출한 결과를 반환한다.
+
+예를 들어 다음과 같다.
+
+```text
+FlowExecutionStatus = EVEN
+```
+
+또는 다음과 같다.
+
+```text
+FlowExecutionStatus = ODD
+```
+
+#### 네 번째: 다음 State 결정
+
+```java
+state = nextState(
+        stateName,
+        status,
+        stepExecution
+);
+```
+
+현재 State의 실행 결과를 이용해 다음 State를 선택한다.
+
+이 과정에서 StateTransition의 패턴 매칭이 이루어진다.
+
+---
+
+### StateTransition은 어떻게 매칭할까?
+
+Decider에서 다음 상태를 반환했다고 생각해보자.
+
+```java
+return new FlowExecutionStatus("EVEN");
+```
+
+그리고 FlowJob에는 다음 Transition이 존재한다.
+
+```java
+.on("ODD").to(oddStep)
+```
+
+```java
+.on("EVEN").to(evenStep)
+```
+
+SimpleFlow는 현재 FlowExecutionStatus를 기준으로 각 Transition의 패턴을 확인한다.
+
+개념적으로 다음과 같은 과정이다.
+
+```java
+String exitCode = status.getName();
+
+for (StateTransition transition : transitions) {
+
+    if (transition.matches(exitCode)) {
+
+        return nextState;
+    }
+}
+```
+
+여기서 exitCode는 EVEN이다.
+
+따라서 다음과 같이 비교한다.
+
+```text
+현재 FlowExecutionStatus = EVEN
+
+Transition 1 = ODD
+    │
+    └── 일치하지 않음
+
+Transition 2 = EVEN
+    │
+    └── 일치함
+```
+
+EVEN에 해당하는 Transition이 선택된다.
+
+그리고 evenStep으로 이동한다.
+
+```mermaid
+flowchart TD
+    A["DecisionState"]
+    B["JobExecutionDecider.decide()"]
+    C["FlowExecutionStatus EVEN"]
+    D["SimpleFlow.nextState()"]
+
+    E{"패턴 비교"}
+    F["ODD Transition"]
+    G["EVEN Transition"]
+
+    H["EvenStep 실행"]
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+
+    E -.->|불일치| F
+    E -->|일치| G
+
+    G --> H
+```
+
+이러한 방식으로 Decider의 판단 결과가 실제 Step 실행으로 연결된다.
+
+---
+
+### JobExecutionDecider는 StepExecution을 생성할까?
+
+JobExecutionDecider를 이해할 때 반드시 알아야 할 특징이 있다.
+
+**Decider 자체는 Step이 아니므로 별도의 StepExecution을 생성하지 않는다.**
+
+예를 들어 다음과 같은 FlowJob을 생각해보자.
+
+```text
+OddEvenJob
+    │
+    ▼
+StartStep
+    │
+    ▼
+OddEvenDecider
+    │
+    ├── ODD → OddStep
+    │
+    └── EVEN → EvenStep
+```
+
+ODD가 반환되었다고 가정한다.
+
+이 경우 실제로 실행되는 Step은 두 개다.
+
+```text
+StartStep
+
+OddStep
+```
+
+OddEvenDecider는 실행되지만 Step이 아니므로 별도의 StepExecution이 생성되지 않는다.
+
+따라서 데이터베이스에서는 다음과 같은 실행 이력을 확인할 수 있다.
+
+| STEP_NAME | STATUS | EXIT_CODE |
+|---|---|---|
+| startStep | COMPLETED | COMPLETED |
+| oddStep | COMPLETED | COMPLETED |
+
+Decider라는 이름의 StepExecution은 존재하지 않는다.
+
+또한 Decider가 반환한 ODD라는 FlowExecutionStatus가 별도의 StepExecution으로 저장되는 것도 아니다.
+
+이 점은 StepExecutionListener를 이용해 ExitStatus를 변경하는 방식과 중요한 차이다.
+
+StepExecutionListener를 사용하면 실제 StepExecution의 ExitStatus에 사용자 정의 코드가 기록될 수 있다.
+
+반면 Decider는 Flow 실행 과정에서 상태를 직접 반환하므로 별도의 StepExecution에 해당 상태가 기록되지 않는다.
+
+따라서 Decider의 판단 결과를 장기적으로 추적해야 한다면 별도의 로깅이나 감사 데이터를 관리하는 방안을 고려할 수 있다.
+
+---
+
+### 예제
+
+이번에는 실제로 홀수와 짝수에 따라 서로 다른 Step을 실행하는 FlowJob을 구현해보자.
+
+전체 구조는 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["oddEvenJob"]
+    B["startStep"]
+    C["OddEvenDecider"]
+
+    D{"주문번호"}
+
+    E["ODD"]
+    F["EVEN"]
+
+    G["oddStep"]
+    H["evenStep"]
+
+    I["Job COMPLETED"]
+
+    A --> B
+    B --> C
+
+    C --> D
+
+    D -->|홀수| E
+    D -->|짝수| F
+
+    E --> G
+    F --> H
+
+    G --> I
+    H --> I
+```
+
+이번 예제에서는 다음 두 가지 상황을 확인한다.
+
+| 주문번호 | Decider 반환값 | 실행 Step |
+|---|---|---|
+| 1001 | ODD | oddStep |
+| 1002 | EVEN | evenStep |
+
+여기서는 클래스 필드의 count 값을 증가시키는 대신 JobParameters에 전달된 주문번호를 사용한다.
+
+이렇게 구성하면 동일한 주문번호에 대해 항상 동일한 판단 결과가 생성된다.
+
+따라서 실행 순서나 애플리케이션 재시작 여부와 관계없이 분기 결과를 예측할 수 있다.
+
+---
+
+### 개발 환경
+
+| 항목 | 기술 |
+|---|---|
+| Java | Java 17 |
+| Spring Boot | Spring Boot 3.4.13 |
+| Spring Batch | Spring Batch 5.2.4 |
+| Build Tool | Maven |
+| Database | H2 |
+| Job 구현체 | FlowJob |
+| Step 구현체 | TaskletStep |
+| Decider 구현체 | OddEvenDecider |
+
+---
+
+### Maven 의존성 설정
+
+`pom.xml`
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="
+             http://maven.apache.org/POM/4.0.0
+             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.4.13</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.example</groupId>
+    <artifactId>spring-batch-decider</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+
+    <properties>
+        <java.version>17</java.version>
+        <spring-batch.version>5.2.4</spring-batch.version>
+    </properties>
+
+    <dependencies>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-batch</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>
+```
+
+이번 예제에서는 Spring Batch와 H2를 사용한다.
+
+H2는 Spring Batch의 실행 메타데이터를 저장하는 용도로 사용한다.
+
+---
+
+### application.yml 설정
+
+`src/main/resources/application.yml`
+
+```yaml
+spring:
+  application:
+    name: spring-batch-decider
+
+  main:
+    web-application-type: none
+
+  datasource:
+    url: jdbc:h2:file:./data/deciderdb;DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+  batch:
+    job:
+      enabled: true
+      name: oddEvenJob
+
+    jdbc:
+      initialize-schema: ${BATCH_SCHEMA_INIT:never}
+
+logging:
+  level:
+    org.springframework.batch: INFO
+    com.example.batch: INFO
+```
+
+이번에는 파일 기반 H2 데이터베이스를 사용한다.
+
+따라서 애플리케이션을 종료하더라도 이전 실행 이력을 유지할 수 있다.
+
+Spring Batch 메타데이터 테이블은 최초 실행 시 생성한다.
+
+이후에는 기존 테이블을 사용한다.
+
+---
+
+### Spring Boot 애플리케이션
+
+`BatchApplication.java`
+
+```java
+package com.example.batch;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class BatchApplication {
+
+    public static void main(String[] args) {
+
+        SpringApplication.run(
+                BatchApplication.class,
+                args
+        );
+    }
+}
+```
+
+---
+
+### OddEvenDecider 구현
+
+먼저 JobExecutionDecider를 구현한다.
+
+`OddEvenDecider.java`
+
+```java
+package com.example.batch;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.StepExecution;
+
+import org.springframework.batch.core.job.flow.FlowExecutionStatus;
+import org.springframework.batch.core.job.flow.JobExecutionDecider;
+
+import org.springframework.stereotype.Component;
+
+@Component
+public class OddEvenDecider implements JobExecutionDecider {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(OddEvenDecider.class);
+
+    public static final String ODD = "ODD";
+
+    public static final String EVEN = "EVEN";
+
+    @Override
+    public FlowExecutionStatus decide(
+            JobExecution jobExecution,
+            StepExecution stepExecution
+    ) {
+
+        String value = jobExecution
+                .getJobParameters()
+                .getString("orderNumber");
+
+        if (value == null || value.isBlank()) {
+
+            throw new IllegalArgumentException(
+                    "orderNumber JobParameter는 필수입니다."
+            );
+        }
+
+        long orderNumber = Long.parseLong(value);
+
+        String previousStepName =
+                stepExecution == null
+                        ? "NONE"
+                        : stepExecution.getStepName();
+
+        log.info(
+                "[OddEvenDecider] 이전 Step={}",
+                previousStepName
+        );
+
+        log.info(
+                "[OddEvenDecider] 주문번호={}",
+                orderNumber
+        );
+
+        if (orderNumber % 2 == 0) {
+
+            log.info(
+                    "[OddEvenDecider] EVEN 반환"
+            );
+
+            return new FlowExecutionStatus(EVEN);
+        }
+
+        log.info(
+                "[OddEvenDecider] ODD 반환"
+        );
+
+        return new FlowExecutionStatus(ODD);
+    }
+}
+```
+
+이 코드는 JobParameters에서 orderNumber를 조회한다.
+
+그리고 홀수와 짝수를 구분한다.
+
+짝수라면 EVEN을 반환한다.
+
+홀수라면 ODD를 반환한다.
+
+또한 이전 StepExecution이 null일 수 있다는 점을 고려했다.
+
+여기서 중요한 사실은 **이 클래스가 StepExecution의 ExitStatus를 변경하지 않는다는 것**이다.
+
+오직 FlowExecutionStatus를 생성해 반환한다.
+
+---
+
+### DeciderConfiguration 전체 코드
+
+이제 세 개의 Step과 하나의 FlowJob을 구성한다.
+
+`DeciderConfiguration.java`
+
+```java
+package com.example.batch;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.Step;
+
+import org.springframework.batch.core.job.builder.JobBuilder;
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.step.builder.StepBuilder;
+
+import org.springframework.batch.repeat.RepeatStatus;
+
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import org.springframework.transaction.PlatformTransactionManager;
+
+@Configuration
+public class DeciderConfiguration {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(
+                    DeciderConfiguration.class
+            );
+
+    // -------------------------------------------
+    // FlowJob
+    // -------------------------------------------
+
+    @Bean
+    public Job oddEvenJob(
+            JobRepository jobRepository,
+            @Qualifier("startStep") Step startStep,
+            @Qualifier("oddStep") Step oddStep,
+            @Qualifier("evenStep") Step evenStep,
+            OddEvenDecider oddEvenDecider
+    ) {
+
+        Job job = new JobBuilder(
+                "oddEvenJob",
+                jobRepository
+        )
+                .start(startStep)
+                .next(oddEvenDecider)
+                    .on(OddEvenDecider.ODD).to(oddStep)
+                .from(oddEvenDecider)
+                    .on(OddEvenDecider.EVEN).to(evenStep)
+                .end()
+                .build();
+
+        log.info(
+                "생성된 Job 구현체={}",
+                job.getClass().getSimpleName()
+        );
+
+        return job;
+    }
+
+    // -------------------------------------------
+    // StartStep
+    // -------------------------------------------
+
+    @Bean
+    public Step startStep(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+
+        return new StepBuilder(
+                "startStep",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    log.info(
+                            "[startStep] 주문 처리 시작"
+                    );
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+
+    // -------------------------------------------
+    // OddStep
+    // -------------------------------------------
+
+    @Bean
+    public Step oddStep(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+
+        return new StepBuilder(
+                "oddStep",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    log.info(
+                            "[oddStep] 홀수 주문 처리"
+                    );
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+
+    // -------------------------------------------
+    // EvenStep
+    // -------------------------------------------
+
+    @Bean
+    public Step evenStep(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+
+        return new StepBuilder(
+                "evenStep",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    log.info(
+                            "[evenStep] 짝수 주문 처리"
+                    );
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+}
+```
+
+이 코드에서 가장 중요한 부분은 다음과 같다.
+
+```java
+.start(startStep)
+.next(oddEvenDecider)
+    .on(OddEvenDecider.ODD).to(oddStep)
+.from(oddEvenDecider)
+    .on(OddEvenDecider.EVEN).to(evenStep)
+.end()
+.build();
+```
+
+Spring Batch는 먼저 startStep을 실행한다.
+
+startStep이 정상적으로 완료되면 OddEvenDecider를 실행한다.
+
+Decider가 반환한 FlowExecutionStatus에 따라 oddStep 또는 evenStep을 실행한다.
+
+따라서 하나의 FlowJob에서 서로 다른 실행 경로를 구성할 수 있다.
+
+---
+
+### 첫 번째 실행: 홀수 주문번호
+
+먼저 프로젝트를 빌드한다.
+
+```bash
+mvn clean package
+```
+
+정상적으로 빌드되면 다음과 같은 결과를 확인할 수 있다.
+
+```text
+BUILD SUCCESS
+```
+
+데이터베이스 저장 디렉터리를 생성한다.
+
+```bash
+mkdir -p data
+```
+
+최초 실행에서는 Spring Batch 메타데이터 테이블을 생성한다.
+
+```bash
+BATCH_SCHEMA_INIT=always \
+java -jar target/spring-batch-decider-0.0.1-SNAPSHOT.jar \
+  orderNumber=1001
+```
+
+여기서 주문번호는 1001이다.
+
+1001은 홀수이므로 Decider는 ODD를 반환한다.
+
+```java
+return new FlowExecutionStatus("ODD");
+```
+
+따라서 다음 Transition이 선택된다.
+
+```java
+.on("ODD").to(oddStep)
+```
+
+#### 예상 실행 로그
+
+```text
+생성된 Job 구현체=FlowJob
+
+[startStep] 주문 처리 시작
+
+[OddEvenDecider] 이전 Step=startStep
+
+[OddEvenDecider] 주문번호=1001
+
+[OddEvenDecider] ODD 반환
+
+[oddStep] 홀수 주문 처리
+```
+
+전체 실행 흐름은 다음과 같다.
+
+```text
+oddEvenJob
+    │
+    ▼
+startStep
+    │
+    └── COMPLETED
+            │
+            ▼
+       OddEvenDecider
+            │
+            └── ODD
+                  │
+                  ▼
+                oddStep
+                  │
+                  └── COMPLETED
+                          │
+                          ▼
+                    Job COMPLETED
+```
+
+#### 실행 결과
+
+| 실행 대상 | 실행 여부 | 상태 |
+|---|---|---|
+| startStep | 실행 | COMPLETED |
+| OddEvenDecider | 실행 | ODD 반환 |
+| oddStep | 실행 | COMPLETED |
+| evenStep | 미실행 | StepExecution 없음 |
+| oddEvenJob | 실행 | COMPLETED |
+
+여기서 중요한 점은 evenStep이 실행되지 않는다는 사실이다.
+
+Decider가 ODD를 반환했기 때문이다.
+
+---
+
+### 두 번째 실행: 짝수 주문번호
+
+이번에는 짝수 주문번호를 전달한다.
+
+```bash
+java -jar target/spring-batch-decider-0.0.1-SNAPSHOT.jar \
+  orderNumber=1002
+```
+
+주문번호는 1002다.
+
+1002는 짝수이므로 Decider는 EVEN을 반환한다.
+
+```java
+return new FlowExecutionStatus("EVEN");
+```
+
+따라서 다음 Transition이 선택된다.
+
+```java
+.on("EVEN").to(evenStep)
+```
+
+#### 예상 실행 로그
+
+```text
+생성된 Job 구현체=FlowJob
+
+[startStep] 주문 처리 시작
+
+[OddEvenDecider] 이전 Step=startStep
+
+[OddEvenDecider] 주문번호=1002
+
+[OddEvenDecider] EVEN 반환
+
+[evenStep] 짝수 주문 처리
+```
+
+전체 실행 흐름은 다음과 같다.
+
+```text
+oddEvenJob
+    │
+    ▼
+startStep
+    │
+    └── COMPLETED
+            │
+            ▼
+       OddEvenDecider
+            │
+            └── EVEN
+                  │
+                  ▼
+                evenStep
+                  │
+                  └── COMPLETED
+                          │
+                          ▼
+                    Job COMPLETED
+```
+
+#### 실행 결과
+
+| 실행 대상 | 실행 여부 | 상태 |
+|---|---|---|
+| startStep | 실행 | COMPLETED |
+| OddEvenDecider | 실행 | EVEN 반환 |
+| oddStep | 미실행 | StepExecution 없음 |
+| evenStep | 실행 | COMPLETED |
+| oddEvenJob | 실행 | COMPLETED |
+
+두 실행은 동일한 FlowJob을 사용했다.
+
+하지만 JobParameters가 다르기 때문에 서로 다른 실행 경로가 선택되었다.
+
+---
+
+### 데이터베이스에서 실행 결과 확인하기
+
+Spring Batch는 Job과 Step의 실행 정보를 메타데이터 테이블에 저장한다.
+
+대표적인 테이블은 다음과 같다.
+
+| 테이블 | 역할 |
+|---|---|
+| BATCH_JOB_INSTANCE | JobInstance 관리 |
+| BATCH_JOB_EXECUTION | JobExecution 관리 |
+| BATCH_STEP_EXECUTION | StepExecution 관리 |
+| BATCH_JOB_EXECUTION_PARAMS | JobParameters 관리 |
+
+이번에는 두 번의 실행에서 생성된 메타데이터를 확인해보자.
+
+#### JobExecution 조회
+
+```sql
+SELECT
+    ji.JOB_NAME,
+    ji.JOB_INSTANCE_ID,
+    je.JOB_EXECUTION_ID,
+    je.STATUS,
+    je.EXIT_CODE
+FROM BATCH_JOB_INSTANCE ji
+JOIN BATCH_JOB_EXECUTION je
+    ON ji.JOB_INSTANCE_ID = je.JOB_INSTANCE_ID
+WHERE ji.JOB_NAME = 'oddEvenJob'
+ORDER BY je.JOB_EXECUTION_ID;
+```
+
+두 주문번호를 실행했다면 다음과 유사한 결과를 확인할 수 있다.
+
+| JOB_INSTANCE_ID | JOB_EXECUTION_ID | STATUS | EXIT_CODE |
+|---|---|---|---|
+| 1 | 1 | COMPLETED | COMPLETED |
+| 2 | 2 | COMPLETED | COMPLETED |
+
+두 JobExecution 모두 정상적으로 완료되었다.
+
+주문번호 1001은 ODD 경로로 실행되었다.
+
+주문번호 1002는 EVEN 경로로 실행되었다.
+
+하지만 두 실행 모두 후속 Step이 정상적으로 완료되었으므로 최종 Job 상태는 COMPLETED다.
+
+#### StepExecution 조회
+
+```sql
+SELECT
+    je.JOB_EXECUTION_ID,
+    se.STEP_EXECUTION_ID,
+    se.STEP_NAME,
+    se.STATUS,
+    se.EXIT_CODE
+FROM BATCH_JOB_EXECUTION je
+JOIN BATCH_STEP_EXECUTION se
+    ON je.JOB_EXECUTION_ID = se.JOB_EXECUTION_ID
+ORDER BY
+    je.JOB_EXECUTION_ID,
+    se.STEP_EXECUTION_ID;
+```
+
+예상 결과는 다음과 같다.
+
+| JOB_EXECUTION_ID | STEP_NAME | STATUS | EXIT_CODE |
+|---|---|---|---|
+| 1 | startStep | COMPLETED | COMPLETED |
+| 1 | oddStep | COMPLETED | COMPLETED |
+| 2 | startStep | COMPLETED | COMPLETED |
+| 2 | evenStep | COMPLETED | COMPLETED |
+
+여기서 중요한 사실을 확인할 수 있다.
+
+**Decider 자체에 대한 StepExecution은 생성되지 않는다.**
+
+첫 번째 실행에서는 startStep과 oddStep만 기록된다.
+
+두 번째 실행에서는 startStep과 evenStep만 기록된다.
+
+또한 Decider가 반환한 ODD나 EVEN이 StepExecution의 EXIT_CODE에 저장되는 것도 아니다.
+
+왜냐하면 Decider는 기존 StepExecution의 ExitStatus를 변경하지 않고 FlowExecutionStatus를 직접 반환하기 때문이다.
+
+---
+
+### JUnit으로 JobExecutionDecider 검증하기
+
+이번에는 실제 JobLauncher를 이용해 두 가지 실행 경로를 검증해보자.
+
+검증할 내용은 다음과 같다.
+
+첫 번째는 홀수 주문번호에서 oddStep이 실행되는지 확인한다.
+
+두 번째는 짝수 주문번호에서 evenStep이 실행되는지 확인한다.
+
+세 번째는 Decider가 별도의 StepExecution을 생성하지 않는지 확인한다.
+
+네 번째는 Decider가 이전 Step의 ExitStatus를 변경하지 않는지 확인한다.
+
+`OddEvenJobTest.java`
+
+```java
+package com.example.batch;
+
+import java.util.Set;
+import java.util.UUID;
+import java.util.stream.Collectors;
+
+import org.junit.jupiter.api.Test;
+
+import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobParameters;
+import org.springframework.batch.core.JobParametersBuilder;
+import org.springframework.batch.core.StepExecution;
+
+import org.springframework.batch.core.launch.JobLauncher;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+
+import org.springframework.boot.test.context.SpringBootTest;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+@SpringBootTest(properties = {
+        "spring.batch.job.enabled=false",
+        "spring.datasource.url=jdbc:h2:mem:decider_test;DB_CLOSE_DELAY=-1",
+        "spring.batch.jdbc.initialize-schema=always"
+})
+class OddEvenJobTest {
+
+    @Autowired
+    private JobLauncher jobLauncher;
+
+    @Autowired
+    @Qualifier("oddEvenJob")
+    private Job oddEvenJob;
+
+    private JobParameters parameters(
+            String orderNumber
+    ) {
+
+        return new JobParametersBuilder()
+                .addString(
+                        "orderNumber",
+                        orderNumber
+                )
+                .addString(
+                        "requestId",
+                        UUID.randomUUID().toString()
+                )
+                .toJobParameters();
+    }
+
+    private Set<String> stepNames(
+            JobExecution execution
+    ) {
+
+        return execution
+                .getStepExecutions()
+                .stream()
+                .map(StepExecution::getStepName)
+                .collect(Collectors.toSet());
+    }
+
+    private StepExecution findStep(
+            JobExecution execution,
+            String name
+    ) {
+
+        return execution
+                .getStepExecutions()
+                .stream()
+                .filter(
+                        step ->
+                                step.getStepName().equals(name)
+                )
+                .findFirst()
+                .orElseThrow();
+    }
+
+    // -------------------------------------------
+    // 홀수 주문번호
+    // -------------------------------------------
+
+    @Test
+    void 홀수_주문번호에서는_oddStep이_실행된다()
+            throws Exception {
+
+        JobExecution execution =
+                jobLauncher.run(
+                        oddEvenJob,
+                        parameters("1001")
+                );
+
+        assertEquals(
+                BatchStatus.COMPLETED,
+                execution.getStatus()
+        );
+
+        assertEquals(
+                Set.of(
+                        "startStep",
+                        "oddStep"
+                ),
+                stepNames(execution)
+        );
+
+        assertFalse(
+                stepNames(execution).contains("evenStep")
+        );
+    }
+
+    // -------------------------------------------
+    // 짝수 주문번호
+    // -------------------------------------------
+
+    @Test
+    void 짝수_주문번호에서는_evenStep이_실행된다()
+            throws Exception {
+
+        JobExecution execution =
+                jobLauncher.run(
+                        oddEvenJob,
+                        parameters("1002")
+                );
+
+        assertEquals(
+                BatchStatus.COMPLETED,
+                execution.getStatus()
+        );
+
+        assertEquals(
+                Set.of(
+                        "startStep",
+                        "evenStep"
+                ),
+                stepNames(execution)
+        );
+
+        assertFalse(
+                stepNames(execution).contains("oddStep")
+        );
+    }
+
+    // -------------------------------------------
+    // Decider는 별도의 StepExecution을 생성하지 않음
+    // -------------------------------------------
+
+    @Test
+    void Decider는_별도의_StepExecution을_생성하지_않는다()
+            throws Exception {
+
+        JobExecution execution =
+                jobLauncher.run(
+                        oddEvenJob,
+                        parameters("1001")
+                );
+
+        assertEquals(
+                2,
+                execution.getStepExecutions().size()
+        );
+
+        assertFalse(
+                stepNames(execution)
+                        .contains("oddEvenDecider")
+        );
+    }
+
+    // -------------------------------------------
+    // 이전 Step의 ExitStatus 유지
+    // -------------------------------------------
+
+    @Test
+    void Decider는_이전_Step의_ExitStatus를_변경하지_않는다()
+            throws Exception {
+
+        JobExecution execution =
+                jobLauncher.run(
+                        oddEvenJob,
+                        parameters("1002")
+                );
+
+        StepExecution startStep =
+                findStep(
+                        execution,
+                        "startStep"
+                );
+
+        assertEquals(
+                BatchStatus.COMPLETED,
+                startStep.getStatus()
+        );
+
+        assertEquals(
+                "COMPLETED",
+                startStep
+                        .getExitStatus()
+                        .getExitCode()
+        );
+    }
+}
+```
+
+이 테스트에서 가장 중요한 것은 세 번째와 네 번째 검증이다.
+
+세 번째 테스트는 Decider가 별도의 StepExecution을 생성하지 않는다는 사실을 확인한다.
+
+네 번째 테스트는 Decider를 사용하더라도 이전 Step의 ExitStatus가 변경되지 않는다는 사실을 확인한다.
+
+#### 테스트 실행
+
+```bash
+mvn test
+```
+
+테스트가 모두 통과한다면 다음과 유사한 결과를 확인할 수 있다.
+
+```text
+Tests run: 4
+
+Failures: 0
+
+Errors: 0
+
+BUILD SUCCESS
+```
+
+이렇게 하면 JobExecutionDecider가 FlowJob의 실행 경로를 결정하면서도 StepExecution의 종료 코드는 변경하지 않는다는 사실을 확인할 수 있다.
+
+---
+
+### AtomicInteger를 이용한 카운터 기반 Decider
+
+이번에는 Decider 내부의 카운터를 증가시키면서 홀수와 짝수를 판단하는 방식을 살펴보자.
+
+가장 단순한 구현은 다음과 같다.
+
+```java
+public class CounterDecider
+        implements JobExecutionDecider {
+
+    private int count = 0;
+
+    @Override
+    public FlowExecutionStatus decide(
+            JobExecution jobExecution,
+            StepExecution stepExecution
+    ) {
+
+        count++;
+
+        if (count % 2 == 0) {
+
+            return new FlowExecutionStatus("EVEN");
+        }
+
+        return new FlowExecutionStatus("ODD");
+    }
+}
+```
+
+이 방식에서는 decide()가 호출될 때마다 count가 증가한다.
+
+초기값이 0이라면 첫 번째 호출에서는 1이 된다.
+
+따라서 ODD를 반환한다.
+
+두 번째 호출에서는 2가 된다.
+
+따라서 EVEN을 반환한다.
+
+```text
+첫 번째 decide()
+    │
+    ├── count = 1
+    └── ODD
+
+두 번째 decide()
+    │
+    ├── count = 2
+    └── EVEN
+
+세 번째 decide()
+    │
+    ├── count = 3
+    └── ODD
+```
+
+이러한 코드는 Decider의 동작 원리를 이해하기에는 간단하다.
+
+하지만 실제 운영 환경에서는 주의해야 한다.
+
+#### 문제 1. 동시성 문제
+
+Spring의 일반적인 Bean은 기본적으로 Singleton으로 생성된다.
+
+따라서 CounterDecider가 여러 JobExecution에서 공유될 수 있다.
+
+그런데 int 타입의 count를 증가시키는 연산은 원자적이지 않다.
+
+여러 스레드가 동시에 decide()를 호출하면 예상하지 못한 결과가 발생할 수 있다.
+
+이 문제를 해결하려면 AtomicInteger를 사용할 수 있다.
+
+```java
+public class CounterDecider
+        implements JobExecutionDecider {
+
+    private final AtomicInteger count =
+            new AtomicInteger();
+
+    @Override
+    public FlowExecutionStatus decide(
+            JobExecution jobExecution,
+            StepExecution stepExecution
+    ) {
+
+        int current = count.incrementAndGet();
+
+        if (current % 2 == 0) {
+
+            return new FlowExecutionStatus("EVEN");
+        }
+
+        return new FlowExecutionStatus("ODD");
+    }
+}
+```
+
+AtomicInteger를 사용하면 증가 연산 자체의 원자성을 보장할 수 있다.
+
+하지만 이것만으로 모든 문제가 해결되는 것은 아니다.
+
+#### 문제 2. 애플리케이션 재시작 시 초기화
+
+count는 Bean의 필드다.
+
+따라서 애플리케이션을 종료하고 다시 시작하면 값이 초기화된다.
+
+예를 들어 다음과 같은 상황이 발생할 수 있다.
+
+```text
+애플리케이션 실행 1
+    │
+    ├── 첫 번째 Job → ODD
+    ├── 두 번째 Job → EVEN
+    └── 종료
+
+애플리케이션 재시작
+    │
+    └── 첫 번째 Job → ODD
+```
+
+따라서 애플리케이션이 재시작되면 이전 실행과 연결된 상태가 유지되지 않는다.
+
+#### 문제 3. 여러 서버에서 실행할 때
+
+배치 애플리케이션이 여러 서버에서 실행된다면 각 서버는 서로 다른 CounterDecider Bean을 가질 수 있다.
+
+따라서 서버별로 count 값이 달라질 수 있다.
+
+예를 들어 다음과 같은 상황이다.
+
+```text
+Server A
+    │
+    └── count = 5
+
+Server B
+    │
+    └── count = 2
+```
+
+이 경우 같은 종류의 Job이 어느 서버에서 실행되는지에 따라 다른 분기 결과가 발생할 수 있다.
+
+#### 문제 4. 재시작 시 분기 결과가 달라질 수 있음
+
+실패한 Job이 재시작되었을 때 Decider가 다시 호출되면 이전 실행과 다른 값을 반환할 가능성이 있다.
+
+이러한 문제는 배치의 재현성과 데이터 정합성 측면에서 위험할 수 있다.
+
+따라서 실제 운영 환경에서는 단순한 Bean 필드 카운터보다 JobParameters나 데이터베이스에 저장된 업무 상태처럼 재현 가능한 값을 기준으로 판단하는 것이 좋다.
+
+---
+
+### 실무에서의 활용
+
+JobExecutionDecider는 단순한 홀수·짝수 분기뿐 아니라 다양한 업무 정책을 구현하는 데 활용할 수 있다.
+
+특히 결제, 정산, 데이터 검증, 외부 API 연동처럼 특정 조건에 따라 처리 경로가 달라지는 시스템에서 유용하다.
+
+다만 Decider의 실행 조건은 안정성과 재현성을 고려해 설계해야 한다.
+
+#### 1. 결제 대사 결과에 따른 실행 경로 분리
+
+결제 대사 시스템에서는 외부 PG사의 거래 내역과 내부 거래 내역을 비교한다.
+
+대사 결과에 따라 정산 처리 또는 오류 분석을 수행할 수 있다.
+
+이때 Decider를 이용하면 다음과 같은 흐름을 구성할 수 있다.
+
+```text
+ReconciliationStep
+    │
+    ▼
+ReconciliationDecider
+    │
+    ├── MATCHED
+    │      │
+    │      ▼
+    │   SettlementStep
+    │
+    └── DISCREPANCY
+           │
+           ▼
+       ReportStep
+```
+
+Decider는 대사 결과를 조회하고 MATCHED 또는 DISCREPANCY를 반환한다.
+
+정상적인 대사 결과라면 SettlementStep을 실행한다.
+
+불일치가 존재한다면 ReportStep을 실행한다.
+
+이러한 구조에서는 대사 데이터를 생성하는 작업과 이후 처리 경로를 결정하는 작업을 분리할 수 있다.
+
+또한 대사 결과를 결정하는 조건이 변경되더라도 Step의 비즈니스 로직을 크게 수정하지 않을 수 있다.
+
+#### 2. 정산 승인 상태에 따른 분기
+
+정산 시스템에서는 특정 조건을 만족하는 정산 건에 대해 운영자의 승인이 필요할 수 있다.
+
+예를 들어 정산 금액이 일정 기준을 초과하면 수동 승인을 거쳐야 하는 경우다.
+
+이때 Decider는 정산 승인 상태를 조회한다.
+
+승인이 완료되었다면 지급 처리 Step으로 이동한다.
+
+반면 아직 승인되지 않았다면 중단 또는 별도 승인 대기 처리를 수행할 수 있다.
+
+다만 Decider 자체가 Job을 자동으로 중단시키는 것은 아니다.
+
+반환한 FlowExecutionStatus와 Transition을 이용해 중단 경로를 명시적으로 정의해야 한다.
+
+#### 3. 국가별 정산 처리 경로 구분
+
+글로벌 서비스를 운영한다면 국가별로 결제와 정산 정책이 달라질 수 있다.
+
+예를 들어 국내 결제와 해외 결제는 서로 다른 처리 방식이 필요할 수 있다.
+
+이때 JobParameters에서 countryCode를 조회해 처리 경로를 결정할 수 있다.
+
+```java
+String countryCode = jobExecution
+        .getJobParameters()
+        .getString("countryCode");
+```
+
+이후 국가별 상태를 반환한다.
+
+```java
+if ("KR".equals(countryCode)) {
+
+    return new FlowExecutionStatus("KR");
+}
+
+return new FlowExecutionStatus("GLOBAL");
+```
+
+이렇게 하면 국가별 분기 정책을 독립적인 객체로 관리할 수 있다.
+
+#### 4. 처리 대상 데이터 존재 여부 확인
+
+대량 데이터 배치에서는 처리할 데이터가 없는 경우가 있다.
+
+이때 Reader와 Writer를 무조건 실행하는 것보다 사전 판단을 통해 불필요한 작업을 생략할 수 있다.
+
+예를 들어 Decider에서 처리 대상 데이터가 존재하는지 확인할 수 있다.
+
+```text
+DataDecider
+    │
+    ├── HAS_DATA → ProcessStep
+    │
+    └── NO_DATA → Job 종료
+```
+
+이러한 방식은 데이터가 존재하지 않는 경우에도 매번 불필요한 처리 로직을 실행하는 것을 방지할 수 있다.
+
+다만 데이터 존재 여부를 확인한 시점과 실제 처리 시점 사이에 데이터가 변경될 가능성도 고려해야 한다.
+
+#### 5. 외부 API 상태에 따른 분기
+
+외부 시스템과 연동하는 배치에서는 대상 시스템의 상태에 따라 실행 경로를 변경해야 할 수 있다.
+
+예를 들어 외부 API가 정상 상태라면 데이터 수집을 진행한다.
+
+반면 장애가 발생했다면 작업을 중단하거나 다른 처리 경로로 이동할 수 있다.
+
+하지만 Decider 내부에서 외부 API를 반복적으로 호출하는 구조는 주의해야 한다.
+
+네트워크 지연이나 일시적인 장애로 인해 Decider 자체가 불안정해질 수 있기 때문이다.
+
+따라서 필요한 경우 외부 시스템의 상태를 별도 Step에서 확인하고, Decider는 저장된 결과를 기준으로 분기하도록 설계할 수 있다.
+
+#### 6. 비즈니스 판단과 비즈니스 처리를 분리한다
+
+Decider는 다음 실행 경로를 결정하기 위한 객체다.
+
+따라서 실제 결제 승인이나 정산 지급처럼 중요한 비즈니스 처리를 Decider 내부에 모두 구현하는 것은 적절하지 않을 수 있다.
+
+예를 들어 다음과 같은 역할 분리가 가능하다.
+
+| 컴포넌트 | 역할 |
+|---|---|
+| PaymentValidationStep | 결제 데이터 검증 |
+| PaymentDecider | 검증 결과에 따른 경로 판단 |
+| PaymentProcessingStep | 실제 결제 처리 |
+| PaymentErrorStep | 오류 처리 |
+
+이러한 구조에서는 각 컴포넌트의 책임이 명확해진다.
+
+또한 비즈니스 로직과 실행 흐름 판단을 독립적으로 테스트할 수 있다.
+
+#### 7. Decider의 판단 결과를 재현 가능하게 설계한다
+
+Decider의 중요한 설계 원칙 중 하나는 동일한 입력에서 동일한 결과를 얻을 수 있도록 하는 것이다.
+
+예를 들어 JobParameters에 포함된 주문번호를 기준으로 홀수와 짝수를 판단한다면 결과를 쉽게 예측할 수 있다.
+
+반면 Bean 필드의 count 값을 증가시키는 방식은 실행 순서에 따라 결과가 달라질 수 있다.
+
+특히 배치 재시작 과정에서는 Decider가 다시 실행될 수 있으므로 이전 실행과 동일한 판단 결과를 보장할 수 있는지 확인해야 한다.
+
+따라서 운영 환경에서는 가능한 한 재현 가능한 업무 데이터를 기준으로 분기하는 것이 좋다.
+
+#### 8. 필요한 경우 판단 결과를 영속화한다
+
+Decider는 FlowExecutionStatus를 반환하지만, 그 자체가 별도의 StepExecution을 생성하는 것은 아니다.
+
+따라서 Decider의 판단 결과가 항상 별도의 메타데이터로 저장되는 것은 아니다.
+
+이러한 특성 때문에 중요한 업무에서는 판단 결과를 별도의 테이블이나 감사 로그로 저장하는 것이 유용할 수 있다.
+
+예를 들어 정산 승인 여부에 따라 다른 Step이 실행되었다면, 어떤 승인 상태를 기준으로 판단했는지 추적할 수 있어야 한다.
+
+특히 재시작 이후에도 동일한 판단 근거를 확인할 수 있도록 설계하는 것이 중요하다.
+
+#### 9. Decider에서 예외가 발생하는 상황을 고려한다
+
+Decider는 일반적인 Java 메서드다.
+
+따라서 실행 중 예외가 발생할 수 있다.
+
+예를 들어 주문번호가 올바르지 않아 Long.parseLong()에서 예외가 발생할 수 있다.
+
+또한 외부 데이터를 조회하는 과정에서 오류가 발생할 수도 있다.
+
+이러한 예외는 단순히 EVEN 또는 ODD를 반환한 상황과 다르다.
+
+실행 상태를 결정하지 못한 것이므로 Job이 실패할 수 있다.
+
+따라서 입력값 검증과 예외 처리 정책을 명확하게 구성해야 한다.
+
+#### 10. 예상하지 못한 상태에 대한 기본 경로를 구성한다
+
+Decider가 여러 사용자 정의 상태를 반환할 수 있다면 모든 상태에 대한 실행 경로를 고려해야 한다.
+
+예를 들어 다음과 같은 상태를 반환할 수 있다고 생각해보자.
+
+```text
+APPROVED
+
+REJECTED
+
+PENDING
+
+UNKNOWN
+```
+
+이 중 APPROVED와 REJECTED에 대해서만 실행 경로를 정의하면 다른 상태가 반환되었을 때 예상하지 못한 종료가 발생할 수 있다.
+
+따라서 운영 정책에 따라 기본 실패 경로를 명시적으로 구성하는 것이 좋다.
+
+```java
+.next(decider)
+    .on("APPROVED").to(processStep)
+
+.from(decider)
+    .on("REJECTED").to(rejectStep)
+
+.from(decider)
+    .on("*").fail()
+```
+
+이렇게 하면 명시적으로 처리하지 않은 결과를 실패 종료로 연결할 수 있다.
+
+#### 11. Decider와 StepExecutionListener의 선택 기준을 명확하게 정의한다
+
+두 기능은 모두 조건부 흐름을 구성하는 데 활용할 수 있다.
+
+하지만 역할이 다르다.
+
+StepExecutionListener는 Step의 실행 결과를 해석하고 ExitStatus를 변경하는 데 적합하다.
+
+반면 JobExecutionDecider는 실행 흐름을 판단하는 별도의 객체로 구성할 때 적합하다.
+
+따라서 특정 Step의 처리 통계나 SkipCount를 기준으로 종료 코드를 변경해야 한다면 Listener를 고려할 수 있다.
+
+반면 여러 Step이나 업무 데이터의 상태를 종합해 실행 경로를 결정해야 한다면 Decider를 고려할 수 있다.
+
+#### 12. 분기 조건과 실행 경로를 별도로 테스트한다
+
+Decider가 올바른 FlowExecutionStatus를 반환하는 것만으로 충분하지 않다.
+
+실제 FlowJob에서 올바른 Transition이 선택되는지도 확인해야 한다.
+
+예를 들어 ODD를 반환했을 때 oddStep이 실행되는지 검증해야 한다.
+
+또한 evenStep이 실행되지 않았는지도 확인해야 한다.
+
+반대로 EVEN을 반환했을 때에는 evenStep이 실행되고 oddStep이 실행되지 않아야 한다.
+
+이러한 테스트를 통해 실행 경로가 비즈니스 요구사항과 일치하는지 확인할 수 있다.
+
+#### 13. JobParameters와 JobInstance의 관계를 고려한다
+
+Spring Batch는 식별용 JobParameters를 이용해 JobInstance를 구분한다.
+
+따라서 주문번호가 JobParameters에 포함되어 있다면 주문번호가 달라질 때 서로 다른 JobInstance가 생성될 수 있다.
+
+하지만 이미 COMPLETED 상태인 JobInstance를 동일한 식별용 JobParameters로 다시 실행하려고 하면 예외가 발생할 수 있다.
+
+따라서 Decider의 분기 조건으로 JobParameters를 사용할 때는 JobInstance 식별 정책도 함께 설계해야 한다.
+
+특히 동일 주문을 다시 처리해야 하는 상황과 실패한 Job을 재시작해야 하는 상황을 명확하게 구분하는 것이 중요하다.
+
+#### 14. 여러 서버에서 실행되는 환경을 고려한다
+
+배치 애플리케이션을 여러 서버에서 운영한다면 Decider가 서버별로 생성될 수 있다.
+
+따라서 서버의 메모리에 저장된 값만으로 실행 경로를 결정하는 방식은 위험할 수 있다.
+
+예를 들어 단순한 count 값을 기준으로 홀수와 짝수를 결정한다면 서버별 실행 횟수에 따라 서로 다른 결과가 발생할 수 있다.
+
+반면 JobParameters나 데이터베이스에 저장된 업무 상태를 기준으로 판단하면 서버가 달라지더라도 동일한 결과를 얻을 가능성이 높아진다.
+
+따라서 분산 환경에서는 Decider가 공유 가능한 업무 데이터를 기준으로 판단하도록 설계하는 것이 좋다.
+
+---
+
+### 전체 아키텍처 정리
+
+지금까지 살펴본 내용을 하나의 구조로 정리해보자.
+
+```mermaid
+flowchart TD
+    A["JobLauncher"]
+    B["FlowJob"]
+    C["JobFlowExecutor"]
+    D["SimpleFlow.start()"]
+
+    E["SimpleFlow.resume()"]
+
+    F["StepState"]
+    G["StartStep 실행"]
+
+    H["StepExecution ExitStatus"]
+
+    I["DecisionState"]
+
+    J["JobExecutionDecider.decide()"]
+
+    K["FlowExecutionStatus"]
+
+    L["SimpleFlow.nextState()"]
+
+    M{"Transition 매칭"}
+
+    N["OddStep"]
+    O["EvenStep"]
+
+    P["Flow 종료"]
+
+    Q["JobExecution 상태 반영"]
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+
+    E --> F
+    F --> G
+    G --> H
+
+    H --> I
+    I --> J
+    J --> K
+
+    K --> L
+    L --> M
+
+    M -->|ODD| N
+    M -->|EVEN| O
+
+    N --> P
+    O --> P
+
+    P --> Q
+```
+
+이 구조에서 가장 중요한 것은 Decider가 실행되는 시점이다.
+
+FlowJob이 실행되면 SimpleFlow가 시작된다.
+
+SimpleFlow는 등록된 State를 순서에 따라 실행한다.
+
+StepState에서는 실제 Step을 실행한다.
+
+Step이 정상적으로 완료되면 다음 State인 DecisionState로 이동한다.
+
+DecisionState는 자신이 보관하고 있는 JobExecutionDecider의 decide()를 호출한다.
+
+개발자가 구현한 decide()에서는 현재 JobExecution과 StepExecution을 이용해 조건을 판단한다.
+
+그리고 FlowExecutionStatus를 반환한다.
+
+반환된 상태는 SimpleFlow로 전달된다.
+
+SimpleFlow는 이 값을 기준으로 StateTransition의 패턴을 매칭한다.
+
+패턴이 일치하면 다음 State로 이동한다.
+
+이후 해당 Step을 실행하고 최종 Flow 상태를 JobExecution에 반영한다.
+
+전체 과정은 다음과 같이 요약할 수 있다.
+
+```text
+FlowJob 실행
+    │
+    ▼
+SimpleFlow.start()
+    │
+    ▼
+SimpleFlow.resume()
+    │
+    ▼
+StepState 실행
+    │
+    ▼
+StepExecution.ExitStatus 반환
+    │
+    ▼
+DecisionState 실행
+    │
+    ▼
+JobExecutionDecider.decide()
+    │
+    ▼
+FlowExecutionStatus 반환
+    │
+    ▼
+StateTransition 패턴 매칭
+    │
+    ├── ODD
+    │     │
+    │     ▼
+    │   OddStep
+    │
+    └── EVEN
+          │
+          ▼
+        EvenStep
+          │
+          ▼
+      Flow 종료
+          │
+          ▼
+    JobExecution 상태 반영
+```
+
+이러한 구조를 통해 Spring Batch는 비즈니스 작업과 실행 경로 판단을 서로 다른 컴포넌트로 분리한다.
+
+---
+
+### 자주 혼동하는 부분
+
+| 혼동하기 쉬운 내용 | 정확한 이해 |
+|---|---|
+| JobExecutionDecider는 클래스다 | 구현해야 하는 인터페이스다 |
+| Decider는 Step이다 | Flow에서 사용하는 독립적인 DecisionState다 |
+| Decider는 ExitStatus를 반환한다 | FlowExecutionStatus를 반환한다 |
+| Decider는 이전 Step의 ExitStatus를 변경한다 | 변경하지 않아도 된다 |
+| Decider가 있으면 on(), to()가 필요 없다 | 반환 상태에 따른 Transition 정의는 여전히 필요하다 |
+| from(decider)는 Decider를 다시 실행한다 | 기존 Decider에 추가적인 실행 경로를 정의한다 |
+| Decider는 항상 StepExecution을 전달받는다 | null일 수 있다 |
+| Decider는 StepExecution을 생성한다 | 별도의 StepExecution을 생성하지 않는다 |
+| Decider의 ODD 또는 EVEN이 StepExecution에 저장된다 | Flow 실행 상태로 사용되며 별도의 StepExecution은 생성되지 않는다 |
+| next(decider)는 항상 실행된다 | 이전 실행 대상이 정상 완료되어야 진행할 수 있다 |
+| AtomicInteger를 사용하면 분산 환경에서도 안전하다 | 원자성은 보장할 수 있지만 서버 간 상태 공유는 보장하지 않는다 |
+| Decider의 반환 상태가 최종 Job 상태가 된다 | 후속 Step과 최종 Flow 상태에 따라 달라진다 |
+| Decider는 비즈니스 로직을 모두 수행해야 한다 | 실행 경로 판단에 집중하는 것이 적합하다 |
+
+---
+
+### 정리
+
+Spring Batch의 `JobExecutionDecider`는 조건에 따른 실행 경로를 결정하기 위해 제공하는 인터페이스다.
+
+기존 FlowJob에서는 StepExecution의 ExitStatus를 기준으로 Transition을 구성할 수 있었다.
+
+하지만 실행 경로를 결정하기 위해 반드시 Step의 ExitStatus를 변경해야 하는 것은 아니다.
+
+JobExecutionDecider를 사용하면 독립적인 객체에서 실행 조건을 판단할 수 있다.
+
+JobExecutionDecider는 다음 메서드를 제공한다.
+
+```java
+FlowExecutionStatus decide(
+        JobExecution jobExecution,
+        StepExecution stepExecution
+);
+```
+
+개발자는 이 메서드에서 실행 조건을 구현한다.
+
+그리고 FlowExecutionStatus를 반환한다.
+
+예를 들어 다음과 같다.
+
+```java
+if (orderNumber % 2 == 0) {
+
+    return new FlowExecutionStatus("EVEN");
+}
+
+return new FlowExecutionStatus("ODD");
+```
+
+이후 FlowJob에서는 다음과 같이 사용할 수 있다.
+
+```java
+.start(startStep)
+.next(oddEvenDecider)
+    .on("ODD").to(oddStep)
+
+.from(oddEvenDecider)
+    .on("EVEN").to(evenStep)
+
+.end()
+.build();
+```
+
+이 구조에서는 startStep이 정상적으로 완료되면 Decider가 실행된다.
+
+Decider는 조건에 따라 ODD 또는 EVEN을 반환한다.
+
+Spring Batch는 반환된 상태를 이용해 다음 Transition을 선택한다.
+
+여기서 중요한 것은 Decider가 StepExecution의 ExitStatus를 변경하지 않는다는 사실이다.
+
+Decider는 FlowExecutionStatus를 직접 반환한다.
+
+또한 Decider 자체는 Step이 아니므로 별도의 StepExecution을 생성하지 않는다.
+
+Spring Batch 내부에서는 FlowBuilder가 JobExecutionDecider를 DecisionState로 변환한다.
+
+그리고 SimpleFlow가 DecisionState를 실행한다.
+
+DecisionState는 decide()를 호출한다.
+
+반환된 FlowExecutionStatus는 SimpleFlow의 nextState()에서 Transition을 선택하는 데 사용된다.
+
+전체 호출 과정은 다음과 같다.
+
+```text
+FlowJob
+    │
+    ▼
+SimpleFlow
+    │
+    ▼
+DecisionState
+    │
+    ▼
+JobExecutionDecider.decide()
+    │
+    ▼
+FlowExecutionStatus
+    │
+    ▼
+StateTransition
+    │
+    ▼
+다음 Step 실행
+```
+
+이러한 구조를 통해 비즈니스 작업과 실행 경로 판단을 명확하게 분리할 수 있다.
+
+다만 Decider 내부에서 단순히 Bean의 필드 값을 증가시키는 방식은 실제 운영 환경에서 주의해야 한다.
+
+동시 실행, 애플리케이션 재시작, 다중 서버 환경에서 판단 결과가 달라질 수 있기 때문이다.
+
+따라서 안정적인 배치 시스템에서는 JobParameters나 데이터베이스에 저장된 업무 상태처럼 재현 가능한 정보를 기준으로 판단하는 것이 좋다.
+
+또한 사용자 정의 FlowExecutionStatus를 반환할 때는 예상 가능한 모든 상태에 대한 Transition을 고려해야 한다.
+
+결국 **JobExecutionDecider는 Step의 종료 코드를 조작하지 않고도 실행 경로를 독립적으로 판단할 수 있도록 지원하는 Spring Batch의 핵심 Flow 제어 인터페이스**다.
+
+#### 한 줄 요약
+
+> Spring Batch의 `JobExecutionDecider`는 조건에 따라 다음 실행 경로를 결정하는 인터페이스다. `decide(JobExecution, StepExecution)`에서 사용자 정의 `FlowExecutionStatus`를 반환하면, Spring Batch는 `DecisionState`와 `SimpleFlow`를 통해 해당 상태를 Transition 패턴과 비교하고 다음 Step을 실행한다. Decider는 별도의 StepExecution을 생성하지 않으며, 기존 Step의 ExitStatus를 변경하지 않고도 비즈니스 처리와 실행 경로 판단을 분리할 수 있다.
