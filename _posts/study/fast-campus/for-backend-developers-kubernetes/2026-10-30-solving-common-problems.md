@@ -2,7 +2,7 @@
 layout: post
 bigtitle: 'Part 4. Kubernetes 환경의 트러블 슈팅'
 subtitle: Ch 2. 자주 발생하는 문제 해결하기 
-date: '2026-10-28 00:00:10 +0900'
+date: '2026-10-30 00:00:10 +0900'
 categories:
     - for-backend-developers-kubernetes
 comments: true

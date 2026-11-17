@@ -2,7 +2,7 @@
 layout: post
 bigtitle: 'Yaml'
 subtitle: Ch 1. Yaml 이란 
-date: '2026-10-28 00:00:10 +0900'
+date: '2026-11-09 00:00:10 +0900'
 categories:
     - for-backend-developers-kubernetes
 comments: true
