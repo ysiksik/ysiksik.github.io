@@ -4600,6 +4600,7 @@ Sequence의 핵심적인 특징은 다음과 같다.
 
 대표적인 명령어는 다음과 같다.
 
+
 | 명령어 | 의미 |
 |---|---|
 | `yq '.days' days.yaml` | days Sequence 전체 조회 |
