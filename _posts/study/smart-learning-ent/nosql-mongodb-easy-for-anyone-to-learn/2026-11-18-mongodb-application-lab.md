@@ -2150,6 +2150,8 @@ Flask에서는 Jinja 템플릿 엔진을 이용하여 HTML 안에서 변수를 �
 
 ### templates/index.html
 
+{% raw %}
+
 ```html
 <!DOCTYPE html>
 <html lang="ko">
@@ -2252,6 +2254,8 @@ Jinja에서는 반복문의 시작과 종료를 다음과 같이 표현한다.
 ```
 
 현재 `song`의 `artist` 값을 출력한다.
+
+{% endraw %}
 
 ### Jinja 템플릿 렌더링 구조
 
@@ -3874,6 +3878,8 @@ flowchart TD
 
 ## 주요 명령어와 코드 정리
 
+{% raw %}
+
 | 구분 | 명령어·API | 설명 |
 |---|---|---|
 | Node.js Driver 설치 | `npm install mongodb` | MongoDB Driver 설치 |
@@ -3906,6 +3912,8 @@ flowchart TD
 | Docker 내부 실행 | `docker exec` | 컨테이너 내부 명령 실행 |
 | Docker Compose 실행 | `docker compose up -d` | 여러 서비스 실행 |
 | Docker Compose 종료 | `docker compose down` | 서비스 종료 및 제거 |
+
+{% endraw %}
 
 ---
 
