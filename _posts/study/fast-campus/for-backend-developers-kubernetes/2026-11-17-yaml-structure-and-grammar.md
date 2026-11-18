@@ -2297,3 +2297,2340 @@ YAML의 문법을 이해할 때 중요한 것은 기호를 암기하는 것이 �
 #### 한 줄 요약
 
 > YAML의 Mapping은 Key-Value 관계로 데이터를 표현하는 기본 구조이며, 들여쓰기와 다양한 Scalar 문법을 통해 중첩된 데이터를 표현할 수 있다. 이러한 문법을 이해하면 Kubernetes와 Spring Boot의 복잡한 설정을 정확하게 작성하고, yq를 통해 구조적으로 조회하고 검증할 수 있다.
+
+## 02. Array
+
+### YAML의 Array와 List: Sequence 문법과 중첩 데이터 구조 이해하기
+
+YAML은 Mapping, Sequence, Scalar라는 세 가지 기본 데이터 구조를 사용하여 데이터를 표현한다.
+
+Mapping은 Key와 Value를 연결하는 구조이며, Scalar는 문자열이나 숫자처럼 하나의 값을 나타낸다.
+
+이번에 살펴볼 **Sequence는 여러 개의 데이터를 순서대로 저장하는 구조**이다.
+
+일반적인 프로그래밍 언어에서 사용하는 Array나 List와 비슷한 개념으로 이해할 수 있다.
+
+예를 들어 일주일을 구성하는 요일을 데이터로 표현한다고 가정하자.
+
+```yaml
+days:
+  - Monday
+  - Tuesday
+  - Wednesday
+  - Thursday
+  - Friday
+  - Saturday
+  - Sunday
+```
+
+여기서 `days`는 Key이며, Value는 일곱 개의 문자열을 포함하는 Sequence이다.
+
+각 항목은 하이픈(`-`)으로 구분한다.
+
+동일한 데이터를 다음과 같이 작성할 수도 있다.
+
+```yaml
+days: [Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday]
+```
+
+두 YAML은 표현 방식이 다르지만 동일한 데이터 구조를 가진다.
+
+이처럼 YAML은 Sequence를 여러 줄로 표현하거나 한 줄로 표현할 수 있다.
+
+또한 Sequence에는 문자열과 숫자뿐 아니라 Mapping이나 또 다른 Sequence도 포함할 수 있다.
+
+이러한 특징은 Kubernetes Manifest를 이해할 때 특히 중요하다.
+
+Kubernetes의 Deployment를 살펴보면 다음과 같은 설정이 자주 등장한다.
+
+```yaml
+containers:
+  - name: application
+    image: nginx:1.27
+    ports:
+      - containerPort: 80
+```
+
+여기서 `containers`는 Sequence이고, 각 요소는 Mapping이다.
+
+또한 컨테이너 내부의 `ports` 역시 Sequence이다.
+
+즉 **Kubernetes Manifest는 Mapping과 Sequence를 여러 단계로 조합하여 만들어진 구조**라고 이해할 수 있다.
+
+이번에는 YAML Sequence의 기본 문법부터 중첩 구조를 표현하는 방법, yq를 이용한 데이터 조회와 수정, Kubernetes에서의 활용 방법까지 살펴본다.
+
+---
+
+### YAML의 Sequence란?
+
+Sequence는 여러 개의 값을 순서대로 저장하는 데이터 구조이다.
+
+YAML에서는 일반적으로 하이픈(`-`)이나 대괄호(`[ ]`)를 사용하여 Sequence를 표현한다.
+
+Sequence는 다음과 같은 특징을 가진다.
+
+| 특징 | 설명 |
+|---|---|
+| 순서 유지 | 작성한 요소의 순서가 유지된다. |
+| 인덱스 접근 | 0부터 시작하는 인덱스로 요소에 접근할 수 있다. |
+| 다양한 데이터 타입 | 문자열, 숫자, Boolean, Mapping 등을 포함할 수 있다. |
+| 중첩 가능 | Sequence 안에 다른 Sequence를 포함할 수 있다. |
+| Mapping과 조합 | Sequence의 각 요소를 Mapping으로 구성할 수 있다. |
+
+Java의 `List`와 비슷하게 생각하면 이해하기 쉽다.
+
+예를 들어 Java에서는 다음과 같이 여러 문자열을 하나의 List에 저장할 수 있다.
+
+```java
+List<String> days = List.of(
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday"
+);
+```
+
+동일한 데이터를 YAML로 표현하면 다음과 같다.
+
+```yaml
+days:
+  - Monday
+  - Tuesday
+  - Wednesday
+  - Thursday
+  - Friday
+  - Saturday
+  - Sunday
+```
+
+YAML은 특정 프로그래밍 언어에 종속되지 않기 때문에 Java뿐 아니라 Python, JavaScript 등에서도 Sequence를 각 언어의 자료구조로 변환할 수 있다.
+
+```mermaid
+flowchart TD
+    A["YAML Sequence"] --> B["Java"]
+    A --> C["Python"]
+    A --> D["JavaScript"]
+
+    B --> E["List"]
+    C --> F["list"]
+    D --> G["Array"]
+```
+
+다만 YAML의 Sequence가 Java의 배열과 완전히 동일한 개념은 아니다.
+
+Java 배열은 길이가 고정되어 있고 선언된 타입에 따라 요소의 타입이 제한된다.
+
+반면 YAML Sequence는 데이터 표현 구조이므로 특정 프로그래밍 언어의 배열 크기나 제네릭 타입 같은 제약을 직접 정의하지 않는다.
+
+---
+
+### Sequence의 두 가지 표현 방식
+
+YAML에서는 Sequence를 크게 두 가지 방식으로 표현할 수 있다.
+
+1. Flow Style
+2. Block Style
+
+두 방식은 문법이 다르지만 동일한 데이터 구조를 표현한다.
+
+#### Flow Style: 대괄호를 사용하는 방식
+
+Flow Style은 대괄호(`[ ]`)를 사용하여 Sequence를 표현한다.
+
+여러 요소는 쉼표(`,`)로 구분한다.
+
+```yaml
+days: [Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday]
+```
+
+이 설정은 다음과 같이 해석할 수 있다.
+
+```text
+days
+ ├── [0] Monday
+ ├── [1] Tuesday
+ ├── [2] Wednesday
+ ├── [3] Thursday
+ ├── [4] Friday
+ ├── [5] Saturday
+ └── [6] Sunday
+```
+
+문자열뿐 아니라 숫자도 저장할 수 있다.
+
+```yaml
+numbers: [1, 2, 3, 100]
+```
+
+Java로 표현하면 다음과 비슷하다.
+
+```java
+List<Integer> numbers = List.of(1, 2, 3, 100);
+```
+
+Boolean 값도 저장할 수 있다.
+
+```yaml
+flags: [true, false, true]
+```
+
+Mapping을 Sequence의 요소로 사용할 수도 있다.
+
+```yaml
+users: [{name: Hong, age: 30}, {name: Kim, age: 28}]
+```
+
+이처럼 Flow Style은 비교적 짧은 데이터를 한 줄로 표현할 때 유용하다.
+
+하지만 요소가 많아지고 중첩 구조가 깊어지면 가독성이 떨어질 수 있다.
+
+---
+
+### Block Style: 하이픈을 사용하는 방식
+
+Block Style은 하이픈(`-`)과 들여쓰기를 사용하여 Sequence를 표현한다.
+
+```yaml
+days:
+  - Monday
+  - Tuesday
+  - Wednesday
+  - Thursday
+  - Friday
+  - Saturday
+  - Sunday
+```
+
+여기서 각 하이픈은 Sequence의 요소 하나를 의미한다.
+
+다음과 같이 숫자 목록도 작성할 수 있다.
+
+```yaml
+numbers:
+  - 1
+  - 2
+  - 3
+  - 100
+```
+
+각 요소는 같은 수준으로 들여쓰기해야 한다.
+
+```text
+numbers
+  ├── 1
+  ├── 2
+  ├── 3
+  └── 100
+```
+
+Block Style은 데이터를 여러 줄에 걸쳐 표현하기 때문에 요소가 많거나 중첩 구조가 복잡할 때 가독성이 좋다.
+
+특히 Kubernetes Manifest에서는 일반적으로 Block Style을 많이 사용한다.
+
+#### Flow Style과 Block Style 비교
+
+| 구분 | Flow Style | Block Style |
+|---|---|---|
+| 표현 기호 | `[ ]` | `-` |
+| 요소 구분 | 쉼표 | 하이픈과 들여쓰기 |
+| 여러 줄 작성 | 가능 | 일반적 |
+| 간단한 목록 | 간결함 | 읽기 쉬움 |
+| 복잡한 중첩 구조 | 가독성이 떨어질 수 있음 | 구조 파악에 유리 |
+| Kubernetes 활용 | 짧은 목록 | 일반적인 리소스 설정 |
+
+중요한 점은 **표현 방식이 다르더라도 파싱된 Sequence의 값과 순서는 동일하다는 것**이다.
+
+---
+
+### Flow Style과 Block Style은 정말 같은 데이터일까?
+
+실제로 두 YAML이 같은 데이터 구조로 해석되는지 확인해보자.
+
+먼저 다음 두 파일을 작성한다.
+
+**days-flow.yaml**
+
+```yaml
+days: [Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday]
+
+numbers: [1, 2, 3, 100]
+```
+
+**days-block.yaml**
+
+```yaml
+days:
+  - Monday
+  - Tuesday
+  - Wednesday
+  - Thursday
+  - Friday
+  - Saturday
+  - Sunday
+
+numbers:
+  - 1
+  - 2
+  - 3
+  - 100
+```
+
+이 두 파일의 `days`와 `numbers`는 동일한 Sequence 데이터를 표현한다.
+
+이를 yq를 이용해 확인할 수 있다.
+
+---
+
+### yq를 이용한 Sequence 데이터 조회
+
+yq는 YAML 파일을 구조적으로 조회하거나 수정할 수 있는 CLI 도구이다.
+
+여기서는 Mike Farah의 yq v4 계열을 기준으로 사용한다.
+
+앞서 작성한 파일을 조회해보자.
+
+```bash
+yq '.' days-flow.yaml
+```
+
+이 명령어에서 `.`은 YAML 문서 전체를 선택한다는 의미이다.
+
+Flow Style로 작성한 파일이 출력된다.
+
+Block Style로 작성한 파일도 조회할 수 있다.
+
+```bash
+yq '.' days-block.yaml
+```
+
+특정 필드만 조회하려면 다음과 같이 작성한다.
+
+```bash
+yq '.days' days-block.yaml
+```
+
+예상 출력:
+
+```yaml
+- Monday
+- Tuesday
+- Wednesday
+- Thursday
+- Friday
+- Saturday
+- Sunday
+```
+
+숫자 목록도 조회할 수 있다.
+
+```bash
+yq '.numbers' days-block.yaml
+```
+
+출력:
+
+```yaml
+- 1
+- 2
+- 3
+- 100
+```
+
+두 파일의 데이터 구조가 동일한지 확인하려면 JSON으로 변환하여 비교할 수도 있다.
+
+```bash
+yq -o=json '.' days-flow.yaml
+```
+
+```bash
+yq -o=json '.' days-block.yaml
+```
+
+두 명령어는 동일한 JSON 데이터를 출력한다.
+
+```json
+{
+  "days": [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday"
+  ],
+  "numbers": [
+    1,
+    2,
+    3,
+    100
+  ]
+}
+```
+
+이를 통해 YAML의 Flow Style과 Block Style이 동일한 Sequence 구조를 표현한다는 사실을 확인할 수 있다.
+
+---
+
+### Sequence의 인덱스 이해하기
+
+Sequence는 순서가 있는 데이터 구조이므로 인덱스를 사용하여 특정 요소에 접근할 수 있다.
+
+중요한 점은 **인덱스가 0부터 시작한다는 것**이다.
+
+다음 Sequence를 살펴보자.
+
+```yaml
+days:
+  - Monday
+  - Tuesday
+  - Wednesday
+  - Thursday
+  - Friday
+  - Saturday
+  - Sunday
+```
+
+각 요소의 인덱스는 다음과 같다.
+
+| 인덱스 | 값 | 의미 |
+|---:|---|---|
+| 0 | Monday | 첫 번째 요소 |
+| 1 | Tuesday | 두 번째 요소 |
+| 2 | Wednesday | 세 번째 요소 |
+| 3 | Thursday | 네 번째 요소 |
+| 4 | Friday | 다섯 번째 요소 |
+| 5 | Saturday | 여섯 번째 요소 |
+| 6 | Sunday | 일곱 번째 요소 |
+
+배열이 0부터 시작하기 때문에 세 번째 요소를 조회하려면 인덱스 `2`를 사용해야 한다.
+
+이 점은 Java나 JavaScript의 배열 인덱스와 동일하다.
+
+---
+
+### yq로 Sequence의 특정 인덱스 조회하기
+
+#### 첫 번째 요소 조회
+
+```bash
+yq '.days[0]' days-block.yaml
+```
+
+출력:
+
+```text
+Monday
+```
+
+여기서 각 부분의 의미는 다음과 같다.
+
+| 표현식 | 의미 |
+|---|---|
+| `.days` | days 필드 선택 |
+| `[0]` | 첫 번째 요소 선택 |
+
+#### 세 번째 요소 조회
+
+```bash
+yq '.days[2]' days-block.yaml
+```
+
+출력:
+
+```text
+Wednesday
+```
+
+#### 다섯 번째 요소 조회
+
+```bash
+yq '.days[4]' days-block.yaml
+```
+
+출력:
+
+```text
+Friday
+```
+
+#### 숫자 Sequence의 첫 번째 요소 조회
+
+```bash
+yq '.numbers[0]' days-block.yaml
+```
+
+출력:
+
+```text
+1
+```
+
+#### 숫자 Sequence의 마지막 요소 조회
+
+```bash
+yq '.numbers[3]' days-block.yaml
+```
+
+출력:
+
+```text
+100
+```
+
+`numbers`에는 네 개의 요소가 있으므로 마지막 요소의 인덱스는 `3`이다.
+
+이처럼 Flow Style과 Block Style 모두 동일한 인덱스 접근 방식을 사용할 수 있다.
+
+---
+
+### yq에서 마지막 요소에 접근하기
+
+Sequence의 마지막 요소를 조회할 때 항상 정확한 인덱스를 알고 있어야 하는 것은 아니다.
+
+yq에서는 음수 인덱스를 사용하여 뒤에서부터 요소에 접근할 수 있다.
+
+예를 들어 다음 명령어를 실행한다.
+
+```bash
+yq '.numbers[-1]' days-block.yaml
+```
+
+출력:
+
+```text
+100
+```
+
+`[-1]`은 마지막 요소를 의미한다.
+
+마지막에서 두 번째 요소를 조회하려면 다음과 같이 작성한다.
+
+```bash
+yq '.numbers[-2]' days-block.yaml
+```
+
+출력:
+
+```text
+3
+```
+
+이를 정리하면 다음과 같다.
+
+| 인덱스 | 의미 |
+|---|---|
+| `[0]` | 첫 번째 요소 |
+| `[1]` | 두 번째 요소 |
+| `[-1]` | 마지막 요소 |
+| `[-2]` | 마지막에서 두 번째 요소 |
+
+음수 인덱스는 Sequence의 길이가 변경될 수 있는 설정 파일에서 특히 유용하다.
+
+다만 인덱스가 지원 범위를 벗어나면 기대한 값이 반환되지 않을 수 있으므로 자동화 스크립트에서는 해당 요소가 존재하는지도 검증하는 것이 좋다.
+
+---
+
+### Sequence의 길이 확인하기
+
+yq의 `length` 연산자를 사용하면 Sequence의 요소 개수를 확인할 수 있다.
+
+```bash
+yq '.days | length' days-block.yaml
+```
+
+출력:
+
+```text
+7
+```
+
+요일이 일곱 개이기 때문이다.
+
+숫자 목록의 길이도 확인해보자.
+
+```bash
+yq '.numbers | length' days-block.yaml
+```
+
+출력:
+
+```text
+4
+```
+
+`length`는 Sequence의 요소 개수를 반환한다.
+
+```mermaid
+flowchart TD
+    A["numbers Sequence"] --> B["1"]
+    A --> C["2"]
+    A --> D["3"]
+    A --> E["100"]
+
+    A --> F["length = 4"]
+```
+
+이 기능은 배열의 크기를 확인하거나 데이터 검증을 수행할 때 사용할 수 있다.
+
+---
+
+### Sequence의 모든 요소를 개별적으로 조회하기
+
+특정 인덱스가 아니라 모든 요소를 하나씩 출력하고 싶을 수도 있다.
+
+이때는 `[]`를 사용한다.
+
+```bash
+yq '.days[]' days-block.yaml
+```
+
+출력:
+
+```text
+Monday
+Tuesday
+Wednesday
+Thursday
+Friday
+Saturday
+Sunday
+```
+
+여기서 `.days[]`는 `days` Sequence의 각 요소를 순서대로 선택한다.
+
+이는 다음과 같이 이해할 수 있다.
+
+```text
+days
+  ↓
+각 요소 순회
+  ↓
+Monday
+Tuesday
+Wednesday
+...
+Sunday
+```
+
+이 방식은 Sequence 안에 Mapping이 포함되어 있을 때 더욱 유용하다.
+
+예를 들어 사용자 목록에서 모든 사용자의 이름만 조회하거나, Kubernetes Deployment의 모든 컨테이너 이미지를 조회할 때 사용할 수 있다.
+
+---
+
+### Sequence 안에 Mapping 포함하기
+
+지금까지는 문자열이나 숫자를 Sequence의 요소로 사용했다.
+
+하지만 YAML Sequence에는 Mapping도 포함할 수 있다.
+
+예를 들어 여러 개의 앨범 정보를 저장한다고 가정하자.
+
+각 앨범은 다음 정보를 가진다.
+
+- 앨범 이름
+- 타이틀곡
+
+이를 YAML로 표현하면 다음과 같다.
+
+**albums-simple.yaml**
+
+```yaml
+albums:
+  - name: First Single
+    title: Happy
+
+  - name: Second Single
+    title: Smile
+```
+
+이 구조를 자세히 살펴보자.
+
+```yaml
+albums:
+```
+
+`albums`는 Key이다.
+
+그 Value는 Sequence이다.
+
+```yaml
+  - name: First Single
+    title: Happy
+```
+
+첫 번째 하이픈은 Sequence의 첫 번째 요소를 의미한다.
+
+그 요소는 `name`과 `title`이라는 두 개의 Key를 포함하는 Mapping이다.
+
+두 번째 요소 역시 Mapping이다.
+
+```yaml
+  - name: Second Single
+    title: Smile
+```
+
+전체 구조를 표현하면 다음과 같다.
+
+```text
+albums
+│
+├── [0] Mapping
+│    ├── name: First Single
+│    └── title: Happy
+│
+└── [1] Mapping
+     ├── name: Second Single
+     └── title: Smile
+```
+
+Mermaid로 표현하면 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["albums: Sequence"] --> B["Index 0: Mapping"]
+    A --> C["Index 1: Mapping"]
+
+    B --> D["name: First Single"]
+    B --> E["title: Happy"]
+
+    C --> F["name: Second Single"]
+    C --> G["title: Smile"]
+```
+
+이처럼 Sequence 안에 Mapping을 포함하면 여러 객체를 하나의 목록으로 관리할 수 있다.
+
+---
+
+### yq로 Sequence 내부의 Mapping 조회하기
+
+앞서 작성한 `albums-simple.yaml`을 사용해보자.
+
+#### 첫 번째 앨범 조회
+
+```bash
+yq '.albums[0]' albums-simple.yaml
+```
+
+출력:
+
+```yaml
+name: First Single
+title: Happy
+```
+
+`albums[0]`은 첫 번째 앨범을 의미한다.
+
+첫 번째 앨범은 Mapping이므로 `name`과 `title`이 함께 출력된다.
+
+#### 두 번째 앨범 조회
+
+```bash
+yq '.albums[1]' albums-simple.yaml
+```
+
+출력:
+
+```yaml
+name: Second Single
+title: Smile
+```
+
+#### 두 번째 앨범의 타이틀 조회
+
+두 번째 앨범에서 타이틀만 조회하려면 다음과 같이 작성한다.
+
+```bash
+yq '.albums[1].title' albums-simple.yaml
+```
+
+출력:
+
+```text
+Smile
+```
+
+이 표현식을 단계적으로 해석하면 다음과 같다.
+
+```text
+.albums
+    ↓
+앨범 목록 선택
+
+[1]
+    ↓
+두 번째 앨범 선택
+
+.title
+    ↓
+해당 앨범의 title 값 선택
+```
+
+즉 다음 경로를 따라 데이터에 접근하는 것이다.
+
+```text
+albums → index 1 → title
+```
+
+이 방식은 Mapping과 Sequence가 조합된 데이터를 조회할 때 기본적으로 사용하는 방법이다.
+
+---
+
+### Sequence의 모든 Mapping에서 특정 필드 조회하기
+
+앨범이 두 개가 아니라 수십 개라면 모든 앨범의 타이틀을 하나씩 조회하기 번거로울 수 있다.
+
+이때는 `[]`를 사용하면 된다.
+
+```bash
+yq '.albums[].title' albums-simple.yaml
+```
+
+출력:
+
+```text
+Happy
+Smile
+```
+
+이 명령어는 다음 과정을 수행한다.
+
+1. `albums` Sequence를 선택한다.
+2. `[]`를 통해 모든 요소에 접근한다.
+3. 각 Mapping에서 `title` 필드를 선택한다.
+
+```mermaid
+flowchart TD
+    A["albums Sequence"] --> B["첫 번째 Mapping"]
+    A --> C["두 번째 Mapping"]
+
+    B --> D["title: Happy"]
+    C --> E["title: Smile"]
+
+    D --> F["타이틀 목록 출력"]
+    E --> F
+```
+
+이처럼 yq에서는 Sequence의 각 요소에 대해 동일한 경로 표현식을 적용할 수 있다.
+
+---
+
+### Mapping 안에 Sequence, Sequence 안에 Mapping 조합하기
+
+실제 데이터는 단순히 Mapping 또는 Sequence 하나만으로 구성되지 않는다.
+
+여러 데이터 구조가 중첩되는 경우가 많다.
+
+예를 들어 앨범 정보를 관리하는 시스템을 생각해보자.
+
+하나의 음악 그룹에는 여러 앨범이 존재한다.
+
+각 앨범에는 앨범명과 타이틀곡이 있다.
+
+또한 하나의 앨범에는 여러 수록곡이 존재한다.
+
+각 수록곡에는 곡명과 작사가 정보가 있다.
+
+이를 구조적으로 표현하면 다음과 같다.
+
+```text
+Group
+│
+└── Albums
+     │
+     ├── Album 1
+     │    ├── Name
+     │    ├── Title
+     │    │
+     │    └── Songs
+     │         ├── Song 1
+     │         │    ├── Name
+     │         │    └── Writer
+     │         │
+     │         └── Song 2
+     │              ├── Name
+     │              └── Writer
+     │
+     └── Album 2
+          ├── Name
+          ├── Title
+          │
+          └── Songs
+               ├── Song 1
+               └── Song 2
+```
+
+이 구조에는 다음 데이터가 포함되어 있다.
+
+| 항목 | 데이터 구조 |
+|---|---|
+| Group | Mapping |
+| Albums | Sequence |
+| Album | Mapping |
+| Name | Scalar |
+| Title | Scalar |
+| Songs | Sequence |
+| Song | Mapping |
+| Writer | Scalar 또는 Sequence |
+
+이처럼 Mapping과 Sequence를 자유롭게 조합할 수 있다는 점이 YAML의 중요한 특징이다.
+
+---
+
+### 실제 앨범 정보를 이용한 중첩 YAML 작성
+
+이번에는 TWICE의 앨범 정보를 이용하여 중첩된 YAML을 작성해보자.
+
+예제에서는 다음 두 앨범을 사용한다.
+
+- THE STORY BEGINS
+- PAGE TWO
+
+각 앨범에는 타이틀곡과 일부 수록곡을 포함한다.
+
+전체 수록곡을 모두 작성하는 대신, 중첩 구조를 이해하기 쉽도록 일부 곡만 사용한다.
+
+**albums.yaml**
+
+```yaml
+group: TWICE
+
+albums:
+  - name: THE STORY BEGINS
+    title: OOH-AHH하게
+
+    songs:
+      - name: OOH-AHH하게
+        writer: 블랙아이드필승, Sam Lewis
+
+      - name: 다시 해줘
+        writer: 박진영
+
+  - name: PAGE TWO
+    title: CHEER UP
+
+    songs:
+      - name: CHEER UP
+        writer: Sam Lewis
+
+      - name: 소중한 사랑
+        writer: 박진영, 채영
+```
+
+이 YAML에는 여러 데이터 구조가 중첩되어 있다.
+
+먼저 최상위 데이터를 살펴보자.
+
+```yaml
+group: TWICE
+```
+
+`group`은 Scalar 문자열을 Value로 가지는 Mapping 항목이다.
+
+다음으로 `albums`를 살펴보자.
+
+```yaml
+albums:
+```
+
+`albums`의 Value는 Sequence이다.
+
+이 Sequence에는 두 개의 Mapping이 포함되어 있다.
+
+첫 번째 Mapping은 다음과 같다.
+
+```yaml
+  - name: THE STORY BEGINS
+    title: OOH-AHH하게
+
+    songs:
+      - name: OOH-AHH하게
+        writer: 블랙아이드필승, Sam Lewis
+
+      - name: 다시 해줘
+        writer: 박진영
+```
+
+여기서 `name`과 `title`은 Scalar이다.
+
+반면 `songs`는 또 다른 Sequence이다.
+
+`songs`의 각 요소는 곡명과 작사가를 나타내는 Mapping이다.
+
+이 구조는 다음과 같이 표현할 수 있다.
+
+```mermaid
+flowchart TD
+    A["TWICE"] --> B["albums: Sequence"]
+
+    B --> C["Album 0: THE STORY BEGINS"]
+    B --> D["Album 1: PAGE TWO"]
+
+    C --> E["title: OOH-AHH하게"]
+    C --> F["songs: Sequence"]
+
+    D --> G["title: CHEER UP"]
+    D --> H["songs: Sequence"]
+
+    F --> I["Song 0: OOH-AHH하게"]
+    F --> J["Song 1: 다시 해줘"]
+
+    H --> K["Song 0: CHEER UP"]
+    H --> L["Song 1: 소중한 사랑"]
+```
+
+이처럼 복잡해 보이는 YAML도 Mapping과 Sequence의 관계를 이해하면 구조를 쉽게 파악할 수 있다.
+
+---
+
+### yq로 중첩된 앨범 데이터 조회하기
+
+이제 작성한 `albums.yaml`을 사용하여 중첩된 데이터에 접근해보자.
+
+#### 전체 데이터 조회
+
+```bash
+yq '.' albums.yaml
+```
+
+문서 전체를 조회한다.
+
+#### 그룹 이름 조회
+
+```bash
+yq '.group' albums.yaml
+```
+
+출력:
+
+```text
+TWICE
+```
+
+#### 모든 앨범 조회
+
+```bash
+yq '.albums' albums.yaml
+```
+
+`albums` Sequence 전체를 조회한다.
+
+#### 첫 번째 앨범 이름 조회
+
+```bash
+yq '.albums[0].name' albums.yaml
+```
+
+출력:
+
+```text
+THE STORY BEGINS
+```
+
+#### 두 번째 앨범 이름 조회
+
+```bash
+yq '.albums[1].name' albums.yaml
+```
+
+출력:
+
+```text
+PAGE TWO
+```
+
+#### 첫 번째 앨범의 타이틀곡 조회
+
+```bash
+yq '.albums[0].title' albums.yaml
+```
+
+출력:
+
+```text
+OOH-AHH하게
+```
+
+#### 두 번째 앨범의 타이틀곡 조회
+
+```bash
+yq '.albums[1].title' albums.yaml
+```
+
+출력:
+
+```text
+CHEER UP
+```
+
+이러한 접근 방식은 앞에서 살펴본 Sequence 인덱스 조회와 동일하다.
+
+---
+
+### 중첩 Sequence의 특정 요소 조회하기
+
+이번에는 첫 번째 앨범의 수록곡 목록을 조회해보자.
+
+```bash
+yq '.albums[0].songs' albums.yaml
+```
+
+출력:
+
+```yaml
+- name: OOH-AHH하게
+  writer: 블랙아이드필승, Sam Lewis
+- name: 다시 해줘
+  writer: 박진영
+```
+
+여기서 `.albums[0]`은 첫 번째 앨범을 의미한다.
+
+그 뒤의 `.songs`는 해당 앨범에 속한 수록곡 목록이다.
+
+#### 첫 번째 앨범의 첫 번째 수록곡
+
+```bash
+yq '.albums[0].songs[0]' albums.yaml
+```
+
+출력:
+
+```yaml
+name: OOH-AHH하게
+writer: 블랙아이드필승, Sam Lewis
+```
+
+#### 첫 번째 앨범의 두 번째 수록곡
+
+```bash
+yq '.albums[0].songs[1]' albums.yaml
+```
+
+출력:
+
+```yaml
+name: 다시 해줘
+writer: 박진영
+```
+
+#### 첫 번째 앨범의 두 번째 수록곡 이름
+
+```bash
+yq '.albums[0].songs[1].name' albums.yaml
+```
+
+출력:
+
+```text
+다시 해줘
+```
+
+이 명령어의 동작을 구조적으로 살펴보자.
+
+```mermaid
+flowchart TD
+    A["albums.yaml"] --> B["albums Sequence"]
+    B --> C["Index 0"]
+    C --> D["THE STORY BEGINS"]
+
+    D --> E["songs Sequence"]
+    E --> F["Index 1"]
+    F --> G["다시 해줘"]
+
+    G --> H["name 필드 조회"]
+```
+
+각 경로의 의미는 다음과 같다.
+
+| 표현식 | 의미 |
+|---|---|
+| `.albums` | 앨범 목록 선택 |
+| `[0]` | 첫 번째 앨범 선택 |
+| `.songs` | 해당 앨범의 수록곡 목록 선택 |
+| `[1]` | 두 번째 수록곡 선택 |
+| `.name` | 수록곡 이름 선택 |
+
+즉 다음 경로를 따라 데이터에 접근한다.
+
+```text
+albums
+  → 첫 번째 앨범
+    → songs
+      → 두 번째 곡
+        → name
+```
+
+이러한 구조는 Kubernetes Manifest에서 중첩된 배열을 조회할 때도 동일하게 사용된다.
+
+---
+
+### 모든 앨범의 타이틀곡 조회하기
+
+특정 앨범 하나가 아니라 모든 앨범의 타이틀곡을 조회하고 싶을 수 있다.
+
+이때 `[]`를 사용한다.
+
+```bash
+yq '.albums[].title' albums.yaml
+```
+
+출력:
+
+```text
+OOH-AHH하게
+CHEER UP
+```
+
+`.albums[]`는 앨범 목록의 모든 요소를 의미한다.
+
+각 앨범 Mapping에서 `title`을 조회한다.
+
+이 방식은 앨범 개수가 늘어나더라도 동일하게 사용할 수 있다.
+
+예를 들어 앨범이 2개에서 10개로 증가해도 명령어를 수정할 필요가 없다.
+
+---
+
+### 모든 앨범의 수록곡 이름 조회하기
+
+이번에는 모든 앨범에 포함된 모든 수록곡의 이름을 조회해보자.
+
+```bash
+yq '.albums[].songs[].name' albums.yaml
+```
+
+출력:
+
+```text
+OOH-AHH하게
+다시 해줘
+CHEER UP
+소중한 사랑
+```
+
+이 명령어는 두 개의 Sequence를 순회한다.
+
+첫 번째 Sequence는 `albums`이다.
+
+두 번째 Sequence는 각 앨범의 `songs`이다.
+
+```mermaid
+flowchart TD
+    A["albums"] --> B["Album 0"]
+    A --> C["Album 1"]
+
+    B --> D["songs"]
+    C --> E["songs"]
+
+    D --> F["OOH-AHH하게"]
+    D --> G["다시 해줘"]
+
+    E --> H["CHEER UP"]
+    E --> I["소중한 사랑"]
+```
+
+이를 단계적으로 해석하면 다음과 같다.
+
+```text
+.albums[]
+    ↓
+모든 앨범을 순회
+
+.songs[]
+    ↓
+각 앨범의 모든 수록곡을 순회
+
+.name
+    ↓
+각 수록곡의 이름을 출력
+```
+
+즉 `[]`를 여러 번 사용하면 중첩된 Sequence를 순회할 수 있다.
+
+이 기능은 YAML 데이터가 복잡해질수록 활용도가 높아진다.
+
+---
+
+### yq의 select를 이용해 특정 앨범 검색하기
+
+지금까지는 인덱스를 기준으로 특정 앨범에 접근했다.
+
+하지만 실제 데이터에서는 앨범의 순서보다 이름을 기준으로 검색하는 것이 더 적절할 수 있다.
+
+예를 들어 `PAGE TWO` 앨범의 정보를 조회한다고 가정하자.
+
+```bash
+yq '.albums[] | select(.name == "PAGE TWO")' albums.yaml
+```
+
+이 명령어의 의미는 다음과 같다.
+
+1. 모든 앨범을 순회한다.
+2. 앨범 이름이 `PAGE TWO`인지 확인한다.
+3. 조건을 만족하는 앨범만 출력한다.
+
+예상 출력:
+
+```yaml
+name: PAGE TWO
+title: CHEER UP
+songs:
+  - name: CHEER UP
+    writer: Sam Lewis
+  - name: 소중한 사랑
+    writer: 박진영, 채영
+```
+
+이를 Mermaid로 표현하면 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["albums Sequence"] --> B["모든 앨범 순회"]
+    B --> C{"name == PAGE TWO"}
+
+    C -->|"일치"| D["해당 앨범 출력"]
+    C -->|"불일치"| E["제외"]
+```
+
+#### 특정 앨범의 타이틀곡만 조회하기
+
+다음과 같이 조건 검색과 필드 조회를 조합할 수 있다.
+
+```bash
+yq '.albums[] | select(.name == "PAGE TWO") | .title' albums.yaml
+```
+
+출력:
+
+```text
+CHEER UP
+```
+
+이 방식은 인덱스를 직접 지정하는 것보다 데이터 순서 변경에 강하다.
+
+예를 들어 앨범 목록의 순서가 바뀌더라도 이름이 동일하다면 같은 데이터를 조회할 수 있다.
+
+다만 이름이 중복될 수 있는 데이터라면 고유 식별자를 별도로 사용하는 것이 더 안전하다.
+
+---
+
+### 특정 조건에 맞는 수록곡 조회하기
+
+이번에는 모든 앨범의 수록곡 중 이름이 `CHEER UP`인 곡을 검색해보자.
+
+```bash
+yq '.albums[].songs[] | select(.name == "CHEER UP")' albums.yaml
+```
+
+예상 출력:
+
+```yaml
+name: CHEER UP
+writer: Sam Lewis
+```
+
+특정 작사가의 곡을 검색할 수도 있다.
+
+```bash
+yq '.albums[].songs[] | select(.writer == "박진영")' albums.yaml
+```
+
+예상 출력:
+
+```yaml
+name: 다시 해줘
+writer: 박진영
+```
+
+다만 이 예제의 `writer`는 문자열이므로 완전히 일치하는 값만 검색한다.
+
+```yaml
+writer: 박진영, 채영
+```
+
+처럼 여러 이름을 하나의 문자열로 저장했다면 `"박진영"`과 정확히 같지 않기 때문에 위 조건에는 포함되지 않는다.
+
+이러한 한계는 실제 데이터 모델을 설계할 때 중요하다.
+
+한 곡에 여러 작사가가 참여할 수 있다면 `writer`를 단일 문자열보다 Sequence로 정의하는 것이 더 적절할 수 있다.
+
+---
+
+### 하나의 Mapping 안에 여러 Sequence 포함하기
+
+YAML에서는 하나의 Mapping에 여러 Sequence를 포함할 수도 있다.
+
+예를 들어 다음과 같은 음악 정보가 있다고 가정하자.
+
+```yaml
+song:
+  name: CHEER UP
+
+  writers:
+    - Sam Lewis
+
+  composers:
+    - 블랙아이드필승
+
+  genres:
+    - Dance
+    - Pop
+```
+
+여기서 `song`은 Mapping이다.
+
+그 안에는 다음 필드가 존재한다.
+
+| 필드 | 데이터 타입 |
+|---|---|
+| `name` | Scalar |
+| `writers` | Sequence |
+| `composers` | Sequence |
+| `genres` | Sequence |
+
+이처럼 Mapping은 하나의 고정된 타입만 Value로 가져야 하는 구조가 아니다.
+
+여러 종류의 데이터 구조를 조합하여 하나의 객체를 표현할 수 있다.
+
+#### 작사가 정보를 Sequence로 표현하는 이유
+
+예를 들어 여러 작사가가 참여한 곡을 다음처럼 표현할 수 있다.
+
+```yaml
+song:
+  name: Example Song
+
+  writers:
+    - Writer A
+    - Writer B
+    - Writer C
+```
+
+이렇게 하면 특정 작사가가 포함되어 있는지 구조적으로 검색할 수 있다.
+
+```bash
+yq '.song.writers[]' song.yaml
+```
+
+출력:
+
+```text
+Writer A
+Writer B
+Writer C
+```
+
+이 구조는 여러 값을 쉼표로 연결한 하나의 문자열보다 프로그램에서 처리하기 쉽다.
+
+예를 들어 다음 값은 하나의 문자열이다.
+
+```yaml
+writers: "Writer A, Writer B, Writer C"
+```
+
+반면 다음 값은 세 개의 문자열로 이루어진 Sequence이다.
+
+```yaml
+writers:
+  - Writer A
+  - Writer B
+  - Writer C
+```
+
+데이터의 의미가 여러 독립적인 값이라면 Sequence로 표현하는 것이 적절하다.
+
+---
+
+### Sequence 안에 Sequence 포함하기
+
+Sequence의 요소가 반드시 Scalar나 Mapping일 필요는 없다.
+
+다른 Sequence를 포함할 수도 있다.
+
+예를 들어 좌석 배치를 표현한다고 가정하자.
+
+```yaml
+seats:
+  - [A1, A2, A3]
+  - [B1, B2, B3]
+  - [C1, C2, C3]
+```
+
+여기서 `seats`는 Sequence이다.
+
+각 요소 역시 Sequence이다.
+
+```text
+seats
+│
+├── [0]
+│    ├── [0] A1
+│    ├── [1] A2
+│    └── [2] A3
+│
+├── [1]
+│    ├── [0] B1
+│    ├── [1] B2
+│    └── [2] B3
+│
+└── [2]
+     ├── [0] C1
+     ├── [1] C2
+     └── [2] C3
+```
+
+이를 Java의 이차원 배열과 비슷하게 이해할 수 있다.
+
+```java
+String[][] seats = {
+    {"A1", "A2", "A3"},
+    {"B1", "B2", "B3"},
+    {"C1", "C2", "C3"}
+};
+```
+
+#### yq로 중첩 Sequence 조회하기
+
+두 번째 행의 세 번째 좌석을 조회한다고 가정하자.
+
+```bash
+yq '.seats[1][2]' seats.yaml
+```
+
+출력:
+
+```text
+B3
+```
+
+첫 번째 인덱스 `[1]`은 두 번째 행을 의미한다.
+
+두 번째 인덱스 `[2]`는 해당 행의 세 번째 요소를 의미한다.
+
+이처럼 YAML에서는 Sequence 안에 Sequence를 포함하여 다차원 구조도 표현할 수 있다.
+
+---
+
+### yq로 Sequence 데이터 수정하기
+
+yq는 데이터를 조회하는 기능뿐 아니라 수정하는 기능도 제공한다.
+
+앞서 작성한 `albums.yaml`을 사용한다고 가정하자.
+
+#### 특정 앨범의 타이틀 변경
+
+다음 명령어는 첫 번째 앨범의 타이틀을 변경한 결과를 출력한다.
+
+```bash
+yq '.albums[0].title = "New Title"' albums.yaml
+```
+
+하지만 이 명령어만 실행하면 원본 파일은 변경되지 않는다.
+
+실제 파일에 변경 사항을 적용하려면 `-i` 옵션을 사용해야 한다.
+
+```bash
+yq -i '.albums[0].title = "New Title"' albums.yaml
+```
+
+변경된 값을 확인한다.
+
+```bash
+yq '.albums[0].title' albums.yaml
+```
+
+출력:
+
+```text
+New Title
+```
+
+`-i`는 원본 파일을 직접 수정하는 옵션이다.
+
+실제 운영 설정이나 중요한 데이터 파일에 사용하기 전에는 변경 이력을 관리하거나 백업해 두는 것이 좋다.
+
+이후 예제는 수정 이전의 `albums.yaml`을 기준으로 설명한다.
+
+---
+
+### yq로 Sequence에 새로운 요소 추가하기
+
+Sequence에 새로운 요소를 추가할 수도 있다.
+
+예를 들어 다음과 같은 데이터가 있다고 가정하자.
+
+**skills.yaml**
+
+```yaml
+skills:
+  - Java
+  - Spring Boot
+```
+
+여기에 `Kubernetes`를 추가하려면 다음과 같이 작성할 수 있다.
+
+```bash
+yq -i '.skills += ["Kubernetes"]' skills.yaml
+```
+
+변경 후 YAML은 다음과 같다.
+
+```yaml
+skills:
+  - Java
+  - Spring Boot
+  - Kubernetes
+```
+
+`+=`는 기존 Sequence에 새로운 요소를 추가하는 데 사용할 수 있다.
+
+#### Mapping 요소 추가하기
+
+Sequence에 Mapping을 추가할 수도 있다.
+
+다음과 같은 파일이 있다고 가정하자.
+
+```yaml
+albums:
+  - name: First Single
+    title: Happy
+```
+
+여기에 두 번째 앨범을 추가한다.
+
+```bash
+yq -i '.albums += [{"name": "Second Single", "title": "Smile"}]' albums-simple.yaml
+```
+
+변경 후 다음과 같은 구조가 된다.
+
+```yaml
+albums:
+  - name: First Single
+    title: Happy
+
+  - name: Second Single
+    title: Smile
+```
+
+실제 파일의 공백이나 줄바꿈 스타일은 yq의 출력 방식에 따라 달라질 수 있지만, 데이터 구조는 동일하다.
+
+---
+
+### yq로 Sequence 요소 삭제하기
+
+Sequence에서 특정 요소를 제거할 수도 있다.
+
+다음 파일을 사용한다고 가정하자.
+
+```yaml
+skills:
+  - Java
+  - Spring Boot
+  - Kubernetes
+```
+
+두 번째 요소인 `Spring Boot`를 삭제하려면 다음과 같이 작성한다.
+
+```bash
+yq -i 'del(.skills[1])' skills.yaml
+```
+
+변경 결과:
+
+```yaml
+skills:
+  - Java
+  - Kubernetes
+```
+
+이때 인덱스 기반 삭제는 주의해야 한다.
+
+요소를 삭제하면 뒤에 있던 요소의 인덱스가 변경되기 때문이다.
+
+예를 들어 기존에는 `Kubernetes`가 인덱스 `2`였지만, `Spring Boot`를 삭제한 후에는 인덱스 `1`이 된다.
+
+따라서 실제 운영 데이터에서는 고정 인덱스보다 명시적인 Key나 조건을 기준으로 요소를 선택하는 것이 더 안전할 수 있다.
+
+---
+
+### Kubernetes에서 Sequence가 중요한 이유
+
+지금까지 살펴본 Sequence와 Mapping의 조합은 Kubernetes Manifest에서 반복적으로 사용된다.
+
+특히 다음 필드에서 자주 등장한다.
+
+- `containers`
+- `initContainers`
+- `ports`
+- `env`
+- `volumeMounts`
+- `volumes`
+- `imagePullSecrets`
+- `tolerations`
+
+이러한 필드는 대부분 여러 개의 요소를 저장할 수 있는 Sequence 구조이다.
+
+예를 들어 Deployment에는 하나 이상의 컨테이너를 정의할 수 있다.
+
+각 컨테이너는 환경 변수 목록, 포트 목록, Volume Mount 목록 등을 가질 수 있다.
+
+이 때문에 Kubernetes YAML을 처음 접하면 들여쓰기가 복잡하게 느껴질 수 있다.
+
+하지만 각 필드가 Mapping인지 Sequence인지 구분하면 구조를 훨씬 쉽게 이해할 수 있다.
+
+---
+
+### Kubernetes Deployment에서 Sequence 활용하기
+
+다음은 Nginx 컨테이너를 실행하는 Deployment 예제이다.
+
+**deployment.yaml**
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: web-app
+
+  labels:
+    app: web-app
+
+spec:
+  replicas: 2
+
+  selector:
+    matchLabels:
+      app: web-app
+
+  template:
+    metadata:
+      labels:
+        app: web-app
+
+    spec:
+      containers:
+        - name: web
+          image: nginx:1.27
+
+          ports:
+            - name: http
+              containerPort: 80
+
+          env:
+            - name: APP_ENV
+              value: "production"
+
+            - name: LOG_LEVEL
+              value: "INFO"
+
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+```
+
+이 Manifest에는 Mapping과 Sequence가 함께 사용된다.
+
+#### containers는 Sequence이다
+
+다음 설정을 살펴보자.
+
+```yaml
+containers:
+  - name: web
+    image: nginx:1.27
+```
+
+`containers`는 Sequence이다.
+
+그 안에는 `name`과 `image`를 포함하는 Mapping이 존재한다.
+
+컨테이너가 하나만 있더라도 `containers`는 Sequence이므로 하이픈을 사용해야 한다.
+
+#### ports도 Sequence이다
+
+```yaml
+ports:
+  - name: http
+    containerPort: 80
+```
+
+컨테이너는 여러 포트를 선언할 수 있으므로 `ports` 역시 Sequence이다.
+
+각 요소는 포트에 대한 정보를 담은 Mapping이다.
+
+#### env도 Sequence이다
+
+```yaml
+env:
+  - name: APP_ENV
+    value: "production"
+
+  - name: LOG_LEVEL
+    value: "INFO"
+```
+
+`env`는 환경 변수 목록이다.
+
+각 요소는 환경 변수 이름과 값을 포함하는 Mapping이다.
+
+#### resources는 Mapping이다
+
+반면 다음 설정을 살펴보자.
+
+```yaml
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+
+  limits:
+    cpu: "500m"
+    memory: "256Mi"
+```
+
+`resources`는 Sequence가 아니라 Mapping이다.
+
+`requests`와 `limits` 역시 Mapping이다.
+
+여기서는 하이픈을 사용하지 않는다.
+
+이처럼 Kubernetes Manifest에서는 필드가 의미하는 데이터 구조에 따라 하이픈 사용 여부가 달라진다.
+
+---
+
+### Kubernetes Deployment의 YAML 구조 분석
+
+앞서 작성한 Deployment를 계층적으로 표현하면 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["Deployment"] --> B["metadata: Mapping"]
+    A --> C["spec: Mapping"]
+
+    C --> D["replicas: Scalar"]
+    C --> E["selector: Mapping"]
+    C --> F["template: Mapping"]
+
+    F --> G["spec: Mapping"]
+    G --> H["containers: Sequence"]
+
+    H --> I["Container 0: Mapping"]
+
+    I --> J["name: Scalar"]
+    I --> K["image: Scalar"]
+    I --> L["ports: Sequence"]
+    I --> M["env: Sequence"]
+    I --> N["resources: Mapping"]
+
+    L --> O["Port 0: Mapping"]
+    M --> P["Environment Variable 0"]
+    M --> Q["Environment Variable 1"]
+
+    N --> R["requests: Mapping"]
+    N --> S["limits: Mapping"]
+```
+
+이 구조를 보면 Kubernetes Manifest가 특별한 데이터 구조를 사용하는 것은 아니라는 사실을 알 수 있다.
+
+결국 YAML의 기본 구성 요소인 Mapping, Sequence, Scalar를 조합한 것이다.
+
+Kubernetes API는 각 필드에 어떤 타입의 데이터가 들어가야 하는지를 정의한다.
+
+따라서 YAML 문법이 올바르더라도 API에서 Mapping을 기대하는 위치에 Sequence를 작성하면 오류가 발생할 수 있다.
+
+---
+
+### yq로 Kubernetes Sequence 조회하기
+
+앞서 작성한 `deployment.yaml`을 이용해보자.
+
+#### 첫 번째 컨테이너 이름 조회
+
+```bash
+yq '.spec.template.spec.containers[0].name' deployment.yaml
+```
+
+출력:
+
+```text
+web
+```
+
+#### 첫 번째 컨테이너 이미지 조회
+
+```bash
+yq '.spec.template.spec.containers[0].image' deployment.yaml
+```
+
+출력:
+
+```text
+nginx:1.27
+```
+
+#### 첫 번째 컨테이너 포트 조회
+
+```bash
+yq '.spec.template.spec.containers[0].ports[0].containerPort' deployment.yaml
+```
+
+출력:
+
+```text
+80
+```
+
+#### 첫 번째 환경 변수 이름 조회
+
+```bash
+yq '.spec.template.spec.containers[0].env[0].name' deployment.yaml
+```
+
+출력:
+
+```text
+APP_ENV
+```
+
+#### 두 번째 환경 변수 값 조회
+
+```bash
+yq '.spec.template.spec.containers[0].env[1].value' deployment.yaml
+```
+
+출력:
+
+```text
+INFO
+```
+
+#### 모든 환경 변수 이름 조회
+
+```bash
+yq '.spec.template.spec.containers[0].env[].name' deployment.yaml
+```
+
+출력:
+
+```text
+APP_ENV
+LOG_LEVEL
+```
+
+이처럼 중첩된 Kubernetes Manifest에서도 Sequence의 인덱스를 사용하거나 모든 요소를 순회할 수 있다.
+
+---
+
+### 컨테이너 이름을 기준으로 이미지 조회하기
+
+컨테이너가 여러 개 존재하는 Pod에서는 인덱스를 이용해 이미지를 조회하는 것보다 이름을 기준으로 검색하는 것이 더 안전할 수 있다.
+
+예를 들어 다음과 같이 두 개의 컨테이너가 있다고 가정하자.
+
+```yaml
+containers:
+  - name: web
+    image: nginx:1.27
+
+  - name: redis
+    image: redis:7
+```
+
+첫 번째 컨테이너 이미지는 다음과 같이 조회할 수 있다.
+
+```bash
+yq '.spec.template.spec.containers[0].image' deployment.yaml
+```
+
+하지만 컨테이너의 순서가 변경되면 다른 이미지가 조회될 수 있다.
+
+따라서 다음처럼 이름을 기준으로 검색하는 방법을 사용할 수 있다.
+
+```bash
+yq '.spec.template.spec.containers[] | select(.name == "web") | .image' deployment.yaml
+```
+
+예상 출력:
+
+```text
+nginx:1.27
+```
+
+`select`는 조건을 만족하는 요소를 선택한다.
+
+이 명령어의 실행 흐름은 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["containers Sequence"] --> B["모든 컨테이너 순회"]
+    B --> C{"name == web"}
+
+    C -->|"예"| D["image 필드 조회"]
+    C -->|"아니오"| E["제외"]
+
+    D --> F["nginx:1.27"]
+```
+
+이러한 방식은 실제 운영 환경에서 컨테이너 이미지 버전을 확인하거나 수정하는 자동화 스크립트를 작성할 때 유용하다.
+
+---
+
+### Kubernetes Manifest에서 자주 발생하는 Sequence 오류
+
+YAML의 Mapping과 Sequence를 혼동하면 문법 오류 또는 Kubernetes API 검증 오류가 발생할 수 있다.
+
+대표적인 사례를 살펴보자.
+
+#### 1. Sequence에서 하이픈을 빠뜨린 경우
+
+다음 설정은 잘못된 예시이다.
+
+```yaml
+containers:
+  name: nginx
+  image: nginx:1.27
+```
+
+YAML 문법만 보면 `containers`의 Value는 Mapping이다.
+
+하지만 Kubernetes의 Pod Spec에서 `containers`는 Sequence를 기대한다.
+
+따라서 Kubernetes API 검증에서 오류가 발생할 수 있다.
+
+올바른 구조는 다음과 같다.
+
+```yaml
+containers:
+  - name: nginx
+    image: nginx:1.27
+```
+
+하이픈을 추가함으로써 하나의 컨테이너 Mapping을 Sequence의 요소로 표현한다.
+
+#### 2. 같은 Mapping의 Key를 다른 요소처럼 작성하는 경우
+
+다음 설정도 주의해야 한다.
+
+```yaml
+containers:
+  - name: nginx
+  - image: nginx:1.27
+```
+
+이 YAML은 Sequence에 두 개의 Mapping을 정의한 것이다.
+
+첫 번째 Mapping에는 `name`만 존재한다.
+
+두 번째 Mapping에는 `image`만 존재한다.
+
+즉 다음과 같이 해석된다.
+
+```text
+containers
+│
+├── [0]
+│    └── name: nginx
+│
+└── [1]
+     └── image: nginx:1.27
+```
+
+하지만 의도한 구조는 하나의 컨테이너에 이름과 이미지를 함께 정의하는 것이다.
+
+따라서 다음과 같이 작성해야 한다.
+
+```yaml
+containers:
+  - name: nginx
+    image: nginx:1.27
+```
+
+이 차이는 Kubernetes Manifest에서 매우 자주 발생하는 실수이다.
+
+**하이픈 하나는 새로운 Sequence 요소가 시작된다는 의미이므로, 같은 객체에 속한 필드마다 하이픈을 붙이면 안 된다.**
+
+#### 3. 들여쓰기가 잘못된 경우
+
+다음 예시는 잘못된 YAML이다.
+
+```yaml
+containers:
+  - name: nginx
+    image: nginx:1.27
+     ports:
+       - containerPort: 80
+```
+
+`ports`의 들여쓰기 수준이 잘못되어 있다.
+
+올바른 설정은 다음과 같다.
+
+```yaml
+containers:
+  - name: nginx
+    image: nginx:1.27
+
+    ports:
+      - containerPort: 80
+```
+
+같은 Mapping에 속하는 `name`, `image`, `ports`는 동일한 계층에 있어야 한다.
+
+---
+
+### YAML 문법 검증과 Kubernetes API 검증은 다르다
+
+앞에서 살펴본 다음 YAML은 문법적으로 유효할 수 있다.
+
+```yaml
+containers:
+  name: nginx
+  image: nginx:1.27
+```
+
+하지만 Kubernetes는 `containers`에 Sequence가 들어오기를 기대한다.
+
+따라서 실제 Kubernetes Manifest를 작성할 때는 두 가지를 모두 검증해야 한다.
+
+첫 번째는 YAML 문법이다.
+
+두 번째는 Kubernetes 리소스의 API 구조이다.
+
+#### yq로 YAML 문법 확인
+
+```bash
+yq '.' deployment.yaml
+```
+
+YAML 파싱에 성공하면 내용을 출력한다.
+
+#### kubectl로 Kubernetes API 검증
+
+```bash
+kubectl apply --dry-run=server -f deployment.yaml
+```
+
+서버 측 Dry Run은 실제 리소스를 저장하지 않고 Kubernetes API Server에서 설정을 검증한다.
+
+예를 들어 `containers`를 Mapping으로 잘못 작성했다면 Kubernetes API가 요구하는 데이터 구조와 일치하지 않아 오류가 발생할 수 있다.
+
+다만 서버 측 Dry Run은 리소스가 실제로 실행될 때 발생할 수 있는 모든 장애를 검증하는 것은 아니다.
+
+예를 들어 Node 리소스 부족이나 이미지 다운로드 실패는 실제 배포 단계에서 나타날 수 있다.
+
+---
+
+### 실무에서 Sequence를 사용할 때 고려해야 할 사항
+
+#### 1. 순서가 의미 있는 데이터에 Sequence를 사용한다
+
+Sequence는 순서를 유지하는 데이터 구조이다.
+
+따라서 순서가 중요한 목록이나 여러 값을 저장하는 용도로 적합하다.
+
+예를 들어 다음과 같은 데이터가 있다.
+
+```yaml
+processingSteps:
+  - validate
+  - authorize
+  - execute
+  - notify
+```
+
+이 구조는 작업 단계의 순서를 표현한다.
+
+단, 이 YAML 자체가 작업을 실행하는 것은 아니다.
+
+해당 설정을 읽는 애플리케이션이 순서에 따라 작업을 처리하도록 구현되어 있어야 한다.
+
+#### 2. 객체가 여러 개라면 Sequence 안에 Mapping을 사용한다
+
+예를 들어 여러 데이터베이스 연결 정보를 관리한다고 가정하자.
+
+```yaml
+databases:
+  - name: primary
+    host: primary-db
+    port: 3306
+
+  - name: replica
+    host: replica-db
+    port: 3306
+```
+
+`databases`는 Sequence이다.
+
+각 데이터베이스는 Mapping이다.
+
+이렇게 표현하면 하나의 데이터베이스에 여러 속성을 부여할 수 있다.
+
+#### 3. 인덱스보다 고유한 Key를 활용하는 것이 안전할 수 있다
+
+예를 들어 `containers[0]`에 접근하면 첫 번째 컨테이너를 선택할 수 있다.
+
+하지만 컨테이너 순서가 바뀌면 다른 컨테이너가 선택된다.
+
+따라서 운영 자동화에서는 다음처럼 이름을 기준으로 검색하는 방식을 고려할 수 있다.
+
+```bash
+yq '.spec.template.spec.containers[] | select(.name == "web")' deployment.yaml
+```
+
+특히 여러 컨테이너가 존재하는 Pod에서는 이러한 접근 방식이 유용하다.
+
+#### 4. 데이터 타입을 일관되게 관리한다
+
+YAML은 하나의 Sequence에 서로 다른 타입의 값을 포함할 수 있다.
+
+```yaml
+values:
+  - 100
+  - "hello"
+  - true
+```
+
+YAML 문법상 허용되는 구조이다.
+
+하지만 이를 Java의 `List<Integer>`와 같은 타입으로 바인딩하려고 하면 문제가 발생할 수 있다.
+
+따라서 실제 애플리케이션에서 사용할 데이터라면 Sequence 요소의 타입을 일관되게 설계하는 것이 좋다.
+
+#### 5. Mapping과 Sequence를 지나치게 깊게 중첩하지 않는다
+
+YAML은 여러 단계의 중첩 구조를 지원한다.
+
+하지만 중첩이 지나치게 깊어지면 읽기와 수정이 어려워진다.
+
+특히 Kubernetes Manifest에서는 Pod Template 내부에 여러 Mapping과 Sequence가 반복되므로 데이터 구조를 이해한 후 수정하는 것이 중요하다.
+
+#### 6. yq로 파일을 직접 수정할 때 주의한다
+
+`yq -i`는 원본 YAML 파일을 변경한다.
+
+따라서 운영 설정 파일에 사용하기 전에는 변경 사항을 검증하고 Git으로 이력을 관리하는 것이 좋다.
+
+또한 특정 인덱스에 의존한 수정은 배열 요소의 순서가 변경될 때 잘못된 데이터를 수정할 가능성이 있다.
+
+---
+
+### Sequence와 Mapping을 구분하는 방법
+
+YAML을 읽을 때 특정 필드가 Mapping인지 Sequence인지 빠르게 구분하는 방법을 정리해보자.
+
+다음 YAML을 살펴보자.
+
+```yaml
+application:
+  name: payment-service
+
+  servers:
+    - name: server-1
+      port: 8080
+
+    - name: server-2
+      port: 8081
+
+  database:
+    host: mysql
+    port: 3306
+```
+
+여기서 `application`은 Mapping이다.
+
+`name`은 Scalar 문자열이다.
+
+`servers`는 Sequence이다.
+
+`servers`의 각 요소는 Mapping이다.
+
+`database`는 Mapping이다.
+
+이를 정리하면 다음과 같다.
+
+| 필드 | 데이터 구조 | 이유 |
+|---|---|---|
+| `application` | Mapping | 여러 Key-Value 포함 |
+| `name` | Scalar | 하나의 문자열 값 |
+| `servers` | Sequence | 하이픈으로 여러 요소 정의 |
+| `servers[0]` | Mapping | name과 port 포함 |
+| `servers[1]` | Mapping | name과 port 포함 |
+| `database` | Mapping | host와 port 포함 |
+| `database.host` | Scalar | 하나의 문자열 값 |
+
+이러한 구분을 반복해서 연습하면 복잡한 YAML도 구조적으로 이해할 수 있다.
+
+---
+
+### 정리
+
+YAML의 Sequence는 여러 개의 값을 순서대로 저장하는 데이터 구조이다.
+
+일반적인 프로그래밍 언어의 Array나 List와 비슷한 개념이며, 하이픈 또는 대괄호를 사용하여 표현할 수 있다.
+
+Sequence의 핵심적인 특징은 다음과 같다.
+
+| 항목 | 핵심 내용 |
+|---|---|
+| Sequence | 여러 값을 순서대로 저장하는 구조 |
+| Flow Style | `[ ]`를 사용한 표현 |
+| Block Style | `-`를 사용한 표현 |
+| 인덱스 | 0부터 시작 |
+| `[0]` | 첫 번째 요소 |
+| `[-1]` | 마지막 요소 |
+| `[]` | 모든 요소 순회 |
+| `length` | Sequence의 요소 개수 조회 |
+| Sequence 안의 Mapping | 여러 객체를 목록으로 저장 |
+| Mapping 안의 Sequence | 하나의 객체에 여러 값을 포함 |
+| 중첩 Sequence | Sequence 안에 다른 Sequence 포함 |
+
+또한 yq를 이용하면 Sequence의 특정 요소를 조회하거나 조건을 만족하는 데이터를 검색할 수 있다.
+
+대표적인 명령어는 다음과 같다.
+
+| 명령어 | 의미 |
+|---|---|
+| `yq '.days' days.yaml` | days Sequence 전체 조회 |
+| `yq '.days[0]' days.yaml` | 첫 번째 요소 조회 |
+| `yq '.days[-1]' days.yaml` | 마지막 요소 조회 |
+| `yq '.days[]' days.yaml` | 모든 요소 순회 |
+| `yq '.days \| length' days.yaml` | 요소 개수 조회 |
+| `yq '.albums[0].name' albums.yaml` | 첫 번째 앨범 이름 조회 |
+| `yq '.albums[1].title' albums.yaml` | 두 번째 앨범 타이틀 조회 |
+| `yq '.albums[0].songs[1].name' albums.yaml` | 첫 번째 앨범의 두 번째 곡 조회 |
+| `yq '.albums[].title' albums.yaml` | 모든 앨범의 타이틀 조회 |
+| `yq '.albums[].songs[].name' albums.yaml` | 모든 앨범의 수록곡 이름 조회 |
+
+YAML에서 가장 중요한 것은 각 기호가 의미하는 데이터 구조를 정확하게 이해하는 것이다.
+
+콜론(`:`)은 Mapping의 Key와 Value를 구분한다.
+
+하이픈(`-`)은 Block Style Sequence의 새로운 요소를 나타낸다.
+
+대괄호(`[ ]`)는 Flow Style Sequence를 나타낸다.
+
+중괄호(`{ }`)는 Flow Style Mapping을 나타낸다.
+
+그리고 들여쓰기는 데이터 사이의 계층 관계를 결정한다.
+
+이러한 기본 문법을 이해하면 Mapping 안에 Sequence가 포함되거나, Sequence 안에 또 다른 Mapping과 Sequence가 중첩된 복잡한 구조도 읽을 수 있다.
+
+특히 Kubernetes Manifest에서는 `containers`, `ports`, `env`, `volumes` 등 많은 필드가 Sequence로 구성되어 있다.
+
+따라서 Mapping과 Sequence의 관계를 이해하는 것은 Kubernetes YAML을 정확하게 작성하고 분석하기 위한 핵심적인 기초 지식이다.
+
+#### 한 줄 요약
+
+> YAML의 Sequence는 여러 값을 순서대로 저장하는 데이터 구조로, 대괄호나 하이픈을 사용해 표현한다. Mapping과 Sequence를 조합하면 복잡한 중첩 데이터를 구성할 수 있으며, yq를 활용하면 특정 인덱스에 접근하거나 조건에 맞는 데이터를 구조적으로 조회하고 수정할 수 있다.
