@@ -4635,3 +4635,2901 @@ YAML에서 가장 중요한 것은 각 기호가 의미하는 데이터 구조�
 #### 한 줄 요약
 
 > YAML의 Sequence는 여러 값을 순서대로 저장하는 데이터 구조로, 대괄호나 하이픈을 사용해 표현한다. Mapping과 Sequence를 조합하면 복잡한 중첩 데이터를 구성할 수 있으며, yq를 활용하면 특정 인덱스에 접근하거나 조건에 맞는 데이터를 구조적으로 조회하고 수정할 수 있다.
+
+## 03. Yaml using Dictionary and Array
+
+### Kubernetes YAML의 Mapping과 Sequence 활용: ConfigMap과 Pod를 이용한 환경 변수 및 설정 파일 관리
+
+Kubernetes에서는 Pod, Deployment, Service, ConfigMap 등 다양한 리소스를 YAML 파일로 정의하고 관리한다.
+
+이러한 YAML 파일을 살펴보면 Mapping과 Sequence가 여러 단계로 중첩되어 있는 것을 확인할 수 있다.
+
+Mapping은 Key-Value 구조로 데이터를 표현하고, Sequence는 여러 개의 데이터를 순서대로 나열하는 구조이다.
+
+예를 들어 다음과 같은 YAML이 있다고 가정하자.
+
+```yaml
+application:
+  name: payment-service
+
+  environments:
+    - name: development
+      port: 8080
+
+    - name: production
+      port: 9090
+```
+
+이 YAML은 다음과 같이 구성되어 있다.
+
+- `application`은 Mapping이다.
+- `name`은 문자열을 Value로 가지는 Mapping의 항목이다.
+- `environments`는 Sequence이다.
+- `environments`의 각 요소는 Mapping이다.
+- 각 Mapping에는 `name`과 `port`가 포함되어 있다.
+
+이처럼 Mapping과 Sequence를 조합하면 복잡한 계층 구조도 표현할 수 있다.
+
+Kubernetes Manifest 역시 이러한 방식으로 구성된다.
+
+특히 ConfigMap은 Mapping과 Sequence의 관계를 이해하기 좋은 리소스이다.
+
+ConfigMap에는 애플리케이션 설정을 Key-Value 형태로 저장하고, Pod에서는 이를 환경 변수나 파일로 사용할 수 있다.
+
+이 과정에서 다음과 같은 YAML 구조가 활용된다.
+
+- ConfigMap의 `metadata`와 `data`는 Mapping이다.
+- Pod의 `containers`는 Sequence이다.
+- `env`는 환경 변수 목록을 표현하는 Sequence이다.
+- `valueFrom`과 `configMapKeyRef`는 중첩된 Mapping이다.
+- `volumeMounts`는 Sequence이다.
+- `volumes`는 Sequence이다.
+- `items`는 ConfigMap에서 파일로 사용할 항목을 정의하는 Sequence이다.
+
+이번에는 ConfigMap과 Pod를 실제로 생성하고, **Mapping과 Sequence가 Kubernetes에서 어떻게 해석되는지, ConfigMap의 값이 컨테이너 내부에 어떻게 전달되는지**를 살펴본다.
+
+---
+
+### ConfigMap이란?
+
+ConfigMap은 Kubernetes에서 애플리케이션의 일반 설정 데이터를 저장하고 관리하기 위한 리소스이다.
+
+애플리케이션을 개발하다 보면 실행 환경에 따라 변경되는 설정들이 존재한다.
+
+예를 들어 다음과 같은 항목이 있다.
+
+- 애플리케이션 실행 환경
+- 로그 레벨
+- 기능 활성화 여부
+- 외부 서비스 주소
+- 파일 이름
+- 사용자에게 표시할 메시지
+- 애플리케이션에서 사용하는 일반 설정값
+
+이러한 설정을 컨테이너 이미지 내부에 직접 포함하면 설정이 변경될 때마다 이미지를 다시 빌드해야 할 수 있다.
+
+예를 들어 다음과 같은 구조를 생각해보자.
+
+```text
+Application Image
+├── Application
+└── Configuration
+```
+
+애플리케이션 코드에는 변경이 없지만 설정값만 변경된 상황에서도 새로운 이미지를 생성해야 한다면 운영 과정이 불필요하게 복잡해진다.
+
+이를 개선하기 위해 애플리케이션 실행 파일과 설정 데이터를 분리할 수 있다.
+
+```mermaid
+flowchart TD
+    A["Container Image"] --> B["Application"]
+
+    C["ConfigMap"] --> D["Configuration Data"]
+
+    B --> E["Running Container"]
+    D --> E
+```
+
+컨테이너 이미지는 애플리케이션 실행에 필요한 코드와 의존성을 제공한다.
+
+ConfigMap은 실행 환경에 필요한 설정을 제공한다.
+
+이렇게 구성하면 동일한 컨테이너 이미지를 사용하면서도 환경에 따라 서로 다른 설정을 주입할 수 있다.
+
+#### ConfigMap의 주요 특징
+
+| 특징 | 설명 |
+|---|---|
+| Key-Value 구조 | 설정 데이터를 이름과 값으로 관리 |
+| 설정 분리 | 애플리케이션 이미지와 설정 데이터 분리 |
+| 환경 변수 지원 | ConfigMap의 값을 컨테이너 환경 변수로 전달 |
+| Volume 지원 | ConfigMap 데이터를 파일로 마운트 |
+| 선언형 관리 | YAML을 통해 생성 및 수정 |
+| Namespace 범위 | 같은 Namespace의 Pod에서 참조 |
+| 일반 설정 관리 | 민감하지 않은 설정 데이터 저장 |
+
+ConfigMap의 `data` 필드에 저장하는 값은 문자열이다.
+
+숫자나 Boolean처럼 보이는 값도 문자열 형태로 저장해야 한다.
+
+또한 ConfigMap은 비밀번호나 인증 토큰을 안전하게 보관하기 위한 리소스가 아니다. 민감한 데이터는 Secret이나 별도의 Secret 관리 시스템을 사용해야 한다.
+
+---
+
+### ConfigMap과 Pod의 관계
+
+ConfigMap은 설정 데이터를 보관하는 리소스이지만, ConfigMap을 생성했다고 해서 모든 Pod에 해당 설정이 자동으로 적용되는 것은 아니다.
+
+Pod가 ConfigMap을 사용하려면 Pod Manifest에서 어떤 ConfigMap의 어떤 데이터를 사용할 것인지 명시해야 한다.
+
+ConfigMap의 값을 컨테이너에 전달하는 대표적인 방법은 다음 두 가지이다.
+
+**첫 번째는 환경 변수로 전달하는 방법이다.**
+
+```text
+ConfigMap
+    ↓
+Key-Value 조회
+    ↓
+Pod Environment Variable
+    ↓
+Application
+```
+
+**두 번째는 Volume을 통해 파일로 전달하는 방법이다.**
+
+```text
+ConfigMap
+    ↓
+Volume
+    ↓
+Container File System
+    ↓
+Application
+```
+
+두 방법을 함께 사용할 수도 있다.
+
+```mermaid
+flowchart TD
+    A["ConfigMap: game-demo"] --> B["Environment Variables"]
+    A --> C["ConfigMap Volume"]
+
+    B --> D["Pod"]
+    C --> D
+
+    D --> E["Container: demo"]
+
+    E --> F["PLAYER_INITIAL_LIVES"]
+    E --> G["UI_PROPERTIES_FILE_NAME"]
+    E --> H["/config/game.properties"]
+    E --> I["/config/user-interface.properties"]
+```
+
+여기서 중요한 것은 **ConfigMap에 저장된 데이터와 컨테이너에서 해당 데이터를 사용하는 방식은 서로 다른 개념**이라는 점이다.
+
+ConfigMap은 단순히 설정값을 저장한다.
+
+실제로 환경 변수로 사용할지, 파일로 사용할지는 Pod의 설정에서 결정한다.
+
+---
+
+### ConfigMap과 Pod를 이용한 전체 구성
+
+이번에는 게임 애플리케이션의 설정을 ConfigMap에 저장하고, 이를 사용하는 Pod를 생성해보자.
+
+ConfigMap에는 다음 정보를 저장한다.
+
+| 설정 | 값 | 용도 |
+|---|---|---|
+| `player_initial_lives` | `"3"` | 플레이어 초기 생명 수 |
+| `ui_properties_file_name` | `"user-interface.properties"` | UI 설정 파일 이름 |
+| `game.properties` | 여러 줄 문자열 | 게임 관련 설정 |
+| `user-interface.properties` | 여러 줄 문자열 | UI 관련 설정 |
+
+Pod에서는 다음과 같이 설정을 사용한다.
+
+| ConfigMap 데이터 | Pod에서 사용하는 방식 | 결과 |
+|---|---|---|
+| `player_initial_lives` | 환경 변수 | `PLAYER_INITIAL_LIVES=3` |
+| `ui_properties_file_name` | 환경 변수 | `UI_PROPERTIES_FILE_NAME=user-interface.properties` |
+| `game.properties` | Volume Mount | `/config/game.properties` |
+| `user-interface.properties` | Volume Mount | `/config/user-interface.properties` |
+
+전체 구조는 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["ConfigMap: game-demo"] --> B["data: Mapping"]
+
+    B --> C["player_initial_lives"]
+    B --> D["ui_properties_file_name"]
+    B --> E["game.properties"]
+    B --> F["user-interface.properties"]
+
+    C --> G["Environment Variable"]
+    D --> G
+
+    E --> H["ConfigMap Volume"]
+    F --> H
+
+    G --> I["Pod: configmap-demo-pod"]
+    H --> I
+
+    I --> J["Container: demo"]
+```
+
+이번 예제에서 가장 중요한 부분은 ConfigMap 하나의 데이터를 서로 다른 방식으로 사용하는 것이다.
+
+단순한 설정값은 환경 변수로 전달하고, 여러 줄로 구성된 설정은 파일 형태로 마운트한다.
+
+---
+
+### 실습 환경 구성
+
+다음 환경을 기준으로 진행한다.
+
+| 항목 | 환경 |
+|---|---|
+| 운영체제 | Ubuntu Linux 또는 macOS |
+| Kubernetes | K3s, Minikube, Kind 또는 일반 Kubernetes 클러스터 |
+| CLI | kubectl |
+| YAML 처리 도구 | yq v4 계열 |
+| Container Image | Alpine Linux |
+| 리소스 | ConfigMap, Pod |
+
+이미 Kubernetes 클러스터가 있다면 별도의 클러스터를 설치할 필요는 없다.
+
+먼저 클러스터에 연결할 수 있는지 확인한다.
+
+```bash
+kubectl get nodes
+```
+
+정상적으로 연결되었다면 다음과 같은 결과가 출력된다.
+
+```text
+NAME       STATUS   ROLES           AGE   VERSION
+worker-1   Ready    <none>          10d   v1.xx.x
+```
+
+`STATUS`가 `Ready`라면 해당 Node가 정상적으로 동작하고 있다는 의미이다.
+
+현재 작업 중인 Namespace도 확인한다.
+
+```bash
+kubectl config view --minify \
+  -o jsonpath='{..namespace}{"\n"}'
+```
+
+Namespace가 지정되어 있지 않다면 일반적으로 `default` Namespace가 사용된다.
+
+이번 예제에서는 ConfigMap과 Pod를 같은 Namespace에 생성한다.
+
+ConfigMap을 참조하는 Pod는 해당 ConfigMap과 동일한 Namespace에 있어야 한다.
+
+---
+
+### ConfigMap YAML 작성하기
+
+먼저 다음 파일을 작성한다.
+
+**game-demo-configmap.yaml**
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+
+metadata:
+  name: game-demo
+
+data:
+  # 단일 문자열 값
+  player_initial_lives: "3"
+  ui_properties_file_name: "user-interface.properties"
+
+  # 게임 설정 파일
+  game.properties: |
+    enemy.types=aliens,monsters
+    player.maximum-lives=5
+
+  # 사용자 인터페이스 설정 파일
+  user-interface.properties: |
+    color.good=purple
+    color.bad=yellow
+    allow.textmode=true
+```
+
+이 YAML은 `game-demo`라는 이름의 ConfigMap을 정의한다.
+
+전체 구조를 살펴보면 다음과 같다.
+
+```text
+ConfigMap
+│
+├── apiVersion: v1
+├── kind: ConfigMap
+│
+├── metadata
+│   └── name: game-demo
+│
+└── data
+    ├── player_initial_lives: "3"
+    ├── ui_properties_file_name: "user-interface.properties"
+    ├── game.properties
+    │   ├── enemy.types=aliens,monsters
+    │   └── player.maximum-lives=5
+    │
+    └── user-interface.properties
+        ├── color.good=purple
+        ├── color.bad=yellow
+        └── allow.textmode=true
+```
+
+이제 각 항목을 자세히 살펴보자.
+
+---
+
+### ConfigMap의 apiVersion과 kind
+
+먼저 다음 부분을 살펴보자.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+```
+
+`apiVersion`은 해당 리소스를 처리하는 Kubernetes API 버전을 의미한다.
+
+ConfigMap은 Kubernetes의 Core API Group에 속하므로 `v1`을 사용한다.
+
+`kind`는 생성할 리소스의 종류를 나타낸다.
+
+```yaml
+kind: ConfigMap
+```
+
+이 설정을 통해 Kubernetes는 해당 Manifest가 ConfigMap을 생성하거나 수정하기 위한 설정이라는 사실을 알 수 있다.
+
+여기서 주의할 점은 리소스 이름을 `ConfigMaps`라고 작성하는 것이 아니라 **`ConfigMap`이라고 작성해야 한다는 것**이다.
+
+```yaml
+kind: ConfigMap
+```
+
+Kubernetes 리소스의 `kind`는 API에서 정의된 정확한 이름을 사용해야 한다.
+
+---
+
+### metadata: 리소스의 이름 정의
+
+다음은 `metadata`이다.
+
+```yaml
+metadata:
+  name: game-demo
+```
+
+`metadata`는 Mapping이다.
+
+그 안에는 `name`이라는 Key가 존재한다.
+
+`name`의 Value는 `game-demo`이다.
+
+즉 이 YAML은 다음과 같은 의미를 가진다.
+
+```text
+리소스 종류: ConfigMap
+리소스 이름: game-demo
+```
+
+Kubernetes에서 Pod가 이 ConfigMap을 사용하려면 이름을 정확하게 참조해야 한다.
+
+예를 들어 다음과 같이 작성한다.
+
+```yaml
+configMapKeyRef:
+  name: game-demo
+```
+
+여기서 `game-demo`가 앞서 생성한 ConfigMap의 이름과 일치해야 한다.
+
+---
+
+### data: ConfigMap 설정 데이터
+
+다음 부분이 핵심이다.
+
+```yaml
+data:
+  player_initial_lives: "3"
+  ui_properties_file_name: "user-interface.properties"
+```
+
+`data`는 Mapping이다.
+
+그 안에는 두 개의 Key-Value 쌍이 존재한다.
+
+| Key | Value |
+|---|---|
+| `player_initial_lives` | `"3"` |
+| `ui_properties_file_name` | `"user-interface.properties"` |
+
+여기서 `player_initial_lives`는 플레이어의 초기 생명 수를 의미한다.
+
+그 값은 3이다.
+
+그런데 YAML에서는 숫자를 그대로 작성하지 않고 큰따옴표로 감싸고 있다.
+
+```yaml
+player_initial_lives: "3"
+```
+
+이유는 ConfigMap의 `data` 필드가 문자열 값을 저장하기 때문이다.
+
+다음과 같이 작성하면 YAML 파서는 `3`을 숫자로 해석할 수 있다.
+
+```yaml
+player_initial_lives: 3
+```
+
+하지만 Kubernetes ConfigMap의 `data`는 문자열 값을 기대한다.
+
+따라서 다음처럼 작성하는 것이 올바르다.
+
+```yaml
+player_initial_lives: "3"
+```
+
+#### ConfigMap data의 값은 문자열이다
+
+예를 들어 다음과 같은 값들이 있다고 가정하자.
+
+```yaml
+data:
+  server_port: "8080"
+  debug_enabled: "true"
+  max_connections: "100"
+```
+
+각 값은 화면상으로 숫자나 Boolean처럼 보일 수 있다.
+
+하지만 ConfigMap의 `data`에서는 모두 문자열이다.
+
+```text
+"8080" → String
+"true" → String
+"100"  → String
+```
+
+애플리케이션에서 숫자나 Boolean으로 사용해야 한다면 해당 값을 읽은 후 적절한 타입으로 변환해야 한다.
+
+---
+
+### ConfigMap에 여러 줄 문자열 저장하기
+
+이번에는 다음 부분을 살펴보자.
+
+```yaml
+game.properties: |
+  enemy.types=aliens,monsters
+  player.maximum-lives=5
+```
+
+여기서는 `game.properties`라는 Key를 사용한다.
+
+Value는 여러 줄로 구성된 문자열이다.
+
+파이프(`|`)는 YAML의 Literal Block Scalar 문법이다.
+
+이 문법을 사용하면 여러 줄의 문자열을 줄바꿈을 유지한 상태로 표현할 수 있다.
+
+실제 값은 다음과 같다.
+
+```properties
+enemy.types=aliens,monsters
+player.maximum-lives=5
+```
+
+다음 부분도 같은 방식이다.
+
+```yaml
+user-interface.properties: |
+  color.good=purple
+  color.bad=yellow
+  allow.textmode=true
+```
+
+실제 값은 다음과 같다.
+
+```properties
+color.good=purple
+color.bad=yellow
+allow.textmode=true
+```
+
+여기서 중요한 점이 있다.
+
+**ConfigMap에 `game.properties`라는 Key를 작성했다고 해서 Kubernetes가 즉시 파일을 생성하는 것은 아니다.**
+
+ConfigMap의 `data`에 저장된 값은 단순한 문자열이다.
+
+이 문자열을 파일로 사용할지, 환경 변수로 사용할지는 해당 ConfigMap을 참조하는 Pod의 설정에 따라 결정된다.
+
+예를 들어 `game.properties`라는 Key를 환경 변수로 사용하도록 설정할 수도 있다.
+
+반대로 `player_initial_lives`라는 Key를 파일로 마운트하도록 설정할 수도 있다.
+
+ConfigMap 자체는 단일 문자열과 여러 줄 문자열을 특별히 구분하여 처리하지 않는다. Pod가 어떤 방식으로 데이터를 사용하는지가 중요하다.
+
+---
+
+### ConfigMap에서 Mapping 구조 분석하기
+
+이제 ConfigMap의 전체 YAML 구조를 데이터 타입 관점에서 살펴보자.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+
+metadata:
+  name: game-demo
+
+data:
+  player_initial_lives: "3"
+  ui_properties_file_name: "user-interface.properties"
+
+  game.properties: |
+    enemy.types=aliens,monsters
+    player.maximum-lives=5
+
+  user-interface.properties: |
+    color.good=purple
+    color.bad=yellow
+    allow.textmode=true
+```
+
+각 항목의 데이터 타입은 다음과 같다.
+
+| 필드 | 데이터 타입 | 설명 |
+|---|---|---|
+| `apiVersion` | Scalar | API 버전 |
+| `kind` | Scalar | 리소스 종류 |
+| `metadata` | Mapping | 메타데이터 |
+| `metadata.name` | Scalar | ConfigMap 이름 |
+| `data` | Mapping | 설정 데이터 |
+| `data.player_initial_lives` | Scalar | 문자열 `"3"` |
+| `data.ui_properties_file_name` | Scalar | 설정 파일 이름 |
+| `data.game.properties` | Scalar | 여러 줄 문자열 |
+| `data.user-interface.properties` | Scalar | 여러 줄 문자열 |
+
+여기서 `game.properties`는 하나의 Key이다.
+
+`game`이라는 Mapping 안에 `properties`라는 Key가 존재하는 구조가 아니다.
+
+따라서 yq로 접근할 때는 이 차이를 이해해야 한다.
+
+예를 들어 다음 표현은 의도한 Key에 접근하는 방법이 아니다.
+
+```bash
+yq '.data.game.properties' game-demo-configmap.yaml
+```
+
+이 표현은 `data` 아래의 `game`이라는 Mapping에서 `properties`를 찾으려고 한다.
+
+하지만 실제 Key는 `game.properties`라는 하나의 문자열이다.
+
+따라서 다음과 같이 작성해야 한다.
+
+```bash
+yq '.data["game.properties"]' game-demo-configmap.yaml
+```
+
+이렇게 하면 정확한 Key를 기준으로 값을 조회할 수 있다.
+
+---
+
+### yq로 ConfigMap 구조 확인하기
+
+작성한 ConfigMap을 Kubernetes에 적용하기 전에 yq로 데이터 구조를 확인해보자.
+
+#### 전체 YAML 조회
+
+```bash
+yq '.' game-demo-configmap.yaml
+```
+
+이 명령어는 전체 YAML 문서를 조회한다.
+
+#### ConfigMap 이름 조회
+
+```bash
+yq '.metadata.name' game-demo-configmap.yaml
+```
+
+출력:
+
+```text
+game-demo
+```
+
+#### player_initial_lives 조회
+
+```bash
+yq '.data.player_initial_lives' game-demo-configmap.yaml
+```
+
+출력:
+
+```text
+3
+```
+
+여기서 출력이 `3`이라고 해서 실제 데이터 타입이 숫자인 것은 아니다.
+
+데이터 타입을 확인하면 다음과 같다.
+
+```bash
+yq '.data.player_initial_lives | tag' game-demo-configmap.yaml
+```
+
+출력:
+
+```text
+!!str
+```
+
+`!!str`은 문자열 타입을 의미한다.
+
+#### game.properties 조회
+
+```bash
+yq '.data["game.properties"]' game-demo-configmap.yaml
+```
+
+출력되는 문자열의 내용은 다음과 같다.
+
+```properties
+enemy.types=aliens,monsters
+player.maximum-lives=5
+```
+
+#### user-interface.properties 조회
+
+```bash
+yq '.data["user-interface.properties"]' game-demo-configmap.yaml
+```
+
+출력되는 문자열의 내용은 다음과 같다.
+
+```properties
+color.good=purple
+color.bad=yellow
+allow.textmode=true
+```
+
+이처럼 yq를 사용하면 YAML의 중첩된 Mapping에서 원하는 값을 정확하게 추출할 수 있다.
+
+---
+
+### ConfigMap 생성하기
+
+이제 작성한 YAML을 Kubernetes에 적용해보자.
+
+```bash
+kubectl apply -f game-demo-configmap.yaml
+```
+
+정상적으로 적용되면 다음과 같은 메시지가 출력된다.
+
+```text
+configmap/game-demo created
+```
+
+이 명령어는 Kubernetes API Server에 `game-demo`라는 ConfigMap을 생성한다.
+
+전체 과정을 표현하면 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["game-demo-configmap.yaml"] --> B["kubectl apply"]
+    B --> C["Kubernetes API Server"]
+    C --> D["ConfigMap: game-demo"]
+    D --> E["data 필드 저장"]
+```
+
+#### ConfigMap 목록 확인
+
+```bash
+kubectl get configmaps
+```
+
+예상 출력:
+
+```text
+NAME               DATA   AGE
+game-demo          4      10s
+kube-root-ca.crt   1      10d
+```
+
+`game-demo`의 `DATA`는 4이다.
+
+이는 ConfigMap의 `data`에 네 개의 Key가 존재하기 때문이다.
+
+```text
+1. player_initial_lives
+2. ui_properties_file_name
+3. game.properties
+4. user-interface.properties
+```
+
+#### 특정 ConfigMap 확인
+
+```bash
+kubectl get configmap game-demo
+```
+
+출력 예시:
+
+```text
+NAME        DATA   AGE
+game-demo   4      20s
+```
+
+#### ConfigMap 상세 정보 확인
+
+```bash
+kubectl describe configmap game-demo
+```
+
+이 명령어는 ConfigMap의 이름과 데이터 항목을 확인하는 데 사용한다.
+
+또는 다음 명령어를 사용할 수 있다.
+
+```bash
+kubectl get configmap game-demo -o yaml
+```
+
+이 명령어는 Kubernetes API Server에 저장된 ConfigMap 객체를 YAML 형식으로 출력한다.
+
+---
+
+### ConfigMap을 사용하는 Pod 작성하기
+
+이제 앞에서 생성한 ConfigMap을 사용하는 Pod를 작성해보자.
+
+Pod에서는 다음 두 가지 방식으로 ConfigMap을 사용한다.
+
+1. ConfigMap의 특정 Key를 환경 변수로 주입한다.
+2. ConfigMap의 특정 Key를 파일로 마운트한다.
+
+이를 하나의 Pod에서 모두 사용한다.
+
+**configmap-demo-pod.yaml**
+
+```yaml
+apiVersion: v1
+kind: Pod
+
+metadata:
+  name: configmap-demo-pod
+
+spec:
+  containers:
+    - name: demo
+      image: alpine:3.21
+
+      command:
+        - sleep
+        - "3600"
+
+      env:
+        - name: PLAYER_INITIAL_LIVES
+          valueFrom:
+            configMapKeyRef:
+              name: game-demo
+              key: player_initial_lives
+
+        - name: UI_PROPERTIES_FILE_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: game-demo
+              key: ui_properties_file_name
+
+      volumeMounts:
+        - name: config
+          mountPath: /config
+          readOnly: true
+
+  volumes:
+    - name: config
+      configMap:
+        name: game-demo
+
+        items:
+          - key: game.properties
+            path: game.properties
+
+          - key: user-interface.properties
+            path: user-interface.properties
+```
+
+이 YAML은 `configmap-demo-pod`라는 Pod를 생성한다.
+
+Pod 내부에는 `demo`라는 컨테이너가 하나 존재한다.
+
+컨테이너는 Alpine Linux 이미지를 사용하고, `sleep 3600` 명령을 실행한다.
+
+또한 ConfigMap의 값을 환경 변수와 파일로 전달받도록 설정되어 있다.
+
+이 YAML은 Mapping과 Sequence가 여러 단계로 중첩된 구조이므로 각 항목을 하나씩 분석해보자.
+
+---
+
+### Pod YAML의 기본 구조
+
+먼저 다음 부분을 살펴보자.
+
+```yaml
+apiVersion: v1
+kind: Pod
+
+metadata:
+  name: configmap-demo-pod
+```
+
+이 설정의 의미는 다음과 같다.
+
+| 필드 | 값 | 의미 |
+|---|---|---|
+| `apiVersion` | `v1` | Pod API 버전 |
+| `kind` | `Pod` | 생성할 리소스 종류 |
+| `metadata.name` | `configmap-demo-pod` | Pod 이름 |
+
+다음으로 `spec`이 등장한다.
+
+```yaml
+spec:
+```
+
+`spec`은 Pod의 원하는 상태를 정의하는 Mapping이다.
+
+그 아래에는 다음 설정들이 포함된다.
+
+```text
+spec
+│
+├── containers
+│
+└── volumes
+```
+
+여기서 `containers`와 `volumes`는 같은 계층에 존재한다.
+
+다만 두 항목의 Value는 모두 Sequence이다.
+
+---
+
+### containers: 컨테이너 목록
+
+다음 설정을 살펴보자.
+
+```yaml
+containers:
+  - name: demo
+    image: alpine:3.21
+```
+
+`containers`는 Sequence이다.
+
+하이픈(`-`)을 사용하여 첫 번째 컨테이너를 정의한다.
+
+첫 번째 요소는 다음 Mapping을 포함한다.
+
+```yaml
+name: demo
+image: alpine:3.21
+```
+
+이를 구조적으로 표현하면 다음과 같다.
+
+```text
+containers
+│
+└── [0]
+     ├── name: demo
+     └── image: alpine:3.21
+```
+
+여기서 `containers`가 Sequence인 이유는 하나의 Pod에 여러 컨테이너를 포함할 수 있기 때문이다.
+
+예를 들어 다음과 같이 작성할 수도 있다.
+
+```yaml
+containers:
+  - name: application
+    image: nginx:1.27
+
+  - name: sidecar
+    image: alpine:3.21
+    command: ["sleep", "3600"]
+```
+
+이 경우 Pod에는 두 개의 일반 컨테이너가 정의된다.
+
+하지만 이번 예제에서는 `demo` 컨테이너 하나만 사용한다.
+
+---
+
+### command: Sequence를 이용한 실행 명령 정의
+
+다음 설정을 살펴보자.
+
+```yaml
+command:
+  - sleep
+  - "3600"
+```
+
+`command`는 Sequence이다.
+
+각 요소는 실행할 프로그램과 인자를 나타내는 문자열이다.
+
+이 설정은 다음 명령을 실행하는 것과 비슷하다.
+
+```bash
+sleep 3600
+```
+
+즉 컨테이너가 시작된 후 3,600초 동안 대기한다.
+
+3,600초는 1시간이다.
+
+여기서 `sleep`을 사용하는 이유는 컨테이너가 바로 종료되지 않도록 하기 위해서이다.
+
+실제로 게임 애플리케이션을 실행하는 것이 아니라 ConfigMap이 컨테이너 내부에 어떻게 전달되었는지 확인하기 위한 구조이다.
+
+#### command를 Flow Style로 작성하기
+
+YAML의 Sequence는 대괄호를 사용하여 한 줄로 작성할 수도 있다.
+
+```yaml
+command: ["sleep", "3600"]
+```
+
+이 설정은 앞에서 작성한 Block Style과 동일한 구조이다.
+
+**Block Style**
+
+```yaml
+command:
+  - sleep
+  - "3600"
+```
+
+**Flow Style**
+
+```yaml
+command: ["sleep", "3600"]
+```
+
+두 방식 모두 Sequence에 두 개의 문자열을 저장한다.
+
+여기서 `"3600"`을 문자열로 작성했다는 점도 중요하다.
+
+Kubernetes의 `command` 필드는 문자열 목록을 기대하기 때문이다.
+
+따라서 다음처럼 숫자로 작성하는 것은 올바르지 않다.
+
+```yaml
+command:
+  - sleep
+  - 3600
+```
+
+YAML 문법 자체는 유효할 수 있지만 Kubernetes API에서 기대하는 데이터 타입과 일치하지 않는다.
+
+---
+
+### env: 컨테이너 환경 변수 설정
+
+이제 ConfigMap을 사용하는 핵심 부분을 살펴보자.
+
+```yaml
+env:
+  - name: PLAYER_INITIAL_LIVES
+    valueFrom:
+      configMapKeyRef:
+        name: game-demo
+        key: player_initial_lives
+
+  - name: UI_PROPERTIES_FILE_NAME
+    valueFrom:
+      configMapKeyRef:
+        name: game-demo
+        key: ui_properties_file_name
+```
+
+`env`는 Sequence이다.
+
+그 안에 두 개의 Mapping이 존재한다.
+
+첫 번째 Mapping은 `PLAYER_INITIAL_LIVES`라는 환경 변수를 정의한다.
+
+두 번째 Mapping은 `UI_PROPERTIES_FILE_NAME`이라는 환경 변수를 정의한다.
+
+```mermaid
+flowchart TD
+    A["env: Sequence"] --> B["Environment 0"]
+    A --> C["Environment 1"]
+
+    B --> D["name: PLAYER_INITIAL_LIVES"]
+    B --> E["valueFrom"]
+
+    C --> F["name: UI_PROPERTIES_FILE_NAME"]
+    C --> G["valueFrom"]
+
+    E --> H["configMapKeyRef"]
+    G --> I["configMapKeyRef"]
+```
+
+이 부분을 이해하려면 `name`, `valueFrom`, `configMapKeyRef`의 역할을 구분해야 한다.
+
+---
+
+### name: 컨테이너에서 사용할 환경 변수 이름
+
+다음 설정을 살펴보자.
+
+```yaml
+- name: PLAYER_INITIAL_LIVES
+```
+
+이 값은 컨테이너 내부에 생성할 환경 변수의 이름이다.
+
+즉 컨테이너 내부에서는 다음과 같은 환경 변수를 사용할 수 있다.
+
+```text
+PLAYER_INITIAL_LIVES
+```
+
+여기서 중요한 점은 환경 변수 이름과 ConfigMap의 Key 이름이 반드시 같을 필요는 없다는 것이다.
+
+ConfigMap에서는 다음 이름을 사용한다.
+
+```yaml
+player_initial_lives: "3"
+```
+
+하지만 Pod에서는 다음 이름으로 환경 변수를 생성한다.
+
+```yaml
+name: PLAYER_INITIAL_LIVES
+```
+
+따라서 다음과 같이 연결된다.
+
+```text
+ConfigMap Key
+player_initial_lives
+        ↓
+Pod Environment Variable
+PLAYER_INITIAL_LIVES
+```
+
+이러한 방식으로 ConfigMap의 Key 이름과 실제 애플리케이션에서 사용하는 환경 변수 이름을 분리할 수 있다.
+
+---
+
+### valueFrom: 다른 리소스에서 값 가져오기
+
+다음 부분을 살펴보자.
+
+```yaml
+valueFrom:
+  configMapKeyRef:
+    name: game-demo
+    key: player_initial_lives
+```
+
+`valueFrom`은 환경 변수의 값을 다른 곳에서 가져오겠다는 설정이다.
+
+여기서는 ConfigMap에서 값을 가져온다.
+
+각 필드의 의미는 다음과 같다.
+
+| 필드 | 의미 |
+|---|---|
+| `valueFrom` | 외부 참조를 통해 환경 변수 값 설정 |
+| `configMapKeyRef` | ConfigMap의 특정 Key 참조 |
+| `name` | 참조할 ConfigMap 이름 |
+| `key` | ConfigMap에서 가져올 Key |
+
+이 설정은 다음 의미를 가진다.
+
+```text
+ConfigMap 이름: game-demo
+Key 이름: player_initial_lives
+```
+
+앞서 작성한 ConfigMap에는 다음 값이 존재한다.
+
+```yaml
+player_initial_lives: "3"
+```
+
+따라서 Pod의 환경 변수에는 다음 값이 전달된다.
+
+```text
+PLAYER_INITIAL_LIVES=3
+```
+
+전체 과정을 표현하면 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["ConfigMap: game-demo"] --> B["data"]
+    B --> C["player_initial_lives: 3"]
+
+    C --> D["configMapKeyRef"]
+    D --> E["Environment Variable"]
+    E --> F["PLAYER_INITIAL_LIVES=3"]
+```
+
+두 번째 환경 변수도 동일한 방식으로 동작한다.
+
+```yaml
+- name: UI_PROPERTIES_FILE_NAME
+  valueFrom:
+    configMapKeyRef:
+      name: game-demo
+      key: ui_properties_file_name
+```
+
+ConfigMap에는 다음 값이 존재한다.
+
+```yaml
+ui_properties_file_name: "user-interface.properties"
+```
+
+따라서 컨테이너 내부에는 다음 환경 변수가 생성된다.
+
+```text
+UI_PROPERTIES_FILE_NAME=user-interface.properties
+```
+
+---
+
+### 환경 변수를 직접 지정하는 방법과 ConfigMap을 참조하는 방법
+
+Kubernetes에서는 환경 변수를 직접 지정할 수도 있다.
+
+예를 들어 다음과 같다.
+
+```yaml
+env:
+  - name: PLAYER_INITIAL_LIVES
+    value: "3"
+```
+
+이 방식은 환경 변수 값을 Pod Manifest에 직접 작성한다.
+
+반면 ConfigMap을 사용하면 다음처럼 작성할 수 있다.
+
+```yaml
+env:
+  - name: PLAYER_INITIAL_LIVES
+    valueFrom:
+      configMapKeyRef:
+        name: game-demo
+        key: player_initial_lives
+```
+
+두 설정은 컨테이너 내부에서 동일한 환경 변수 값을 만들 수 있다.
+
+하지만 설정을 관리하는 방식에는 차이가 있다.
+
+| 구분 | 직접 지정 | ConfigMap 참조 |
+|---|---|---|
+| 설정 위치 | Pod Manifest | ConfigMap |
+| 주요 필드 | `value` | `valueFrom` |
+| 설정 재사용 | Pod마다 직접 정의 | 여러 Pod에서 참조 가능 |
+| 환경별 설정 분리 | 상대적으로 불편 | 비교적 편리 |
+| 변경 관리 | Pod Template 변경 필요 | ConfigMap을 별도로 관리 가능 |
+
+ConfigMap을 사용하면 공통 설정을 여러 Pod에서 재사용할 수 있다.
+
+다만 ConfigMap을 변경했다고 해서 실행 중인 컨테이너의 환경 변수가 자동으로 변경되는 것은 아니다.
+
+이 부분은 실제 운영에서 중요하므로 뒤에서 자세히 살펴본다.
+
+---
+
+### volumeMounts: 컨테이너 내부에 Volume 연결하기
+
+다음 설정을 살펴보자.
+
+```yaml
+volumeMounts:
+  - name: config
+    mountPath: /config
+    readOnly: true
+```
+
+`volumeMounts`는 Sequence이다.
+
+그 안에는 하나의 Mapping이 존재한다.
+
+각 필드의 의미는 다음과 같다.
+
+| 필드 | 의미 |
+|---|---|
+| `name` | 마운트할 Volume의 이름 |
+| `mountPath` | 컨테이너 내부의 마운트 경로 |
+| `readOnly` | 해당 마운트를 읽기 전용으로 지정 |
+
+여기서 중요한 값은 다음 두 가지이다.
+
+```yaml
+name: config
+mountPath: /config
+```
+
+`name: config`는 Pod에 정의된 Volume 중 `config`라는 이름의 Volume을 사용하겠다는 의미이다.
+
+`mountPath: /config`는 해당 Volume을 컨테이너 내부의 `/config` 경로에 연결하겠다는 의미이다.
+
+```mermaid
+flowchart LR
+    A["Pod Volume: config"] --> B["volumeMounts"]
+    B --> C["Container"]
+    C --> D["/config"]
+```
+
+여기서 `readOnly: true`를 설정했기 때문에 컨테이너에서는 해당 경로를 읽기 전용으로 사용한다.
+
+ConfigMap Volume은 Kubernetes에서 기본적으로 읽기 전용으로 제공되므로, `readOnly: true`는 의도를 명시하는 역할도 한다.
+
+---
+
+### volumes: Pod에서 사용할 Volume 정의
+
+다음 설정을 살펴보자.
+
+```yaml
+volumes:
+  - name: config
+    configMap:
+      name: game-demo
+```
+
+`volumes`는 Pod Spec에 존재한다.
+
+`containers`와 같은 계층이다.
+
+이 점이 중요하다.
+
+```yaml
+spec:
+  containers:
+    - name: demo
+      image: alpine:3.21
+
+  volumes:
+    - name: config
+      configMap:
+        name: game-demo
+```
+
+`volumes`는 특정 컨테이너 내부에 정의하는 것이 아니다.
+
+Pod에서 사용할 Volume을 정의하는 영역이다.
+
+반면 `volumeMounts`는 각 컨테이너 내부에 정의한다.
+
+따라서 다음처럼 이해할 수 있다.
+
+**volumes**
+
+Pod에서 사용할 Volume 자체를 정의한다.
+
+**volumeMounts**
+
+Pod에 정의된 Volume을 특정 컨테이너의 어느 경로에 연결할지 정의한다.
+
+```mermaid
+flowchart TD
+    A["Pod"] --> B["volumes"]
+    A --> C["containers"]
+
+    B --> D["Volume: config"]
+
+    C --> E["Container: demo"]
+    E --> F["volumeMounts"]
+
+    F --> G["name: config"]
+    F --> H["mountPath: /config"]
+
+    D --> G
+```
+
+여기서 `volumes.name`과 `volumeMounts.name`은 일치해야 한다.
+
+예를 들어 다음과 같이 작성하면 연결할 Volume을 찾을 수 없다.
+
+```yaml
+volumeMounts:
+  - name: config-volume
+    mountPath: /config
+
+volumes:
+  - name: config
+    configMap:
+      name: game-demo
+```
+
+`volumeMounts`에서는 `config-volume`을 참조하지만 실제 Volume 이름은 `config`이기 때문이다.
+
+올바른 설정은 다음과 같다.
+
+```yaml
+volumeMounts:
+  - name: config
+    mountPath: /config
+
+volumes:
+  - name: config
+    configMap:
+      name: game-demo
+```
+
+---
+
+### configMap: Volume의 데이터 원본 지정
+
+이번에는 다음 부분을 살펴보자.
+
+```yaml
+volumes:
+  - name: config
+    configMap:
+      name: game-demo
+```
+
+이 설정은 `config`라는 이름의 Volume이 `game-demo` ConfigMap을 데이터 원본으로 사용하도록 지정한다.
+
+```mermaid
+flowchart TD
+    A["ConfigMap: game-demo"] --> B["Pod Volume: config"]
+    B --> C["Container Mount: /config"]
+```
+
+이렇게 하면 ConfigMap의 데이터를 컨테이너 파일 시스템에 제공할 수 있다.
+
+다만 ConfigMap의 모든 Key를 파일로 마운트할지, 일부 Key만 사용할지는 `items` 설정으로 제어할 수 있다.
+
+---
+
+### items: ConfigMap에서 사용할 Key 선택하기
+
+다음 설정을 살펴보자.
+
+```yaml
+items:
+  - key: game.properties
+    path: game.properties
+
+  - key: user-interface.properties
+    path: user-interface.properties
+```
+
+`items`는 Sequence이다.
+
+두 개의 Mapping이 포함되어 있다.
+
+첫 번째 Mapping은 다음과 같다.
+
+```yaml
+- key: game.properties
+  path: game.properties
+```
+
+두 번째 Mapping은 다음과 같다.
+
+```yaml
+- key: user-interface.properties
+  path: user-interface.properties
+```
+
+각 필드의 의미는 다음과 같다.
+
+| 필드 | 의미 |
+|---|---|
+| `key` | ConfigMap에서 가져올 데이터의 Key |
+| `path` | Volume 내부에서 생성할 상대 파일 경로 |
+
+앞서 작성한 ConfigMap에는 네 개의 Key가 존재한다.
+
+```text
+player_initial_lives
+ui_properties_file_name
+game.properties
+user-interface.properties
+```
+
+하지만 `items`에서는 두 개의 Key만 선택했다.
+
+따라서 Volume에는 다음 두 파일만 생성된다.
+
+```text
+game.properties
+user-interface.properties
+```
+
+이렇게 선택한 파일은 `mountPath`와 결합되어 최종 경로가 결정된다.
+
+```yaml
+mountPath: /config
+```
+
+따라서 다음 경로에 파일이 제공된다.
+
+```text
+/config/game.properties
+/config/user-interface.properties
+```
+
+이를 구조적으로 표현하면 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["ConfigMap: game-demo"] --> B["game.properties"]
+    A --> C["user-interface.properties"]
+
+    B --> D["items"]
+    C --> D
+
+    D --> E["Volume: config"]
+    E --> F["mountPath: /config"]
+
+    F --> G["/config/game.properties"]
+    F --> H["/config/user-interface.properties"]
+```
+
+여기서 `path`는 컨테이너의 절대 경로가 아니라 Volume 내부의 상대 경로이다.
+
+예를 들어 다음과 같이 작성할 수도 있다.
+
+```yaml
+items:
+  - key: game.properties
+    path: settings/game.properties
+```
+
+`mountPath`가 `/config`라면 최종 경로는 다음과 같다.
+
+```text
+/config/settings/game.properties
+```
+
+이처럼 ConfigMap의 Key와 컨테이너 내부의 파일 이름 및 경로를 분리할 수 있다.
+
+---
+
+### items를 생략하면 어떻게 될까?
+
+이번 예제에서는 `items`를 사용하여 두 개의 Key만 선택했다.
+
+그렇다면 `items`를 작성하지 않으면 어떻게 될까?
+
+다음 설정을 살펴보자.
+
+```yaml
+volumes:
+  - name: config
+    configMap:
+      name: game-demo
+```
+
+이 경우 ConfigMap의 모든 `data` Key가 파일로 제공된다.
+
+앞서 작성한 ConfigMap에는 네 개의 Key가 있으므로 다음 파일들이 생성된다.
+
+```text
+/config/
+├── player_initial_lives
+├── ui_properties_file_name
+├── game.properties
+└── user-interface.properties
+```
+
+반면 `items`를 명시하면 선택된 Key만 파일로 제공된다.
+
+```yaml
+items:
+  - key: game.properties
+    path: game.properties
+
+  - key: user-interface.properties
+    path: user-interface.properties
+```
+
+결과는 다음과 같다.
+
+```text
+/config/
+├── game.properties
+└── user-interface.properties
+```
+
+즉 `items`는 ConfigMap의 데이터 중 파일로 제공할 항목을 선택하는 역할을 한다.
+
+---
+
+### ConfigMap과 Pod YAML의 Mapping·Sequence 구조 분석
+
+지금까지 살펴본 Pod YAML을 전체적으로 분석해보자.
+
+```yaml
+apiVersion: v1
+kind: Pod
+
+metadata:
+  name: configmap-demo-pod
+
+spec:
+  containers:
+    - name: demo
+      image: alpine:3.21
+
+      command:
+        - sleep
+        - "3600"
+
+      env:
+        - name: PLAYER_INITIAL_LIVES
+          valueFrom:
+            configMapKeyRef:
+              name: game-demo
+              key: player_initial_lives
+
+        - name: UI_PROPERTIES_FILE_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: game-demo
+              key: ui_properties_file_name
+
+      volumeMounts:
+        - name: config
+          mountPath: /config
+          readOnly: true
+
+  volumes:
+    - name: config
+      configMap:
+        name: game-demo
+
+        items:
+          - key: game.properties
+            path: game.properties
+
+          - key: user-interface.properties
+            path: user-interface.properties
+```
+
+각 항목의 데이터 타입은 다음과 같다.
+
+| 필드 | 데이터 타입 | 설명 |
+|---|---|---|
+| `spec` | Mapping | Pod 실행 설정 |
+| `spec.containers` | Sequence | 컨테이너 목록 |
+| `containers[0]` | Mapping | 첫 번째 컨테이너 정보 |
+| `command` | Sequence | 실행 명령 및 인자 |
+| `env` | Sequence | 환경 변수 목록 |
+| `env[0]` | Mapping | 첫 번째 환경 변수 |
+| `valueFrom` | Mapping | 값의 참조 정보 |
+| `configMapKeyRef` | Mapping | ConfigMap 참조 정보 |
+| `volumeMounts` | Sequence | Volume 마운트 목록 |
+| `volumeMounts[0]` | Mapping | 첫 번째 마운트 정보 |
+| `volumes` | Sequence | Pod Volume 목록 |
+| `volumes[0]` | Mapping | 첫 번째 Volume |
+| `configMap` | Mapping | ConfigMap Volume 설정 |
+| `items` | Sequence | 파일로 사용할 ConfigMap Key 목록 |
+| `items[0]` | Mapping | 첫 번째 파일 매핑 |
+
+이 구조를 Mermaid로 표현하면 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["Pod"] --> B["spec: Mapping"]
+
+    B --> C["containers: Sequence"]
+    B --> D["volumes: Sequence"]
+
+    C --> E["Container 0: Mapping"]
+
+    E --> F["command: Sequence"]
+    E --> G["env: Sequence"]
+    E --> H["volumeMounts: Sequence"]
+
+    G --> I["Environment 0: Mapping"]
+    G --> J["Environment 1: Mapping"]
+
+    I --> K["valueFrom: Mapping"]
+    K --> L["configMapKeyRef: Mapping"]
+
+    H --> M["Mount 0: Mapping"]
+
+    D --> N["Volume 0: Mapping"]
+    N --> O["configMap: Mapping"]
+    O --> P["items: Sequence"]
+
+    P --> Q["File Mapping 0"]
+    P --> R["File Mapping 1"]
+```
+
+처음에는 복잡해 보일 수 있지만, 실제로는 Mapping과 Sequence가 반복적으로 등장하는 구조이다.
+
+이 두 가지를 정확하게 구분하면 Kubernetes Manifest의 계층 관계를 이해할 수 있다.
+
+---
+
+### Pod 생성하기
+
+이제 작성한 Pod Manifest를 Kubernetes에 적용해보자.
+
+먼저 ConfigMap이 존재하는지 확인한다.
+
+```bash
+kubectl get configmap game-demo
+```
+
+예상 출력:
+
+```text
+NAME        DATA   AGE
+game-demo   4      5m
+```
+
+ConfigMap이 정상적으로 생성되었다면 Pod를 생성한다.
+
+```bash
+kubectl apply -f configmap-demo-pod.yaml
+```
+
+정상적으로 적용되면 다음과 같은 메시지가 출력된다.
+
+```text
+pod/configmap-demo-pod created
+```
+
+Pod 상태를 확인한다.
+
+```bash
+kubectl get pods
+```
+
+예상 출력:
+
+```text
+NAME                 READY   STATUS    RESTARTS   AGE
+configmap-demo-pod   1/1     Running   0          15s
+```
+
+처음에는 이미지 다운로드와 컨테이너 생성 때문에 `Pending` 또는 `ContainerCreating` 상태가 나타날 수 있다.
+
+정상적으로 준비될 때까지 기다리려면 다음 명령어를 사용할 수 있다.
+
+```bash
+kubectl wait \
+  --for=condition=Ready \
+  pod/configmap-demo-pod \
+  --timeout=120s
+```
+
+정상적으로 Ready 상태가 되면 다음과 같은 메시지가 출력된다.
+
+```text
+pod/configmap-demo-pod condition met
+```
+
+---
+
+### kubectl describe로 Pod 설정 확인하기
+
+Pod가 생성되었다면 상세 정보를 확인해보자.
+
+```bash
+kubectl describe pod configmap-demo-pod
+```
+
+이 명령어는 Pod의 실행 상태와 설정 정보를 확인하는 데 사용한다.
+
+출력에는 다음 항목들이 포함될 수 있다.
+
+```text
+Containers:
+  demo:
+    Image: alpine:3.21
+
+    Command:
+      sleep
+      3600
+
+    Environment:
+      PLAYER_INITIAL_LIVES:
+        <set to the key 'player_initial_lives'
+         of config map 'game-demo'>
+
+      UI_PROPERTIES_FILE_NAME:
+        <set to the key 'ui_properties_file_name'
+         of config map 'game-demo'>
+
+    Mounts:
+      /config from config (ro)
+```
+
+실제 출력 형식은 Kubernetes 버전에 따라 조금씩 다를 수 있다.
+
+여기서 중요한 부분은 다음과 같다.
+
+**첫 번째는 컨테이너 실행 명령이다.**
+
+```text
+Command:
+  sleep
+  3600
+```
+
+YAML에서 Sequence로 작성한 명령이 컨테이너 실행 설정으로 전달되었다.
+
+**두 번째는 환경 변수이다.**
+
+```text
+PLAYER_INITIAL_LIVES
+UI_PROPERTIES_FILE_NAME
+```
+
+이 환경 변수들은 `game-demo` ConfigMap에서 값을 가져오도록 구성되어 있다.
+
+**세 번째는 Volume Mount이다.**
+
+```text
+/config from config (ro)
+```
+
+`config`라는 Volume이 컨테이너의 `/config` 경로에 읽기 전용으로 마운트되었다.
+
+다만 `kubectl describe pod`에 표시되는 환경 변수 정보는 ConfigMap 참조 관계를 중심으로 보여줄 수 있다.
+
+따라서 실제 값이 컨테이너 내부에 어떻게 적용되었는지 확인하려면 컨테이너 내부에서 직접 조회하는 것이 좋다.
+
+---
+
+### kubectl exec로 컨테이너 내부 접속하기
+
+실행 중인 컨테이너 내부에서 환경 변수와 파일을 확인해보자.
+
+```bash
+kubectl exec -it configmap-demo-pod -- sh
+```
+
+각 옵션의 의미는 다음과 같다.
+
+| 옵션 | 의미 |
+|---|---|
+| `exec` | 실행 중인 컨테이너에서 명령 실행 |
+| `-i` | 표준 입력 유지 |
+| `-t` | 터미널 할당 |
+| `configmap-demo-pod` | 대상 Pod |
+| `--` | kubectl 옵션과 컨테이너 명령 구분 |
+| `sh` | 컨테이너 내부 Shell 실행 |
+
+이번 Pod에는 컨테이너가 하나뿐이므로 컨테이너 이름을 생략할 수 있다.
+
+여러 컨테이너가 있다면 다음과 같이 컨테이너를 명시하는 것이 좋다.
+
+```bash
+kubectl exec -it configmap-demo-pod \
+  -c demo \
+  -- sh
+```
+
+정상적으로 실행되면 Alpine 컨테이너 내부의 Shell에 접근할 수 있다.
+
+```text
+/ #
+```
+
+이제 ConfigMap의 데이터가 어떻게 적용되었는지 확인해보자.
+
+---
+
+### 컨테이너 내부 환경 변수 확인하기
+
+컨테이너 내부에서 다음 명령어를 실행한다.
+
+```bash
+env
+```
+
+이 명령어는 현재 프로세스의 환경 변수를 출력한다.
+
+여러 환경 변수가 출력되지만, 그중 다음 값들이 존재하는지 확인한다.
+
+```text
+PLAYER_INITIAL_LIVES=3
+UI_PROPERTIES_FILE_NAME=user-interface.properties
+```
+
+이 값들은 ConfigMap에서 가져온 데이터이다.
+
+```yaml
+data:
+  player_initial_lives: "3"
+  ui_properties_file_name: "user-interface.properties"
+```
+
+Pod에서는 다음과 같이 설정했다.
+
+```yaml
+env:
+  - name: PLAYER_INITIAL_LIVES
+    valueFrom:
+      configMapKeyRef:
+        name: game-demo
+        key: player_initial_lives
+
+  - name: UI_PROPERTIES_FILE_NAME
+    valueFrom:
+      configMapKeyRef:
+        name: game-demo
+        key: ui_properties_file_name
+```
+
+따라서 다음과 같은 연결 관계가 만들어진다.
+
+```mermaid
+flowchart TD
+    A["ConfigMap: game-demo"] --> B["player_initial_lives: 3"]
+    A --> C["ui_properties_file_name"]
+
+    B --> D["configMapKeyRef"]
+    C --> D
+
+    D --> E["Container Environment"]
+
+    E --> F["PLAYER_INITIAL_LIVES=3"]
+    E --> G["UI_PROPERTIES_FILE_NAME=user-interface.properties"]
+```
+
+이처럼 ConfigMap의 Key 이름과 환경 변수 이름이 달라도 정상적으로 값을 전달할 수 있다.
+
+---
+
+### 특정 환경 변수만 조회하기
+
+모든 환경 변수를 출력하는 대신 특정 환경 변수만 확인할 수도 있다.
+
+컨테이너 내부에서 다음 명령어를 실행한다.
+
+```bash
+echo "$PLAYER_INITIAL_LIVES"
+```
+
+출력:
+
+```text
+3
+```
+
+두 번째 환경 변수도 확인한다.
+
+```bash
+echo "$UI_PROPERTIES_FILE_NAME"
+```
+
+출력:
+
+```text
+user-interface.properties
+```
+
+컨테이너 내부에 들어가지 않고 바로 조회할 수도 있다.
+
+```bash
+kubectl exec configmap-demo-pod \
+  -- printenv PLAYER_INITIAL_LIVES
+```
+
+출력:
+
+```text
+3
+```
+
+두 번째 환경 변수를 확인한다.
+
+```bash
+kubectl exec configmap-demo-pod \
+  -- printenv UI_PROPERTIES_FILE_NAME
+```
+
+출력:
+
+```text
+user-interface.properties
+```
+
+실무에서는 `kubectl exec`를 이용해 컨테이너 내부에 진입하지 않고 특정 설정만 확인하는 방식도 자주 활용한다.
+
+---
+
+### ConfigMap Volume이 실제로 생성되었는지 확인하기
+
+이번에는 환경 변수가 아니라 파일로 마운트한 설정을 확인해보자.
+
+Pod YAML에서는 다음과 같이 설정했다.
+
+```yaml
+volumeMounts:
+  - name: config
+    mountPath: /config
+    readOnly: true
+```
+
+따라서 컨테이너 내부의 `/config` 경로를 확인하면 된다.
+
+컨테이너 내부에서 다음 명령어를 실행한다.
+
+```bash
+ls /config
+```
+
+예상 출력:
+
+```text
+game.properties
+user-interface.properties
+```
+
+ConfigMap에는 네 개의 Key가 있었지만 두 개의 파일만 생성되었다.
+
+그 이유는 Pod YAML의 `items`에서 두 개의 Key만 선택했기 때문이다.
+
+```yaml
+items:
+  - key: game.properties
+    path: game.properties
+
+  - key: user-interface.properties
+    path: user-interface.properties
+```
+
+따라서 최종 파일 구조는 다음과 같다.
+
+```text
+/config/
+├── game.properties
+└── user-interface.properties
+```
+
+이처럼 ConfigMap의 여러 Key 중 필요한 항목만 파일로 사용할 수 있다.
+
+---
+
+### game.properties 파일 확인하기
+
+이제 첫 번째 설정 파일의 내용을 확인해보자.
+
+컨테이너 내부에서 다음 명령어를 실행한다.
+
+```bash
+cat /config/game.properties
+```
+
+출력:
+
+```properties
+enemy.types=aliens,monsters
+player.maximum-lives=5
+```
+
+이 데이터는 ConfigMap에 정의했던 내용과 동일하다.
+
+```yaml
+game.properties: |
+  enemy.types=aliens,monsters
+  player.maximum-lives=5
+```
+
+즉 ConfigMap에 저장된 여러 줄 문자열이 파일 내용으로 제공된 것이다.
+
+여기서 YAML의 Literal Block Scalar인 `|`가 중요한 역할을 한다.
+
+문자열의 줄바꿈이 유지되기 때문에 `.properties` 형식의 설정 파일을 그대로 표현할 수 있다.
+
+---
+
+### user-interface.properties 파일 확인하기
+
+두 번째 파일도 확인해보자.
+
+```bash
+cat /config/user-interface.properties
+```
+
+출력:
+
+```properties
+color.good=purple
+color.bad=yellow
+allow.textmode=true
+```
+
+이 값 역시 ConfigMap에 저장한 내용과 동일하다.
+
+```yaml
+user-interface.properties: |
+  color.good=purple
+  color.bad=yellow
+  allow.textmode=true
+```
+
+이렇게 하면 애플리케이션은 컨테이너 이미지 내부에 설정 파일을 포함하지 않아도 `/config` 경로에서 설정 파일을 읽을 수 있다.
+
+예를 들어 애플리케이션이 다음 파일을 읽도록 구현할 수 있다.
+
+```text
+/config/game.properties
+```
+
+또는 다음 파일을 읽도록 구현할 수 있다.
+
+```text
+/config/user-interface.properties
+```
+
+다만 이번 예제에서는 `sleep 3600`만 실행하므로 해당 설정 파일을 실제로 읽어 처리하는 애플리케이션은 존재하지 않는다.
+
+이번 구성은 ConfigMap의 데이터가 환경 변수와 파일로 올바르게 전달되는지 확인하는 데 목적이 있다.
+
+---
+
+### ConfigMap이 환경 변수와 파일로 전달되는 전체 과정
+
+지금까지 확인한 과정을 하나의 흐름으로 정리해보자.
+
+```mermaid
+flowchart TD
+    A["game-demo-configmap.yaml"] --> B["ConfigMap 생성"]
+    C["configmap-demo-pod.yaml"] --> D["Pod 생성"]
+
+    B --> E["ConfigMap: game-demo"]
+    D --> F["Pod: configmap-demo-pod"]
+
+    E --> G["Key-Value Data"]
+
+    G --> H["configMapKeyRef"]
+    G --> I["ConfigMap Volume"]
+
+    H --> J["Environment Variables"]
+    I --> K["/config"]
+
+    J --> F
+    K --> F
+
+    F --> L["Container: demo"]
+
+    L --> M["PLAYER_INITIAL_LIVES=3"]
+    L --> N["UI_PROPERTIES_FILE_NAME"]
+    L --> O["game.properties"]
+    L --> P["user-interface.properties"]
+```
+
+여기서 ConfigMap과 Pod의 역할을 구분하면 다음과 같다.
+
+| 구분 | 역할 |
+|---|---|
+| ConfigMap | 설정 데이터 저장 |
+| `configMapKeyRef` | 특정 Key의 값을 환경 변수로 전달 |
+| `volumes` | ConfigMap을 Volume 데이터 원본으로 지정 |
+| `items` | 파일로 사용할 Key 선택 |
+| `volumeMounts` | Volume을 컨테이너 경로에 연결 |
+| Container | 환경 변수와 파일을 사용 |
+
+결국 ConfigMap 자체는 설정을 저장하고, Pod는 해당 설정을 어떤 형태로 사용할지 결정한다.
+
+---
+
+### yq를 이용한 Pod YAML 구조 분석
+
+이번에는 yq로 Pod YAML의 Mapping과 Sequence를 분석해보자.
+
+먼저 컨테이너의 이름을 조회한다.
+
+```bash
+yq '.spec.containers[0].name' configmap-demo-pod.yaml
+```
+
+출력:
+
+```text
+demo
+```
+
+컨테이너 이미지를 조회한다.
+
+```bash
+yq '.spec.containers[0].image' configmap-demo-pod.yaml
+```
+
+출력:
+
+```text
+alpine:3.21
+```
+
+#### 첫 번째 환경 변수 이름 조회
+
+```bash
+yq '.spec.containers[0].env[0].name' configmap-demo-pod.yaml
+```
+
+출력:
+
+```text
+PLAYER_INITIAL_LIVES
+```
+
+#### 첫 번째 환경 변수가 참조하는 ConfigMap 조회
+
+```bash
+yq '.spec.containers[0].env[0].valueFrom.configMapKeyRef.name' \
+  configmap-demo-pod.yaml
+```
+
+출력:
+
+```text
+game-demo
+```
+
+#### 첫 번째 환경 변수가 참조하는 Key 조회
+
+```bash
+yq '.spec.containers[0].env[0].valueFrom.configMapKeyRef.key' \
+  configmap-demo-pod.yaml
+```
+
+출력:
+
+```text
+player_initial_lives
+```
+
+#### 모든 환경 변수 이름 조회
+
+```bash
+yq '.spec.containers[0].env[].name' configmap-demo-pod.yaml
+```
+
+출력:
+
+```text
+PLAYER_INITIAL_LIVES
+UI_PROPERTIES_FILE_NAME
+```
+
+#### Volume Mount 경로 조회
+
+```bash
+yq '.spec.containers[0].volumeMounts[0].mountPath' \
+  configmap-demo-pod.yaml
+```
+
+출력:
+
+```text
+/config
+```
+
+#### Volume이 참조하는 ConfigMap 이름 조회
+
+```bash
+yq '.spec.volumes[0].configMap.name' configmap-demo-pod.yaml
+```
+
+출력:
+
+```text
+game-demo
+```
+
+#### 파일로 선택된 모든 Key 조회
+
+```bash
+yq '.spec.volumes[0].configMap.items[].key' \
+  configmap-demo-pod.yaml
+```
+
+출력:
+
+```text
+game.properties
+user-interface.properties
+```
+
+이처럼 yq를 활용하면 Kubernetes Manifest의 복잡한 계층 구조도 경로 표현식을 이용해 분석할 수 있다.
+
+---
+
+### Mapping과 Sequence의 데이터 타입 확인하기
+
+yq의 `kind` 연산자를 사용하면 각 노드가 Scalar, Mapping, Sequence 중 어떤 구조인지 확인할 수 있다.
+
+예를 들어 다음 명령어를 실행한다.
+
+```bash
+yq '.spec | kind' configmap-demo-pod.yaml
+```
+
+출력:
+
+```text
+map
+```
+
+`spec`은 Mapping이다.
+
+컨테이너 목록의 타입을 확인한다.
+
+```bash
+yq '.spec.containers | kind' configmap-demo-pod.yaml
+```
+
+출력:
+
+```text
+seq
+```
+
+`containers`는 Sequence이다.
+
+첫 번째 컨테이너의 타입을 확인한다.
+
+```bash
+yq '.spec.containers[0] | kind' configmap-demo-pod.yaml
+```
+
+출력:
+
+```text
+map
+```
+
+첫 번째 컨테이너는 Mapping이다.
+
+환경 변수 목록도 확인해보자.
+
+```bash
+yq '.spec.containers[0].env | kind' configmap-demo-pod.yaml
+```
+
+출력:
+
+```text
+seq
+```
+
+이러한 결과를 정리하면 다음과 같다.
+
+| 경로 | kind |
+|---|---|
+| `.spec` | `map` |
+| `.spec.containers` | `seq` |
+| `.spec.containers[0]` | `map` |
+| `.spec.containers[0].env` | `seq` |
+| `.spec.containers[0].env[0]` | `map` |
+| `.spec.containers[0].env[0].valueFrom` | `map` |
+| `.spec.volumes` | `seq` |
+| `.spec.volumes[0].configMap.items` | `seq` |
+
+이 방법은 복잡한 Kubernetes YAML을 분석할 때 특히 유용하다.
+
+어떤 필드가 배열인지 객체인지 혼동된다면 yq로 실제 데이터 구조를 확인할 수 있다.
+
+---
+
+### ConfigMap을 변경하면 컨테이너에도 자동으로 반영될까?
+
+ConfigMap을 사용하는 환경에서 중요한 운영상의 특징이 있다.
+
+ConfigMap의 값을 변경했을 때 컨테이너 내부에 반영되는 방식은 **환경 변수와 Volume Mount에서 서로 다르다.**
+
+#### 환경 변수로 전달한 경우
+
+환경 변수는 컨테이너가 시작될 때 설정된다.
+
+따라서 ConfigMap의 값이 변경되더라도 이미 실행 중인 컨테이너의 환경 변수가 자동으로 변경되지는 않는다.
+
+예를 들어 다음 값이 있다고 가정하자.
+
+```yaml
+player_initial_lives: "3"
+```
+
+컨테이너 내부에는 다음 환경 변수가 존재한다.
+
+```text
+PLAYER_INITIAL_LIVES=3
+```
+
+이후 ConfigMap을 다음과 같이 변경했다고 가정하자.
+
+```yaml
+player_initial_lives: "5"
+```
+
+ConfigMap은 변경되었지만 실행 중인 컨테이너에서는 여전히 다음 값이 유지될 수 있다.
+
+```text
+PLAYER_INITIAL_LIVES=3
+```
+
+새로운 값을 적용하려면 Pod를 다시 생성해야 한다.
+
+Deployment가 관리하는 Pod라면 Rolling Update를 수행하여 새로운 Pod가 생성되도록 할 수 있다.
+
+예를 들어 다음 명령어를 사용할 수 있다.
+
+```bash
+kubectl rollout restart deployment/<deployment-name>
+```
+
+하지만 이번 예제는 Deployment가 아니라 Pod를 직접 생성했으므로 이 명령어를 사용할 수 없다.
+
+이번 예제에서는 Pod를 삭제한 후 다시 생성하면 변경된 환경 변수를 확인할 수 있다.
+
+```bash
+kubectl delete -f configmap-demo-pod.yaml
+```
+
+```bash
+kubectl apply -f configmap-demo-pod.yaml
+```
+
+새로운 Pod에서는 변경된 값을 사용할 수 있다.
+
+---
+
+### Volume Mount로 전달한 경우
+
+ConfigMap을 Volume으로 마운트했다면 동작이 다르다.
+
+ConfigMap의 데이터가 변경되면 Kubernetes는 변경된 내용을 Volume에 반영할 수 있다.
+
+예를 들어 다음 설정을 변경했다고 가정하자.
+
+**변경 전**
+
+```properties
+enemy.types=aliens,monsters
+```
+
+**변경 후**
+
+```properties
+enemy.types=aliens,monsters,robots
+```
+
+ConfigMap을 다시 적용한다.
+
+```bash
+kubectl apply -f game-demo-configmap.yaml
+```
+
+이후 Kubernetes의 ConfigMap Volume 갱신 과정을 거쳐 컨테이너의 파일 내용이 변경될 수 있다.
+
+```mermaid
+flowchart TD
+    A["ConfigMap 데이터 변경"] --> B["kubectl apply"]
+    B --> C["Kubernetes API Server"]
+    C --> D["ConfigMap 갱신"]
+
+    D --> E["kubelet이 변경 감지"]
+    E --> F["ConfigMap Volume 갱신"]
+
+    F --> G["/config/game.properties"]
+```
+
+다만 ConfigMap Volume의 변경 사항이 항상 즉시 반영되는 것은 아니다.
+
+kubelet의 동기화 주기와 캐시 전파 시간 등에 따라 지연될 수 있다.
+
+또한 Volume에 변경 내용이 반영되더라도 애플리케이션이 해당 파일을 다시 읽지 않으면 실제 동작에는 반영되지 않을 수 있다.
+
+따라서 설정 파일의 변경 사항을 즉시 적용해야 하는 애플리케이션이라면 별도의 설정 재로딩 구조가 필요할 수 있다.
+
+---
+
+### 환경 변수와 Volume Mount의 변경 반영 차이
+
+| 구분 | 환경 변수 | ConfigMap Volume |
+|---|---|---|
+| 설정 전달 시점 | 컨테이너 시작 시 | Volume 마운트 및 갱신 시 |
+| ConfigMap 변경 감지 | 실행 중인 환경 변수는 자동 변경되지 않음 | 변경 내용이 Volume에 반영될 수 있음 |
+| Pod 재생성 | 새로운 값 적용에 필요 | 일반적인 Volume 갱신에는 불필요 |
+| 애플리케이션 재로딩 | 새 Pod에서 환경 변수 사용 | 애플리케이션의 파일 재로딩 동작 필요 |
+| 대표 사용처 | 단순 설정값 | 설정 파일, 여러 줄 문자열 |
+| 주의사항 | 구버전과 신버전 값이 혼재할 수 있음 | 동기화 지연 발생 가능 |
+
+또한 `subPath`로 ConfigMap의 특정 파일만 마운트한 경우에는 ConfigMap 변경 사항이 자동으로 반영되지 않는다.
+
+따라서 실무에서는 단순히 ConfigMap을 사용한다는 사실뿐 아니라 **어떤 방식으로 Pod에 전달했는지**까지 확인해야 한다.
+
+---
+
+### ConfigMap을 사용할 때 발생할 수 있는 오류
+
+ConfigMap과 Pod는 서로 다른 Kubernetes 리소스이다.
+
+따라서 두 리소스 사이의 참조 관계가 잘못되면 Pod가 정상적으로 실행되지 않을 수 있다.
+
+#### 1. ConfigMap이 존재하지 않는 경우
+
+다음 설정을 살펴보자.
+
+```yaml
+valueFrom:
+  configMapKeyRef:
+    name: game-demo
+    key: player_initial_lives
+```
+
+Pod는 `game-demo`라는 ConfigMap을 참조한다.
+
+하지만 해당 ConfigMap이 존재하지 않는다면 환경 변수의 값을 가져올 수 없다.
+
+이 경우 컨테이너가 정상적으로 시작되지 못할 수 있다.
+
+다음 명령어로 확인한다.
+
+```bash
+kubectl describe pod configmap-demo-pod
+```
+
+이벤트나 컨테이너 상태에서 ConfigMap 관련 오류를 확인할 수 있다.
+
+#### 2. ConfigMap의 Key가 잘못된 경우
+
+다음 설정을 살펴보자.
+
+```yaml
+configMapKeyRef:
+  name: game-demo
+  key: player_initial_life
+```
+
+실제 ConfigMap에는 다음 Key가 존재한다.
+
+```yaml
+player_initial_lives: "3"
+```
+
+하지만 Pod에서는 `player_initial_life`를 참조하고 있다.
+
+이름이 다르기 때문에 값을 가져올 수 없다.
+
+따라서 ConfigMap을 참조할 때는 Key 이름을 정확하게 작성해야 한다.
+
+#### 3. ConfigMap과 Pod의 Namespace가 다른 경우
+
+Pod가 ConfigMap을 참조하려면 두 리소스가 같은 Namespace에 있어야 한다.
+
+예를 들어 다음과 같은 상황을 생각해보자.
+
+```text
+Namespace: development
+ └── ConfigMap: game-demo
+
+Namespace: production
+ └── Pod: configmap-demo-pod
+```
+
+`production`의 Pod는 `development` Namespace에 존재하는 ConfigMap을 `configMapKeyRef`로 직접 참조할 수 없다.
+
+따라서 ConfigMap과 Pod의 Namespace를 확인해야 한다.
+
+#### 4. Volume 이름이 일치하지 않는 경우
+
+다음 설정은 잘못된 예시이다.
+
+```yaml
+volumeMounts:
+  - name: application-config
+    mountPath: /config
+
+volumes:
+  - name: config
+    configMap:
+      name: game-demo
+```
+
+`volumeMounts`에서는 `application-config`를 참조하지만 `volumes`에는 `config`라는 이름의 Volume만 존재한다.
+
+이 경우 Kubernetes의 Pod 설정 검증에서 오류가 발생할 수 있다.
+
+따라서 다음 두 값이 일치해야 한다.
+
+```text
+volumeMounts.name
+        =
+volumes.name
+```
+
+---
+
+### kubectl로 ConfigMap 관련 오류 확인하기
+
+Pod가 정상적으로 생성되지 않는다면 다음 명령어를 순서대로 확인할 수 있다.
+
+#### Pod 상태 확인
+
+```bash
+kubectl get pods
+```
+
+#### Pod 상세 정보 확인
+
+```bash
+kubectl describe pod configmap-demo-pod
+```
+
+#### ConfigMap 존재 여부 확인
+
+```bash
+kubectl get configmap game-demo
+```
+
+#### ConfigMap 데이터 확인
+
+```bash
+kubectl get configmap game-demo -o yaml
+```
+
+#### Pod의 ConfigMap 참조 설정 확인
+
+```bash
+kubectl get pod configmap-demo-pod -o yaml
+```
+
+이러한 명령어를 이용하면 다음 문제를 구분할 수 있다.
+
+```mermaid
+flowchart TD
+    A["Pod 실행 실패"] --> B["Pod 상태 확인"]
+    B --> C["Events 확인"]
+
+    C --> D{"ConfigMap 존재?"}
+
+    D -->|"아니오"| E["ConfigMap 생성"]
+    D -->|"예"| F{"Key 이름 일치?"}
+
+    F -->|"아니오"| G["Key 수정"]
+    F -->|"예"| H{"Namespace 일치?"}
+
+    H -->|"아니오"| I["Namespace 확인"]
+    H -->|"예"| J["Volume 및 Pod 설정 확인"]
+```
+
+이때 애플리케이션 로그만 확인해서는 원인을 파악하기 어려울 수 있다.
+
+ConfigMap 참조 오류는 컨테이너가 실행되기 전에 발생할 수 있기 때문이다.
+
+따라서 `kubectl describe pod`의 이벤트를 함께 확인하는 것이 좋다.
+
+---
+
+### 실무에서 ConfigMap을 활용하는 방법
+
+실제 백엔드 서비스에서는 ConfigMap을 통해 애플리케이션 설정을 관리할 수 있다.
+
+예를 들어 Spring Boot 애플리케이션을 Kubernetes에 배포한다고 가정하자.
+
+애플리케이션 설정을 다음과 같이 ConfigMap으로 정의할 수 있다.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+
+metadata:
+  name: payment-service-config
+
+data:
+  application.yml: |
+    server:
+      port: 8080
+
+    payment:
+      retry:
+        enabled: true
+        max-attempts: 3
+
+    logging:
+      level:
+        root: INFO
+```
+
+이 ConfigMap에는 Spring Boot의 `application.yml` 내용이 문자열로 저장되어 있다.
+
+이를 Volume으로 마운트하면 컨테이너 내부에서 설정 파일을 읽을 수 있다.
+
+예를 들어 Deployment에서 다음과 같이 설정할 수 있다.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: payment-service
+
+spec:
+  replicas: 2
+
+  selector:
+    matchLabels:
+      app: payment-service
+
+  template:
+    metadata:
+      labels:
+        app: payment-service
+
+    spec:
+      containers:
+        - name: payment-service
+          image: example/payment-service:1.0.0
+
+          ports:
+            - containerPort: 8080
+
+          volumeMounts:
+            - name: application-config
+              mountPath: /config
+              readOnly: true
+
+      volumes:
+        - name: application-config
+          configMap:
+            name: payment-service-config
+
+            items:
+              - key: application.yml
+                path: application.yml
+```
+
+이 설정은 컨테이너 내부에 다음 파일을 제공한다.
+
+```text
+/config/application.yml
+```
+
+Spring Boot는 실행 환경과 설정에 따라 외부 설정 파일을 읽을 수 있으므로, 이러한 구조를 활용해 애플리케이션 이미지와 설정을 분리할 수 있다.
+
+다만 실제 운영에서는 기존 설정과의 우선순위, 설정 파일 로딩 경로, 환경 변수 재정의 여부 등을 함께 고려해야 한다.
+
+또한 단순히 파일을 마운트했다고 해서 실행 중인 Spring Boot의 모든 설정이 자동으로 갱신되는 것은 아니다.
+
+설정 변경을 반영하려면 애플리케이션의 설정 로딩 방식과 재시작 또는 재로딩 정책을 함께 설계해야 한다.
+
+---
+
+### ConfigMap과 Secret의 역할 구분
+
+ConfigMap은 일반 설정을 저장하기 위한 리소스이다.
+
+비밀번호나 토큰 같은 민감한 정보를 ConfigMap에 직접 저장하는 것은 피해야 한다.
+
+예를 들어 다음과 같은 설정은 주의가 필요하다.
+
+```yaml
+data:
+  DB_PASSWORD: "my-password"
+```
+
+이 값은 일반 문자열로 저장된다.
+
+따라서 ConfigMap에 접근할 수 있는 사용자나 시스템이 값을 조회할 수 있다.
+
+민감한 데이터는 Secret 또는 별도의 Secret 관리 시스템을 사용하는 것이 좋다.
+
+| 구분 | ConfigMap | Secret |
+|---|---|---|
+| 주요 용도 | 일반 설정 | 민감한 데이터 |
+| 데이터 표현 | 문자열 및 바이너리 데이터 | 문자열 또는 바이너리 데이터 |
+| 환경 변수 주입 | 가능 | 가능 |
+| Volume Mount | 가능 | 가능 |
+| 데이터 보호 | 별도 보안 설정 필요 | 별도 보안 설정 필요 |
+| 대표 예시 | 로그 레벨, 서버 주소 | 비밀번호, API Key, 인증서 |
+
+단, Secret도 기본적으로 완전한 보안을 보장하는 것은 아니다.
+
+Kubernetes Secret을 안전하게 사용하려면 RBAC, 저장 시 암호화, 접근 통제 등의 보안 설정이 필요하다.
+
+---
+
+### 실무에서 YAML의 Mapping과 Sequence를 이해해야 하는 이유
+
+Kubernetes Manifest는 여러 개의 Mapping과 Sequence를 조합하여 구성된다.
+
+앞서 살펴본 ConfigMap과 Pod만 하더라도 다음과 같은 구조가 등장한다.
+
+```text
+ConfigMap
+ └── data
+      ├── Key: Value
+      ├── Key: Value
+      └── Key: Multi-line String
+
+Pod
+ └── spec
+      ├── containers[]
+      │    ├── command[]
+      │    ├── env[]
+      │    │    └── valueFrom
+      │    │         └── configMapKeyRef
+      │    │
+      │    └── volumeMounts[]
+      │
+      └── volumes[]
+           └── configMap
+                └── items[]
+```
+
+이러한 구조를 처음부터 외우기는 쉽지 않다.
+
+하지만 각 필드가 Mapping인지 Sequence인지 구분하면 YAML을 이해하는 과정이 훨씬 단순해진다.
+
+예를 들어 다음 세 가지를 기억하면 된다.
+
+**첫째, Mapping은 Key와 Value의 관계를 표현한다.**
+
+```yaml
+metadata:
+  name: game-demo
+```
+
+**둘째, Sequence는 여러 개의 요소를 표현한다.**
+
+```yaml
+containers:
+  - name: demo
+    image: alpine:3.21
+```
+
+**셋째, Mapping과 Sequence는 서로 중첩될 수 있다.**
+
+```yaml
+env:
+  - name: PLAYER_INITIAL_LIVES
+    valueFrom:
+      configMapKeyRef:
+        name: game-demo
+        key: player_initial_lives
+```
+
+이 세 가지 구조를 이해하면 Deployment, StatefulSet, Service, Volume 등 다른 Kubernetes 리소스의 YAML도 같은 방식으로 분석할 수 있다.
+
+---
+
+### 실습 리소스 정리하기
+
+모든 확인을 마쳤다면 생성한 리소스를 삭제한다.
+
+먼저 Pod를 삭제한다.
+
+```bash
+kubectl delete -f configmap-demo-pod.yaml
+```
+
+정상적으로 삭제되면 다음과 같은 메시지가 출력된다.
+
+```text
+pod "configmap-demo-pod" deleted
+```
+
+이후 ConfigMap을 삭제한다.
+
+```bash
+kubectl delete -f game-demo-configmap.yaml
+```
+
+출력:
+
+```text
+configmap "game-demo" deleted
+```
+
+리소스가 삭제되었는지 확인한다.
+
+```bash
+kubectl get pods
+```
+
+```bash
+kubectl get configmaps
+```
+
+`configmap-demo-pod`와 `game-demo`가 더 이상 목록에 나타나지 않는지 확인한다.
+
+실무에서는 ConfigMap을 사용하는 Pod가 존재하는 상태에서 ConfigMap을 삭제하면 애플리케이션에 영향을 줄 수 있으므로, 참조 관계를 확인하고 삭제해야 한다.
+
+---
+
+### 정리
+
+Kubernetes Manifest는 YAML의 Mapping과 Sequence를 조합하여 구성된다.
+
+Mapping은 Key와 Value의 관계로 데이터를 표현하며, Sequence는 여러 개의 데이터를 순서대로 표현한다.
+
+ConfigMap과 Pod는 이러한 구조를 이해하기 좋은 예제이다.
+
+ConfigMap은 설정 데이터를 Key-Value 형태로 저장한다.
+
+Pod는 ConfigMap의 데이터를 환경 변수 또는 파일 형태로 사용할 수 있다.
+
+이번에 살펴본 핵심 내용을 정리하면 다음과 같다.
+
+| 항목 | 핵심 내용 |
+|---|---|
+| Mapping | Key-Value 구조 |
+| Sequence | 여러 요소를 순서대로 저장하는 구조 |
+| ConfigMap | 애플리케이션 일반 설정 데이터 저장 |
+| `data` | ConfigMap의 설정값을 저장하는 Mapping |
+| `containers` | 컨테이너 목록을 정의하는 Sequence |
+| `command` | 실행 명령을 정의하는 문자열 Sequence |
+| `env` | 환경 변수 목록을 정의하는 Sequence |
+| `valueFrom` | 환경 변수 값을 외부 참조에서 가져오는 설정 |
+| `configMapKeyRef` | ConfigMap의 특정 Key를 참조 |
+| `volumeMounts` | 컨테이너에 연결할 Volume Mount 목록 |
+| `volumes` | Pod에서 사용할 Volume 목록 |
+| `configMap.name` | 참조할 ConfigMap 이름 |
+| `items` | 파일로 사용할 ConfigMap Key 선택 |
+| `mountPath` | 컨테이너 내부의 마운트 경로 |
+| `readOnly` | 읽기 전용 마운트 지정 |
+
+또한 ConfigMap의 설정을 컨테이너에 전달하는 방식에 따라 변경 사항이 반영되는 동작도 달라진다.
+
+**환경 변수로 전달한 ConfigMap 값은 실행 중인 컨테이너에 자동으로 갱신되지 않는다.**
+
+반면 **Volume으로 마운트한 ConfigMap 데이터는 Kubernetes의 동기화 과정을 통해 파일에 반영될 수 있다.**
+
+하지만 애플리케이션이 파일의 변경 사항을 자동으로 읽는 것은 아니므로 실제 운영에서는 설정 재로딩 정책까지 고려해야 한다.
+
+이번에 사용한 주요 명령어는 다음과 같다.
+
+| 명령어 | 목적 |
+|---|---|
+| `kubectl apply -f game-demo-configmap.yaml` | ConfigMap 생성 |
+| `kubectl get configmaps` | ConfigMap 목록 확인 |
+| `kubectl describe configmap game-demo` | ConfigMap 상세 정보 확인 |
+| `kubectl apply -f configmap-demo-pod.yaml` | Pod 생성 |
+| `kubectl get pods` | Pod 상태 확인 |
+| `kubectl describe pod configmap-demo-pod` | Pod 설정 및 이벤트 확인 |
+| `kubectl exec -it configmap-demo-pod -- sh` | 컨테이너 내부 접속 |
+| `env` | 환경 변수 확인 |
+| `ls /config` | 마운트된 파일 목록 확인 |
+| `cat /config/game.properties` | 설정 파일 내용 확인 |
+| `yq '.data \| kind' game-demo-configmap.yaml` | Mapping 여부 확인 |
+| `yq '.spec.containers \| kind' configmap-demo-pod.yaml` | Sequence 여부 확인 |
+
+결국 Kubernetes YAML의 구조를 이해하는 핵심은 복잡한 필드 이름을 암기하는 것이 아니다.
+
+**각 필드가 Mapping인지 Sequence인지 구분하고, 데이터가 어떤 계층 관계를 통해 연결되는지 이해하는 것**이다.
+
+이를 이해하면 ConfigMap뿐 아니라 Deployment, StatefulSet, Service 등 다양한 Kubernetes 리소스의 Manifest를 읽고 작성하는 과정도 훨씬 수월해진다.
+
+#### 한 줄 요약
+
+> Kubernetes Manifest는 YAML의 Mapping과 Sequence를 중첩하여 구성되며, ConfigMap은 Key-Value 형태로 저장된 설정 데이터를 Pod에 환경 변수 또는 파일로 전달하는 리소스이다. `env`, `volumeMounts`, `volumes`, `items`의 구조를 이해하면 Kubernetes 설정이 실제 컨테이너에 적용되는 과정을 정확하게 파악할 수 있다.

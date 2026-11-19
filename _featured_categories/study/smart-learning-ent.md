@@ -19,11 +19,13 @@ related_posts:
 * [처음 배우는 쿠버네티스 개발 전략]{:.heading.flip-title}
 * [처음 배우는 카프카(개발부터 운영까지)]{:.heading.flip-title}
 * [누구나 쉽게 배우는 NoSQL-MongoDB]{:.heading.flip-title}
+* [빅데이터 분석 및 검색 시스템 구축을 위한 엘라스틱서치]{:.heading.flip-title}
 
 [아마존 AWS 입문 웹 서비스 만들기]: /amazon-aws-introduction-building-web-services/
 [처음 배우는 쿠버네티스 개발 전략]: /kubernetes-development-strategy-for-beginners/
 [처음 배우는 카프카(개발부터 운영까지)]: /kafka-development-strategy-for-beginners/
 [누구나 쉽게 배우는 NoSQL-MongoDB]: /nosql-mongodb-easy-for-anyone-to-learn/
+[빅데이터 분석 및 검색 시스템 구축을 위한 엘라스틱서치]: /elasticsearch-for-big-data-analysis-and-search/
 
 
 
