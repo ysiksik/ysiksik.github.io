@@ -26659,3 +26659,6415 @@ BatchStatus는 최종 FlowExecutionStatus를 기준으로 결정된다.
 #### 한 줄 요약
 
 > Spring Batch의 `SimpleFlow`는 여러 Step과 Flow를 중첩하여 실행할 수 있으며, FlowJob은 `on()`, `to()`, `from()` 등의 Transition API를 이용해 Flow의 실행 결과에 따라 다른 경로로 이동할 수 있다. 이때 최종 `FlowExecutionStatus`는 Job의 `BatchStatus`에 반영되고, `EndState`를 통해 누적된 종료 코드는 Job의 `ExitStatus`에 반영된다. 따라서 실패한 Flow 이후 다른 Flow가 정상적으로 완료되면 Job의 `BatchStatus`는 `COMPLETED`이지만 `ExitStatus`는 `FAILED`가 되는 상황도 발생할 수 있다.
+
+## SimpleFlow 아키텍처
+
+
+### Spring Batch SimpleFlow 아키텍처 심화: StateTransition 생성부터 실행까지
+
+Spring Batch에서 `FlowJob`은 여러 Step과 Flow를 조합해 복잡한 배치 실행 흐름을 구성할 수 있는 Job 구현체다.
+
+일반적인 `SimpleJob`은 등록된 Step을 순차적으로 실행한다.
+
+반면 `FlowJob`은 Step의 실행 결과에 따라 다음 실행 대상을 선택한다.
+
+예를 들어 다음과 같은 코드를 살펴보자.
+
+```java
+new JobBuilder("routingJob", jobRepository)
+        .start(step1)
+            .on("*").to(step2)
+        .from(step1)
+            .on("FAILED").to(recoveryFlow)
+        .end()
+        .build();
+```
+
+이 코드는 Step1의 실행 결과에 따라 두 가지 경로로 이동하도록 정의한다.
+
+Step1이 FAILED로 종료되었다면 recoveryFlow로 이동한다.
+
+반면 FAILED가 아닌 다른 종료 코드가 반환되었다면 Step2로 이동한다.
+
+여기서 주목할 부분은 다음 두 가지 패턴이다.
+
+```java
+.on("*").to(step2)
+```
+
+```java
+.on("FAILED").to(recoveryFlow)
+```
+
+`*`는 모든 종료 코드와 일치할 수 있는 와일드카드다.
+
+따라서 Step1이 FAILED로 종료되더라도 두 조건은 모두 일치한다.
+
+그렇다면 Spring Batch는 어떤 경로를 선택할까?
+
+이 질문에 답하려면 SimpleFlow가 내부적으로 Transition을 어떻게 저장하고 실행하는지 이해해야 한다.
+
+Spring Batch는 `FlowBuilder`를 통해 설정한 실행 흐름을 내부적으로 `State`와 `StateTransition` 객체로 변환한다.
+
+그리고 `SimpleFlow`는 이러한 객체들을 이용해 실제 실행 순서를 결정한다.
+
+전체 과정을 간단하게 표현하면 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["FlowBuilder API 설정"]
+    B["State 객체 생성"]
+    C["StateTransition 객체 생성"]
+    D["SimpleFlow 생성"]
+    E["State 및 Transition 초기화"]
+    F["SimpleFlow.start()"]
+    G["SimpleFlow.resume()"]
+    H["State.handle()"]
+    I["FlowExecutionStatus 반환"]
+    J["Transition 패턴 매칭"]
+    K{"다음 State 존재?"}
+    L["다음 State 실행"]
+    M["FlowExecution 반환"]
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+    F --> G
+    G --> H
+    H --> I
+    I --> J
+    J --> K
+    K -->|YES| L
+    L --> H
+    K -->|NO| M
+```
+
+여기서 중요한 점은 **FlowBuilder는 실행 구조를 생성하고, SimpleFlow는 생성된 구조를 실행한다는 사실**이다.
+
+두 객체는 서로 다른 책임을 가진다.
+
+이번에는 Spring Batch 5.2.4의 실제 구현을 기준으로 이 과정을 자세히 살펴보자.
+
+---
+
+### 개념
+
+#### SimpleFlow란?
+
+`SimpleFlow`는 Spring Batch의 `Flow` 인터페이스를 구현한 클래스다.
+
+Flow는 하나 이상의 실행 상태와 상태 사이의 전이 관계를 나타낸다.
+
+Spring Batch 5.2.4에서 SimpleFlow는 다음과 같이 선언되어 있다.
+
+```java
+public class SimpleFlow
+        implements Flow, InitializingBean {
+}
+```
+
+SimpleFlow는 크게 두 가지 역할을 수행한다.
+
+첫 번째는 실행 가능한 State들을 관리하는 것이다.
+
+두 번째는 현재 State의 실행 결과에 따라 다음 State를 결정하는 것이다.
+
+이를 위해 SimpleFlow는 다음과 같은 정보를 가진다.
+
+```java
+private State startState;
+
+private final Map<String, State> stateMap =
+        new HashMap<>();
+
+private final Map<String, Set<StateTransition>>
+        transitionMap = new HashMap<>();
+
+private List<StateTransition> stateTransitions =
+        new ArrayList<>();
+```
+
+각 필드의 역할은 다음과 같다.
+
+| 필드 | 자료구조 | 역할 |
+|---|---|---|
+| startState | State | 최초 실행할 State |
+| stateMap | Map | State 이름으로 State 객체 조회 |
+| transitionMap | Map | State별 Transition 관리 |
+| stateTransitions | List | 전체 Transition 정의 목록 |
+
+이러한 필드들은 서로 다른 목적으로 사용된다.
+
+`stateTransitions`는 전체 실행 흐름을 정의하기 위한 데이터다.
+
+반면 `stateMap`과 `transitionMap`은 실행 과정에서 필요한 정보를 조회하기 위한 자료구조다.
+
+그리고 `startState`는 Flow의 시작 위치를 나타낸다.
+
+따라서 SimpleFlow는 단순히 Step 목록을 저장하는 객체가 아니다.
+
+**실행 가능한 State와 상태 전이 규칙을 관리하는 실행 엔진**에 가깝다.
+
+---
+
+### 왜 사용하는가?
+
+일반적인 순차 실행에서는 다음 Step을 결정하는 과정이 단순하다.
+
+```text
+Step1
+  │
+  ▼
+Step2
+  │
+  ▼
+Step3
+```
+
+하지만 조건부 실행이 추가되면 상황이 달라진다.
+
+```mermaid
+flowchart TD
+    A["Step1"]
+    B{"ExitStatus"}
+    C["Step2"]
+    D["RecoveryFlow"]
+    E["Step3"]
+    F["Job 종료"]
+
+    A --> B
+    B -->|COMPLETED| C
+    B -->|FAILED| D
+    D --> E
+    C --> F
+    E --> F
+```
+
+Step1의 실행 결과에 따라 다음 실행 대상이 달라진다.
+
+이러한 구조에서는 단순히 Step 목록을 순회하는 것만으로 전체 실행 흐름을 처리할 수 없다.
+
+현재 실행 대상의 결과를 확인해야 한다.
+
+그 결과에 해당하는 Transition을 찾아야 한다.
+
+그리고 Transition이 지정한 다음 실행 대상으로 이동해야 한다.
+
+Spring Batch는 이러한 실행 흐름을 SimpleFlow에 위임한다.
+
+이렇게 하면 FlowJob은 구체적인 상태 전이 알고리즘을 직접 구현할 필요가 없다.
+
+FlowJob은 SimpleFlow를 실행하면 된다.
+
+SimpleFlow는 자신이 가진 State와 Transition을 이용해 다음 실행 경로를 결정한다.
+
+---
+
+### 주요 특징
+
+#### 1. FlowBuilder는 실행 대상을 State로 변환한다
+
+FlowBuilder는 다음과 같은 실행 대상을 전달받을 수 있다.
+
+| 전달 객체 | 내부에서 생성하는 State |
+|---|---|
+| Step | StepState |
+| Flow | FlowState |
+| JobExecutionDecider | DecisionState |
+| 여러 Flow와 TaskExecutor | SplitState |
+
+예를 들어 다음과 같이 Step을 등록했다고 생각해보자.
+
+```java
+.start(step1)
+```
+
+FlowBuilder는 Step1을 감싸는 StepState를 생성한다.
+
+```text
+Step1
+  │
+  ▼
+StepState
+```
+
+Flow를 등록한 경우에는 FlowState를 생성한다.
+
+```java
+.to(recoveryFlow)
+```
+
+```text
+RecoveryFlow
+    │
+    ▼
+ FlowState
+```
+
+JobExecutionDecider를 등록한 경우에는 DecisionState를 생성한다.
+
+```java
+.next(decider)
+```
+
+```text
+JobExecutionDecider
+        │
+        ▼
+   DecisionState
+```
+
+이렇게 생성된 State는 SimpleFlow가 실행하는 기본 단위가 된다.
+
+#### 2. StateTransition은 실행 경로를 표현한다
+
+StateTransition은 현재 State에서 다른 State로 이동하기 위한 규칙을 표현한다.
+
+주요 속성은 다음과 같다.
+
+```java
+private final State state;
+
+private final String pattern;
+
+private final String next;
+```
+
+각 필드는 다음 정보를 가진다.
+
+| 필드 | 의미 |
+|---|---|
+| state | 현재 실행할 State |
+| pattern | 종료 코드와 비교할 패턴 |
+| next | 다음에 실행할 State의 이름 |
+
+예를 들어 다음과 같은 코드가 있다고 생각해보자.
+
+```java
+.start(step1)
+    .on("FAILED").to(recoveryFlow)
+```
+
+개념적으로 다음과 같은 StateTransition이 생성된다.
+
+```text
+StateTransition
+    │
+    ├── state
+    │      └── StepState(step1)
+    │
+    ├── pattern
+    │      └── FAILED
+    │
+    └── next
+           └── FlowState(recoveryFlow)
+```
+
+즉, Step1이 FAILED로 종료되면 recoveryFlow로 이동하라는 규칙이다.
+
+#### 3. SimpleFlow는 Transition을 기준으로 다음 State를 선택한다
+
+SimpleFlow는 현재 State를 실행한다.
+
+그리고 반환된 FlowExecutionStatus를 이용해 Transition을 확인한다.
+
+```text
+현재 State 실행
+    │
+    ▼
+FlowExecutionStatus 반환
+    │
+    ▼
+Transition 패턴 비교
+    │
+    ▼
+다음 State 결정
+```
+
+따라서 실제 실행 순서는 State가 등록된 순서와 다를 수 있다.
+
+#### 4. 모든 State가 반드시 실행되는 것은 아니다
+
+SimpleFlow는 등록된 모든 State를 무조건 실행하지 않는다.
+
+실제 실행 경로에 포함된 State만 실행한다.
+
+따라서 조건부 분기에서는 일부 State가 실행되지 않을 수 있다.
+
+이러한 특성 때문에 `stateMap`의 크기와 실제 실행된 Step의 개수는 다를 수 있다.
+
+---
+
+### FlowBuilder의 내부 구조
+
+SimpleFlow 아키텍처를 이해하려면 먼저 FlowBuilder가 실행 구조를 생성하는 과정을 살펴봐야 한다.
+
+FlowBuilder는 Spring Batch에서 Flow를 구성하기 위한 Builder다.
+
+대표적인 API는 다음과 같다.
+
+```java
+start(step)
+next(step)
+from(step)
+
+start(flow)
+next(flow)
+from(flow)
+
+start(decider)
+next(decider)
+from(decider)
+
+on(pattern)
+split(taskExecutor)
+```
+
+이러한 API를 사용하면 Step, Flow, Decider 등을 조합할 수 있다.
+
+하지만 FlowBuilder의 역할은 단순히 객체를 연결하는 것이 아니다.
+
+내부적으로 State를 생성하고, StateTransition을 생성한다.
+
+그리고 최종적으로 이러한 데이터를 SimpleFlow에 전달한다.
+
+---
+
+### FlowBuilder.createState() 분석
+
+Spring Batch 5.2.4의 FlowBuilder에는 `createState()` 메서드가 존재한다.
+
+이 메서드는 전달받은 객체의 타입을 확인하여 적절한 State를 생성한다.
+
+핵심 구조는 다음과 같다.
+
+```java
+private State createState(Object input) {
+
+    State result;
+
+    if (input instanceof Step) {
+
+        if (!states.containsKey(input)) {
+
+            Step step = (Step) input;
+
+            states.put(
+                    input,
+                    new StepState(
+                            prefix + "step" + (stepCounter++),
+                            step
+                    )
+            );
+        }
+
+        result = states.get(input);
+
+    } else if (input instanceof JobExecutionDecider) {
+
+        if (!states.containsKey(input)) {
+
+            states.put(
+                    input,
+                    new DecisionState(
+                            (JobExecutionDecider) input,
+                            prefix + "decision"
+                                    + (decisionCounter++)
+                    )
+            );
+        }
+
+        result = states.get(input);
+
+    } else if (input instanceof Flow) {
+
+        if (!states.containsKey(input)) {
+
+            states.put(
+                    input,
+                    new FlowState(
+                            (Flow) input,
+                            prefix + "flow" + (flowCounter++)
+                    )
+            );
+        }
+
+        result = states.get(input);
+
+    } else {
+
+        throw new FlowBuilderException(
+                "No state can be created for: " + input
+        );
+    }
+
+    dirty = true;
+
+    return result;
+}
+```
+
+이 코드에서 중요한 부분은 입력 객체의 타입에 따라 서로 다른 State를 생성한다는 것이다.
+
+Step이 전달되면 StepState를 생성한다.
+
+Flow가 전달되면 FlowState를 생성한다.
+
+JobExecutionDecider가 전달되면 DecisionState를 생성한다.
+
+또한 이미 등록된 객체가 있다면 기존 State를 재사용한다.
+
+```java
+if (!states.containsKey(input)) {
+    // 새로운 State 생성
+}
+```
+
+이러한 구조는 동일한 Step을 기준으로 여러 Transition을 정의할 때 중요하다.
+
+예를 들어 다음과 같은 코드가 있다고 생각해보자.
+
+```java
+.start(step1)
+    .on("COMPLETED").to(step2)
+
+.from(step1)
+    .on("FAILED").to(step3)
+```
+
+이 경우 Step1을 기준으로 두 개의 Transition이 정의된다.
+
+하지만 동일한 FlowBuilder 안에서 Step1에 대한 StepState를 매번 새로 생성할 필요는 없다.
+
+FlowBuilder는 이미 생성한 State를 재사용한다.
+
+따라서 하나의 StepState에 여러 Transition이 연결될 수 있다.
+
+---
+
+### State 이름은 어떻게 생성될까?
+
+FlowBuilder는 State 객체를 생성하면서 내부 이름도 생성한다.
+
+예를 들어 다음과 같다.
+
+```java
+new StepState(
+        prefix + "step" + (stepCounter++),
+        step
+);
+```
+
+FlowBuilder의 이름이 `routingJob`이라면 다음과 같은 이름이 생성될 수 있다.
+
+```text
+routingJob.step0
+
+routingJob.step1
+```
+
+FlowState도 같은 방식으로 생성된다.
+
+```java
+new FlowState(
+        flow,
+        prefix + "flow" + (flowCounter++)
+);
+```
+
+따라서 다음과 같은 이름이 생성될 수 있다.
+
+```text
+routingJob.flow0
+```
+
+여기서 주의해야 할 점이 있다.
+
+**State 이름과 실제 Step 이름은 서로 다를 수 있다.**
+
+예를 들어 다음과 같은 Step이 있다고 생각해보자.
+
+```java
+new StepBuilder(
+        "paymentValidationStep",
+        jobRepository
+)
+```
+
+이 Step의 이름은 `paymentValidationStep`이다.
+
+하지만 FlowBuilder가 생성한 State 이름은 다음과 같을 수 있다.
+
+```text
+routingJob.step0
+```
+
+따라서 다음 두 객체는 구분해야 한다.
+
+```text
+Step Name
+    └── paymentValidationStep
+
+State Name
+    └── routingJob.step0
+```
+
+이 차이는 SimpleFlow의 stateMap과 transitionMap을 분석할 때 중요하다.
+
+---
+
+### StateTransition은 어떻게 생성될까?
+
+이번에는 다음 API를 살펴보자.
+
+```java
+.start(step1)
+    .on("COMPLETED").to(step2)
+```
+
+이 코드는 Step1이 정상적으로 완료되면 Step2로 이동하도록 설정한다.
+
+FlowBuilder는 이 과정에서 `addTransition()`을 호출한다.
+
+Spring Batch 5.2.4의 핵심 구현은 다음과 같다.
+
+```java
+private void addTransition(
+        String pattern,
+        State next
+) {
+
+    tos.put(
+            next.getName(),
+            next
+    );
+
+    transitions.add(
+            StateTransition.createStateTransition(
+                    currentState,
+                    pattern,
+                    next.getName()
+            )
+    );
+
+    // 종료 State 관련 처리
+}
+```
+
+여기서 중요한 부분은 다음 코드다.
+
+```java
+StateTransition.createStateTransition(
+        currentState,
+        pattern,
+        next.getName()
+);
+```
+
+세 가지 인자를 전달한다.
+
+첫 번째는 현재 State다.
+
+두 번째는 Transition 패턴이다.
+
+세 번째는 다음 State의 이름이다.
+
+예를 들어 다음 코드가 있다고 가정하자.
+
+```java
+.start(step1)
+    .on("COMPLETED").to(step2)
+```
+
+그러면 다음과 같은 StateTransition이 만들어진다.
+
+```text
+state   = routingJob.step0
+
+pattern = COMPLETED
+
+next    = routingJob.step1
+```
+
+이 정보를 하나의 객체가 가진다.
+
+```mermaid
+flowchart LR
+    A["routingJob.step0"]
+    B["StateTransition"]
+    C["routingJob.step1"]
+
+    A --> B
+    B -->|COMPLETED| C
+```
+
+따라서 StateTransition은 현재 State와 다음 State를 연결하는 역할을 한다.
+
+---
+
+### StateTransition의 핵심 속성
+
+Spring Batch 5.2.4의 StateTransition은 다음과 같은 필드를 가진다.
+
+```java
+public final class StateTransition {
+
+    private final State state;
+
+    private final String pattern;
+
+    private final String next;
+}
+```
+
+여기서 중요한 것은 next가 State 객체 자체가 아니라 문자열이라는 점이다.
+
+```java
+private final String next;
+```
+
+즉, 다음 State의 이름을 저장한다.
+
+실제 State 객체는 SimpleFlow의 stateMap에서 조회한다.
+
+따라서 다음과 같은 구조가 된다.
+
+```text
+StateTransition
+    │
+    ├── state = routingJob.step0
+    │
+    ├── pattern = COMPLETED
+    │
+    └── next = routingJob.step1
+                       │
+                       ▼
+                   stateMap
+                       │
+                       ▼
+                StepState(step2)
+```
+
+이러한 방식으로 StateTransition과 stateMap이 연결된다.
+
+---
+
+### 전체 예제 구조
+
+이번에는 다음과 같은 Job을 기준으로 내부 동작을 분석해보자.
+
+```java
+@Bean
+public Job routingJob(
+        JobRepository jobRepository,
+        Step step1,
+        Step step2,
+        Flow recoveryFlow
+) {
+
+    return new JobBuilder(
+            "routingJob",
+            jobRepository
+    )
+            .start(step1)
+                .on("*").to(step2)
+
+            .from(step1)
+                .on("FAILED").to(recoveryFlow)
+
+            .end()
+            .build();
+}
+```
+
+그리고 recoveryFlow는 다음과 같이 정의한다.
+
+```java
+@Bean
+public Flow recoveryFlow(
+        Step step2,
+        Step step3
+) {
+
+    return new FlowBuilder<SimpleFlow>(
+            "recoveryFlow"
+    )
+            .start(step2)
+                .on("*").to(step3)
+            .build();
+}
+```
+
+전체 실행 구조는 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["routingJob"]
+    B["Step1"]
+    C{"Step1 ExitStatus"}
+
+    D["Step2"]
+    E["recoveryFlow"]
+
+    F["Step2"]
+    G["Step3"]
+
+    H["Job 종료"]
+
+    A --> B
+    B --> C
+
+    C -->|FAILED| E
+    C -->|그 외| D
+
+    E --> F
+    F -->|모든 종료 코드| G
+
+    D --> H
+    G --> H
+```
+
+여기서 Step2는 두 경로에서 사용된다.
+
+첫 번째는 Step1 이후 직접 실행되는 경우다.
+
+두 번째는 recoveryFlow 내부에서 실행되는 경우다.
+
+따라서 두 경로에서 동일한 Step Bean을 사용할 수 있지만, 각 FlowBuilder가 생성하는 State는 서로 다르다.
+
+이제 이러한 구조가 SimpleFlow 내부에 어떻게 저장되는지 살펴보자.
+
+---
+
+### SimpleFlow 내부의 StateTransition 구조
+
+먼저 최상위 FlowJob을 살펴보자.
+
+```java
+.start(step1)
+    .on("*").to(step2)
+
+.from(step1)
+    .on("FAILED").to(recoveryFlow)
+```
+
+이 설정에서는 다음 State들이 생성된다.
+
+| State 이름 | State 타입 | 실제 실행 대상 |
+|---|---|---|
+| routingJob.step0 | StepState | Step1 |
+| routingJob.step1 | StepState | Step2 |
+| routingJob.flow0 | FlowState | recoveryFlow |
+
+또한 기본 종료 상태를 위한 EndState도 생성된다.
+
+```text
+routingJob.COMPLETED
+
+routingJob.FAILED
+
+routingJob.STOPPED
+```
+
+따라서 최상위 SimpleFlow에는 실행 상태와 종료 상태가 함께 관리된다.
+
+이때 중요한 Transition은 다음과 같다.
+
+| 현재 State | Pattern | 다음 State |
+|---|---|---|
+| routingJob.step0 | * | routingJob.step1 |
+| routingJob.step0 | FAILED | routingJob.flow0 |
+| routingJob.step1 | COMPLETED | routingJob.COMPLETED |
+| routingJob.step1 | * | routingJob.FAILED |
+| routingJob.flow0 | COMPLETED | routingJob.COMPLETED |
+| routingJob.flow0 | * | routingJob.FAILED |
+
+이러한 Transition 외에도 EndState 자체의 종료 Transition이 존재한다.
+
+예를 들어 다음과 같다.
+
+```text
+routingJob.COMPLETED
+    │
+    └── * → null
+```
+
+```text
+routingJob.FAILED
+    │
+    └── * → null
+```
+
+```text
+routingJob.STOPPED
+    │
+    └── * → null
+```
+
+여기서 next가 null이라는 것은 더 이상 이동할 State가 없다는 의미다.
+
+따라서 Flow의 실행이 종료된다.
+
+---
+
+### stateTransitions에 저장되는 정보
+
+FlowBuilder는 생성한 StateTransition을 List에 저장한다.
+
+```java
+private final List<StateTransition> transitions =
+        new ArrayList<>();
+```
+
+그리고 SimpleFlow를 생성할 때 다음과 같이 전달한다.
+
+```java
+flow.setStateTransitions(transitions);
+```
+
+따라서 SimpleFlow는 StateTransition 객체들을 보관한다.
+
+개념적으로 다음과 같다.
+
+```text
+SimpleFlow
+    │
+    └── stateTransitions
+            │
+            ├── StateTransition 1
+            │      ├── state = routingJob.step0
+            │      ├── pattern = *
+            │      └── next = routingJob.step1
+            │
+            ├── StateTransition 2
+            │      ├── state = routingJob.step0
+            │      ├── pattern = FAILED
+            │      └── next = routingJob.flow0
+            │
+            ├── StateTransition 3
+            │      ├── state = routingJob.step1
+            │      ├── pattern = COMPLETED
+            │      └── next = routingJob.COMPLETED
+            │
+            └── ...
+```
+
+여기서 알아둘 점이 있다.
+
+**stateTransitions의 요소 수는 실제 업무 Step의 개수보다 많을 수 있다.**
+
+FlowBuilder가 기본 종료 처리를 위한 Transition까지 추가하기 때문이다.
+
+또한 동일한 종료 State를 참조하는 Transition이 여러 개 생성될 수 있다.
+
+따라서 StateTransition의 수와 실제 실행되는 Step의 수는 직접적인 관계가 없다.
+
+---
+
+### FlowBuilder가 기본 종료 Transition을 생성하는 이유
+
+FlowBuilder는 개발자가 모든 종료 경로를 직접 작성하지 않았더라도 필요한 기본 종료 경로를 구성한다.
+
+이 과정에서 사용하는 메서드가 다음과 같다.
+
+```java
+private void addDanglingEndStates()
+```
+
+이 메서드는 실행 대상 중 다음 경로가 명확하지 않은 State를 확인한다.
+
+그리고 필요한 종료 Transition을 추가한다.
+
+대표적으로 다음과 같은 종료 경로를 생성한다.
+
+```text
+COMPLETED → 정상 종료
+
+* → 실패 종료
+```
+
+예를 들어 Step2가 마지막 실행 대상이라고 생각해보자.
+
+```text
+Step2
+    │
+    ├── COMPLETED
+    │      │
+    │      ▼
+    │   EndState COMPLETED
+    │
+    └── *
+           │
+           ▼
+        EndState FAILED
+```
+
+여기서 중요한 점은 `*`가 모든 상태에 매칭될 수 있다는 것이다.
+
+하지만 COMPLETED가 더 구체적인 패턴이므로 정상 완료 시에는 COMPLETED 경로가 우선 선택된다.
+
+따라서 기본 종료 경로는 다음과 같이 동작한다.
+
+| Step2 ExitStatus | 선택되는 경로 |
+|---|---|
+| COMPLETED | COMPLETED EndState |
+| FAILED | FAILED EndState |
+| STOPPED | 일반적으로 실패 경로 또는 별도 중단 처리 |
+| 사용자 정의 코드 | 정의된 Transition에 따라 결정 |
+
+실제 처리에서는 중단 상태와 재시작 정책에 대한 추가 로직도 고려된다.
+
+---
+
+### SimpleFlow 초기화 과정
+
+FlowBuilder는 StateTransition 목록을 생성한다.
+
+하지만 SimpleFlow는 실행 과정에서 List 전체를 반복적으로 순회하기보다 Map을 이용해 필요한 State와 Transition을 조회한다.
+
+따라서 SimpleFlow는 StateTransition 목록을 이용해 내부 자료구조를 초기화한다.
+
+이 과정에서 사용하는 메서드가 다음과 같다.
+
+```java
+initializeTransitions()
+```
+
+Spring Batch 5.2.4의 핵심 구조를 살펴보자.
+
+```java
+private void initializeTransitions() {
+
+    startState = null;
+
+    transitionMap.clear();
+
+    stateMap.clear();
+
+    if (stateTransitions.isEmpty()) {
+
+        throw new IllegalArgumentException(
+                "No start state was found."
+        );
+    }
+
+    // State 정보 구성
+
+    for (StateTransition transition
+            : stateTransitions) {
+
+        State state = transition.getState();
+
+        stateMap.put(
+                state.getName(),
+                state
+        );
+    }
+
+    // Transition 정보 구성
+
+    for (StateTransition transition
+            : stateTransitions) {
+
+        State state = transition.getState();
+
+        String name = state.getName();
+
+        // State별 Transition을 그룹화한다.
+
+        // transitionMap에 저장한다.
+    }
+
+    // 첫 번째 Transition의 State를 시작 State로 설정
+
+    startState =
+            stateTransitions.get(0).getState();
+}
+```
+
+위 코드는 초기화의 핵심 부분만 정리한 설명용 코드다.
+
+실제 구현에서는 Transition의 다음 State 존재 여부, 종료 State 존재 여부, Comparator 설정 등의 검증도 수행한다.
+
+이 과정에서 다음 세 가지 정보가 준비된다.
+
+```text
+stateMap
+
+transitionMap
+
+startState
+```
+
+각 자료구조가 어떻게 만들어지는지 살펴보자.
+
+---
+
+### stateMap 초기화
+
+stateMap은 State 이름으로 State 객체를 조회하기 위한 Map이다.
+
+```java
+private final Map<String, State> stateMap =
+        new HashMap<>();
+```
+
+SimpleFlow는 StateTransition 목록에서 State 객체를 조회한다.
+
+그리고 State 이름을 Key로 저장한다.
+
+```java
+for (StateTransition transition
+        : stateTransitions) {
+
+    State state = transition.getState();
+
+    stateMap.put(
+            state.getName(),
+            state
+    );
+}
+```
+
+이번 예제에서는 개념적으로 다음과 같은 Map이 구성된다.
+
+```text
+stateMap
+    │
+    ├── routingJob.step0
+    │      └── StepState(step1)
+    │
+    ├── routingJob.step1
+    │      └── StepState(step2)
+    │
+    ├── routingJob.flow0
+    │      └── FlowState(recoveryFlow)
+    │
+    ├── routingJob.COMPLETED
+    │      └── EndState(COMPLETED)
+    │
+    ├── routingJob.FAILED
+    │      └── EndState(FAILED)
+    │
+    └── routingJob.STOPPED
+           └── EndState(STOPPED)
+```
+
+이 예제의 최상위 SimpleFlow에는 여섯 개의 State가 존재한다.
+
+하지만 이것이 여섯 개의 Step을 실행한다는 의미는 아니다.
+
+실제 업무 Step은 Step1과 Step2이며, recoveryFlow 안에 Step2와 Step3이 추가로 정의되어 있다.
+
+또한 일부 State는 조건에 따라 실행되지 않을 수 있다.
+
+따라서 **stateMap은 실행 가능한 State의 집합이지, 실제 실행 이력 목록이 아니다.**
+
+---
+
+### transitionMap 초기화
+
+transitionMap은 State별 Transition을 관리한다.
+
+```java
+private final Map<String, Set<StateTransition>>
+        transitionMap = new HashMap<>();
+```
+
+Key는 State 이름이다.
+
+Value는 해당 State에서 선택할 수 있는 Transition들의 집합이다.
+
+이번 예제에서는 다음과 같은 구조가 만들어진다.
+
+```text
+transitionMap
+    │
+    ├── routingJob.step0
+    │      │
+    │      ├── FAILED → routingJob.flow0
+    │      └── * → routingJob.step1
+    │
+    ├── routingJob.step1
+    │      │
+    │      ├── COMPLETED → routingJob.COMPLETED
+    │      └── * → routingJob.FAILED
+    │
+    └── routingJob.flow0
+           │
+           ├── COMPLETED → routingJob.COMPLETED
+           └── * → routingJob.FAILED
+```
+
+종료 State들의 Transition도 별도로 관리된다.
+
+여기서 중요한 것은 다음 부분이다.
+
+```text
+routingJob.step0
+    │
+    ├── FAILED → routingJob.flow0
+    └── * → routingJob.step1
+```
+
+Step1에는 두 개의 Transition이 존재한다.
+
+따라서 Step1 실행 이후 SimpleFlow는 두 조건을 비교해 다음 State를 결정한다.
+
+Step1의 종료 코드가 FAILED라면 recoveryFlow로 이동한다.
+
+그 외의 상태라면 Step2로 이동한다.
+
+---
+
+### Transition의 우선순위
+
+이제 처음에 제기했던 질문으로 돌아가 보자.
+
+Step1에 다음 두 Transition이 있다고 가정한다.
+
+```java
+.start(step1)
+    .on("*").to(step2)
+
+.from(step1)
+    .on("FAILED").to(recoveryFlow)
+```
+
+Step1의 ExitStatus가 FAILED라면 두 패턴에 모두 일치한다.
+
+```text
+FAILED matches "*"
+
+FAILED matches "FAILED"
+```
+
+하지만 Spring Batch는 모든 패턴을 동일한 우선순위로 처리하지 않는다.
+
+**더 구체적인 패턴을 먼저 평가한다.**
+
+Spring Batch 5.2.4에서는 `DefaultStateTransitionComparator`를 사용한다.
+
+이 클래스는 와일드카드의 개수와 문자열 길이 등을 비교하여 패턴의 구체성을 판단한다.
+
+예를 들어 다음과 같은 우선순위가 적용된다.
+
+| Pattern | 구체성 |
+|---|---|
+| FAILED | 높음 |
+| FAIL?D | 중간 |
+| FAIL* | 낮음 |
+| * | 가장 포괄적 |
+
+따라서 FAILED와 `*`가 동시에 일치한다면 FAILED가 우선한다.
+
+이 때문에 다음과 같이 코드를 작성했더라도 문제가 없다.
+
+```java
+.on("*").to(step2)
+```
+
+```java
+.on("FAILED").to(recoveryFlow)
+```
+
+실제 실행에서는 FAILED 패턴이 먼저 선택된다.
+
+#### 중요한 점
+
+Transition의 우선순위는 단순한 코드 작성 순서에 의해 결정되지 않는다.
+
+Spring Batch가 설정한 Comparator에 따라 결정된다.
+
+따라서 다음 두 설정은 동일한 분기 의도를 표현한다.
+
+```java
+.start(step1)
+    .on("*").to(step2)
+.from(step1)
+    .on("FAILED").to(recoveryFlow)
+```
+
+```java
+.start(step1)
+    .on("FAILED").to(recoveryFlow)
+.from(step1)
+    .on("*").to(step2)
+```
+
+다만 가독성을 위해서는 구체적인 조건을 먼저 선언하고, 마지막에 기본 조건을 작성하는 방식도 고려할 수 있다.
+
+---
+
+### DefaultStateTransitionComparator의 동작 원리
+
+Spring Batch 5.2.4의 DefaultStateTransitionComparator는 패턴에 포함된 와일드카드를 기준으로 구체성을 비교한다.
+
+예를 들어 다음 두 패턴을 비교한다.
+
+```text
+FAILED
+
+*
+```
+
+FAILED에는 와일드카드가 없다.
+
+반면 `*`는 모든 문자열과 일치할 수 있다.
+
+따라서 FAILED가 더 구체적인 패턴이다.
+
+또 다른 예를 살펴보자.
+
+```text
+COMPLETED
+
+COMPLETED*
+```
+
+COMPLETED는 정확히 일치하는 종료 코드만 표현한다.
+
+반면 `COMPLETED*`는 COMPLETED로 시작하는 여러 종료 코드와 일치할 수 있다.
+
+따라서 COMPLETED가 더 구체적이다.
+
+Spring Batch는 이러한 규칙을 이용해 Transition을 정렬한다.
+
+SimpleFlow의 초기화 과정에서는 Comparator가 존재할 경우 다음과 같은 자료구조를 사용한다.
+
+```java
+Set<StateTransition> set =
+        new TreeSet<>(
+                stateTransitionComparator
+        ).descendingSet();
+```
+
+이렇게 생성한 Set에는 구체적인 패턴이 먼저 평가되도록 Transition이 저장된다.
+
+따라서 `nextState()`가 Transition을 순회할 때 별도의 복잡한 우선순위 계산을 반복할 필요가 없다.
+
+이미 정렬된 Transition을 순서대로 확인하면 된다.
+
+---
+
+### StateTransition과 transitionMap의 관계
+
+지금까지의 내용을 비교해보자.
+
+| 구분 | stateTransitions | transitionMap |
+|---|---|---|
+| 자료구조 | List | Map |
+| 저장 대상 | 전체 Transition 정의 | State별 Transition |
+| 생성 주체 | FlowBuilder | SimpleFlow 초기화 |
+| 주요 목적 | 실행 흐름의 원본 정의 | 현재 State의 다음 경로 조회 |
+| 조회 방식 | 전체 목록 | State 이름 기반 |
+| 실행 시 활용 | 초기화에 활용 | 다음 State 결정에 활용 |
+
+예를 들어 다음과 같은 Transition이 존재한다고 생각해보자.
+
+```text
+Step1 → COMPLETED → Step2
+
+Step1 → FAILED → RecoveryFlow
+
+Step2 → COMPLETED → EndState
+```
+
+stateTransitions는 이러한 정보를 하나의 목록으로 관리한다.
+
+반면 transitionMap은 다음과 같이 그룹화한다.
+
+```text
+Step1
+    ├── COMPLETED → Step2
+    └── FAILED → RecoveryFlow
+
+Step2
+    └── COMPLETED → EndState
+```
+
+따라서 SimpleFlow는 현재 State의 이름만 알고 있으면 관련된 Transition을 바로 조회할 수 있다.
+
+이러한 구조는 실행 과정에서 불필요하게 전체 Transition을 검색하는 일을 줄이는 데 도움이 된다.
+
+---
+
+### startState는 어떻게 결정될까?
+
+SimpleFlow는 시작 State를 저장한다.
+
+```java
+private State startState;
+```
+
+Spring Batch 5.2.4의 initializeTransitions()에서는 다음과 같이 설정한다.
+
+```java
+startState =
+        stateTransitions.get(0).getState();
+```
+
+즉, StateTransition 목록의 첫 번째 State를 시작 State로 설정한다.
+
+이번 예제에서는 다음 코드가 최초 실행 대상을 정의한다.
+
+```java
+.start(step1)
+```
+
+따라서 시작 State는 Step1을 보관한 StepState다.
+
+```text
+startState
+    │
+    ▼
+routingJob.step0
+    │
+    ▼
+StepState(step1)
+```
+
+SimpleFlow는 이 객체부터 실행을 시작한다.
+
+---
+
+### State 인터페이스
+
+SimpleFlow는 StepState, FlowState, DecisionState 등의 객체를 실행한다.
+
+하지만 SimpleFlow는 현재 State가 어떤 구현체인지 직접 구분할 필요가 없다.
+
+그 이유는 State 인터페이스 때문이다.
+
+Spring Batch에서는 State 인터페이스를 통해 공통적인 실행 메서드를 제공한다.
+
+핵심 메서드는 다음과 같다.
+
+```java
+public interface State {
+
+    String getName();
+
+    FlowExecutionStatus handle(
+            FlowExecutor executor
+    ) throws Exception;
+
+    boolean isEndState();
+}
+```
+
+SimpleFlow는 다음과 같이 실행한다.
+
+```java
+FlowExecutionStatus status =
+        state.handle(executor);
+```
+
+현재 State가 StepState라면 Step을 실행한다.
+
+현재 State가 FlowState라면 다른 Flow를 실행한다.
+
+현재 State가 DecisionState라면 Decider를 실행한다.
+
+이러한 구조는 객체지향의 다형성을 활용한 설계다.
+
+---
+
+### StepState의 실행 구조
+
+StepState는 실제 Step을 보관한다.
+
+```java
+private final Step step;
+```
+
+그리고 handle() 메서드에서 Step을 실행한다.
+
+```java
+@Override
+public FlowExecutionStatus handle(
+        FlowExecutor executor
+) throws Exception {
+
+    executor.abandonStepExecution();
+
+    return new FlowExecutionStatus(
+            executor.executeStep(step)
+    );
+}
+```
+
+이 코드에서 중요한 부분은 다음과 같다.
+
+```java
+executor.executeStep(step);
+```
+
+StepState가 직접 Tasklet을 실행하는 것은 아니다.
+
+FlowExecutor에게 Step 실행을 위임한다.
+
+일반적인 FlowJob에서는 JobFlowExecutor가 이를 처리한다.
+
+전체 호출 구조는 다음과 같다.
+
+```text
+SimpleFlow
+    │
+    ▼
+StepState.handle()
+    │
+    ▼
+JobFlowExecutor.executeStep()
+    │
+    ▼
+SimpleStepHandler.handleStep()
+    │
+    ▼
+Step.execute()
+```
+
+Step 실행이 완료되면 종료 코드를 반환받는다.
+
+그리고 FlowExecutionStatus로 변환한다.
+
+이렇게 생성된 FlowExecutionStatus는 SimpleFlow의 nextState()에서 사용된다.
+
+---
+
+### FlowState의 실행 구조
+
+FlowState는 다른 Flow를 보관한다.
+
+```java
+private final Flow flow;
+```
+
+그리고 handle()을 통해 하위 Flow를 실행한다.
+
+```java
+@Override
+public FlowExecutionStatus handle(
+        FlowExecutor executor
+) throws Exception {
+
+    return flow.start(executor).getStatus();
+}
+```
+
+이 코드는 중첩 Flow의 실행 원리를 설명한다.
+
+상위 SimpleFlow가 FlowState를 실행하면 하위 Flow의 start()가 호출된다.
+
+하위 Flow가 실행을 완료하면 FlowExecutionStatus가 반환된다.
+
+상위 SimpleFlow는 이 값을 이용해 다음 State를 결정한다.
+
+```mermaid
+sequenceDiagram
+    participant Parent as 상위 SimpleFlow
+    participant FS as FlowState
+    participant Child as 하위 SimpleFlow
+    participant Step as 하위 Step
+
+    Parent->>FS: handle()
+    FS->>Child: start()
+    Child->>Step: handle()
+    Step-->>Child: FlowExecutionStatus
+    Child-->>FS: FlowExecution
+    FS-->>Parent: FlowExecutionStatus
+```
+
+이러한 구조를 통해 Flow 안에 다른 Flow를 중첩할 수 있다.
+
+---
+
+### DecisionState의 실행 구조
+
+DecisionState는 JobExecutionDecider를 보관한다.
+
+```java
+private final JobExecutionDecider decider;
+```
+
+그리고 다음 메서드를 호출한다.
+
+```java
+@Override
+public FlowExecutionStatus handle(
+        FlowExecutor executor
+) throws Exception {
+
+    return decider.decide(
+            executor.getJobExecution(),
+            executor.getStepExecution()
+    );
+}
+```
+
+DecisionState는 실제 비즈니스 조건을 직접 판단하지 않는다.
+
+조건 판단은 JobExecutionDecider 구현체에 위임한다.
+
+그리고 반환된 FlowExecutionStatus를 SimpleFlow에 전달한다.
+
+따라서 StepState와 FlowState, DecisionState는 서로 다른 실행 대상을 가지고 있지만 동일한 인터페이스로 실행된다.
+
+---
+
+### SplitState의 실행 구조
+
+SplitState는 여러 Flow를 실행하기 위한 State다.
+
+이 객체는 여러 Flow와 TaskExecutor를 사용한다.
+
+예를 들어 다음과 같은 구성이 가능하다.
+
+```java
+new FlowBuilder<SimpleFlow>("splitFlow")
+        .start(flow1)
+        .split(taskExecutor)
+        .add(flow2)
+        .build();
+```
+
+이러한 구조에서는 TaskExecutor를 이용해 여러 Flow를 실행할 수 있다.
+
+다만 실제 병렬 실행 여부는 어떤 TaskExecutor를 사용하는지에 따라 달라진다.
+
+예를 들어 SyncTaskExecutor를 사용한다면 일반적인 의미의 병렬 실행이 이루어지지 않는다.
+
+반면 비동기 실행을 지원하는 TaskExecutor를 사용하면 여러 Flow를 병렬적으로 실행할 수 있다.
+
+따라서 SplitState는 단순히 여러 Flow를 포함하는 객체가 아니라 **TaskExecutor를 이용해 Flow의 분리 실행을 관리하는 State**라고 이해할 수 있다.
+
+---
+
+### SimpleFlow.start()의 내부 동작
+
+이제 실제 실행 과정을 살펴보자.
+
+FlowJob은 SimpleFlow를 실행한다.
+
+```java
+flow.start(executor);
+```
+
+SimpleFlow는 start()를 호출한다.
+
+Spring Batch 5.2.4의 핵심 코드는 다음과 같다.
+
+```java
+@Override
+public FlowExecution start(
+        FlowExecutor executor
+) throws FlowExecutionException {
+
+    initializeTransitionsIfNotInitialized();
+
+    State state = startState;
+
+    String stateName = state.getName();
+
+    return resume(
+            stateName,
+            executor
+    );
+}
+```
+
+이 메서드는 다음 작업을 수행한다.
+
+먼저 State 및 Transition 정보가 초기화되었는지 확인한다.
+
+그다음 시작 State를 가져온다.
+
+마지막으로 resume()을 호출한다.
+
+따라서 start()는 실제 상태 전이 루프를 직접 수행하지 않는다.
+
+**상태 전이의 핵심 실행 로직은 resume()에 존재한다.**
+
+---
+
+### SimpleFlow.resume()의 내부 동작
+
+resume()은 현재 State를 실행하고 다음 State를 결정하는 과정을 반복한다.
+
+Spring Batch 5.2.4의 주요 실행 구조는 다음과 같다.
+
+```java
+@Override
+public FlowExecution resume(
+        String stateName,
+        FlowExecutor executor
+) throws FlowExecutionException {
+
+    FlowExecutionStatus status =
+            FlowExecutionStatus.UNKNOWN;
+
+    State state = stateMap.get(stateName);
+
+    StepExecution stepExecution = null;
+
+    while (isFlowContinued(
+            state,
+            status,
+            stepExecution
+    )) {
+
+        stateName = state.getName();
+
+        try {
+
+            status = state.handle(executor);
+
+            stepExecution =
+                    executor.getStepExecution();
+
+        } catch (FlowExecutionException e) {
+
+            executor.close(
+                    new FlowExecution(
+                            stateName,
+                            status
+                    )
+            );
+
+            throw e;
+
+        } catch (Exception e) {
+
+            executor.close(
+                    new FlowExecution(
+                            stateName,
+                            status
+                    )
+            );
+
+            throw new FlowExecutionException(
+                    "Flow execution failed",
+                    e
+            );
+        }
+
+        state = nextState(
+                stateName,
+                status,
+                stepExecution
+        );
+    }
+
+    FlowExecution result =
+            new FlowExecution(
+                    stateName,
+                    status
+            );
+
+    executor.close(result);
+
+    return result;
+}
+```
+
+위 코드는 주요 처리 흐름을 이해하기 위해 로그와 일부 예외 메시지를 단순화한 설명용 코드다.
+
+이 메서드에서는 크게 다섯 가지 작업이 반복된다.
+
+현재 State를 조회한다.
+
+State의 handle()을 호출한다.
+
+FlowExecutionStatus를 반환받는다.
+
+nextState()로 다음 State를 조회한다.
+
+다음 State가 있다면 다시 실행한다.
+
+따라서 resume()은 다음과 같은 구조로 동작한다.
+
+```text
+현재 State
+    │
+    ▼
+state.handle()
+    │
+    ▼
+FlowExecutionStatus
+    │
+    ▼
+nextState()
+    │
+    ├── 다음 State 존재
+    │      │
+    │      ▼
+    │   state.handle() 반복
+    │
+    └── 다음 State 없음
+           │
+           ▼
+       FlowExecution 반환
+```
+
+---
+
+### resume()은 모든 State를 실행할까?
+
+여기서 중요한 점이 있다.
+
+resume()은 stateMap에 등록된 모든 State를 순회하지 않는다.
+
+현재 State에서 선택된 다음 State만 실행한다.
+
+예를 들어 다음과 같은 구조가 있다고 생각해보자.
+
+```text
+Step1
+    │
+    ├── COMPLETED → Step2
+    │
+    └── FAILED → RecoveryFlow
+```
+
+Step1이 COMPLETED로 종료되었다면 Step2만 실행된다.
+
+RecoveryFlow는 실행되지 않는다.
+
+반대로 Step1이 FAILED로 종료되었다면 RecoveryFlow가 실행된다.
+
+Step2로 직접 이동하는 경로는 선택되지 않는다.
+
+따라서 실행되는 State의 개수는 조건에 따라 달라질 수 있다.
+
+또한 Flow에 반복 경로가 정의되어 있다면 동일한 State를 다시 방문할 수도 있다.
+
+따라서 **resume()의 반복 횟수가 stateMap의 크기와 반드시 일치하는 것은 아니다.**
+
+---
+
+### nextState()의 내부 동작
+
+nextState()는 현재 State의 실행 결과를 이용해 다음 State를 결정한다.
+
+Spring Batch 5.2.4에서는 다음과 같은 핵심 로직을 사용한다.
+
+```java
+protected State nextState(
+        String stateName,
+        FlowExecutionStatus status,
+        StepExecution stepExecution
+) throws FlowExecutionException {
+
+    Set<StateTransition> transitions =
+            transitionMap.get(stateName);
+
+    if (transitions == null) {
+
+        throw new FlowExecutionException(
+                "No transitions found"
+        );
+    }
+
+    String exitCode = status.getName();
+
+    String next = null;
+
+    for (StateTransition transition
+            : transitions) {
+
+        if (transition.matches(exitCode)) {
+
+            if (transition.isEnd()) {
+
+                return null;
+            }
+
+            next = transition.getNext();
+
+            break;
+        }
+    }
+
+    if (next == null) {
+
+        throw new FlowExecutionException(
+                "Next state not found"
+        );
+    }
+
+    return stateMap.get(next);
+}
+```
+
+위 코드는 주요 로직을 단순화한 설명용 코드다.
+
+실제 구현에는 PENDING과 STOPPED의 특수 처리 및 다음 State 존재 여부 검증도 포함되어 있다.
+
+이 코드에서 가장 중요한 부분은 다음과 같다.
+
+```java
+transition.matches(exitCode)
+```
+
+현재 FlowExecutionStatus와 Transition 패턴이 일치하는지 검사한다.
+
+일치한다면 다음 State 이름을 가져온다.
+
+```java
+next = transition.getNext();
+```
+
+그리고 stateMap에서 실제 State 객체를 조회한다.
+
+```java
+return stateMap.get(next);
+```
+
+이렇게 다음 실행 대상이 결정된다.
+
+---
+
+### StateTransition.matches()의 동작
+
+StateTransition에서는 다음 메서드를 제공한다.
+
+```java
+public boolean matches(String status) {
+
+    return PatternMatcher.match(
+            pattern,
+            status
+    );
+}
+```
+
+여기서 pattern은 FlowBuilder의 on()에서 설정한 문자열이다.
+
+예를 들어 다음과 같다.
+
+```java
+.on("FAILED")
+```
+
+이 경우 StateTransition의 pattern은 FAILED가 된다.
+
+반면 status는 현재 State가 실행된 후 반환한 FlowExecutionStatus의 이름이다.
+
+예를 들어 다음과 같다.
+
+```text
+status = FAILED
+```
+
+따라서 다음 비교가 이루어진다.
+
+```text
+Pattern = FAILED
+
+Status  = FAILED
+```
+
+두 값이 일치하므로 true가 반환된다.
+
+반면 다음과 같은 경우도 생각해보자.
+
+```text
+Pattern = *
+
+Status  = FAILED
+```
+
+`*`는 모든 문자열에 일치할 수 있으므로 역시 true가 반환된다.
+
+하지만 FAILED 패턴이 더 구체적이므로 먼저 선택된다.
+
+이처럼 **Transition의 패턴 매칭은 종료 코드와 실행 경로를 연결하는 핵심 과정**이다.
+
+---
+
+### EndState와 실행 종료
+
+SimpleFlow는 더 이상 실행할 State가 없을 때 종료된다.
+
+일반적으로 FlowBuilder는 정상 종료와 실패 종료를 위한 EndState를 생성한다.
+
+예를 들어 다음과 같은 구조다.
+
+```text
+Step2
+    │
+    ▼
+EndState COMPLETED
+    │
+    ▼
+Flow 종료
+```
+
+EndState도 State 구현체다.
+
+따라서 handle()을 제공한다.
+
+EndState는 자신이 가지고 있는 FlowExecutionStatus를 반환한다.
+
+그리고 종료 정보를 FlowExecutor에 전달한다.
+
+이후 EndState와 연결된 StateTransition이 다음 State가 없는 종료 경로를 나타내면 nextState()는 null을 반환한다.
+
+따라서 resume()의 반복문이 종료된다.
+
+이 과정에서 다음과 같은 FlowExecution 객체가 생성된다.
+
+```java
+new FlowExecution(
+        stateName,
+        status
+);
+```
+
+여기에는 마지막 State의 이름과 최종 FlowExecutionStatus가 저장된다.
+
+이 값은 최종적으로 FlowJob의 실행 결과를 결정하는 데 사용된다.
+
+---
+
+### 전체 실행 시퀀스
+
+지금까지의 내용을 실제 메서드 호출 순서로 정리해보자.
+
+```mermaid
+sequenceDiagram
+    participant Job as FlowJob
+    participant Flow as SimpleFlow
+    participant Map as stateMap / transitionMap
+    participant State as State
+    participant Executor as JobFlowExecutor
+    participant Step as Step
+
+    Job->>Flow: start(executor)
+    Flow->>Flow: initializeTransitionsIfNotInitialized()
+    Flow->>Flow: startState 조회
+    Flow->>Flow: resume()
+
+    Flow->>Map: stateMap.get(stateName)
+    Map-->>Flow: 현재 State
+
+    Flow->>State: handle(executor)
+    State->>Executor: executeStep(step)
+    Executor->>Step: execute()
+    Step-->>Executor: ExitStatus
+    Executor-->>State: ExitCode
+    State-->>Flow: FlowExecutionStatus
+
+    Flow->>Map: transitionMap.get(stateName)
+    Map-->>Flow: StateTransition 목록
+
+    Flow->>Flow: 패턴 매칭
+    Flow->>Map: 다음 State 조회
+
+    alt 다음 State 존재
+        Map-->>Flow: 다음 State
+        Flow->>State: handle() 반복
+    else 종료 State
+        Flow->>Flow: FlowExecution 생성
+        Flow-->>Job: FlowExecution 반환
+    end
+```
+
+이 구조는 크게 세 영역으로 구분할 수 있다.
+
+첫 번째는 FlowBuilder가 실행 구조를 준비하는 단계다.
+
+두 번째는 SimpleFlow가 State를 실행하는 단계다.
+
+세 번째는 Transition을 이용해 다음 State를 결정하는 단계다.
+
+이 세 과정을 이해하면 FlowJob의 내부 실행 구조를 파악할 수 있다.
+
+---
+
+### 예제: SimpleFlow의 조건부 실행 구현
+
+이번에는 실제 Job을 구성해보자.
+
+요구사항은 다음과 같다.
+
+Step1이 정상적으로 완료되면 Step2를 실행한다.
+
+Step1이 실패하면 recoveryFlow를 실행한다.
+
+recoveryFlow는 Step2와 Step3를 실행한다.
+
+따라서 다음과 같은 구조가 된다.
+
+```mermaid
+flowchart TD
+    A["routingJob"]
+    B["firstStep"]
+
+    C{"ExitStatus"}
+
+    D["secondStep"]
+    E["recoveryFlow"]
+
+    F["secondStep"]
+    G["thirdStep"]
+
+    H["Job 종료"]
+
+    A --> B
+    B --> C
+
+    C -->|FAILED| E
+    C -->|그 외| D
+
+    E --> F
+    F --> G
+
+    D --> H
+    G --> H
+```
+
+이번 예제에서는 JobParameters를 이용해 firstStep의 실패 여부를 제어한다.
+
+정상 실행에서는 firstStep과 secondStep만 실행된다.
+
+실패 실행에서는 firstStep 이후 recoveryFlow의 secondStep과 thirdStep이 실행된다.
+
+---
+
+### 개발 환경
+
+| 항목 | 기술 |
+|---|---|
+| Java | Java 17 |
+| Spring Boot | Spring Boot 3.4.x |
+| Spring Batch | Spring Batch 5.2.4 |
+| Database | H2 |
+| Build Tool | Maven |
+| Job | FlowJob |
+| Flow | SimpleFlow |
+| Step | TaskletStep |
+
+이번 예제는 Spring Batch 5.2.4의 API를 기준으로 작성한다.
+
+Spring Batch 4.x에서 사용하던 JobBuilderFactory, StepBuilderFactory 대신 JobRepository를 직접 전달하는 방식을 사용한다.
+
+---
+
+### Maven 의존성
+
+`pom.xml`
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="
+             http://maven.apache.org/POM/4.0.0
+             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.4.13</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.example</groupId>
+    <artifactId>simple-flow-architecture</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+
+    <properties>
+        <java.version>17</java.version>
+        <spring-batch.version>5.2.4</spring-batch.version>
+    </properties>
+
+    <dependencies>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-batch</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>
+```
+
+---
+
+### application.yml 설정
+
+`src/main/resources/application.yml`
+
+```yaml
+spring:
+  application:
+    name: simple-flow-architecture
+
+  main:
+    web-application-type: none
+
+  datasource:
+    url: jdbc:h2:file:./data/simple-flow-db;DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+  batch:
+    job:
+      enabled: true
+      name: routingJob
+
+    jdbc:
+      initialize-schema: ${BATCH_SCHEMA_INIT:never}
+
+logging:
+  level:
+    org.springframework.batch: INFO
+    com.example.batch: INFO
+```
+
+이번에는 파일 기반 H2를 사용한다.
+
+따라서 애플리케이션을 종료하더라도 이전 실행 이력을 유지할 수 있다.
+
+최초 실행에서는 BATCH_SCHEMA_INIT을 always로 설정해 Spring Batch 메타데이터 테이블을 생성한다.
+
+이후에는 기존 테이블을 사용한다.
+
+---
+
+### Spring Boot 애플리케이션
+
+`BatchApplication.java`
+
+```java
+package com.example.batch;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class BatchApplication {
+
+    public static void main(String[] args) {
+
+        SpringApplication.run(
+                BatchApplication.class,
+                args
+        );
+    }
+}
+```
+
+---
+
+### SimpleFlowArchitectureConfiguration 전체 코드
+
+`SimpleFlowArchitectureConfiguration.java`
+
+```java
+package com.example.batch;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.Step;
+
+import org.springframework.batch.core.job.builder.FlowBuilder;
+import org.springframework.batch.core.job.builder.JobBuilder;
+
+import org.springframework.batch.core.job.flow.Flow;
+import org.springframework.batch.core.job.flow.support.SimpleFlow;
+
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.step.builder.StepBuilder;
+
+import org.springframework.batch.repeat.RepeatStatus;
+
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import org.springframework.transaction.PlatformTransactionManager;
+
+@Configuration
+public class SimpleFlowArchitectureConfiguration {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(
+                    SimpleFlowArchitectureConfiguration.class
+            );
+
+    @Bean
+    public Job routingJob(
+            JobRepository jobRepository,
+            @Qualifier("firstStep") Step firstStep,
+            @Qualifier("secondStep") Step secondStep,
+            @Qualifier("recoveryFlow") Flow recoveryFlow
+    ) {
+
+        return new JobBuilder(
+                "routingJob",
+                jobRepository
+        )
+                .start(firstStep)
+                    .on("*").to(secondStep)
+
+                .from(firstStep)
+                    .on("FAILED").to(recoveryFlow)
+
+                .end()
+                .build();
+    }
+
+    @Bean
+    public Flow recoveryFlow(
+            @Qualifier("secondStep") Step secondStep,
+            @Qualifier("thirdStep") Step thirdStep
+    ) {
+
+        return new FlowBuilder<SimpleFlow>(
+                "recoveryFlow"
+        )
+                .start(secondStep)
+                    .on("*").to(thirdStep)
+                .build();
+    }
+
+    @Bean
+    public Step firstStep(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+
+        return new StepBuilder(
+                "firstStep",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    log.info("[firstStep] 실행");
+
+                    String failFirst =
+                            contribution
+                                    .getStepExecution()
+                                    .getJobParameters()
+                                    .getString("failFirst");
+
+                    if ("true".equals(failFirst)) {
+
+                        log.error(
+                                "[firstStep] 의도적인 예외 발생"
+                        );
+
+                        throw new IllegalStateException(
+                                "firstStep 실행 실패"
+                        );
+                    }
+
+                    log.info("[firstStep] 정상 완료");
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+
+    @Bean
+    public Step secondStep(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+
+        return new StepBuilder(
+                "secondStep",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    log.info("[secondStep] 실행");
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+
+    @Bean
+    public Step thirdStep(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+
+        return new StepBuilder(
+                "thirdStep",
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    log.info("[thirdStep] 실행");
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+}
+```
+
+이 코드에서는 하나의 FlowJob과 하나의 하위 Flow를 구성한다.
+
+최상위 FlowJob은 firstStep의 실행 결과에 따라 두 경로 중 하나를 선택한다.
+
+firstStep이 정상적으로 완료되었다면 secondStep을 실행한다.
+
+firstStep이 FAILED로 종료되었다면 recoveryFlow를 실행한다.
+
+recoveryFlow는 secondStep과 thirdStep을 순서대로 실행한다.
+
+따라서 실행 결과에 따라 실제 Step의 개수가 달라진다.
+
+---
+
+### 정상 실행 결과
+
+먼저 프로젝트를 빌드한다.
+
+```bash
+mvn clean package
+```
+
+정상적으로 빌드되면 다음과 유사한 결과가 출력된다.
+
+```text
+BUILD SUCCESS
+```
+
+데이터베이스 저장 디렉터리를 생성한다.
+
+```bash
+mkdir -p data
+```
+
+최초 실행에서는 Spring Batch 메타데이터 테이블을 생성한다.
+
+```bash
+BATCH_SCHEMA_INIT=always \
+java -jar target/simple-flow-architecture-0.0.1-SNAPSHOT.jar \
+  failFirst=false \
+  requestId=normal-001
+```
+
+이번에는 firstStep에서 예외가 발생하지 않는다.
+
+따라서 firstStep의 ExitStatus는 COMPLETED가 된다.
+
+SimpleFlow는 다음 Transition을 확인한다.
+
+```text
+FAILED → recoveryFlow
+
+* → secondStep
+```
+
+현재 종료 코드는 COMPLETED다.
+
+FAILED 패턴에는 일치하지 않는다.
+
+반면 `*`에는 일치한다.
+
+따라서 secondStep으로 이동한다.
+
+#### 예상 실행 로그
+
+```text
+[firstStep] 실행
+
+[firstStep] 정상 완료
+
+[secondStep] 실행
+```
+
+실행 순서는 다음과 같다.
+
+```text
+firstStep
+    │
+    ▼
+secondStep
+    │
+    ▼
+Job COMPLETED
+```
+
+thirdStep은 실행되지 않는다.
+
+정상 경로에서는 recoveryFlow로 이동하지 않기 때문이다.
+
+---
+
+### 실패 실행 결과
+
+이번에는 firstStep에서 예외를 발생시켜보자.
+
+```bash
+java -jar target/simple-flow-architecture-0.0.1-SNAPSHOT.jar \
+  failFirst=true \
+  requestId=failed-001
+```
+
+firstStep에서 다음 예외가 발생한다.
+
+```java
+throw new IllegalStateException(
+        "firstStep 실행 실패"
+);
+```
+
+따라서 firstStep의 ExitStatus는 FAILED가 된다.
+
+이때 SimpleFlow는 다음 두 패턴을 확인한다.
+
+```text
+FAILED → recoveryFlow
+
+* → secondStep
+```
+
+두 조건 모두 일치할 수 있다.
+
+하지만 FAILED가 더 구체적인 패턴이므로 우선 선택된다.
+
+따라서 recoveryFlow로 이동한다.
+
+recoveryFlow는 secondStep과 thirdStep을 실행한다.
+
+#### 예상 실행 로그
+
+```text
+[firstStep] 실행
+
+[firstStep] 의도적인 예외 발생
+
+[secondStep] 실행
+
+[thirdStep] 실행
+```
+
+firstStep의 예외 스택 트레이스도 함께 출력될 수 있다.
+
+전체 실행 구조는 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["routingJob"]
+    B["firstStep"]
+    C["FAILED"]
+    D["recoveryFlow"]
+    E["secondStep"]
+    F["thirdStep"]
+    G["Job 종료"]
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+    F --> G
+```
+
+이렇게 하면 firstStep은 실패했지만 이후 recoveryFlow를 실행할 수 있다.
+
+이러한 기능은 오류 처리 또는 복구 작업을 구성할 때 유용하다.
+
+---
+
+### 실패 후 BatchStatus가 ABANDONED로 변경될 수 있는 이유
+
+이번 예제에서 중요한 내부 동작이 하나 더 있다.
+
+StepState는 새로운 Step을 실행하기 전에 다음 메서드를 호출한다.
+
+```java
+executor.abandonStepExecution();
+```
+
+JobFlowExecutor는 이전 StepExecution이 실패 상태인지 확인한다.
+
+그리고 필요한 경우 이전 StepExecution을 ABANDONED로 변경한다.
+
+Spring Batch 5.2.4의 핵심 코드는 다음과 같다.
+
+```java
+@Override
+public void abandonStepExecution() {
+
+    StepExecution lastStepExecution =
+            stepExecutionHolder.get();
+
+    if (lastStepExecution != null
+            && lastStepExecution
+                    .getStatus()
+                    .isGreaterThan(BatchStatus.STOPPING)) {
+
+        lastStepExecution.upgradeStatus(
+                BatchStatus.ABANDONED
+        );
+
+        jobRepository.update(
+                lastStepExecution
+        );
+    }
+}
+```
+
+이번 예제에서는 firstStep이 FAILED로 종료된다.
+
+이후 recoveryFlow로 이동한다.
+
+recoveryFlow의 첫 번째 Step인 secondStep이 실행되면서 StepState.handle()이 호출된다.
+
+이때 이전 firstStep에 대한 StepExecution 참조가 남아 있다면 abandonStepExecution()이 실행되어 상태가 ABANDONED로 변경된다.
+
+이번 구성에서는 다음과 같은 상태 변화가 발생할 수 있다.
+
+```text
+firstStep
+    │
+    ├── 최초 실패 시
+    │      └── BatchStatus = FAILED
+    │
+    ▼
+recoveryFlow 실행
+    │
+    ▼
+secondStep 시작
+    │
+    ▼
+abandonStepExecution()
+    │
+    ▼
+firstStep
+    │
+    └── BatchStatus = ABANDONED
+```
+
+여기서 주의할 점은 BatchStatus와 ExitStatus가 서로 다르다는 것이다.
+
+BatchStatus가 ABANDONED로 변경되더라도 기존 ExitStatus는 FAILED로 유지될 수 있다.
+
+따라서 다음과 같은 상태가 가능하다.
+
+```text
+firstStep
+
+BatchStatus = ABANDONED
+
+ExitStatus = FAILED
+```
+
+이러한 동작은 Spring Batch의 재시작 정책과 관련되어 있다.
+
+실패한 Step 이후 다른 Step으로 이동했다면 기존 실패 Step을 재시작할 때 다시 실행하지 않도록 관리해야 하는 상황이 있기 때문이다.
+
+따라서 FlowJob의 실행 결과를 분석할 때는 실제 예외 발생 시점의 상태와 최종 데이터베이스에 저장된 상태를 구분해야 한다.
+
+---
+
+### Job의 최종 상태는 어떻게 결정될까?
+
+이번 예제에서는 firstStep에서 실패가 발생했지만 recoveryFlow를 실행한다.
+
+그리고 recoveryFlow의 secondStep과 thirdStep이 모두 정상적으로 완료되었다고 가정하자.
+
+이 경우 최종 FlowExecutionStatus는 COMPLETED가 될 수 있다.
+
+따라서 JobExecution의 BatchStatus도 COMPLETED가 된다.
+
+이때 주의해야 할 점이 있다.
+
+firstStep의 ExitStatus가 FAILED라고 해서 JobExecution의 ExitStatus가 반드시 FAILED가 되는 것은 아니다.
+
+최종 Job의 ExitStatus는 FlowJob의 상태 처리 과정에 따라 결정된다.
+
+이번 구성에서는 실패한 firstStep이 별도의 FAILED EndState로 종료되지 않고 recoveryFlow로 전환된다.
+
+그리고 recoveryFlow가 정상적으로 종료되면 최종 Job은 COMPLETED로 종료될 수 있다.
+
+따라서 다음과 같은 결과를 예상할 수 있다.
+
+```text
+JobExecution
+
+BatchStatus = COMPLETED
+
+ExitStatus = COMPLETED
+```
+
+반면 firstStep의 StepExecution에는 실패 이력이 남을 수 있다.
+
+```text
+firstStep
+
+BatchStatus = ABANDONED
+
+ExitStatus = FAILED
+```
+
+이러한 차이는 FlowJob에서 매우 중요한 특징이다.
+
+**Step의 실패 이력이 존재하더라도 최종 Job 상태는 정의된 Flow의 종료 경로에 따라 달라질 수 있다.**
+
+따라서 JobExecution의 최종 상태만 조회해서 모든 Step이 정상적으로 완료되었다고 판단해서는 안 된다.
+
+---
+
+### 데이터베이스에서 실행 결과 확인하기
+
+Spring Batch는 Job과 Step의 실행 정보를 메타데이터 테이블에 저장한다.
+
+대표적인 테이블은 다음과 같다.
+
+| 테이블 | 역할 |
+|---|---|
+| BATCH_JOB_INSTANCE | JobInstance 관리 |
+| BATCH_JOB_EXECUTION | JobExecution 관리 |
+| BATCH_STEP_EXECUTION | StepExecution 관리 |
+| BATCH_JOB_EXECUTION_PARAMS | JobParameters 관리 |
+| BATCH_JOB_EXECUTION_CONTEXT | Job 실행 상태 데이터 |
+| BATCH_STEP_EXECUTION_CONTEXT | Step 실행 상태 데이터 |
+
+이번에는 정상 실행과 실패 실행의 결과를 비교해보자.
+
+#### JobExecution 조회
+
+```sql
+SELECT
+    ji.JOB_NAME,
+    je.JOB_EXECUTION_ID,
+    je.STATUS,
+    je.EXIT_CODE
+FROM BATCH_JOB_INSTANCE ji
+JOIN BATCH_JOB_EXECUTION je
+    ON ji.JOB_INSTANCE_ID = je.JOB_INSTANCE_ID
+WHERE ji.JOB_NAME = 'routingJob'
+ORDER BY je.JOB_EXECUTION_ID;
+```
+
+정상 경로와 실패 후 복구 경로가 모두 최종적으로 정상 종료되었다면 JobExecution에서는 COMPLETED 상태를 확인할 수 있다.
+
+하지만 두 실행의 내부 Step 상태는 서로 다르다.
+
+#### StepExecution 조회
+
+```sql
+SELECT
+    je.JOB_EXECUTION_ID,
+    se.STEP_EXECUTION_ID,
+    se.STEP_NAME,
+    se.STATUS,
+    se.EXIT_CODE
+FROM BATCH_JOB_EXECUTION je
+JOIN BATCH_STEP_EXECUTION se
+    ON je.JOB_EXECUTION_ID = se.JOB_EXECUTION_ID
+ORDER BY
+    je.JOB_EXECUTION_ID,
+    se.STEP_EXECUTION_ID;
+```
+
+정상 실행에서는 다음과 같은 StepExecution이 생성된다.
+
+| STEP_NAME | STATUS | EXIT_CODE |
+|---|---|---|
+| firstStep | COMPLETED | COMPLETED |
+| secondStep | COMPLETED | COMPLETED |
+
+반면 실패 후 복구 경로에서는 다음과 같은 실행 이력이 나타날 수 있다.
+
+| STEP_NAME | STATUS | EXIT_CODE |
+|---|---|---|
+| firstStep | ABANDONED | FAILED |
+| secondStep | COMPLETED | COMPLETED |
+| thirdStep | COMPLETED | COMPLETED |
+
+따라서 동일한 Job이라도 어떤 Transition이 선택되었는지에 따라 실제 실행된 Step과 저장된 상태가 달라질 수 있다.
+
+---
+
+### JUnit으로 실행 경로 검증하기
+
+이번에는 JobLauncher를 이용해 두 가지 실행 경로를 검증해보자.
+
+`SimpleFlowArchitectureTest.java`
+
+```java
+package com.example.batch;
+
+import java.util.Comparator;
+import java.util.List;
+import java.util.UUID;
+
+import org.junit.jupiter.api.Test;
+
+import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobParameters;
+import org.springframework.batch.core.JobParametersBuilder;
+import org.springframework.batch.core.StepExecution;
+
+import org.springframework.batch.core.launch.JobLauncher;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+
+import org.springframework.boot.test.context.SpringBootTest;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+@SpringBootTest(properties = {
+        "spring.batch.job.enabled=false",
+        "spring.datasource.url=jdbc:h2:mem:simple_flow_test;DB_CLOSE_DELAY=-1",
+        "spring.batch.jdbc.initialize-schema=always"
+})
+class SimpleFlowArchitectureTest {
+
+    @Autowired
+    private JobLauncher jobLauncher;
+
+    @Autowired
+    @Qualifier("routingJob")
+    private Job routingJob;
+
+    private JobParameters parameters(
+            boolean failFirst
+    ) {
+
+        return new JobParametersBuilder()
+                .addString(
+                        "failFirst",
+                        Boolean.toString(failFirst)
+                )
+                .addString(
+                        "requestId",
+                        UUID.randomUUID().toString()
+                )
+                .toJobParameters();
+    }
+
+    private List<String> stepNames(
+            JobExecution execution
+    ) {
+
+        return execution
+                .getStepExecutions()
+                .stream()
+                .sorted(
+                        Comparator.comparing(
+                                StepExecution::getId
+                        )
+                )
+                .map(StepExecution::getStepName)
+                .toList();
+    }
+
+    private StepExecution findStep(
+            JobExecution execution,
+            String stepName
+    ) {
+
+        return execution
+                .getStepExecutions()
+                .stream()
+                .filter(
+                        step -> step.getStepName()
+                                .equals(stepName)
+                )
+                .findFirst()
+                .orElseThrow();
+    }
+
+    @Test
+    void 정상_실행에서는_secondStep까지_실행된다()
+            throws Exception {
+
+        JobExecution execution =
+                jobLauncher.run(
+                        routingJob,
+                        parameters(false)
+                );
+
+        assertEquals(
+                BatchStatus.COMPLETED,
+                execution.getStatus()
+        );
+
+        assertEquals(
+                List.of(
+                        "firstStep",
+                        "secondStep"
+                ),
+                stepNames(execution)
+        );
+    }
+
+    @Test
+    void firstStep이_실패하면_recoveryFlow를_실행한다()
+            throws Exception {
+
+        JobExecution execution =
+                jobLauncher.run(
+                        routingJob,
+                        parameters(true)
+                );
+
+        assertEquals(
+                List.of(
+                        "firstStep",
+                        "secondStep",
+                        "thirdStep"
+                ),
+                stepNames(execution)
+        );
+    }
+
+    @Test
+    void 실패_경로에서도_Job은_정상_완료될_수_있다()
+            throws Exception {
+
+        JobExecution execution =
+                jobLauncher.run(
+                        routingJob,
+                        parameters(true)
+                );
+
+        assertEquals(
+                BatchStatus.COMPLETED,
+                execution.getStatus()
+        );
+    }
+
+    @Test
+    void 새로운_Step_실행시_이전_실패_Step이_ABANDONED가_될_수_있다()
+            throws Exception {
+
+        JobExecution execution =
+                jobLauncher.run(
+                        routingJob,
+                        parameters(true)
+                );
+
+        StepExecution firstStep =
+                findStep(
+                        execution,
+                        "firstStep"
+                );
+
+        assertEquals(
+                BatchStatus.ABANDONED,
+                firstStep.getStatus()
+        );
+
+        assertEquals(
+                "FAILED",
+                firstStep
+                        .getExitStatus()
+                        .getExitCode()
+        );
+    }
+}
+```
+
+이 테스트에서는 정상 경로와 실패 후 복구 경로를 구분한다.
+
+정상 경로에서는 firstStep과 secondStep만 실행된다.
+
+실패 경로에서는 recoveryFlow가 선택되어 secondStep과 thirdStep이 실행된다.
+
+또한 실패한 Step 이후 다른 Step이 실행되었을 때 기존 StepExecution의 상태가 어떻게 관리되는지도 확인한다.
+
+#### 테스트 실행
+
+```bash
+mvn test
+```
+
+정상적으로 테스트가 통과하면 다음과 유사한 결과가 출력된다.
+
+```text
+Tests run: 4
+
+Failures: 0
+
+Errors: 0
+
+BUILD SUCCESS
+```
+
+위 결과는 예상되는 성공 형태이며, 실제 실행 결과에 따라 로그와 예외 정보는 달라질 수 있다.
+
+---
+
+### 디버깅할 때 확인해야 할 메서드
+
+SimpleFlow의 내부 동작을 추적하려면 다음 메서드를 순서대로 확인하는 것이 좋다.
+
+| 순서 | 클래스 | 메서드 | 확인할 내용 |
+|---|---|---|---|
+| 1 | FlowBuilder | createState() | StepState, FlowState 생성 |
+| 2 | FlowBuilder | addTransition() | StateTransition 생성 |
+| 3 | FlowBuilder | flow() | SimpleFlow 생성 |
+| 4 | SimpleFlow | setStateTransitions() | Transition 목록 전달 |
+| 5 | SimpleFlow | initializeTransitions() | stateMap, transitionMap 구성 |
+| 6 | SimpleFlow | start() | 시작 State 결정 |
+| 7 | SimpleFlow | resume() | State 실행 반복 |
+| 8 | StepState | handle() | 실제 Step 실행 |
+| 9 | FlowState | handle() | 하위 Flow 실행 |
+| 10 | SimpleFlow | nextState() | Transition 패턴 매칭 |
+| 11 | StateTransition | matches() | 패턴 일치 여부 판단 |
+| 12 | EndState | handle() | Flow 종료 처리 |
+| 13 | SimpleFlow | resume() 종료 부분 | FlowExecution 생성 |
+| 14 | JobFlowExecutor | updateJobExecutionStatus() | 최종 Job 상태 반영 |
+
+특히 중요한 부분은 세 가지다.
+
+첫 번째는 FlowBuilder의 addTransition()이다.
+
+이 지점에서는 현재 State, Pattern, Next State가 실제 StateTransition으로 변환되는 과정을 확인할 수 있다.
+
+두 번째는 SimpleFlow의 initializeTransitions()다.
+
+이 지점에서는 StateTransition 목록이 stateMap과 transitionMap으로 변환되는 과정을 확인할 수 있다.
+
+세 번째는 SimpleFlow의 nextState()다.
+
+이 지점에서는 실제 종료 코드가 Transition 패턴과 비교되고 다음 State가 선택되는 과정을 확인할 수 있다.
+
+이 세 부분을 연결해서 살펴보면 API 설정부터 실제 실행까지 전체 구조를 이해할 수 있다.
+
+---
+
+### 실무에서의 활용
+
+SimpleFlow의 내부 구조를 이해하면 복잡한 배치 작업을 설계할 때 여러 가지 이점을 얻을 수 있다.
+
+특히 실행 흐름의 가독성, 장애 대응, 재시작 정책, 데이터 정합성 측면에서 활용할 수 있다.
+
+#### 1. 비즈니스 처리와 실행 흐름을 분리한다
+
+실제 업무에서는 Step이 비즈니스 로직을 수행한다.
+
+SimpleFlow는 다음 실행 대상을 결정한다.
+
+따라서 Step 내부에서 다음 Step을 직접 호출하는 방식보다 Flow의 Transition을 이용하는 것이 구조적으로 명확하다.
+
+예를 들어 결제 검증 Step은 결제 데이터를 검증한다.
+
+그리고 검증 결과에 따라 정산 Step 또는 오류 처리 Flow로 이동하도록 구성할 수 있다.
+
+이러한 방식은 비즈니스 로직과 실행 흐름을 분리하는 데 도움이 된다.
+
+#### 2. Flow를 업무 단위로 그룹화한다
+
+여러 Step을 하나의 Flow로 구성할 수 있다.
+
+예를 들어 결제 데이터 수집과 정제를 CollectionFlow로 구성할 수 있다.
+
+정산 금액 계산과 결과 저장은 SettlementFlow로 구성할 수 있다.
+
+이렇게 하면 전체 Job의 구조를 업무 단위로 이해하기 쉬워진다.
+
+#### 3. Transition의 우선순위를 명확하게 설계한다
+
+복잡한 Flow에서는 여러 패턴이 동시에 일치할 수 있다.
+
+따라서 구체적인 패턴과 와일드카드 패턴의 우선순위를 이해해야 한다.
+
+특히 FAILED와 `*`를 함께 사용하는 경우에는 FAILED가 우선 선택된다.
+
+이러한 특성을 이용하면 예외 처리 경로를 명확하게 정의할 수 있다.
+
+#### 4. `*` 패턴을 무조건적인 정상 처리로 사용하지 않는다
+
+`*`는 모든 종료 코드에 매칭될 수 있다.
+
+따라서 FAILED, STOPPED, UNKNOWN 같은 상태도 포함될 수 있다.
+
+이러한 이유로 `on("*")`를 사용하는 경우에는 실제로 모든 상태를 같은 경로로 보내도 되는지 확인해야 한다.
+
+예를 들어 시스템 장애가 발생했는데도 정상 처리 Step으로 이동하면 데이터 정합성 문제가 발생할 수 있다.
+
+따라서 `*` 패턴은 기본 경로를 정의할 때 신중하게 사용해야 한다.
+
+#### 5. Flow 중첩 시 실행 상태 전파를 이해한다
+
+FlowState는 하위 Flow를 실행한다.
+
+하위 Flow가 완료되면 FlowExecutionStatus를 상위 Flow에 반환한다.
+
+따라서 하위 Flow의 최종 상태가 상위 Flow의 Transition 선택에 영향을 준다.
+
+특히 여러 Flow가 중첩되어 있다면 어느 Flow에서 어떤 상태를 반환하는지 확인해야 한다.
+
+#### 6. 실패한 Step의 최종 상태를 확인한다
+
+실패한 Step 이후 다른 Step으로 이동하면 이전 StepExecution이 ABANDONED로 변경될 수 있다.
+
+따라서 장애 분석 시 Step의 최종 BatchStatus만 확인하면 실제 예외 발생 시점의 상태를 놓칠 수 있다.
+
+이러한 문제를 방지하려면 BatchStatus와 ExitStatus, ExitMessage를 함께 확인해야 한다.
+
+#### 7. Job의 최종 상태만으로 업무 성공 여부를 판단하지 않는다
+
+FlowJob은 실패한 Step 이후 복구 Flow를 실행할 수 있다.
+
+따라서 Job이 COMPLETED로 종료되더라도 중간에 실패한 Step이 존재할 수 있다.
+
+특히 결제나 정산 시스템에서는 JobExecution의 상태뿐 아니라 실제 업무 데이터의 처리 결과도 확인해야 한다.
+
+#### 8. Flow의 실행 이력과 StepExecution을 구분한다
+
+SimpleFlow는 별도의 StepExecution을 생성하지 않는다.
+
+따라서 Flow 자체의 실행 상태는 기본 메타데이터에서 독립적인 StepExecution으로 관리되지 않는다.
+
+실제 실행된 Step의 이력을 확인해야 한다.
+
+Flow 단위의 실행 이력이 별도로 필요하다면 FlowStep 또는 별도의 운영 로그 구조를 고려할 수 있다.
+
+#### 9. 재시작 정책을 고려한다
+
+Spring Batch는 이전 StepExecution의 상태를 이용해 재시작 가능 여부를 판단한다.
+
+따라서 Flow의 조건부 분기와 재시작 정책을 함께 설계해야 한다.
+
+특히 이미 완료된 Step이 다시 실행되면 안 되는 경우에는 멱등성과 재시작 설정을 확인해야 한다.
+
+#### 10. 종료 코드를 비즈니스 상태와 구분한다
+
+ExitStatus는 배치의 종료 코드를 표현한다.
+
+하지만 비즈니스 상태와 완전히 동일한 것은 아니다.
+
+예를 들어 결제 대사 작업이 정상적으로 실행되었지만 일부 거래에 불일치가 존재할 수 있다.
+
+이 경우 시스템 실행 상태는 COMPLETED지만 업무적으로 추가 확인이 필요할 수 있다.
+
+따라서 업무 상태를 별도의 데이터로 관리하고, 필요한 경우 사용자 정의 ExitStatus 또는 JobExecutionDecider를 이용해 실행 흐름을 제어하는 것이 좋다.
+
+#### 11. State 이름과 Step 이름을 구분한다
+
+FlowBuilder는 내부적으로 State 이름을 자동 생성한다.
+
+따라서 디버깅 과정에서 `routingJob.step0`이라는 이름이 보인다고 해서 실제 Step 이름도 동일하다고 생각해서는 안 된다.
+
+State 이름은 Flow 내부 실행 구조를 관리하기 위한 이름이다.
+
+반면 Step 이름은 실제 StepExecution과 연결되는 이름이다.
+
+두 이름을 구분하면 실행 흐름을 더 정확하게 추적할 수 있다.
+
+#### 12. 조건부 실행 경로를 테스트한다
+
+FlowJob에서는 코드가 정상적으로 컴파일된다고 해서 모든 실행 경로가 올바른 것은 아니다.
+
+예를 들어 FAILED 패턴이 예상한 Flow로 연결되는지 확인해야 한다.
+
+또한 와일드카드 패턴이 의도하지 않은 실패 상태까지 처리하지 않는지도 검증해야 한다.
+
+따라서 정상 경로뿐 아니라 실패 경로와 예외적인 종료 코드에 대해서도 테스트를 작성하는 것이 좋다.
+
+---
+
+### 구조: SimpleFlow의 전체 실행 아키텍처
+
+지금까지 살펴본 객체들을 하나의 구조로 정리해보자.
+
+```mermaid
+flowchart TD
+    A["FlowBuilder"]
+
+    B["Step"]
+    C["Flow"]
+    D["JobExecutionDecider"]
+
+    E["StepState"]
+    F["FlowState"]
+    G["DecisionState"]
+
+    H["StateTransition 생성"]
+
+    I["SimpleFlow"]
+
+    J["stateTransitions"]
+
+    K["initializeTransitions()"]
+
+    L["stateMap"]
+    M["transitionMap"]
+    N["startState"]
+
+    O["SimpleFlow.start()"]
+    P["SimpleFlow.resume()"]
+
+    Q["State.handle()"]
+
+    R["FlowExecutionStatus"]
+
+    S["nextState()"]
+
+    T{"Transition 매칭"}
+
+    U["다음 State"]
+    V["FlowExecution"]
+
+    W["JobExecution 상태 반영"]
+
+    A --> B
+    A --> C
+    A --> D
+
+    B --> E
+    C --> F
+    D --> G
+
+    E --> H
+    F --> H
+    G --> H
+
+    H --> I
+    I --> J
+
+    J --> K
+
+    K --> L
+    K --> M
+    K --> N
+
+    N --> O
+    O --> P
+
+    P --> Q
+    Q --> R
+
+    R --> S
+    S --> T
+
+    T -->|다음 State 존재| U
+    U --> Q
+
+    T -->|종료| V
+    V --> W
+```
+
+이 구조는 크게 세 부분으로 나눌 수 있다.
+
+첫 번째는 Flow 구성 단계다.
+
+FlowBuilder는 Step, Flow, JobExecutionDecider를 전달받아 적절한 State를 생성한다.
+
+그리고 현재 State, Pattern, Next State 정보를 이용해 StateTransition을 생성한다.
+
+두 번째는 SimpleFlow 초기화 단계다.
+
+SimpleFlow는 StateTransition 목록을 전달받는다.
+
+그리고 initializeTransitions()를 통해 stateMap과 transitionMap을 구성한다.
+
+또한 startState를 결정한다.
+
+세 번째는 실제 실행 단계다.
+
+SimpleFlow는 startState부터 실행을 시작한다.
+
+resume()은 현재 State의 handle()을 호출한다.
+
+그리고 반환된 FlowExecutionStatus를 이용해 nextState()를 호출한다.
+
+nextState()는 Transition의 패턴을 비교해 다음 State를 선택한다.
+
+이 과정을 반복하다가 종료 State에 도달하면 FlowExecution을 생성한다.
+
+최종 FlowExecutionStatus는 FlowJob의 실행 결과를 결정하는 데 사용된다.
+
+---
+
+### 정리
+
+Spring Batch의 `SimpleFlow`는 여러 State와 StateTransition을 이용해 배치의 실행 흐름을 관리하는 객체다.
+
+FlowBuilder는 API 설정을 기반으로 State와 StateTransition을 생성한다.
+
+예를 들어 다음과 같다.
+
+```java
+.start(step1)
+    .on("COMPLETED").to(step2)
+```
+
+이 코드는 다음과 같은 StateTransition을 생성한다.
+
+```text
+state   = routingJob.step0
+
+pattern = COMPLETED
+
+next    = routingJob.step1
+```
+
+이렇게 생성된 StateTransition은 SimpleFlow의 stateTransitions에 저장된다.
+
+SimpleFlow는 초기화 과정에서 이 목록을 이용해 stateMap과 transitionMap을 구성한다.
+
+stateMap은 State 이름으로 State 객체를 조회하기 위한 자료구조다.
+
+transitionMap은 현재 State에서 선택할 수 있는 Transition을 관리하는 자료구조다.
+
+그리고 startState는 최초 실행할 State를 나타낸다.
+
+실제 실행은 다음과 같이 진행된다.
+
+```text
+SimpleFlow.start()
+    │
+    ▼
+startState 조회
+    │
+    ▼
+SimpleFlow.resume()
+    │
+    ▼
+State.handle()
+    │
+    ▼
+FlowExecutionStatus 반환
+    │
+    ▼
+nextState()
+    │
+    ▼
+Transition 패턴 매칭
+    │
+    ▼
+다음 State 조회
+    │
+    ▼
+반복 실행
+    │
+    ▼
+FlowExecution 반환
+```
+
+여기서 중요한 점은 SimpleFlow가 모든 State를 순차적으로 실행하지 않는다는 사실이다.
+
+현재 State의 실행 결과와 Transition 조건에 따라 다음 State를 선택한다.
+
+따라서 조건부 분기에 따라 일부 State는 실행되지 않을 수 있다.
+
+또한 SimpleFlow는 현재 State의 실제 타입을 직접 구분할 필요가 없다.
+
+StepState, FlowState, DecisionState 등의 구현체가 공통적으로 제공하는 handle() 메서드를 호출한다.
+
+이러한 구조는 객체지향의 다형성을 활용한 설계다.
+
+그리고 Transition의 패턴 비교에서는 DefaultStateTransitionComparator를 이용해 구체적인 패턴을 우선적으로 처리한다.
+
+따라서 FAILED와 `*`가 모두 일치하더라도 FAILED가 먼저 선택된다.
+
+또한 실패한 Step 이후 다른 Step을 실행할 때는 JobFlowExecutor의 abandonStepExecution()에 의해 이전 StepExecution의 BatchStatus가 ABANDONED로 변경될 수 있다.
+
+따라서 SimpleFlow의 실행 구조를 정확하게 이해하려면 State와 Transition뿐 아니라 JobFlowExecutor의 역할도 함께 이해해야 한다.
+
+결국 **SimpleFlow는 FlowBuilder가 생성한 StateTransition을 기반으로 실행 구조를 초기화하고, State.handle()과 nextState()를 반복 호출하여 조건에 따른 실행 흐름을 제어하는 Spring Batch의 핵심 실행 엔진**이다.
+
+#### 한 줄 요약
+
+> Spring Batch의 `SimpleFlow`는 `FlowBuilder`가 생성한 `State`와 `StateTransition`을 기반으로 실행 흐름을 관리한다. `FlowBuilder`는 Step, Flow, JobExecutionDecider를 각각 StepState, FlowState, DecisionState로 변환하고, 현재 State와 종료 패턴 및 다음 State 정보를 StateTransition으로 저장한다. SimpleFlow는 이를 이용해 stateMap과 transitionMap을 초기화하며, 실행 시에는 `start() → resume() → State.handle() → nextState()`의 과정을 반복한다. 이때 모든 State를 순차적으로 실행하는 것이 아니라 Transition 조건에 맞는 State만 실행하며, 더 구체적인 패턴이 우선 선택된다. 따라서 SimpleFlow의 내부 구조를 이해하면 복잡한 FlowJob의 실행 순서와 조건부 분기, 실패 처리 및 최종 상태 결정 과정을 정확하게 분석할 수 있다.
+
+## FlowStep
+
+### Spring Batch FlowStep 완벽 이해: Flow를 실행하는 Step의 구조와 내부 아키텍처
+
+Spring Batch에서는 하나의 Job을 여러 Step으로 구성하여 배치 작업을 실행할 수 있다.
+
+일반적인 Step은 `Tasklet` 또는 Chunk 기반 처리 로직을 실행한다.
+
+예를 들어 다음과 같은 구조다.
+
+```text
+Job
+ │
+ ├── Step1
+ │     └── Tasklet
+ │
+ ├── Step2
+ │     └── Tasklet
+ │
+ └── Step3
+       └── Tasklet
+```
+
+하지만 Spring Batch의 모든 Step이 반드시 Tasklet이나 Chunk 처리만 수행하는 것은 아니다.
+
+Spring Batch는 Step 내부에서 다른 Job이나 Flow를 실행할 수 있는 특수한 Step 구현체도 제공한다.
+
+대표적인 구현체는 다음과 같다.
+
+| 구현체 | 역할 |
+|---|---|
+| TaskletStep | Tasklet 또는 Chunk 기반 비즈니스 로직 실행 |
+| JobStep | Step 내부에서 다른 Job 실행 |
+| FlowStep | Step 내부에서 Flow 실행 |
+| PartitionStep | 작업을 여러 파티션으로 분할하여 실행 |
+
+이 중 `FlowStep`은 **Step 내부에서 Flow를 실행하기 위해 제공하는 구현체**다.
+
+FlowStep 자체는 일반적인 Step과 동일하게 Job에 등록된다.
+
+하지만 실행 시에는 자신이 보관하고 있는 Flow를 실행한다.
+
+그리고 Flow에 포함된 Step들이 실제 비즈니스 작업을 수행한다.
+
+예를 들어 다음과 같은 구조를 만들 수 있다.
+
+```mermaid
+flowchart TD
+    A["Job"]
+    B["FlowStep"]
+    C["SimpleFlow"]
+    D["Step1"]
+    E["Step2"]
+    F["Step3"]
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    B -->|정상 완료 후| F
+```
+
+실행 순서는 다음과 같다.
+
+```text
+Job
+ │
+ ▼
+FlowStep
+ │
+ ▼
+SimpleFlow
+ │
+ ├── Step1 실행
+ │
+ └── Step2 실행
+        │
+        ▼
+   FlowStep 종료
+        │
+        ▼
+      Step3
+        │
+        ▼
+     Job 종료
+```
+
+여기서 중요한 사실은 FlowStep이 하나의 Step이라는 점이다.
+
+Job 입장에서는 FlowStep도 일반적인 Step과 동일하게 취급할 수 있다.
+
+하지만 FlowStep 내부에서는 별도의 Flow가 실행되며, 그 Flow에 포함된 Step들 역시 실행된다.
+
+따라서 **FlowStep은 하나의 Step을 통해 여러 Step으로 구성된 Flow를 실행할 수 있도록 지원하는 객체**라고 이해할 수 있다.
+
+---
+
+### 개념
+
+#### FlowStep이란?
+
+`FlowStep`은 Spring Batch에서 제공하는 `Step` 구현체로, 자신의 내부에 `Flow` 객체를 보관하고 실행하는 역할을 한다.
+
+Spring Batch 5.2.4에서 FlowStep은 다음과 같은 상속 구조를 가진다.
+
+```java
+public class FlowStep extends AbstractStep {
+    
+    private Flow flow;
+}
+```
+
+여기서 중요한 부분은 두 가지다.
+
+첫 번째는 `AbstractStep`을 상속한다는 점이다.
+
+두 번째는 `Flow` 타입의 필드를 가지고 있다는 점이다.
+
+```java
+private Flow flow;
+```
+
+따라서 FlowStep은 일반적인 Step의 공통 기능을 사용하면서도 내부적으로 Flow를 실행할 수 있다.
+
+AbstractStep에서는 다음과 같은 공통 기능을 제공한다.
+
+- StepExecution 실행 상태 관리
+- StepExecutionListener 호출
+- Step 실행 시간 관리
+- StepExecution 메타데이터 저장
+- 실행 중 예외 처리
+- Step 종료 상태 관리
+
+FlowStep은 이러한 기능을 직접 구현하지 않고 AbstractStep으로부터 제공받는다.
+
+그리고 자신에게 필요한 Flow 실행 로직만 `doExecute()`에 구현한다.
+
+즉, 다음과 같은 책임 분리가 이루어진다.
+
+| 클래스 | 주요 책임 |
+|---|---|
+| AbstractStep | Step 실행의 공통 처리 |
+| FlowStep | Flow 실행 및 결과 반영 |
+| SimpleFlow | State와 Transition 기반 실행 흐름 제어 |
+| StepState | Flow 내부의 실제 Step 실행 |
+| JobFlowExecutor | Flow 실행과 JobExecution 상태 연결 |
+
+이 구조를 이해하면 FlowStep이 단순한 Step이면서도 여러 Step을 실행할 수 있는 이유를 설명할 수 있다.
+
+---
+
+### FlowStep과 JobStep의 차이
+
+FlowStep을 이해할 때 비교하면 좋은 객체가 `JobStep`이다.
+
+두 객체는 모두 Step 내부에서 다른 실행 단위를 수행한다.
+
+하지만 실행하는 대상이 다르다.
+
+#### JobStep
+
+JobStep은 Step 내부에서 별도의 Job을 실행한다.
+
+구조는 다음과 같다.
+
+```text
+ParentJob
+    │
+    ▼
+JobStep
+    │
+    ▼
+ChildJob
+    │
+    ├── ChildStep1
+    │
+    └── ChildStep2
+```
+
+JobStep은 `JobLauncher`를 이용해 ChildJob을 실행한다.
+
+따라서 ChildJob에 대한 JobExecution이 별도로 생성된다.
+
+필요한 경우 ChildJob의 JobInstance도 별도로 생성된다.
+
+즉, 부모 Job과 자식 Job은 서로 다른 Job 실행 단위다.
+
+#### FlowStep
+
+FlowStep은 별도의 Job이 아니라 Flow를 실행한다.
+
+```text
+ParentJob
+    │
+    ▼
+FlowStep
+    │
+    ▼
+SimpleFlow
+    │
+    ├── ChildStep1
+    │
+    └── ChildStep2
+```
+
+여기서는 별도의 ChildJob이 존재하지 않는다.
+
+따라서 FlowStep 때문에 새로운 JobExecution이나 JobInstance가 생성되는 것은 아니다.
+
+대신 현재 JobExecution에 FlowStep과 내부 Step들의 StepExecution이 생성된다.
+
+#### 비교
+
+| 구분 | JobStep | FlowStep |
+|---|---|---|
+| 구현체 | JobStep | FlowStep |
+| 상위 클래스 | AbstractStep | AbstractStep |
+| 내부 실행 대상 | Job | Flow |
+| 주요 실행 API | JobLauncher를 통한 Job 실행 | Flow.start() |
+| 별도 JobExecution | 생성됨 | 생성되지 않음 |
+| 별도 JobInstance | 자식 Job에 대해 관리 | 생성되지 않음 |
+| 부모 StepExecution | 생성됨 | 생성됨 |
+| 내부 StepExecution | 자식 JobExecution에 연결 | 현재 JobExecution에 연결 |
+| 실행 결과 | ChildJob 실행 결과 | Flow 실행 결과 |
+| 적합한 상황 | 독립적인 Job 실행 단위 필요 | 여러 Step의 논리적 그룹화 필요 |
+
+따라서 두 객체는 비슷해 보이지만 실행 메타데이터 구조가 다르다.
+
+**별도의 Job 실행 이력이 필요하다면 JobStep을 고려하고, 하나의 Job 안에서 여러 Step을 논리적으로 그룹화하려면 FlowStep을 고려할 수 있다.**
+
+---
+
+### 왜 사용하는가?
+
+FlowStep의 주요 목적은 여러 Step으로 구성된 Flow를 하나의 Step처럼 다루기 위해서다.
+
+예를 들어 정산 배치를 생각해보자.
+
+```text
+SettlementJob
+    │
+    ├── CollectionStep
+    │
+    ├── ValidationStep
+    │
+    ├── CalculationStep
+    │
+    └── NotificationStep
+```
+
+이러한 구조에서는 모든 Step이 동일한 계층에 존재한다.
+
+하지만 업무적으로 다음과 같은 그룹을 만들고 싶을 수 있다.
+
+```text
+SettlementJob
+    │
+    ├── SettlementProcessing
+    │      ├── CollectionStep
+    │      ├── ValidationStep
+    │      └── CalculationStep
+    │
+    └── NotificationStep
+```
+
+이때 여러 Step을 하나의 Flow로 구성할 수 있다.
+
+```java
+@Bean
+public Flow settlementFlow(
+        Step collectionStep,
+        Step validationStep,
+        Step calculationStep
+) {
+    return new FlowBuilder<SimpleFlow>("settlementFlow")
+            .start(collectionStep)
+            .next(validationStep)
+            .next(calculationStep)
+            .build();
+}
+```
+
+그리고 이 Flow를 FlowStep으로 감쌀 수 있다.
+
+```java
+@Bean
+public Step settlementFlowStep(
+        JobRepository jobRepository,
+        Flow settlementFlow
+) {
+    return new StepBuilder(
+            "settlementFlowStep",
+            jobRepository
+    )
+            .flow(settlementFlow)
+            .build();
+}
+```
+
+이제 Job에서는 FlowStep을 하나의 Step으로 등록할 수 있다.
+
+```java
+@Bean
+public Job settlementJob(
+        JobRepository jobRepository,
+        Step settlementFlowStep,
+        Step notificationStep
+) {
+    return new JobBuilder(
+            "settlementJob",
+            jobRepository
+    )
+            .start(settlementFlowStep)
+            .next(notificationStep)
+            .build();
+}
+```
+
+이렇게 하면 다음과 같은 실행 구조가 만들어진다.
+
+```mermaid
+flowchart TD
+    A["SettlementJob"]
+    B["SettlementFlowStep"]
+    C["SettlementFlow"]
+    D["CollectionStep"]
+    E["ValidationStep"]
+    F["CalculationStep"]
+    G["NotificationStep"]
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+    B -->|완료| G
+```
+
+Job은 SettlementFlowStep을 실행한다.
+
+SettlementFlowStep은 SettlementFlow를 실행한다.
+
+SettlementFlow는 내부 Step을 순서대로 실행한다.
+
+그리고 Flow가 정상적으로 완료되면 다음 Step인 NotificationStep으로 이동한다.
+
+이러한 구조가 FlowStep을 사용하는 기본적인 이유다.
+
+---
+
+### 주요 특징
+
+FlowStep에는 다음과 같은 특징이 있다.
+
+| 특징 | 설명 |
+|---|---|
+| Step 구현체 | AbstractStep을 상속 |
+| 내부 객체 | Flow |
+| Flow 실행 | Flow.start() 호출 |
+| Flow 구현체 | 일반적으로 SimpleFlow |
+| 내부 Step 실행 | SimpleFlow가 StepState를 통해 실행 |
+| StepExecution 생성 | FlowStep 자체에도 생성 |
+| 내부 StepExecution | Flow 내부의 Step마다 생성 가능 |
+| JobExecution | 기존 JobExecution 사용 |
+| 상태 반영 | Flow의 최종 실행 결과를 FlowStep에 반영 |
+| 후속 Step 실행 | FlowStep의 최종 상태에 따라 결정 |
+| 트랜잭션 | 내부 Step이 각각 자신의 트랜잭션 관리 |
+| 주요 활용 | Step 그룹화, 실행 이력 관리, Partition 기반 처리 |
+
+여기서 중요한 것은 FlowStep의 실행 이력이 독립적인 StepExecution으로 관리된다는 점이다.
+
+일반적인 중첩 Flow에서는 Flow 자체에 대한 StepExecution이 생성되지 않는다.
+
+반면 FlowStep으로 감싸면 FlowStep에 대한 StepExecution이 추가로 생성된다.
+
+이 차이는 운영 환경에서 매우 중요하다.
+
+---
+
+### FlowStep API
+
+FlowStep은 StepBuilder의 `flow()` API를 이용해 생성한다.
+
+#### Spring Batch 4.x 방식
+
+기존 Spring Batch 4.x에서는 다음과 같은 방식을 사용했다.
+
+```java
+@Bean
+public Step flowStep() {
+    return stepBuilderFactory
+            .get("flowStep")
+            .flow(flow())
+            .build();
+}
+```
+
+이 방식은 StepBuilderFactory를 사용한다.
+
+하지만 Spring Batch 5.x에서는 JobRepository를 직접 전달하는 Builder 구성이 권장된다.
+
+#### Spring Batch 5.2 방식
+
+```java
+@Bean
+public Step flowStep(
+        JobRepository jobRepository,
+        Flow flow
+) {
+    return new StepBuilder(
+            "flowStep",
+            jobRepository
+    )
+            .flow(flow)
+            .build();
+}
+```
+
+여기서 핵심 API는 다음과 같다.
+
+```java
+.flow(flow)
+```
+
+이 메서드는 FlowStepBuilder를 반환한다.
+
+그리고 build()를 호출하면 FlowStep 객체가 생성된다.
+
+```text
+StepBuilder
+    │
+    ▼
+flow(Flow)
+    │
+    ▼
+FlowStepBuilder
+    │
+    ▼
+build()
+    │
+    ▼
+FlowStep
+```
+
+여기서 주의할 점이 있다.
+
+**FlowStep의 생성에는 TaskletStep과 달리 PlatformTransactionManager를 직접 전달하지 않는다.**
+
+그 이유는 FlowStep 자체가 여러 Step의 업무 처리를 하나의 트랜잭션으로 감싸는 객체가 아니기 때문이다.
+
+실제 트랜잭션은 내부 Flow에 포함된 개별 Step에서 관리한다.
+
+---
+
+### StepBuilder의 하위 Builder 구조
+
+Spring Batch는 StepBuilder를 통해 다양한 Step 구현체를 생성한다.
+
+대표적인 API를 비교해보자.
+
+| StepBuilder API | 반환 Builder | 최종 구현체 |
+|---|---|---|
+| tasklet(tasklet, transactionManager) | TaskletStepBuilder | TaskletStep |
+| chunk(size, transactionManager) | SimpleStepBuilder | TaskletStep |
+| partitioner(...) | PartitionStepBuilder | PartitionStep |
+| job(job) | JobStepBuilder | JobStep |
+| flow(flow) | FlowStepBuilder | FlowStep |
+
+이 구조에서 중요한 점은 `flow()`와 `job()`이 서로 다른 Builder를 반환한다는 것이다.
+
+예를 들어 다음 코드는 JobStep을 생성한다.
+
+```java
+new StepBuilder("jobStep", jobRepository)
+        .job(childJob)
+        .launcher(jobLauncher)
+        .build();
+```
+
+반면 다음 코드는 FlowStep을 생성한다.
+
+```java
+new StepBuilder("flowStep", jobRepository)
+        .flow(flow)
+        .build();
+```
+
+두 코드는 모두 StepBuilder로 시작한다.
+
+하지만 호출하는 API에 따라 서로 다른 Step 구현체를 생성한다.
+
+---
+
+### FlowStep의 클래스 상속 구조
+
+Spring Batch 5.2.4에서 FlowStep은 AbstractStep을 상속한다.
+
+```mermaid
+classDiagram
+    class Step {
+        <<interface>>
+        +execute(StepExecution)
+        +getName()
+    }
+
+    class AbstractStep {
+        +execute(StepExecution)
+        #doExecute(StepExecution)
+    }
+
+    class FlowStep {
+        -Flow flow
+        +setFlow(Flow)
+        #doExecute(StepExecution)
+    }
+
+    class TaskletStep {
+        #doExecute(StepExecution)
+    }
+
+    class JobStep {
+        -Job job
+        #doExecute(StepExecution)
+    }
+
+    class PartitionStep {
+        #doExecute(StepExecution)
+    }
+
+    Step <|.. AbstractStep
+    AbstractStep <|-- FlowStep
+    AbstractStep <|-- TaskletStep
+    AbstractStep <|-- JobStep
+    AbstractStep <|-- PartitionStep
+```
+
+AbstractStep은 Step의 공통 실행 과정을 관리한다.
+
+그리고 실제 작업 실행은 하위 구현체의 doExecute()에 위임한다.
+
+따라서 FlowStep은 다음과 같은 구조로 실행된다.
+
+```text
+AbstractStep.execute()
+        │
+        ▼
+FlowStep.doExecute()
+        │
+        ▼
+Flow 실행
+```
+
+이 구조는 Template Method 패턴의 관점에서 이해할 수 있다.
+
+AbstractStep은 공통적인 실행 절차를 정의한다.
+
+FlowStep은 그중 실제 처리 부분을 구현한다.
+
+---
+
+### FlowStepBuilder 내부 구현
+
+이번에는 FlowStep이 어떻게 생성되는지 살펴보자.
+
+Spring Batch 5.2.4의 StepBuilder에는 다음 메서드가 있다.
+
+```java
+public FlowStepBuilder flow(Flow flow) {
+    return new FlowStepBuilder(this).flow(flow);
+}
+```
+
+이 메서드는 FlowStepBuilder를 생성한다.
+
+그리고 Flow 객체를 설정한다.
+
+FlowStepBuilder에는 다음과 같은 필드가 있다.
+
+```java
+private Flow flow;
+```
+
+flow() 메서드는 전달받은 Flow를 보관한다.
+
+```java
+public FlowStepBuilder flow(Flow flow) {
+    this.flow = flow;
+    return this;
+}
+```
+
+이후 build()를 호출한다.
+
+Spring Batch 5.2.4의 핵심 구현은 다음과 같다.
+
+```java
+public Step build() {
+
+    FlowStep step = new FlowStep();
+
+    step.setName(getName());
+
+    step.setFlow(flow);
+
+    super.enhance(step);
+
+    try {
+        step.afterPropertiesSet();
+    }
+    catch (Exception e) {
+        throw new StepBuilderException(e);
+    }
+
+    return step;
+}
+```
+
+이 코드를 단계별로 살펴보자.
+
+#### 첫 번째: FlowStep 객체 생성
+
+```java
+FlowStep step = new FlowStep();
+```
+
+FlowStep 객체를 생성한다.
+
+#### 두 번째: Step 이름 설정
+
+```java
+step.setName(getName());
+```
+
+StepBuilder에서 지정한 이름을 적용한다.
+
+예를 들어 다음과 같다.
+
+```text
+flowStep
+```
+
+이 이름은 실제 StepExecution의 Step 이름으로 사용된다.
+
+#### 세 번째: Flow 설정
+
+```java
+step.setFlow(flow);
+```
+
+FlowStep이 실행할 Flow 객체를 설정한다.
+
+이제 FlowStep은 내부적으로 Flow를 보관한다.
+
+#### 네 번째: 공통 Step 속성 적용
+
+```java
+super.enhance(step);
+```
+
+StepBuilder에서 설정한 공통 속성을 적용한다.
+
+예를 들어 JobRepository와 Step 실행 설정 등이 포함된다.
+
+#### 다섯 번째: 초기화 검증
+
+```java
+step.afterPropertiesSet();
+```
+
+FlowStep의 설정을 검증한다.
+
+Flow가 설정되지 않았다면 초기화 과정에서 오류가 발생할 수 있다.
+
+#### 여섯 번째: FlowStep 반환
+
+```java
+return step;
+```
+
+최종 FlowStep을 반환한다.
+
+따라서 FlowStepBuilder의 역할은 **FlowStep을 생성하고 실행할 Flow를 연결하는 것**이다.
+
+---
+
+### FlowStep의 내부 실행 아키텍처
+
+FlowStep이 생성되는 과정을 확인했다면 이제 실제 실행 구조를 살펴보자.
+
+전체 실행 흐름은 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["JobLauncher"]
+    B["Job"]
+    C["AbstractStep.execute()"]
+    D["FlowStep.doExecute()"]
+
+    E["SimpleStepHandler 생성"]
+    F["JobFlowExecutor 생성"]
+
+    G["SimpleFlow.start()"]
+    H["SimpleFlow.resume()"]
+
+    I["StepState"]
+    J["내부 Step 실행"]
+
+    K["FlowExecution 반환"]
+    L["FlowExecutionStatus 추출"]
+
+    M["JobExecution 상태 반영"]
+    N["FlowStep StepExecution 상태 반영"]
+
+    O["후속 Step"]
+
+    A --> B
+    B --> C
+    C --> D
+
+    D --> E
+    E --> F
+
+    F --> G
+    G --> H
+
+    H --> I
+    I --> J
+
+    J --> K
+    K --> L
+
+    L --> M
+    M --> N
+
+    N -->|COMPLETED| O
+```
+
+이 과정에서 가장 중요한 메서드는 FlowStep의 `doExecute()`다.
+
+---
+
+### FlowStep.doExecute() 분석
+
+Spring Batch 5.2.4의 FlowStep은 다음과 같은 실행 로직을 가진다.
+
+```java
+@Override
+protected void doExecute(
+        StepExecution stepExecution
+) throws Exception {
+
+    try {
+
+        stepExecution.getExecutionContext()
+                .put(
+                        STEP_TYPE_KEY,
+                        this.getClass().getName()
+                );
+
+        StepHandler stepHandler =
+                new SimpleStepHandler(
+                        getJobRepository(),
+                        stepExecution.getExecutionContext()
+                );
+
+        FlowExecutor executor =
+                new JobFlowExecutor(
+                        getJobRepository(),
+                        stepHandler,
+                        stepExecution.getJobExecution()
+                );
+
+        executor.updateJobExecutionStatus(
+                flow.start(executor).getStatus()
+        );
+
+        stepExecution.upgradeStatus(
+                executor.getJobExecution().getStatus()
+        );
+
+        stepExecution.setExitStatus(
+                executor.getJobExecution().getExitStatus()
+        );
+
+    }
+    catch (FlowExecutionException e) {
+
+        if (e.getCause() instanceof JobExecutionException) {
+            throw (JobExecutionException) e.getCause();
+        }
+
+        throw new JobExecutionException(
+                "Flow execution ended unexpectedly",
+                e
+        );
+    }
+}
+```
+
+이 메서드는 FlowStep의 핵심 실행 로직이다.
+
+순서대로 살펴보자.
+
+---
+
+### 첫 번째: FlowStep의 ExecutionContext 설정
+
+가장 먼저 다음 코드가 실행된다.
+
+```java
+stepExecution.getExecutionContext()
+        .put(
+                STEP_TYPE_KEY,
+                this.getClass().getName()
+        );
+```
+
+이 코드는 FlowStep의 ExecutionContext에 Step 구현체 정보를 저장한다.
+
+이때 저장하는 값은 FlowStep의 클래스 이름이다.
+
+따라서 Spring Batch는 해당 StepExecution이 어떤 종류의 Step에서 생성되었는지에 대한 정보를 가질 수 있다.
+
+---
+
+### 두 번째: SimpleStepHandler 생성
+
+다음 코드를 살펴보자.
+
+```java
+StepHandler stepHandler =
+        new SimpleStepHandler(
+                getJobRepository(),
+                stepExecution.getExecutionContext()
+        );
+```
+
+FlowStep은 SimpleStepHandler를 생성한다.
+
+SimpleStepHandler는 실제 Step 실행과 JobRepository의 메타데이터 관리를 연결하는 객체다.
+
+여기서 중요한 부분은 다음 인자다.
+
+```java
+stepExecution.getExecutionContext()
+```
+
+FlowStep 자신의 ExecutionContext를 전달한다.
+
+SimpleStepHandler는 이를 내부 Step의 실행 Context를 초기화하는 데 사용할 수 있다.
+
+다만 부모 FlowStep의 ExecutionContext를 전달한다고 해서 부모와 자식 Step이 항상 같은 ExecutionContext 객체를 공유하는 것은 아니다.
+
+새로운 내부 StepExecution을 생성할 때 Context의 내용을 복사할 수 있으며, 재시작 시에는 해당 내부 Step의 기존 ExecutionContext를 재사용할 수도 있다.
+
+따라서 부모와 자식 Step 사이의 상태 공유를 설계할 때는 이러한 차이를 고려해야 한다.
+
+---
+
+### 세 번째: JobFlowExecutor 생성
+
+이제 다음 코드를 실행한다.
+
+```java
+FlowExecutor executor =
+        new JobFlowExecutor(
+                getJobRepository(),
+                stepHandler,
+                stepExecution.getJobExecution()
+        );
+```
+
+여기서 중요한 것은 세 번째 인자다.
+
+```java
+stepExecution.getJobExecution()
+```
+
+FlowStep은 현재 StepExecution이 속한 JobExecution을 전달한다.
+
+즉, **FlowStep은 새로운 JobExecution을 생성하지 않고 현재 JobExecution을 사용한다.**
+
+이 부분이 JobStep과 가장 큰 차이다.
+
+JobStep은 별도의 Job을 실행한다.
+
+반면 FlowStep은 기존 JobExecution 안에서 Flow를 실행한다.
+
+따라서 전체 구조는 다음과 같다.
+
+```text
+JobExecution
+    │
+    ├── FlowStep StepExecution
+    │
+    ├── InnerStep1 StepExecution
+    │
+    ├── InnerStep2 StepExecution
+    │
+    └── NextStep StepExecution
+```
+
+이러한 구조에서는 하나의 JobExecution에 여러 StepExecution이 연결된다.
+
+---
+
+### 네 번째: Flow 실행
+
+다음 코드가 실제 Flow를 실행하는 부분이다.
+
+```java
+flow.start(executor)
+```
+
+FlowStep은 자신이 보관하고 있는 Flow의 start()를 호출한다.
+
+일반적인 FlowBuilder 구성에서는 Flow의 구현체가 SimpleFlow다.
+
+따라서 다음과 같은 호출 관계가 만들어진다.
+
+```text
+FlowStep.doExecute()
+        │
+        ▼
+SimpleFlow.start()
+        │
+        ▼
+SimpleFlow.resume()
+        │
+        ▼
+State.handle()
+```
+
+SimpleFlow는 내부적으로 State와 Transition을 관리한다.
+
+State가 StepState라면 실제 Step을 실행한다.
+
+State가 FlowState라면 다른 Flow를 실행한다.
+
+State가 DecisionState라면 JobExecutionDecider를 실행한다.
+
+FlowStep은 이러한 내부 실행 과정에 직접 관여하지 않는다.
+
+Flow 실행을 SimpleFlow에 위임할 뿐이다.
+
+---
+
+### 다섯 번째: FlowExecutionStatus 조회
+
+SimpleFlow가 실행을 완료하면 FlowExecution을 반환한다.
+
+```java
+flow.start(executor)
+```
+
+그리고 다음 메서드로 최종 FlowExecutionStatus를 조회한다.
+
+```java
+flow.start(executor).getStatus()
+```
+
+예를 들어 내부 Step이 모두 정상적으로 완료되었다면 다음 상태가 반환될 수 있다.
+
+```text
+FlowExecutionStatus = COMPLETED
+```
+
+반면 내부 Step에서 실패가 발생하고 별도의 복구 경로가 없다면 다음 상태가 반환될 수 있다.
+
+```text
+FlowExecutionStatus = FAILED
+```
+
+이렇게 반환된 상태는 FlowStep의 최종 상태를 결정하는 데 사용된다.
+
+---
+
+### 여섯 번째: JobExecution 상태 반영
+
+다음 코드는 Flow 실행 결과를 JobExecution에 반영한다.
+
+```java
+executor.updateJobExecutionStatus(
+        flow.start(executor).getStatus()
+);
+```
+
+JobFlowExecutor는 최종 FlowExecutionStatus를 이용해 JobExecution의 상태를 갱신한다.
+
+Spring Batch 5.2.4의 핵심 코드는 다음과 같다.
+
+```java
+@Override
+public void updateJobExecutionStatus(
+        FlowExecutionStatus status
+) {
+
+    execution.setStatus(
+            findBatchStatus(status)
+    );
+
+    exitStatus = exitStatus.and(
+            new ExitStatus(status.getName())
+    );
+
+    execution.setExitStatus(exitStatus);
+}
+```
+
+이 과정에서 두 가지 상태가 변경된다.
+
+첫 번째는 JobExecution의 BatchStatus다.
+
+두 번째는 JobExecution의 ExitStatus다.
+
+BatchStatus는 FlowExecutionStatus를 변환하여 설정한다.
+
+ExitStatus는 종료 코드를 생성하고 기존 종료 코드와 결합한다.
+
+여기서 알아둘 점은 **FlowStep이 내부 Flow를 실행하면서 현재 JobExecution의 상태에도 영향을 준다는 사실**이다.
+
+따라서 FlowStep의 상태와 JobExecution의 상태가 완전히 독립적으로 처리되는 것은 아니다.
+
+---
+
+### 일곱 번째: FlowStep의 상태 반영
+
+FlowStep은 JobExecution에 반영된 실행 상태를 이용해 자신의 StepExecution도 변경한다.
+
+```java
+stepExecution.upgradeStatus(
+        executor.getJobExecution().getStatus()
+);
+```
+
+이 코드는 FlowStep의 BatchStatus를 갱신한다.
+
+그리고 다음 코드를 실행한다.
+
+```java
+stepExecution.setExitStatus(
+        executor.getJobExecution().getExitStatus()
+);
+```
+
+이 코드는 FlowStep의 ExitStatus를 설정한다.
+
+따라서 정상적인 실행에서는 다음과 같은 결과가 나타난다.
+
+```text
+FlowExecutionStatus = COMPLETED
+           │
+           ▼
+JobExecution
+    BatchStatus = COMPLETED
+    ExitStatus  = COMPLETED
+           │
+           ▼
+FlowStep StepExecution
+    BatchStatus = COMPLETED
+    ExitStatus  = COMPLETED
+```
+
+반면 내부 Flow가 실패했다면 다음과 같은 결과가 나타날 수 있다.
+
+```text
+FlowExecutionStatus = FAILED
+           │
+           ▼
+JobExecution
+    BatchStatus = FAILED
+    ExitStatus  = FAILED
+           │
+           ▼
+FlowStep StepExecution
+    BatchStatus = FAILED
+    ExitStatus  = FAILED
+```
+
+이러한 구조로 인해 내부 Flow의 실행 결과가 FlowStep에 반영된다.
+
+---
+
+### AbstractStep.execute()와 FlowStep.doExecute()의 관계
+
+FlowStep은 AbstractStep을 상속한다.
+
+따라서 실제 실행에서는 AbstractStep.execute()가 먼저 호출된다.
+
+AbstractStep은 공통적인 실행 처리를 수행한다.
+
+그리고 내부에서 다음 메서드를 호출한다.
+
+```java
+doExecute(stepExecution);
+```
+
+FlowStep은 이 메서드를 오버라이딩한다.
+
+따라서 실제 실행 순서는 다음과 같다.
+
+```mermaid
+sequenceDiagram
+    participant Job as Job
+    participant Abstract as AbstractStep
+    participant FlowStep as FlowStep
+    participant Flow as SimpleFlow
+    participant Executor as JobFlowExecutor
+    participant Inner as InnerStep
+
+    Job->>Abstract: execute(stepExecution)
+
+    Abstract->>Abstract: BatchStatus STARTED
+    Abstract->>Abstract: beforeStep()
+
+    Abstract->>FlowStep: doExecute()
+
+    FlowStep->>Executor: 생성
+    FlowStep->>Flow: start(executor)
+
+    Flow->>Executor: executeStep()
+    Executor->>Inner: execute()
+
+    Inner-->>Executor: ExitStatus
+    Executor-->>Flow: FlowExecutionStatus
+
+    Flow-->>FlowStep: FlowExecution
+
+    FlowStep->>Executor: updateJobExecutionStatus()
+
+    FlowStep->>FlowStep: StepExecution 상태 반영
+
+    FlowStep-->>Abstract: 반환
+
+    Abstract->>Abstract: afterStep()
+    Abstract->>Abstract: 최종 StepExecution 저장
+```
+
+여기서 중요한 것은 FlowStep의 doExecute()가 종료된 후에도 AbstractStep의 공통 종료 처리가 실행된다는 사실이다.
+
+예를 들어 다음과 같은 작업이 수행된다.
+
+- 종료 시간 설정
+- 최종 ExitStatus 결합
+- afterStep() 호출
+- ExecutionContext 저장
+- StepExecution 메타데이터 갱신
+
+따라서 FlowStep은 내부적으로 Flow를 실행하더라도 일반적인 Step과 동일한 생명주기를 가진다.
+
+---
+
+### FlowStep을 사용하면 Job이 FlowJob이 될까?
+
+여기서 중요한 부분이 있다.
+
+FlowStep을 사용한다고 해서 Job이 반드시 FlowJob으로 생성되는 것은 아니다.
+
+예를 들어 다음과 같은 코드를 살펴보자.
+
+```java
+@Bean
+public Job flowStepJob(
+        JobRepository jobRepository,
+        Step flowStep,
+        Step nextStep
+) {
+    return new JobBuilder(
+            "flowStepJob",
+            jobRepository
+    )
+            .start(flowStep)
+            .next(nextStep)
+            .build();
+}
+```
+
+이 코드는 `SimpleJob`을 생성한다.
+
+왜냐하면 JobBuilder의 start()에 전달한 객체가 Flow가 아니라 Step이기 때문이다.
+
+```java
+.start(flowStep)
+```
+
+FlowStep은 Step 인터페이스의 구현체다.
+
+따라서 JobBuilder는 일반적인 Step을 전달받은 것과 동일하게 처리한다.
+
+전체 구조는 다음과 같다.
+
+```text
+SimpleJob
+    │
+    ├── FlowStep
+    │      │
+    │      ▼
+    │   SimpleFlow
+    │      │
+    │      ├── InnerStep1
+    │      │
+    │      └── InnerStep2
+    │
+    └── NextStep
+```
+
+반면 다음과 같이 Flow를 직접 등록하면 FlowJob을 생성한다.
+
+```java
+new JobBuilder(
+        "flowJob",
+        jobRepository
+)
+        .start(flow)
+        .next(nextStep)
+        .end()
+        .build();
+```
+
+따라서 두 코드를 비교하면 다음과 같다.
+
+| JobBuilder 설정 | Job 구현체 | 내부 구조 |
+|---|---|---|
+| start(flowStep) | SimpleJob | SimpleJob → FlowStep → Flow |
+| start(flow) | FlowJob | FlowJob → SimpleFlow |
+
+이 차이는 FlowStep의 실행 구조를 이해할 때 반드시 알아야 한다.
+
+**FlowStep은 Flow를 실행하는 Step이지, FlowJob 자체가 아니다.**
+
+---
+
+### Flow를 직접 사용하는 경우와 FlowStep으로 감싸는 경우
+
+동일한 Flow를 사용하더라도 Job에 등록하는 방식에 따라 실행 메타데이터 구조가 달라진다.
+
+#### Flow 직접 등록
+
+```java
+new JobBuilder("flowJob", jobRepository)
+        .start(flow)
+        .next(nextStep)
+        .end()
+        .build();
+```
+
+이 경우 Flow는 FlowState로 관리된다.
+
+Flow 자체에 대한 StepExecution은 생성되지 않는다.
+
+실제 실행된 내부 Step들의 StepExecution만 생성된다.
+
+#### FlowStep으로 감싸서 등록
+
+```java
+Step flowStep = new StepBuilder(
+        "flowStep",
+        jobRepository
+)
+        .flow(flow)
+        .build();
+```
+
+```java
+new JobBuilder("flowStepJob", jobRepository)
+        .start(flowStep)
+        .next(nextStep)
+        .build();
+```
+
+이 경우 FlowStep 자체에 대한 StepExecution이 생성된다.
+
+그리고 Flow 내부에 있는 Step들의 StepExecution도 생성된다.
+
+따라서 실행 이력은 다음과 같이 달라질 수 있다.
+
+| 실행 대상 | Flow 직접 등록 | FlowStep 사용 |
+|---|---|---|
+| Flow 자체 | StepExecution 없음 | FlowStep의 StepExecution 생성 |
+| 내부 Step1 | StepExecution 생성 | StepExecution 생성 |
+| 내부 Step2 | StepExecution 생성 | StepExecution 생성 |
+| 후속 Step | StepExecution 생성 | StepExecution 생성 |
+
+이 차이는 FlowStep을 사용하는 실질적인 장점 중 하나다.
+
+여러 Step을 하나의 논리적 실행 단위로 관리하면서도, 내부 Step의 상세 실행 이력을 유지할 수 있기 때문이다.
+
+---
+
+### 예제: FlowStep을 사용하는 배치 구현
+
+이번에는 다음과 같은 구조를 구현해보자.
+
+```text
+flowStepJob
+    │
+    ▼
+flowStep
+    │
+    ▼
+processingFlow
+    │
+    ├── step1
+    │
+    └── step2
+    │
+    ▼
+step3
+    │
+    ▼
+Job 종료
+```
+
+이번 예제는 세 개의 일반 Step과 하나의 FlowStep으로 구성한다.
+
+FlowStep은 Step1과 Step2를 포함하는 Flow를 실행한다.
+
+그리고 FlowStep이 정상적으로 완료되면 Step3을 실행한다.
+
+또한 JobParameters를 이용해 Step1 또는 Step2에서 의도적으로 예외를 발생시킬 수 있도록 구성한다.
+
+이를 통해 다음 세 가지 시나리오를 확인한다.
+
+| 시나리오 | 실행 결과 |
+|---|---|
+| 모든 Step 성공 | Step1 → Step2 → Step3 |
+| Step1 실패 | Step1 실행 후 종료 |
+| Step2 실패 | Step1 → Step2 실행 후 종료 |
+
+각 시나리오에서 FlowStep의 상태와 JobExecution의 상태도 함께 확인한다.
+
+---
+
+### 개발 환경
+
+| 항목 | 기술 |
+|---|---|
+| Java | Java 17 |
+| Spring Boot | 3.4.x |
+| Spring Batch | 5.2.4 |
+| Build Tool | Maven |
+| Database | H2 |
+| Job | SimpleJob |
+| FlowStep | FlowStep |
+| Flow | SimpleFlow |
+| 내부 Step | TaskletStep |
+
+이번 예제에서는 Spring Batch 5.2.4의 Builder API를 사용한다.
+
+---
+
+### Maven 의존성 설정
+
+`pom.xml`
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="
+             http://maven.apache.org/POM/4.0.0
+             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.4.13</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.example</groupId>
+    <artifactId>spring-batch-flow-step</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+
+    <properties>
+        <java.version>17</java.version>
+        <spring-batch.version>5.2.4</spring-batch.version>
+    </properties>
+
+    <dependencies>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-batch</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>
+```
+
+Spring Batch 실행 메타데이터를 저장하기 위해 H2를 사용한다.
+
+---
+
+### application.yml 설정
+
+`src/main/resources/application.yml`
+
+```yaml
+spring:
+  application:
+    name: spring-batch-flow-step
+
+  main:
+    web-application-type: none
+
+  datasource:
+    url: jdbc:h2:file:./data/flowstepdb;DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+  batch:
+    job:
+      enabled: true
+      name: flowStepJob
+
+    jdbc:
+      initialize-schema: ${BATCH_SCHEMA_INIT:never}
+
+logging:
+  level:
+    org.springframework.batch: INFO
+    com.example.batch: INFO
+```
+
+이번에는 파일 기반 H2를 사용한다.
+
+따라서 애플리케이션을 종료하더라도 이전 JobExecution과 StepExecution 기록을 유지할 수 있다.
+
+최초 실행에서만 Spring Batch 메타데이터 테이블을 생성하도록 구성한다.
+
+---
+
+### Spring Boot 애플리케이션
+
+`BatchApplication.java`
+
+```java
+package com.example.batch;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class BatchApplication {
+
+    public static void main(String[] args) {
+
+        SpringApplication.run(
+                BatchApplication.class,
+                args
+        );
+    }
+}
+```
+
+---
+
+### FlowStepConfiguration 전체 코드
+
+`FlowStepConfiguration.java`
+
+```java
+package com.example.batch;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.Step;
+
+import org.springframework.batch.core.job.builder.FlowBuilder;
+import org.springframework.batch.core.job.builder.JobBuilder;
+
+import org.springframework.batch.core.job.flow.Flow;
+import org.springframework.batch.core.job.flow.support.SimpleFlow;
+
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.step.builder.StepBuilder;
+
+import org.springframework.batch.repeat.RepeatStatus;
+
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import org.springframework.transaction.PlatformTransactionManager;
+
+@Configuration
+public class FlowStepConfiguration {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(
+                    FlowStepConfiguration.class
+            );
+
+    // -----------------------------------------
+    // 1. Job
+    // -----------------------------------------
+
+    @Bean
+    public Job flowStepJob(
+            JobRepository jobRepository,
+            @Qualifier("flowStep") Step flowStep,
+            @Qualifier("step3") Step step3
+    ) {
+
+        Job job = new JobBuilder(
+                "flowStepJob",
+                jobRepository
+        )
+                .start(flowStep)
+                .next(step3)
+                .build();
+
+        log.info(
+                "[Job] 구현체={}",
+                job.getClass().getSimpleName()
+        );
+
+        return job;
+    }
+
+    // -----------------------------------------
+    // 2. FlowStep
+    // -----------------------------------------
+
+    @Bean
+    public Step flowStep(
+            JobRepository jobRepository,
+            @Qualifier("processingFlow") Flow processingFlow
+    ) {
+
+        Step step = new StepBuilder(
+                "flowStep",
+                jobRepository
+        )
+                .flow(processingFlow)
+                .build();
+
+        log.info(
+                "[FlowStep] 구현체={}",
+                step.getClass().getSimpleName()
+        );
+
+        return step;
+    }
+
+    // -----------------------------------------
+    // 3. Flow
+    // -----------------------------------------
+
+    @Bean
+    public Flow processingFlow(
+            @Qualifier("step1") Step step1,
+            @Qualifier("step2") Step step2
+    ) {
+
+        Flow flow = new FlowBuilder<SimpleFlow>(
+                "processingFlow"
+        )
+                .start(step1)
+                .next(step2)
+                .build();
+
+        log.info(
+                "[Flow] 구현체={}",
+                flow.getClass().getSimpleName()
+        );
+
+        return flow;
+    }
+
+    // -----------------------------------------
+    // 4. Step1
+    // -----------------------------------------
+
+    @Bean
+    public Step step1(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+
+        return createStep(
+                "step1",
+                jobRepository,
+                transactionManager
+        );
+    }
+
+    // -----------------------------------------
+    // 5. Step2
+    // -----------------------------------------
+
+    @Bean
+    public Step step2(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+
+        return createStep(
+                "step2",
+                jobRepository,
+                transactionManager
+        );
+    }
+
+    // -----------------------------------------
+    // 6. Step3
+    // -----------------------------------------
+
+    @Bean
+    public Step step3(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+
+        return createStep(
+                "step3",
+                jobRepository,
+                transactionManager
+        );
+    }
+
+    // -----------------------------------------
+    // 7. 공통 Step 생성
+    // -----------------------------------------
+
+    private Step createStep(
+            String stepName,
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager
+    ) {
+
+        return new StepBuilder(
+                stepName,
+                jobRepository
+        )
+                .tasklet((contribution, chunkContext) -> {
+
+                    log.info(
+                            "[{}] 실행 시작",
+                            stepName
+                    );
+
+                    String failOn =
+                            contribution
+                                    .getStepExecution()
+                                    .getJobParameters()
+                                    .getString("failOn");
+
+                    if (stepName.equals(failOn)) {
+
+                        log.error(
+                                "[{}] 의도적인 예외 발생",
+                                stepName
+                        );
+
+                        throw new IllegalStateException(
+                                stepName + " 실행 실패"
+                        );
+                    }
+
+                    log.info(
+                            "[{}] 정상 완료",
+                            stepName
+                    );
+
+                    return RepeatStatus.FINISHED;
+
+                }, transactionManager)
+                .build();
+    }
+}
+```
+
+이 코드는 다음과 같은 구조를 가진다.
+
+```text
+flowStepJob
+    │
+    ▼
+flowStep
+    │
+    ▼
+processingFlow
+    │
+    ├── step1
+    │
+    └── step2
+    │
+    ▼
+step3
+```
+
+여기서 가장 중요한 부분은 다음 코드다.
+
+```java
+new StepBuilder(
+        "flowStep",
+        jobRepository
+)
+        .flow(processingFlow)
+        .build();
+```
+
+이 코드가 FlowStep을 생성한다.
+
+그리고 다음 코드가 생성된 FlowStep을 Job에 등록한다.
+
+```java
+new JobBuilder(
+        "flowStepJob",
+        jobRepository
+)
+        .start(flowStep)
+        .next(step3)
+        .build();
+```
+
+따라서 실제 Job 구현체는 SimpleJob이다.
+
+하지만 SimpleJob 내부의 첫 번째 Step이 FlowStep이므로, 실행 시 Flow를 실행하게 된다.
+
+---
+
+### 첫 번째 실행: 모든 Step이 정상적으로 완료되는 경우
+
+먼저 프로젝트를 빌드한다.
+
+```bash
+mvn clean package
+```
+
+정상적으로 완료되면 다음과 같은 결과가 출력된다.
+
+```text
+BUILD SUCCESS
+```
+
+데이터베이스 디렉터리를 생성한다.
+
+```bash
+mkdir -p data
+```
+
+최초 실행에서는 메타데이터 테이블을 생성한다.
+
+```bash
+BATCH_SCHEMA_INIT=always \
+java -jar target/spring-batch-flow-step-0.0.1-SNAPSHOT.jar \
+  failOn=none \
+  run.id=1
+```
+
+이번에는 모든 Step이 정상적으로 완료된다.
+
+따라서 다음 실행 순서를 가진다.
+
+```text
+flowStepJob
+    │
+    ▼
+flowStep
+    │
+    ▼
+processingFlow
+    │
+    ├── step1
+    │      └── COMPLETED
+    │
+    └── step2
+           └── COMPLETED
+    │
+    ▼
+flowStep COMPLETED
+    │
+    ▼
+step3
+    │
+    └── COMPLETED
+    │
+    ▼
+Job COMPLETED
+```
+
+#### 예상 실행 로그
+
+```text
+[Flow] 구현체=SimpleFlow
+
+[FlowStep] 구현체=FlowStep
+
+[Job] 구현체=SimpleJob
+
+[step1] 실행 시작
+[step1] 정상 완료
+
+[step2] 실행 시작
+[step2] 정상 완료
+
+[step3] 실행 시작
+[step3] 정상 완료
+```
+
+Bean 생성 로그의 순서는 의존성 초기화 과정에 따라 달라질 수 있다.
+
+하지만 실제 Step 실행 순서는 다음과 같다.
+
+```text
+step1
+
+step2
+
+step3
+```
+
+여기서 FlowStep이 실제로 실행된다는 사실도 중요하다.
+
+FlowStep은 별도의 Tasklet을 실행하지 않으므로 직접 작성한 로그에서는 나타나지 않을 수 있다.
+
+하지만 Spring Batch의 Step 실행 로그와 메타데이터에서는 FlowStep의 실행 기록을 확인할 수 있다.
+
+---
+
+### 정상 실행의 StepExecution 구조
+
+JobExecution에는 다음 StepExecution들이 생성된다.
+
+```text
+JobExecution
+    │
+    ├── flowStep StepExecution
+    │
+    ├── step1 StepExecution
+    │
+    ├── step2 StepExecution
+    │
+    └── step3 StepExecution
+```
+
+여기서 중요한 사실은 **실제 비즈니스 Step은 세 개지만 StepExecution은 네 개라는 점**이다.
+
+그 이유는 FlowStep 자체에 대한 StepExecution이 추가로 생성되기 때문이다.
+
+예상 결과는 다음과 같다.
+
+| STEP_NAME | STATUS | EXIT_CODE |
+|---|---|---|
+| flowStep | COMPLETED | COMPLETED |
+| step1 | COMPLETED | COMPLETED |
+| step2 | COMPLETED | COMPLETED |
+| step3 | COMPLETED | COMPLETED |
+
+실제 StepExecution의 생성 순서는 일반적으로 다음과 같다.
+
+```text
+flowStep
+    │
+    ▼
+step1
+    │
+    ▼
+step2
+    │
+    ▼
+step3
+```
+
+FlowStep의 StepExecution은 내부 Flow 실행 전에 생성된다.
+
+따라서 StepExecution의 생성 순서와 각 Step의 완료 시각을 구분해서 이해해야 한다.
+
+---
+
+### 두 번째 실행: Step1에서 실패하는 경우
+
+이번에는 processingFlow에 포함된 Step1에서 예외를 발생시켜보자.
+
+```bash
+java -jar target/spring-batch-flow-step-0.0.1-SNAPSHOT.jar \
+  failOn=step1 \
+  run.id=2
+```
+
+Step1에서 다음 예외가 발생한다.
+
+```java
+throw new IllegalStateException(
+        "step1 실행 실패"
+);
+```
+
+Step1은 FAILED로 종료된다.
+
+processingFlow는 Step1의 실패 결과를 확인한다.
+
+별도의 복구 Transition이 존재하지 않으므로 Flow도 FAILED로 종료된다.
+
+FlowStep은 FlowExecutionStatus를 전달받는다.
+
+그리고 자신의 StepExecution 상태를 FAILED로 변경한다.
+
+따라서 다음과 같은 결과가 발생한다.
+
+```mermaid
+flowchart TD
+    A["flowStepJob"]
+    B["flowStep"]
+    C["processingFlow"]
+    D["step1"]
+
+    E["FAILED"]
+    F["FlowStep FAILED"]
+    G["Job FAILED"]
+
+    H["step2"]
+    I["step3"]
+
+    A --> B
+    B --> C
+    C --> D
+
+    D --> E
+    E --> F
+    F --> G
+
+    E -.->|"실행되지 않음"| H
+    F -.->|"실행되지 않음"| I
+```
+
+#### 예상 실행 로그
+
+```text
+[step1] 실행 시작
+
+[step1] 의도적인 예외 발생
+```
+
+이후 Step1의 예외에 대한 로그가 출력될 수 있다.
+
+하지만 Step2와 Step3은 실행되지 않는다.
+
+#### 최종 실행 상태
+
+| 실행 대상 | BatchStatus | ExitStatus |
+|---|---|---|
+| step1 | FAILED | FAILED |
+| step2 | 미실행 | 없음 |
+| flowStep | FAILED | FAILED |
+| step3 | 미실행 | 없음 |
+| Job | FAILED | FAILED |
+
+여기서 중요한 점은 FlowStep이 실패한 이유다.
+
+FlowStep 자체에서 직접 비즈니스 예외를 발생시킨 것이 아니다.
+
+내부 Flow의 실행 결과가 FAILED였기 때문에 FlowStep도 FAILED로 종료된 것이다.
+
+---
+
+### 세 번째 실행: Step2에서 실패하는 경우
+
+이번에는 Step1은 정상적으로 완료되지만 Step2에서 실패하도록 설정한다.
+
+```bash
+java -jar target/spring-batch-flow-step-0.0.1-SNAPSHOT.jar \
+  failOn=step2 \
+  run.id=3
+```
+
+실행 순서는 다음과 같다.
+
+```text
+flowStepJob
+    │
+    ▼
+flowStep
+    │
+    ▼
+processingFlow
+    │
+    ├── step1
+    │      └── COMPLETED
+    │
+    └── step2
+           └── FAILED
+    │
+    ▼
+flowStep FAILED
+    │
+    ▼
+Job FAILED
+```
+
+Step3은 실행되지 않는다.
+
+#### 최종 실행 상태
+
+| 실행 대상 | BatchStatus | ExitStatus |
+|---|---|---|
+| step1 | COMPLETED | COMPLETED |
+| step2 | FAILED | FAILED |
+| flowStep | FAILED | FAILED |
+| step3 | 미실행 | 없음 |
+| Job | FAILED | FAILED |
+
+이 결과에서도 FlowStep의 상태가 내부 Flow의 최종 실행 결과에 따라 결정된다는 사실을 확인할 수 있다.
+
+---
+
+### FlowStep의 상태는 내부 Step의 상태와 항상 같을까?
+
+여기서 한 가지 더 생각해볼 필요가 있다.
+
+지금까지는 내부 Step이 실패하면 FlowStep도 실패하는 경우를 살펴봤다.
+
+하지만 모든 Flow가 반드시 동일한 규칙으로 종료되는 것은 아니다.
+
+Flow에는 Transition을 정의할 수 있기 때문이다.
+
+예를 들어 다음과 같은 구조를 생각해보자.
+
+```text
+FlowStep
+    │
+    ▼
+SimpleFlow
+    │
+    ▼
+Step1
+    │
+    ├── COMPLETED → Step2
+    │
+    └── FAILED → RecoveryStep
+```
+
+Step1이 실패하더라도 RecoveryStep을 실행하도록 구성할 수 있다.
+
+그리고 RecoveryStep이 정상적으로 완료되면 최종 Flow 상태가 COMPLETED가 되도록 설계할 수 있다.
+
+이 경우 FlowStep의 상태 역시 단순히 Step1의 FAILED 상태만으로 결정되지 않는다.
+
+**FlowStep은 내부 Flow의 최종 실행 결과를 기준으로 자신의 상태를 결정하기 때문이다.**
+
+다만 Flow의 종료 상태와 종료 코드가 항상 같은 값을 가지는 것은 아니다.
+
+중첩 Flow와 Transition의 구성에 따라 BatchStatus와 ExitStatus가 다르게 나타날 수 있다.
+
+따라서 복잡한 FlowStep에서는 다음 값을 구분해야 한다.
+
+| 상태 | 의미 |
+|---|---|
+| 내부 Step BatchStatus | 개별 Step의 실행 상태 |
+| 내부 Step ExitStatus | 개별 Step의 종료 코드 |
+| FlowExecutionStatus | 내부 Flow의 최종 실행 상태 |
+| FlowStep BatchStatus | FlowStep 자체의 실행 상태 |
+| FlowStep ExitStatus | FlowStep 자체의 종료 코드 |
+| Job BatchStatus | 전체 Job 실행 상태 |
+| Job ExitStatus | 전체 Job 종료 코드 |
+
+실무에서는 이 여섯 가지를 혼동하지 않는 것이 중요하다.
+
+---
+
+### 데이터베이스에서 실행 결과 확인하기
+
+Spring Batch는 Job과 Step의 실행 정보를 메타데이터 테이블에 저장한다.
+
+이번 예제에서 사용하는 주요 테이블은 다음과 같다.
+
+| 테이블 | 역할 |
+|---|---|
+| BATCH_JOB_INSTANCE | JobInstance 관리 |
+| BATCH_JOB_EXECUTION | JobExecution 관리 |
+| BATCH_STEP_EXECUTION | StepExecution 관리 |
+| BATCH_JOB_EXECUTION_PARAMS | JobParameters 관리 |
+| BATCH_JOB_EXECUTION_CONTEXT | JobExecution의 ExecutionContext 저장 |
+| BATCH_STEP_EXECUTION_CONTEXT | StepExecution의 ExecutionContext 저장 |
+
+FlowStep 자체는 Step이므로 BATCH_STEP_EXECUTION에 실행 이력이 저장된다.
+
+반면 내부 Flow인 processingFlow는 기본적으로 별도의 FlowExecution 테이블에 저장되지 않는다.
+
+이 차이를 확인해보자.
+
+#### JobExecution 조회
+
+```sql
+SELECT
+    ji.JOB_NAME,
+    ji.JOB_INSTANCE_ID,
+    je.JOB_EXECUTION_ID,
+    je.STATUS,
+    je.EXIT_CODE
+FROM BATCH_JOB_INSTANCE ji
+JOIN BATCH_JOB_EXECUTION je
+    ON ji.JOB_INSTANCE_ID = je.JOB_INSTANCE_ID
+WHERE ji.JOB_NAME = 'flowStepJob'
+ORDER BY je.JOB_EXECUTION_ID;
+```
+
+세 가지 시나리오를 실행했다면 다음과 같은 결과가 예상된다.
+
+| JOB_EXECUTION_ID | STATUS | EXIT_CODE |
+|---|---|---|
+| 1 | COMPLETED | COMPLETED |
+| 2 | FAILED | FAILED |
+| 3 | FAILED | FAILED |
+
+첫 번째 실행은 모든 Step이 정상적으로 완료되었다.
+
+두 번째 실행은 Step1에서 실패했다.
+
+세 번째 실행은 Step2에서 실패했다.
+
+따라서 최종 JobExecution 상태가 다르게 저장된다.
+
+#### StepExecution 조회
+
+```sql
+SELECT
+    je.JOB_EXECUTION_ID,
+    se.STEP_EXECUTION_ID,
+    se.STEP_NAME,
+    se.STATUS,
+    se.EXIT_CODE
+FROM BATCH_JOB_EXECUTION je
+JOIN BATCH_STEP_EXECUTION se
+    ON je.JOB_EXECUTION_ID = se.JOB_EXECUTION_ID
+ORDER BY
+    je.JOB_EXECUTION_ID,
+    se.STEP_EXECUTION_ID;
+```
+
+정상 실행에서는 다음과 같은 결과가 나타난다.
+
+| STEP_NAME | STATUS | EXIT_CODE |
+|---|---|---|
+| flowStep | COMPLETED | COMPLETED |
+| step1 | COMPLETED | COMPLETED |
+| step2 | COMPLETED | COMPLETED |
+| step3 | COMPLETED | COMPLETED |
+
+반면 Step1에서 실패했다면 다음과 같은 실행 이력이 남는다.
+
+| STEP_NAME | STATUS | EXIT_CODE |
+|---|---|---|
+| flowStep | FAILED | FAILED |
+| step1 | FAILED | FAILED |
+
+Step2에서 실패했다면 다음과 같다.
+
+| STEP_NAME | STATUS | EXIT_CODE |
+|---|---|---|
+| flowStep | FAILED | FAILED |
+| step1 | COMPLETED | COMPLETED |
+| step2 | FAILED | FAILED |
+
+이처럼 **FlowStep과 내부 Step은 각각 독립적인 StepExecution을 생성하지만 모두 동일한 JobExecution에 속한다.**
+
+이것이 FlowStep의 메타데이터 구조에서 가장 중요한 특징이다.
+
+---
+
+### JUnit으로 FlowStep 실행 검증하기
+
+이번에는 실제 JobLauncher를 이용해 FlowStep의 동작을 검증해보자.
+
+검증할 내용은 다음과 같다.
+
+첫 번째는 FlowStep의 구현체가 실제로 FlowStep인지 확인한다.
+
+두 번째는 Job의 구현체가 SimpleJob인지 확인한다.
+
+세 번째는 정상 실행 시 네 개의 StepExecution이 생성되는지 확인한다.
+
+네 번째는 Step1에서 실패하면 내부 Flow와 Job이 FAILED로 종료되는지 확인한다.
+
+다섯 번째는 Step2에서 실패하면 Step3이 실행되지 않는지 확인한다.
+
+여섯 번째는 내부 Step들이 동일한 JobExecution에 속하는지 확인한다.
+
+`FlowStepTest.java`
+
+```java
+package com.example.batch;
+
+import java.util.Set;
+import java.util.UUID;
+import java.util.stream.Collectors;
+
+import org.junit.jupiter.api.Test;
+
+import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobParameters;
+import org.springframework.batch.core.JobParametersBuilder;
+import org.springframework.batch.core.Step;
+import org.springframework.batch.core.StepExecution;
+
+import org.springframework.batch.core.job.SimpleJob;
+import org.springframework.batch.core.job.flow.FlowStep;
+
+import org.springframework.batch.core.launch.JobLauncher;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+
+import org.springframework.boot.test.context.SpringBootTest;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+@SpringBootTest(properties = {
+        "spring.batch.job.enabled=false",
+        "spring.datasource.url=jdbc:h2:mem:flow_step_test;DB_CLOSE_DELAY=-1",
+        "spring.batch.jdbc.initialize-schema=always"
+})
+class FlowStepTest {
+
+    @Autowired
+    private JobLauncher jobLauncher;
+
+    @Autowired
+    @Qualifier("flowStepJob")
+    private Job flowStepJob;
+
+    @Autowired
+    @Qualifier("flowStep")
+    private Step flowStep;
+
+    private JobParameters parameters(String failOn) {
+
+        return new JobParametersBuilder()
+                .addString("failOn", failOn)
+                .addString(
+                        "requestId",
+                        UUID.randomUUID().toString()
+                )
+                .toJobParameters();
+    }
+
+    private Set<String> stepNames(
+            JobExecution execution
+    ) {
+
+        return execution
+                .getStepExecutions()
+                .stream()
+                .map(StepExecution::getStepName)
+                .collect(Collectors.toSet());
+    }
+
+    private StepExecution findStep(
+            JobExecution execution,
+            String stepName
+    ) {
+
+        return execution
+                .getStepExecutions()
+                .stream()
+                .filter(step ->
+                        step.getStepName().equals(stepName)
+                )
+                .findFirst()
+                .orElseThrow();
+    }
+
+    // -------------------------------------
+    // 1. FlowStep 구현체 확인
+    // -------------------------------------
+
+    @Test
+    void flowStep은_FlowStep_구현체다() {
+
+        assertInstanceOf(
+                FlowStep.class,
+                flowStep
+        );
+    }
+
+    // -------------------------------------
+    // 2. Job 구현체 확인
+    // -------------------------------------
+
+    @Test
+    void flowStep을_등록한_Job은_SimpleJob이다() {
+
+        assertInstanceOf(
+                SimpleJob.class,
+                flowStepJob
+        );
+    }
+
+    // -------------------------------------
+    // 3. 정상 실행
+    // -------------------------------------
+
+    @Test
+    void 모든_Step이_정상적으로_실행된다()
+            throws Exception {
+
+        JobExecution execution =
+                jobLauncher.run(
+                        flowStepJob,
+                        parameters("none")
+                );
+
+        assertEquals(
+                BatchStatus.COMPLETED,
+                execution.getStatus()
+        );
+
+        assertEquals(
+                Set.of(
+                        "flowStep",
+                        "step1",
+                        "step2",
+                        "step3"
+                ),
+                stepNames(execution)
+        );
+
+        assertEquals(
+                4,
+                execution.getStepExecutions().size()
+        );
+    }
+
+    // -------------------------------------
+    // 4. Step1 실패
+    // -------------------------------------
+
+    @Test
+    void step1이_실패하면_flowStep도_실패한다()
+            throws Exception {
+
+        JobExecution execution =
+                jobLauncher.run(
+                        flowStepJob,
+                        parameters("step1")
+                );
+
+        assertEquals(
+                BatchStatus.FAILED,
+                execution.getStatus()
+        );
+
+        assertEquals(
+                Set.of(
+                        "flowStep",
+                        "step1"
+                ),
+                stepNames(execution)
+        );
+
+        StepExecution parent =
+                findStep(execution, "flowStep");
+
+        StepExecution child =
+                findStep(execution, "step1");
+
+        assertEquals(
+                BatchStatus.FAILED,
+                parent.getStatus()
+        );
+
+        assertEquals(
+                BatchStatus.FAILED,
+                child.getStatus()
+        );
+    }
+
+    // -------------------------------------
+    // 5. Step2 실패
+    // -------------------------------------
+
+    @Test
+    void step2가_실패하면_step3은_실행되지_않는다()
+            throws Exception {
+
+        JobExecution execution =
+                jobLauncher.run(
+                        flowStepJob,
+                        parameters("step2")
+                );
+
+        assertEquals(
+                BatchStatus.FAILED,
+                execution.getStatus()
+        );
+
+        assertEquals(
+                Set.of(
+                        "flowStep",
+                        "step1",
+                        "step2"
+                ),
+                stepNames(execution)
+        );
+
+        assertFalse(
+                stepNames(execution).contains("step3")
+        );
+    }
+
+    // -------------------------------------
+    // 6. JobExecution 공유 확인
+    // -------------------------------------
+
+    @Test
+    void 내부_Step은_동일한_JobExecution에_속한다()
+            throws Exception {
+
+        JobExecution execution =
+                jobLauncher.run(
+                        flowStepJob,
+                        parameters("none")
+                );
+
+        Long jobExecutionId = execution.getId();
+
+        for (StepExecution stepExecution
+                : execution.getStepExecutions()) {
+
+            assertEquals(
+                    jobExecutionId,
+                    stepExecution.getJobExecutionId()
+            );
+        }
+    }
+}
+```
+
+이 테스트는 FlowStep의 핵심 특성을 검증한다.
+
+특히 중요한 부분은 정상 실행에서 네 개의 StepExecution이 생성된다는 점이다.
+
+```text
+flowStep
+
+step1
+
+step2
+
+step3
+```
+
+또한 이 StepExecution들은 모두 동일한 JobExecution에 연결된다.
+
+따라서 FlowStep이 별도의 JobExecution을 생성하는 것이 아니라 기존 JobExecution 안에서 Flow를 실행한다는 사실을 확인할 수 있다.
+
+#### 테스트 실행
+
+```bash
+mvn test
+```
+
+테스트가 모두 성공하면 다음과 유사한 결과가 나타난다.
+
+```text
+Tests run: 6
+
+Failures: 0
+
+Errors: 0
+
+BUILD SUCCESS
+```
+
+위 출력은 예상되는 성공 형태다.
+
+---
+
+### FlowStep의 트랜잭션 구조
+
+FlowStep에서 반드시 이해해야 할 부분이 있다.
+
+**FlowStep 내부의 모든 Step이 하나의 트랜잭션으로 묶이는 것은 아니다.**
+
+예를 들어 다음과 같은 구조를 생각해보자.
+
+```text
+FlowStep
+    │
+    ▼
+SimpleFlow
+    │
+    ├── Step1
+    │      └── Transaction 1
+    │
+    ├── Step2
+    │      └── Transaction 2
+    │
+    └── Step3
+           └── Transaction 3
+```
+
+각 Step은 자신만의 트랜잭션 경계를 가질 수 있다.
+
+예를 들어 Step1이 데이터베이스에 데이터를 저장하고 커밋했다고 가정하자.
+
+이후 Step2에서 예외가 발생했다.
+
+이 경우 Step2의 트랜잭션은 롤백될 수 있다.
+
+하지만 이미 커밋된 Step1의 데이터가 자동으로 롤백되는 것은 아니다.
+
+이러한 특성은 FlowStep에서도 동일하게 적용된다.
+
+FlowStep은 여러 Step의 실행을 관리하는 객체이지, 모든 Step을 하나의 트랜잭션으로 처리하는 객체가 아니기 때문이다.
+
+따라서 실무에서는 다음과 같은 사항을 고려해야 한다.
+
+- 개별 Step의 트랜잭션 경계
+- 실패한 Step의 재실행 가능 여부
+- 이미 완료된 Step의 멱등성
+- 부분적으로 저장된 데이터의 정합성
+- 실패 후 보상 처리 또는 재처리 정책
+
+특히 결제나 정산 시스템에서는 이러한 특성을 반드시 고려해야 한다.
+
+---
+
+### FlowStep의 재시작 구조
+
+FlowStep도 Step이기 때문에 Spring Batch의 재시작 정책에 영향을 받는다.
+
+예를 들어 다음과 같은 실행이 있었다고 가정하자.
+
+```text
+flowStepJob
+    │
+    ▼
+flowStep
+    │
+    ├── step1
+    │      └── COMPLETED
+    │
+    └── step2
+           └── FAILED
+```
+
+이 경우 Job은 FAILED로 종료된다.
+
+이후 동일한 JobInstance를 재시작할 수 있다.
+
+재시작 과정에서는 이전 StepExecution의 상태가 확인된다.
+
+이미 COMPLETED 상태인 Step은 기본적으로 다시 실행하지 않을 수 있다.
+
+반면 실패한 Step은 재실행 대상이 될 수 있다.
+
+따라서 다음과 같은 재시작 흐름이 가능하다.
+
+```text
+첫 번째 실행
+
+flowStep
+    │
+    ├── step1 COMPLETED
+    │
+    └── step2 FAILED
+
+
+재시작
+
+flowStep
+    │
+    ├── step1 건너뜀
+    │
+    └── step2 재실행
+```
+
+다만 실제 재시작 결과는 Flow 구성과 Step 설정에 영향을 받는다.
+
+특히 다음 속성들을 고려해야 한다.
+
+| 설정 또는 상태 | 영향 |
+|---|---|
+| JobInstance | 동일한 논리적 Job 실행 단위 |
+| JobParameters | JobInstance 식별 |
+| allowStartIfComplete | 완료된 Step 재실행 여부 |
+| startLimit | Step 실행 횟수 제한 |
+| ExecutionContext | 재시작 상태 복원 |
+| 이전 BatchStatus | 재실행 가능 여부 판단 |
+| Flow Transition | 재시작 시 실행 경로 결정 |
+
+또한 FlowStep 자체가 완료된 상태라면 기본적으로 다시 실행되지 않을 수 있다.
+
+이때 내부 Step만 개별적으로 재실행하도록 기대하는 것은 적절하지 않다.
+
+따라서 FlowStep을 재시작 가능한 업무 단위로 설계할 때는 부모 FlowStep과 내부 Step의 재시작 정책을 함께 고려해야 한다.
+
+---
+
+### 실무에서의 활용
+
+FlowStep은 단순히 Flow를 감싸는 기능뿐 아니라 배치 시스템의 실행 단위를 설계하는 데 활용할 수 있다.
+
+특히 다음과 같은 상황에서 유용하다.
+
+#### 1. 여러 Step을 하나의 논리적 실행 단위로 그룹화한다
+
+FlowStep은 여러 Step으로 구성된 업무를 하나의 Step처럼 표현할 수 있다.
+
+예를 들어 정산 데이터 수집과 검증을 하나의 FlowStep으로 구성할 수 있다.
+
+```text
+SettlementJob
+    │
+    ├── ValidationFlowStep
+    │      ├── DataCollectionStep
+    │      └── DataValidationStep
+    │
+    └── SettlementStep
+```
+
+이렇게 하면 Job의 최상위 구성은 간단해진다.
+
+반면 내부 Flow에서는 세부적인 Step 실행을 유지할 수 있다.
+
+#### 2. Flow 단위 실행 이력을 관리한다
+
+일반적인 Flow는 별도의 StepExecution을 생성하지 않는다.
+
+하지만 FlowStep으로 감싸면 FlowStep 자체의 StepExecution이 생성된다.
+
+따라서 Flow에 포함된 여러 Step을 하나의 상위 실행 단위로 추적하는 데 도움이 된다.
+
+예를 들어 다음 두 수준의 실행 정보를 확인할 수 있다.
+
+```text
+FlowStep 실행 결과
+    │
+    └── 전체 Flow의 상태
+
+
+내부 Step 실행 결과
+    │
+    ├── Step1 상태
+    └── Step2 상태
+```
+
+이러한 구조는 운영 모니터링에서 유용할 수 있다.
+
+#### 3. 별도의 Job이 필요하지 않은 경우에 사용한다
+
+여러 Step을 하나의 업무 단위로 그룹화하고 싶지만 별도의 JobInstance나 JobExecution을 생성할 필요가 없다면 FlowStep을 고려할 수 있다.
+
+반대로 독립적인 Job 실행 이력이 필요한 경우에는 JobStep이 더 적합할 수 있다.
+
+따라서 FlowStep과 JobStep의 선택 기준은 단순한 코드 구조가 아니라 **실행 단위와 메타데이터를 어디까지 분리할 것인가**에 있다.
+
+#### 4. Partition 기반 처리와 결합할 수 있다
+
+FlowStep은 여러 Step으로 구성된 Flow를 하나의 Step으로 실행할 수 있다.
+
+이러한 특성은 파티션별로 여러 처리 단계를 수행해야 하는 구조에서 활용할 수 있다.
+
+예를 들어 여러 파일을 파티션으로 분리하여 처리한다고 생각해보자.
+
+각 파티션에서는 다음 작업이 필요할 수 있다.
+
+```text
+파일 읽기
+    │
+    ▼
+데이터 검증
+    │
+    ▼
+데이터 저장
+```
+
+이러한 처리 과정을 하나의 Flow로 구성하고 FlowStep으로 감쌀 수 있다.
+
+다만 병렬 실행 시에는 각 Step의 상태 공유, ExecutionContext, 중복 처리 방지 정책을 신중하게 설계해야 한다.
+
+#### 5. FlowStep과 내부 Step의 실패 상태를 함께 확인한다
+
+FlowStep이 FAILED로 종료되었다면 내부 Flow에서 어떤 Step이 실패했는지 확인해야 한다.
+
+FlowStep의 StepExecution만 조회하면 전체적인 실패 여부를 알 수 있다.
+
+하지만 실제 원인을 파악하려면 내부 StepExecution의 ExitMessage와 예외 정보를 확인해야 한다.
+
+따라서 장애 분석에서는 상위 FlowStep과 내부 Step의 실행 기록을 함께 조회하는 것이 좋다.
+
+#### 6. BatchStatus와 ExitStatus를 구분한다
+
+FlowStep은 내부 Flow의 최종 상태를 반영한다.
+
+하지만 복잡한 Transition을 사용하는 경우에는 BatchStatus와 ExitStatus가 항상 동일하지 않을 수 있다.
+
+예를 들어 실패한 Step 이후 복구 Flow를 실행하도록 구성할 수 있다.
+
+이 경우 최종 FlowExecutionStatus와 누적된 ExitStatus를 구분해야 한다.
+
+따라서 운영 모니터링에서는 STATUS와 EXIT_CODE를 함께 확인해야 한다.
+
+#### 7. FlowStep 내부 트랜잭션을 독립적으로 관리한다
+
+FlowStep에 포함된 모든 Step이 하나의 트랜잭션으로 묶이지는 않는다.
+
+따라서 각 Step이 수행하는 데이터 변경을 독립적인 트랜잭션으로 관리해야 한다.
+
+예를 들어 데이터 수집 Step이 성공한 후 검증 Step에서 실패했다면 수집된 데이터는 이미 저장되어 있을 수 있다.
+
+이러한 상황을 고려해 재실행 가능한 구조를 설계해야 한다.
+
+#### 8. 멱등성을 보장한다
+
+FlowStep은 실패 후 재시작될 수 있다.
+
+따라서 내부 Step의 비즈니스 로직은 동일한 데이터를 다시 처리하더라도 중복 결과가 발생하지 않도록 설계하는 것이 좋다.
+
+예를 들어 정산 결과를 저장하는 Step이라면 동일한 정산 대상에 대한 중복 저장을 방지해야 한다.
+
+이러한 문제는 고유키, 중복 검사, 상태 전이 검증 등을 활용해 해결할 수 있다.
+
+#### 9. StepExecutionContext의 전파 방식을 이해한다
+
+FlowStep은 내부 Step 실행을 위해 SimpleStepHandler를 생성한다.
+
+이때 FlowStep의 ExecutionContext를 전달한다.
+
+하지만 내부 Step이 항상 동일한 ExecutionContext 객체를 공유하는 것은 아니다.
+
+따라서 부모 FlowStep의 Context를 변경하면 내부 Step에서 자동으로 동일한 변경이 보인다고 가정해서는 안 된다.
+
+Job 전체에 공유해야 하는 데이터라면 Job ExecutionContext를 사용하거나, 필요한 경우 ExecutionContextPromotionListener 등을 고려할 수 있다.
+
+#### 10. FlowStep의 이름을 명확하게 정의한다
+
+FlowStep은 실제 StepExecution을 생성한다.
+
+따라서 FlowStep의 이름은 운영 환경에서 중요한 식별자가 된다.
+
+예를 들어 다음과 같은 이름이 적절할 수 있다.
+
+```text
+paymentValidationFlowStep
+
+settlementProcessingFlowStep
+
+notificationFlowStep
+```
+
+이렇게 하면 StepExecution의 실행 기록만 확인해도 어떤 업무 단위가 실행되었는지 파악하기 쉽다.
+
+#### 11. Flow 중첩과 FlowStep을 구분한다
+
+Flow 안에 다른 Flow를 포함하는 것과 FlowStep을 사용하는 것은 서로 다르다.
+
+Flow를 중첩하면 FlowState를 통해 하위 Flow가 실행된다.
+
+반면 FlowStep을 사용하면 별도의 StepExecution이 생성된다.
+
+따라서 필요한 메타데이터 구조에 따라 적절한 방식을 선택해야 한다.
+
+#### 12. FlowStep을 과도하게 중첩하지 않는다
+
+FlowStep 내부에 여러 Flow가 중첩되고, 각 Flow에 다시 여러 Step이 포함될 수 있다.
+
+이러한 구조가 지나치게 깊어지면 실제 실행 경로와 실패 지점을 파악하기 어려워질 수 있다.
+
+따라서 업무적으로 의미 있는 단위로 그룹화하는 것이 좋다.
+
+단순히 코드를 짧게 만들기 위해 FlowStep을 추가하기보다는 실행 이력, 재사용성, 책임 분리 등의 목적이 명확한 경우에 사용하는 것이 적절하다.
+
+---
+
+### FlowStep, JobStep, FlowJob 종합 비교
+
+지금까지 살펴본 세 가지 개념을 비교해보자.
+
+| 구분 | FlowStep | JobStep | FlowJob |
+|---|---|---|---|
+| 객체 종류 | Step | Step | Job |
+| 상위 클래스 | AbstractStep | AbstractStep | AbstractJob |
+| 내부 실행 대상 | Flow | Job | Flow |
+| 실행 메서드 | Flow.start() | JobLauncher 기반 실행 | Flow.start() |
+| 별도 StepExecution | 있음 | 있음 | Job 자체에는 없음 |
+| 내부 JobExecution | 별도 생성하지 않음 | 자식 Job에 대해 생성 | 현재 JobExecution 사용 |
+| 실행 결과 | Flow 상태를 Step에 반영 | 자식 Job 결과를 Step에 반영 | Flow 상태를 Job에 반영 |
+| 주요 목적 | Flow의 Step 단위 실행 | Job의 Step 단위 실행 | 복잡한 Job 흐름 제어 |
+| 적합한 상황 | 논리적 Step 그룹화 | 독립적인 Job 실행 | 조건부 실행과 Flow 조합 |
+
+이 표에서 가장 중요한 것은 세 구현체가 서로 다른 수준에서 동작한다는 사실이다.
+
+FlowStep은 Step이다.
+
+JobStep도 Step이다.
+
+FlowJob은 Job이다.
+
+FlowStep과 JobStep은 일반적인 Job 안에서 하나의 Step처럼 실행될 수 있다.
+
+반면 FlowJob은 Job 자체의 실행 방식을 정의한다.
+
+---
+
+### 자주 혼동하는 부분
+
+| 혼동하기 쉬운 내용 | 정확한 이해 |
+|---|---|
+| FlowStep은 FlowJob이다 | FlowStep은 Step 구현체다 |
+| FlowStep을 사용하면 항상 FlowJob이 생성된다 | JobBuilder의 구성에 따라 SimpleJob이 될 수 있다 |
+| FlowStep은 Job을 실행한다 | Flow를 실행한다 |
+| FlowStep은 별도 JobExecution을 생성한다 | 기존 JobExecution을 사용한다 |
+| FlowStep 자체에는 StepExecution이 없다 | FlowStep도 StepExecution을 생성한다 |
+| 내부 Flow에 포함된 Step들은 StepExecution이 없다 | 실제 실행된 내부 Step마다 생성될 수 있다 |
+| FlowStep은 Tasklet을 직접 실행한다 | Flow를 통해 내부 Step을 실행한다 |
+| FlowStep은 모든 내부 Step을 하나의 트랜잭션으로 처리한다 | 일반적으로 내부 Step이 각각 트랜잭션을 관리한다 |
+| FlowStep이 실패하면 반드시 직접 예외가 발생한 것이다 | 내부 Flow의 실패 상태가 반영된 것일 수 있다 |
+| 내부 Step이 실패하면 반드시 FlowStep이 실패한다 | 복구 Transition이 있다면 최종 상태가 달라질 수 있다 |
+| FlowStep이 COMPLETED이면 내부 Step에 실패가 없었다 | 복구 경로에 따라 실패 이력이 남아 있을 수 있다 |
+| FlowStep과 FlowState는 동일하다 | FlowStep은 StepExecution을 생성하지만 FlowState는 Flow 실행 상태를 관리한다 |
+
+---
+
+### 구조: FlowStep 전체 실행 아키텍처
+
+지금까지 살펴본 내용을 하나의 구조로 정리해보자.
+
+```mermaid
+flowchart TD
+    A["JobLauncher"]
+    B["SimpleJob"]
+    C["FlowStep"]
+
+    D["AbstractStep.execute()"]
+
+    E["FlowStep.doExecute()"]
+
+    F["SimpleStepHandler"]
+
+    G["JobFlowExecutor"]
+
+    H["SimpleFlow.start()"]
+
+    I["SimpleFlow.resume()"]
+
+    J["StepState"]
+
+    K["InnerStep1"]
+    L["InnerStep2"]
+
+    M["FlowExecution"]
+
+    N["FlowExecutionStatus"]
+
+    O["JobExecution 상태 반영"]
+
+    P["FlowStep StepExecution 상태 반영"]
+
+    Q{"FlowStep BatchStatus"}
+
+    R["NextStep"]
+    S["Job 종료"]
+
+    A --> B
+    B --> C
+    C --> D
+
+    D --> E
+
+    E --> F
+    E --> G
+
+    G --> H
+    H --> I
+
+    I --> J
+    J --> K
+    K --> L
+
+    L --> M
+    M --> N
+
+    N --> O
+    O --> P
+
+    P --> Q
+
+    Q -->|COMPLETED| R
+    Q -->|FAILED| S
+
+    R --> S
+```
+
+전체 실행 과정은 다음과 같이 정리할 수 있다.
+
+첫 번째는 Job 실행 단계다.
+
+JobLauncher가 Job을 실행한다.
+
+그리고 Job은 FlowStep을 실행한다.
+
+두 번째는 FlowStep 실행 단계다.
+
+AbstractStep.execute()가 호출된다.
+
+이후 FlowStep.doExecute()가 실행된다.
+
+세 번째는 Flow 실행 단계다.
+
+FlowStep은 SimpleStepHandler와 JobFlowExecutor를 생성한다.
+
+그리고 SimpleFlow.start()를 호출한다.
+
+SimpleFlow는 내부 State를 실행한다.
+
+State가 StepState라면 실제 Step을 실행한다.
+
+네 번째는 상태 반영 단계다.
+
+SimpleFlow가 최종 FlowExecutionStatus를 반환한다.
+
+JobFlowExecutor는 해당 상태를 JobExecution에 반영한다.
+
+FlowStep은 다시 자신의 StepExecution 상태를 반영한다.
+
+다섯 번째는 후속 Step 실행 단계다.
+
+FlowStep이 정상적으로 완료되면 Job에 등록된 다음 Step을 실행한다.
+
+반면 FlowStep이 FAILED로 종료되면 일반적인 SimpleJob에서는 후속 Step을 실행하지 않는다.
+
+이러한 과정으로 FlowStep의 실행이 완료된다.
+
+---
+
+### 정리
+
+Spring Batch의 `FlowStep`은 Step 내부에서 Flow를 실행하기 위한 구현체다.
+
+FlowStep은 AbstractStep을 상속한다.
+
+따라서 일반적인 Step의 공통 실행 기능을 사용한다.
+
+하지만 실제 비즈니스 로직을 직접 실행하는 대신 Flow를 실행한다.
+
+FlowStep은 다음과 같이 생성한다.
+
+```java
+new StepBuilder(
+        "flowStep",
+        jobRepository
+)
+        .flow(flow)
+        .build();
+```
+
+여기서 flow()는 FlowStepBuilder를 반환한다.
+
+그리고 build()를 호출하면 FlowStep 객체를 생성한다.
+
+FlowStep의 실제 실행은 doExecute()에서 이루어진다.
+
+핵심 코드는 다음과 같다.
+
+```java
+executor.updateJobExecutionStatus(
+        flow.start(executor).getStatus()
+);
+```
+
+이 코드는 Flow를 실행하고 최종 FlowExecutionStatus를 JobExecution에 반영한다.
+
+그리고 다음 코드를 실행한다.
+
+```java
+stepExecution.upgradeStatus(
+        executor.getJobExecution().getStatus()
+);
+```
+
+```java
+stepExecution.setExitStatus(
+        executor.getJobExecution().getExitStatus()
+);
+```
+
+이러한 과정으로 FlowStep의 BatchStatus와 ExitStatus가 결정된다.
+
+따라서 내부 Flow가 정상적으로 완료되면 FlowStep도 정상적으로 완료될 수 있다.
+
+반면 내부 Flow가 실패했다면 FlowStep도 FAILED로 종료될 수 있다.
+
+다만 Flow에 별도의 복구 Transition이 존재한다면 최종 상태는 달라질 수 있다.
+
+또한 FlowStep은 일반적인 Step과 마찬가지로 StepExecution을 생성한다.
+
+내부 Flow에 포함된 Step들 역시 각각 StepExecution을 생성할 수 있다.
+
+따라서 다음과 같은 메타데이터 구조가 만들어진다.
+
+```text
+JobExecution
+    │
+    ├── FlowStep StepExecution
+    │
+    ├── InnerStep1 StepExecution
+    │
+    ├── InnerStep2 StepExecution
+    │
+    └── NextStep StepExecution
+```
+
+이러한 구조는 일반적인 Flow 중첩과 중요한 차이가 있다.
+
+Flow를 직접 중첩하면 Flow 자체에 대한 StepExecution은 생성되지 않는다.
+
+반면 FlowStep으로 감싸면 논리적인 Flow 실행 단위에 대한 StepExecution을 추가로 관리할 수 있다.
+
+따라서 FlowStep은 여러 Step을 하나의 논리적 실행 단위로 그룹화하면서, 상위 실행 상태와 내부 상세 실행 이력을 함께 관리하려는 경우에 유용하다.
+
+또한 FlowStep은 별도의 JobExecution을 생성하지 않는다.
+
+이 점이 JobStep과의 핵심적인 차이다.
+
+마지막으로 FlowStep은 여러 Step의 업무 처리를 하나의 트랜잭션으로 묶는 객체가 아니다.
+
+실제 트랜잭션은 내부 Step이 관리한다.
+
+따라서 실무에서는 FlowStep의 실행 구조뿐 아니라 내부 Step의 트랜잭션, 멱등성, 재시작 정책, 실행 상태 관리까지 함께 고려해야 한다.
+
+결국 **FlowStep은 여러 Step으로 구성된 Flow를 하나의 Step처럼 실행할 수 있도록 지원하며, Step 단위의 실행 이력을 유지하면서 복잡한 배치 작업을 논리적으로 그룹화할 수 있게 해주는 Spring Batch의 핵심 Step 구현체**다.
+
+#### 한 줄 요약
+
+> Spring Batch의 `FlowStep`은 `AbstractStep`을 상속한 Step 구현체로, 내부에 `Flow` 객체를 보관하고 `Flow.start()`를 통해 실행한다. `FlowStepBuilder`의 `flow()` API를 이용해 생성하며, Flow의 최종 `FlowExecutionStatus`를 기반으로 자신의 `BatchStatus`와 `ExitStatus`를 결정한다. FlowStep 자체와 내부 Step들은 각각 `StepExecution`을 생성하지만, 별도의 `JobExecution`을 생성하지는 않는다. 따라서 여러 Step으로 구성된 Flow를 하나의 Step처럼 다루면서 실행 이력을 관리할 수 있다.
