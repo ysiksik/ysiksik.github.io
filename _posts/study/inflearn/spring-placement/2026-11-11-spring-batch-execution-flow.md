@@ -33071,3 +33071,2856 @@ Flow를 직접 중첩하면 Flow 자체에 대한 StepExecution은 생성되지 
 #### 한 줄 요약
 
 > Spring Batch의 `FlowStep`은 `AbstractStep`을 상속한 Step 구현체로, 내부에 `Flow` 객체를 보관하고 `Flow.start()`를 통해 실행한다. `FlowStepBuilder`의 `flow()` API를 이용해 생성하며, Flow의 최종 `FlowExecutionStatus`를 기반으로 자신의 `BatchStatus`와 `ExitStatus`를 결정한다. FlowStep 자체와 내부 Step들은 각각 `StepExecution`을 생성하지만, 별도의 `JobExecution`을 생성하지는 않는다. 따라서 여러 Step으로 구성된 Flow를 하나의 Step처럼 다루면서 실행 이력을 관리할 수 있다.
+
+## @JobScope / @StepScope - 기본개념 및 설정
+
+
+### Spring Batch @JobScope와 @StepScope 완벽 이해: Late Binding, JobParameters, ExecutionContext와 내부 동작 원리
+
+Spring Batch에서는 Job을 실행할 때 외부로부터 전달받은 파라미터를 사용하거나, Job 또는 Step의 실행 과정에서 생성된 데이터를 참조해야 하는 경우가 많다.
+
+예를 들어 특정 날짜의 정산 데이터를 처리하는 배치 시스템을 생각해보자.
+
+배치 애플리케이션은 매일 동일한 코드로 실행된다.
+
+하지만 실행할 때마다 처리할 날짜가 달라진다.
+
+```text
+첫 번째 실행
+    │
+    └── 정산 기준일 = 2026-11-21
+
+두 번째 실행
+    │
+    └── 정산 기준일 = 2026-11-22
+
+세 번째 실행
+    │
+    └── 정산 기준일 = 2026-11-23
+```
+
+이러한 요구사항을 처리하기 위해 날짜를 코드에 직접 지정하는 것은 적절하지 않다.
+
+대신 Job 실행 시점에 전달받은 파라미터를 사용하는 것이 좋다.
+
+Spring Batch에서는 이를 위해 `JobParameters`를 제공한다.
+
+```java
+JobParameters parameters =
+        new JobParametersBuilder()
+                .addString("requestDate", "2026-11-23")
+                .toJobParameters();
+```
+
+그런데 여기서 한 가지 문제가 발생한다.
+
+**Spring Bean은 일반적으로 애플리케이션이 시작될 때 생성되지만, JobParameters는 Job을 실행할 때 결정된다.**
+
+따라서 일반적인 Singleton Bean에서 JobParameters를 직접 참조하려고 하면 문제가 발생할 수 있다.
+
+Spring Batch는 이러한 문제를 해결하기 위해 다음 두 가지 Scope를 제공한다.
+
+- `@JobScope`
+- `@StepScope`
+
+두 Scope를 이용하면 Job이나 Step의 실행 시점에 필요한 데이터를 참조하도록 Bean 생성을 지연할 수 있다.
+
+이러한 기능을 **Late Binding(지연 바인딩)**이라고 한다.
+
+이번에는 Spring Bean Scope의 기본 개념부터 시작하여 JobScope와 StepScope의 차이, 파라미터 주입, ExecutionContext 접근, Scoped Proxy의 내부 동작, 실제 코드 구성 및 실무 활용까지 살펴보자.
+
+---
+
+### 개념
+
+#### Spring Bean Scope란?
+
+Spring에서 Scope는 **Bean 인스턴스의 생성과 관리 범위를 정의하는 개념**이다.
+
+일반적으로 Spring Bean을 선언하면 Spring 컨테이너가 해당 Bean을 생성하고 관리한다.
+
+```java
+@Bean
+public PaymentService paymentService() {
+    return new PaymentService();
+}
+```
+
+이 Bean에는 별도의 Scope를 설정하지 않았다.
+
+따라서 기본적으로 Singleton Scope가 적용된다.
+
+Singleton Scope에서는 하나의 Spring 컨테이너 안에서 해당 Bean 정의에 대해 하나의 인스턴스를 관리한다.
+
+```text
+ApplicationContext
+    │
+    └── PaymentService Bean
+              │
+              ├── Controller A
+              │
+              ├── Controller B
+              │
+              └── Batch Job
+```
+
+Controller A와 Controller B가 PaymentService를 주입받더라도 서로 다른 인스턴스가 생성되는 것이 아니다.
+
+동일한 Singleton Bean을 참조한다.
+
+이러한 방식은 객체 생성 비용을 줄이고 공통 컴포넌트를 재사용하는 데 적합하다.
+
+하지만 모든 Bean이 반드시 Singleton으로 관리되어야 하는 것은 아니다.
+
+Spring은 여러 Scope를 제공한다.
+
+#### Spring의 주요 Bean Scope
+
+| Scope | 생성 및 관리 범위 | 대표적인 사용 사례 |
+|---|---|---|
+| Singleton | Spring 컨테이너에서 Bean 정의당 하나의 인스턴스 | Service, Repository |
+| Prototype | Bean을 요청할 때마다 새로운 인스턴스 생성 | 상태를 가진 단기 객체 |
+| Request | HTTP 요청 단위 | 요청별 데이터 |
+| Session | HTTP 세션 단위 | 사용자 세션 정보 |
+| Application | ServletContext 단위 | 웹 애플리케이션 공통 데이터 |
+| Job | JobExecution 단위 | Job 실행별 데이터 |
+| Step | StepExecution 단위 | Step 실행별 데이터 |
+
+여기서 Job과 Step Scope는 Spring Batch가 제공하는 Scope다.
+
+일반적인 Spring 웹 애플리케이션에서는 Request와 Session Scope가 사용될 수 있다.
+
+반면 Spring Batch에서는 Job과 Step의 실행 단위에 맞는 Scope가 필요하다.
+
+그 이유는 배치 애플리케이션의 생명주기와 Job의 실행 생명주기가 서로 다르기 때문이다.
+
+---
+
+### Spring Bean의 생성 시점과 Job 실행 시점의 차이
+
+일반적인 Spring Boot 애플리케이션에서는 다음과 같은 순서로 초기화가 진행된다.
+
+```text
+Spring Boot 시작
+    │
+    ▼
+ApplicationContext 생성
+    │
+    ▼
+Bean Definition 등록
+    │
+    ▼
+Singleton Bean 생성
+    │
+    ▼
+애플리케이션 초기화 완료
+    │
+    ▼
+Job 실행
+```
+
+여기서 중요한 점은 Singleton Bean이 일반적으로 Job 실행보다 먼저 생성된다는 것이다.
+
+예를 들어 다음과 같은 코드가 있다고 생각해보자.
+
+```java
+@Bean
+public Tasklet settlementTasklet(
+        @Value("#{jobParameters['requestDate']}")
+        String requestDate
+) {
+    return (contribution, chunkContext) -> {
+
+        System.out.println(requestDate);
+
+        return RepeatStatus.FINISHED;
+    };
+}
+```
+
+이 코드는 JobParameters에서 requestDate를 가져오려고 한다.
+
+하지만 별도의 Scope를 설정하지 않았다.
+
+따라서 Spring은 일반적인 Singleton Bean을 생성하는 과정에서 `@Value` 표현식을 평가하려고 시도한다.
+
+문제는 이 시점에 Job이 실행되지 않았을 수 있다는 것이다.
+
+JobExecution이 생성되지 않았다면 JobParameters를 참조할 수 있는 실행 Context도 준비되지 않았다.
+
+따라서 다음과 같은 오류가 발생할 수 있다.
+
+```text
+Property or field 'jobParameters'
+cannot be found on object of type
+'org.springframework.beans.factory.config.BeanExpressionContext'
+```
+
+이러한 문제를 해결하려면 실제 Bean의 생성과 값 바인딩을 Job 또는 Step의 실행 시점으로 지연해야 한다.
+
+Spring Batch의 JobScope와 StepScope가 이러한 역할을 담당한다.
+
+---
+
+### Late Binding이란?
+
+Late Binding은 필요한 값을 애플리케이션 초기화 시점에 결정하지 않고 **실제 실행 시점에 결정하도록 바인딩을 지연하는 방식**이다.
+
+Spring Batch에서는 JobScope와 StepScope를 이용해 이를 구현할 수 있다.
+
+예를 들어 다음과 같은 코드를 살펴보자.
+
+```java
+@Bean
+@StepScope
+public FlatFileItemReader<Order> orderReader(
+        @Value("#{jobParameters['inputFile']}")
+        String inputFile
+) {
+    // ItemReader 생성
+}
+```
+
+이 Bean은 애플리케이션 시작 시점에 실제 ItemReader 인스턴스를 바로 생성하지 않는다.
+
+대신 Spring은 Scoped Proxy를 생성한다.
+
+그리고 Step이 실행되어 실제 ItemReader가 필요한 시점에 대상 Bean을 생성한다.
+
+이때 JobParameters의 inputFile 값을 참조한다.
+
+전체 구조는 다음과 같다.
+
+```mermaid
+sequenceDiagram
+    participant Spring as Spring Container
+    participant Job as Job
+    participant Step as Step
+    participant Proxy as Scoped Proxy
+    participant Scope as StepScope
+    participant Reader as ItemReader
+
+    Spring->>Proxy: Proxy Bean 생성
+
+    Note over Spring,Proxy: 실제 ItemReader 생성 지연
+
+    Job->>Step: Step 실행
+    Step->>Proxy: read() 호출
+
+    Proxy->>Scope: 실제 Bean 요청
+    Scope->>Scope: StepContext 조회
+    Scope->>Scope: JobParameters 참조
+
+    Scope->>Reader: ItemReader 생성
+    Reader-->>Scope: 실제 Bean
+
+    Scope-->>Proxy: 대상 Bean 반환
+    Proxy->>Reader: read() 위임
+```
+
+이러한 방식으로 애플리케이션 구동 시점에는 존재하지 않는 실행 파라미터를 실제 Job 실행 시점에 사용할 수 있다.
+
+여기서 중요한 점은 **Scoped Proxy와 실제 Bean의 생성 시점이 서로 다르다는 사실**이다.
+
+---
+
+### @JobScope란?
+
+`@JobScope`는 Bean을 JobExecution 단위로 관리하기 위한 Scope다.
+
+하나의 JobExecution 안에서는 동일한 JobScope Bean 인스턴스를 재사용한다.
+
+반면 다른 JobExecution에서는 별도의 Bean 인스턴스를 사용할 수 있다.
+
+예를 들어 다음과 같은 실행이 있다고 생각해보자.
+
+```text
+JobExecution 1
+    │
+    └── JobScopedBean A
+
+
+JobExecution 2
+    │
+    └── JobScopedBean B
+```
+
+두 JobExecution은 서로 다른 실행 단위다.
+
+따라서 JobScope Bean도 각각의 실행 단위에 맞게 관리된다.
+
+여기서 중요한 것은 JobScope의 기준이 JobInstance가 아니라 **JobExecution**이라는 점이다.
+
+예를 들어 동일한 JobInstance가 실패 후 재시작되었다고 생각해보자.
+
+```text
+JobInstance 1
+    │
+    ├── JobExecution 1
+    │      └── FAILED
+    │
+    └── JobExecution 2
+           └── COMPLETED
+```
+
+JobExecution 1과 JobExecution 2는 서로 다른 실행 시도다.
+
+따라서 JobScope Bean도 새로운 실행 Context에 맞게 생성될 수 있다.
+
+---
+
+### @JobScope의 내부 선언
+
+Spring Batch 5.2.4에서 `@JobScope`는 다음과 같이 정의된다.
+
+```java
+@Scope(
+        value = "job",
+        proxyMode = ScopedProxyMode.TARGET_CLASS
+)
+@Retention(RetentionPolicy.RUNTIME)
+@Documented
+public @interface JobScope {
+}
+```
+
+이 코드에서 중요한 부분은 다음과 같다.
+
+```java
+value = "job"
+```
+
+Job Scope를 사용한다는 의미다.
+
+그리고 다음 설정이 존재한다.
+
+```java
+proxyMode = ScopedProxyMode.TARGET_CLASS
+```
+
+이 설정은 클래스 기반 Scoped Proxy를 사용하도록 지정한다.
+
+따라서 다음 두 선언은 기본적으로 같은 Scope 설정을 표현한다.
+
+```java
+@JobScope
+```
+
+```java
+@Scope(
+        value = "job",
+        proxyMode = ScopedProxyMode.TARGET_CLASS
+)
+```
+
+즉, JobScope는 Spring의 Scope 기능을 기반으로 구현되어 있다.
+
+---
+
+### @JobScope에서 참조할 수 있는 값
+
+JobScope에서는 대표적으로 다음 두 가지 데이터를 참조할 수 있다.
+
+| 데이터 | 표현식 |
+|---|---|
+| JobParameters | `#{jobParameters['key']}` |
+| JobExecutionContext | `#{jobExecutionContext['key']}` |
+
+예를 들어 다음과 같이 사용할 수 있다.
+
+```java
+@Bean
+@JobScope
+public JobRunOptions jobRunOptions(
+        @Value("#{jobParameters['requestDate']}")
+        String requestDate
+) {
+    return new JobRunOptions(requestDate);
+}
+```
+
+이 Bean은 Job 실행 시점에 requestDate 값을 참조한다.
+
+그리고 해당 값을 가진 JobRunOptions 객체를 생성한다.
+
+JobExecutionContext에서도 값을 참조할 수 있다.
+
+```java
+@Bean
+@JobScope
+public JobRunOptions jobRunOptions(
+        @Value("#{jobParameters['requestDate']}")
+        String requestDate,
+
+        @Value("#{jobExecutionContext['operator']}")
+        String operator
+) {
+    return new JobRunOptions(
+            requestDate,
+            operator
+    );
+}
+```
+
+여기서는 JobParameters의 requestDate와 JobExecutionContext의 operator를 함께 사용한다.
+
+---
+
+### @JobScope는 반드시 Step Bean에 선언해야 할까?
+
+기존의 Spring Batch 코드에서는 다음과 같이 Step Bean에 JobScope를 설정하는 예제를 볼 수 있다.
+
+```java
+@Bean
+@JobScope
+public Step settlementStep(
+        JobRepository jobRepository,
+
+        @Value("#{jobParameters['requestDate']}")
+        String requestDate
+) {
+    // Step 생성
+}
+```
+
+이 방식에서는 Step 자체의 생성을 Job 실행 시점까지 지연한다.
+
+따라서 Step 생성 과정에서 JobParameters를 참조할 수 있다.
+
+하지만 Spring Batch 5.2 공식 문서는 **Step Bean 자체에 JobScope나 StepScope를 설정하지 않는 것을 권장한다.**
+
+대신 실제 실행 시점의 값이 필요한 구성요소에 Scope를 적용하는 방식이 적절하다.
+
+예를 들어 다음과 같다.
+
+```java
+@Bean
+public Step settlementStep(
+        JobRepository jobRepository,
+        PlatformTransactionManager transactionManager,
+        SettlementTasklet settlementTasklet
+) {
+    return new StepBuilder(
+            "settlementStep",
+            jobRepository
+    )
+            .tasklet(
+                    settlementTasklet,
+                    transactionManager
+            )
+            .build();
+}
+```
+
+그리고 실제 JobParameters가 필요한 Tasklet에 StepScope를 설정한다.
+
+```java
+@Bean
+@StepScope
+public SettlementTasklet settlementTasklet(
+        @Value("#{jobParameters['requestDate']}")
+        String requestDate
+) {
+    return new SettlementTasklet(requestDate);
+}
+```
+
+이렇게 구성하면 Step은 일반적인 Singleton Bean으로 관리할 수 있다.
+
+반면 Tasklet은 실행 시점에 생성된다.
+
+이러한 방식은 Step의 구성과 실제 실행 데이터를 분리하는 데 도움이 된다.
+
+---
+
+### @StepScope란?
+
+`@StepScope`는 Bean을 StepExecution 단위로 관리하기 위한 Scope다.
+
+JobScope가 JobExecution을 기준으로 관리된다면, StepScope는 StepExecution을 기준으로 관리된다.
+
+예를 들어 하나의 Job에 두 개의 Step이 있다고 가정하자.
+
+```text
+JobExecution
+    │
+    ├── StepExecution 1
+    │      └── StepScopedBean A
+    │
+    └── StepExecution 2
+           └── StepScopedBean B
+```
+
+StepExecution 1과 StepExecution 2는 서로 다른 실행 단위다.
+
+따라서 각각의 StepExecution에서 별도의 StepScope Bean을 사용할 수 있다.
+
+StepScope 역시 새로운 StepExecution이 생성되면 해당 실행에 맞는 Bean 인스턴스를 관리한다.
+
+---
+
+### @StepScope의 내부 선언
+
+Spring Batch 5.2.4에서 StepScope는 다음과 같이 정의된다.
+
+```java
+@Scope(
+        value = "step",
+        proxyMode = ScopedProxyMode.TARGET_CLASS
+)
+@Retention(RetentionPolicy.RUNTIME)
+@Documented
+public @interface StepScope {
+}
+```
+
+JobScope와 마찬가지로 Scoped Proxy를 사용한다.
+
+하지만 관리 범위는 다르다.
+
+JobScope는 JobExecution을 기준으로 한다.
+
+StepScope는 StepExecution을 기준으로 한다.
+
+---
+
+### @StepScope에서 참조할 수 있는 값
+
+StepScope에서는 다음 세 가지 데이터를 참조할 수 있다.
+
+| 데이터 | 표현식 |
+|---|---|
+| JobParameters | `#{jobParameters['key']}` |
+| JobExecutionContext | `#{jobExecutionContext['key']}` |
+| StepExecutionContext | `#{stepExecutionContext['key']}` |
+
+예를 들어 다음과 같다.
+
+```java
+@Bean
+@StepScope
+public OrderReader orderReader(
+        @Value("#{jobParameters['requestDate']}")
+        String requestDate,
+
+        @Value("#{jobExecutionContext['operator']}")
+        String operator,
+
+        @Value("#{stepExecutionContext['partitionId']}")
+        String partitionId
+) {
+    return new OrderReader(
+            requestDate,
+            operator,
+            partitionId
+    );
+}
+```
+
+이 Bean은 실행 시점에 세 가지 데이터를 참조한다.
+
+첫 번째는 JobParameters다.
+
+두 번째는 JobExecutionContext다.
+
+세 번째는 StepExecutionContext다.
+
+따라서 StepScope는 JobScope보다 더 세부적인 실행 Context에 접근할 수 있다.
+
+---
+
+### @JobScope와 @StepScope 비교
+
+두 Scope의 차이를 정리해보자.
+
+| 구분 | @JobScope | @StepScope |
+|---|---|---|
+| 관리 범위 | JobExecution | StepExecution |
+| Bean 생성 | Job 실행 중 최초 대상 접근 시 | Step 실행 중 최초 대상 접근 시 |
+| Scoped Proxy | 사용 | 사용 |
+| JobParameters 접근 | 가능 | 가능 |
+| JobExecutionContext 접근 | 가능 | 가능 |
+| StepExecutionContext 접근 | 직접 지원하지 않음 | 가능 |
+| 대표적인 사용 대상 | Job별 설정 객체, Listener 등 | Tasklet, ItemReader, ItemProcessor, ItemWriter |
+| Bean 재사용 범위 | 동일 JobExecution | 동일 StepExecution |
+| 재시작 시 | 새 JobExecution에 따라 새 대상 생성 가능 | 새 StepExecution에 따라 새 대상 생성 가능 |
+| 멀티스레드 처리 | 별도 주의 필요 | StepExecution 공유 여부에 따라 주의 필요 |
+
+여기서 가장 중요한 차이는 관리 단위다.
+
+**JobScope는 JobExecution 단위로 Bean을 관리하고, StepScope는 StepExecution 단위로 Bean을 관리한다.**
+
+이 두 Scope를 단순히 실행 시점에 Bean을 생성하는 기능으로만 이해하면 부족하다.
+
+실행 단위에 따라 Bean의 생명주기를 관리한다는 점까지 이해해야 한다.
+
+---
+
+### JobParameters와 ExecutionContext의 차이
+
+JobScope와 StepScope를 제대로 사용하려면 JobParameters와 ExecutionContext의 차이도 이해해야 한다.
+
+두 객체는 모두 배치 실행 데이터를 관리하지만 목적이 다르다.
+
+#### JobParameters
+
+JobParameters는 Job을 실행할 때 전달하는 입력값이다.
+
+예를 들어 다음과 같다.
+
+```java
+JobParameters parameters =
+        new JobParametersBuilder()
+                .addString(
+                        "requestDate",
+                        "2026-11-23"
+                )
+                .addString(
+                        "countryCode",
+                        "KR"
+                )
+                .toJobParameters();
+```
+
+JobParameters는 실행 요청 시 전달되는 데이터다.
+
+또한 식별 파라미터는 JobInstance를 구분하는 데 사용된다.
+
+일반적으로 실행 중 값을 변경하는 용도로 사용하지 않는다.
+
+#### JobExecutionContext
+
+JobExecutionContext는 Job 실행 과정에서 필요한 상태 데이터를 저장한다.
+
+예를 들어 다음과 같다.
+
+```java
+jobExecution.getExecutionContext()
+        .putString(
+                "operator",
+                "user1"
+        );
+```
+
+이 값은 같은 JobExecution에 속한 여러 Step에서 참조할 수 있다.
+
+다만 실행 중 변경된 값을 다른 Step에서 안정적으로 참조하려면 저장 시점과 트랜잭션 처리도 함께 고려해야 한다.
+
+#### StepExecutionContext
+
+StepExecutionContext는 특정 StepExecution에 속한 상태 데이터를 저장한다.
+
+```java
+stepExecution.getExecutionContext()
+        .putString(
+                "operator",
+                "user2"
+        );
+```
+
+이 값은 해당 Step의 실행 상태 관리에 사용된다.
+
+특히 Chunk 기반 처리에서는 마지막 처리 위치나 재시작에 필요한 정보를 저장하는 데 활용할 수 있다.
+
+#### 비교
+
+| 구분 | JobParameters | JobExecutionContext | StepExecutionContext |
+|---|---|---|---|
+| 목적 | Job 실행 입력값 | Job 실행 상태 데이터 | Step 실행 상태 데이터 |
+| 전달 시점 | Job 실행 요청 시 | Job 실행 중 | Step 실행 중 |
+| 변경 가능 여부 | 입력값으로 취급 | 변경 가능 | 변경 가능 |
+| 범위 | Job 실행 및 JobInstance 식별 | JobExecution | StepExecution |
+| 대표적 사용 | 처리 날짜, 국가 코드 | 공통 실행 상태 | Reader 처리 위치 |
+| 기본 저장 위치 | Job 실행 파라미터 메타데이터 | Job Context 테이블 | Step Context 테이블 |
+
+따라서 세 객체를 혼동하지 않고 목적에 맞게 사용해야 한다.
+
+---
+
+### 예제: JobScope와 StepScope를 이용한 Late Binding
+
+이번에는 실제 코드를 작성해보자.
+
+다음과 같은 배치 작업을 구현한다.
+
+```text
+scopeJob
+    │
+    ├── step1
+    │      │
+    │      ├── JobParameters['message']
+    │      │
+    │      └── JobExecutionContext['name']
+    │
+    └── step2
+           │
+           └── StepExecutionContext['name2']
+```
+
+Job 실행 시에는 message라는 파라미터를 전달한다.
+
+```text
+message = 2026-11-23
+```
+
+JobExecutionListener는 JobExecutionContext에 다음 값을 저장한다.
+
+```text
+name = user1
+```
+
+StepExecutionListener는 Step2의 StepExecutionContext에 다음 값을 저장한다.
+
+```text
+name2 = user2
+```
+
+이후 StepScope Bean이 생성될 때 `@Value` 표현식을 통해 해당 값들을 주입받는다.
+
+또한 JobScope Bean을 별도로 생성하여 Job 실행 단위의 값 바인딩도 확인한다.
+
+---
+
+### 개발 환경
+
+| 항목 | 기술 |
+|---|---|
+| Java | Java 17 |
+| Spring Boot | 3.4.13 |
+| Spring Batch | 5.2.4 |
+| Build Tool | Maven |
+| Database | H2 |
+| Job | SimpleJob |
+| Step | TaskletStep |
+| Scope | JobScope, StepScope |
+
+이번 예제는 Spring Batch 5.2.4의 API를 기준으로 작성한다.
+
+기존 Spring Batch 4.x에서 사용하는 JobBuilderFactory, StepBuilderFactory 대신 JobRepository를 직접 전달하는 방식을 사용한다.
+
+---
+
+### Maven 의존성 설정
+
+`pom.xml`
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="
+             http://maven.apache.org/POM/4.0.0
+             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.4.13</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.example</groupId>
+    <artifactId>spring-batch-scope-example</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+
+    <properties>
+        <java.version>17</java.version>
+        <spring-batch.version>5.2.4</spring-batch.version>
+    </properties>
+
+    <dependencies>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-batch</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>
+```
+
+---
+
+### application.yml 설정
+
+`src/main/resources/application.yml`
+
+```yaml
+spring:
+  application:
+    name: spring-batch-scope-example
+
+  main:
+    web-application-type: none
+
+  datasource:
+    url: jdbc:h2:mem:scope_db;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+  batch:
+    job:
+      enabled: true
+      name: scopeJob
+
+    jdbc:
+      initialize-schema: always
+
+logging:
+  level:
+    org.springframework.batch: INFO
+    com.example.batch: INFO
+```
+
+이번에는 인메모리 H2를 사용한다.
+
+애플리케이션이 종료되면 데이터도 사라지므로, 재시작 이력까지 확인하려면 파일 기반 H2나 별도의 데이터베이스를 사용하는 것이 좋다.
+
+---
+
+### Spring Boot 애플리케이션
+
+`BatchApplication.java`
+
+```java
+package com.example.batch;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class BatchApplication {
+
+    public static void main(String[] args) {
+
+        SpringApplication.run(
+                BatchApplication.class,
+                args
+        );
+    }
+}
+```
+
+---
+
+### JobScope Bean 생성
+
+먼저 Job 실행 단위로 관리할 설정 객체를 생성한다.
+
+`JobRunOptions.java`
+
+```java
+package com.example.batch;
+
+public class JobRunOptions {
+
+    private final String message;
+
+    private final String name;
+
+    public JobRunOptions(
+            String message,
+            String name
+    ) {
+        this.message = message;
+        this.name = name;
+    }
+
+    public String getMessage() {
+        return message;
+    }
+
+    public String getName() {
+        return name;
+    }
+}
+```
+
+이 클래스는 Job 실행 시 전달된 값을 보관한다.
+
+그리고 다음과 같이 JobScope Bean으로 등록한다.
+
+```java
+@Bean
+@JobScope
+public JobRunOptions jobRunOptions(
+        @Value("#{jobParameters['message']}")
+        String message,
+
+        @Value("#{jobExecutionContext['name']}")
+        String name
+) {
+    return new JobRunOptions(
+            message,
+            name
+    );
+}
+```
+
+여기서 중요한 부분은 다음 두 표현식이다.
+
+```java
+@Value("#{jobParameters['message']}")
+```
+
+```java
+@Value("#{jobExecutionContext['name']}")
+```
+
+JobParameters와 JobExecutionContext의 값을 실제 Job 실행 시점에 참조한다.
+
+또한 JobRunOptions는 JobScope Bean이기 때문에 동일한 JobExecution 안에서는 같은 대상 인스턴스를 재사용한다.
+
+---
+
+### StepScope Tasklet 생성
+
+이번에는 Step1에서 실행할 Tasklet을 생성한다.
+
+Step1에서는 다음 데이터를 사용한다.
+
+- JobParameters의 message
+- JobExecutionContext의 name
+- JobScope Bean인 JobRunOptions
+
+`FirstTasklet.java`
+
+```java
+package com.example.batch;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.batch.core.StepContribution;
+import org.springframework.batch.core.scope.context.ChunkContext;
+
+import org.springframework.batch.core.step.tasklet.Tasklet;
+
+import org.springframework.batch.repeat.RepeatStatus;
+
+public class FirstTasklet implements Tasklet {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(
+                    FirstTasklet.class
+            );
+
+    private final String message;
+
+    private final String name;
+
+    private final JobRunOptions jobRunOptions;
+
+    public FirstTasklet(
+            String message,
+            String name,
+            JobRunOptions jobRunOptions
+    ) {
+        this.message = message;
+        this.name = name;
+        this.jobRunOptions = jobRunOptions;
+    }
+
+    @Override
+    public RepeatStatus execute(
+            StepContribution contribution,
+            ChunkContext chunkContext
+    ) {
+
+        log.info(
+                "[Step1] JobParameters.message={}",
+                message
+        );
+
+        log.info(
+                "[Step1] JobExecutionContext.name={}",
+                name
+        );
+
+        log.info(
+                "[Step1] JobScope.message={}",
+                jobRunOptions.getMessage()
+        );
+
+        log.info(
+                "[Step1] JobScope.name={}",
+                jobRunOptions.getName()
+        );
+
+        contribution
+                .getStepExecution()
+                .getJobExecution()
+                .getExecutionContext()
+                .putString(
+                        "observedMessage",
+                        message
+                );
+
+        return RepeatStatus.FINISHED;
+    }
+}
+```
+
+이 Tasklet은 실제 실행 시점에 주입된 값들을 출력한다.
+
+그리고 테스트에서 확인할 수 있도록 주입받은 message 값을 JobExecutionContext에 저장한다.
+
+이제 이 Tasklet을 StepScope Bean으로 등록한다.
+
+```java
+@Bean
+@StepScope
+public FirstTasklet firstTasklet(
+        @Value("#{jobParameters['message']}")
+        String message,
+
+        @Value("#{jobExecutionContext['name']}")
+        String name,
+
+        JobRunOptions jobRunOptions
+) {
+    return new FirstTasklet(
+            message,
+            name,
+            jobRunOptions
+    );
+}
+```
+
+여기서 중요한 점은 `@StepScope`가 FirstTasklet Bean에 적용된다는 것이다.
+
+따라서 FirstTasklet의 실제 인스턴스는 Step 실행 Context가 활성화된 시점에 생성된다.
+
+---
+
+### StepExecutionContext를 사용하는 Tasklet
+
+이번에는 Step2에서 실행할 Tasklet을 생성한다.
+
+Step2에서는 StepExecutionContext의 name2 값을 사용한다.
+
+`SecondTasklet.java`
+
+```java
+package com.example.batch;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.batch.core.StepContribution;
+import org.springframework.batch.core.scope.context.ChunkContext;
+
+import org.springframework.batch.core.step.tasklet.Tasklet;
+
+import org.springframework.batch.repeat.RepeatStatus;
+
+public class SecondTasklet implements Tasklet {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(
+                    SecondTasklet.class
+            );
+
+    private final String name2;
+
+    public SecondTasklet(String name2) {
+        this.name2 = name2;
+    }
+
+    @Override
+    public RepeatStatus execute(
+            StepContribution contribution,
+            ChunkContext chunkContext
+    ) {
+
+        log.info(
+                "[Step2] StepExecutionContext.name2={}",
+                name2
+        );
+
+        contribution
+                .getStepExecution()
+                .getExecutionContext()
+                .putString(
+                        "observedName2",
+                        name2
+                );
+
+        return RepeatStatus.FINISHED;
+    }
+}
+```
+
+이 Tasklet 역시 StepScope Bean으로 등록한다.
+
+```java
+@Bean
+@StepScope
+public SecondTasklet secondTasklet(
+        @Value("#{stepExecutionContext['name2']}")
+        String name2
+) {
+    return new SecondTasklet(name2);
+}
+```
+
+StepExecutionContext는 Step 실행 시점에 접근할 수 있다.
+
+따라서 Step2의 실행 Context에 name2 값이 저장되어 있다면 Bean 생성 시점에 해당 값을 주입받을 수 있다.
+
+---
+
+### JobExecutionListener 구성
+
+이번에는 JobExecutionContext에 값을 저장하는 Listener를 생성한다.
+
+`JobExecutionListener`는 Job 실행 전후에 호출되는 메서드를 제공한다.
+
+```java
+@Bean
+public JobExecutionListener jobContextListener() {
+
+    return new JobExecutionListener() {
+
+        @Override
+        public void beforeJob(
+                JobExecution jobExecution
+        ) {
+
+            jobExecution
+                    .getExecutionContext()
+                    .putString(
+                            "name",
+                            "user1"
+                    );
+        }
+    };
+}
+```
+
+이 Listener는 Job이 실행되기 전에 JobExecutionContext에 다음 값을 저장한다.
+
+```text
+name = user1
+```
+
+이후 Step1의 StepScope Bean이 생성되면 다음 표현식으로 해당 값을 참조할 수 있다.
+
+```java
+@Value("#{jobExecutionContext['name']}")
+```
+
+여기서 중요한 것은 실행 순서다.
+
+```text
+Job 실행
+    │
+    ▼
+JobExecutionListener.beforeJob()
+    │
+    ▼
+JobExecutionContext에 name 저장
+    │
+    ▼
+Step1 실행
+    │
+    ▼
+StepScope Bean 실제 생성
+    │
+    ▼
+name 값 바인딩
+```
+
+이러한 순서가 성립하므로 Step1에서 name 값을 사용할 수 있다.
+
+---
+
+### StepExecutionListener 구성
+
+이번에는 Step2의 ExecutionContext에 값을 저장한다.
+
+```java
+@Bean
+public StepExecutionListener stepContextListener() {
+
+    return new StepExecutionListener() {
+
+        @Override
+        public void beforeStep(
+                StepExecution stepExecution
+        ) {
+
+            stepExecution
+                    .getExecutionContext()
+                    .putString(
+                            "name2",
+                            "user2"
+                    );
+        }
+    };
+}
+```
+
+이 Listener는 Step2가 실행되기 전에 StepExecutionContext에 다음 값을 저장한다.
+
+```text
+name2 = user2
+```
+
+이후 SecondTasklet이 실행될 때 StepScope를 통해 해당 값을 주입받는다.
+
+```java
+@Value("#{stepExecutionContext['name2']}")
+```
+
+실행 순서는 다음과 같다.
+
+```text
+Step2 실행 시작
+    │
+    ▼
+StepExecutionListener.beforeStep()
+    │
+    ▼
+StepExecutionContext에 name2 저장
+    │
+    ▼
+Tasklet Scoped Proxy 접근
+    │
+    ▼
+SecondTasklet 실제 인스턴스 생성
+    │
+    ▼
+name2 값 바인딩
+    │
+    ▼
+Tasklet.execute()
+```
+
+이렇게 하면 StepExecutionListener와 StepScope를 함께 사용하여 실행 시점에 필요한 값을 전달할 수 있다.
+
+단, 이 흐름은 Tasklet 대상 Bean이 beforeStep() 이후 처음 생성되는 구성을 전제로 한다.
+
+실제 Bean이 더 이른 시점에 접근된다면 값 바인딩 시점도 달라질 수 있으므로 초기화 순서를 고려해야 한다.
+
+---
+
+### 전체 Configuration 구성
+
+지금까지 작성한 Bean들을 하나의 Configuration으로 연결해보자.
+
+`ScopeConfiguration.java`
+
+```java
+package com.example.batch;
+
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobExecutionListener;
+
+import org.springframework.batch.core.Step;
+import org.springframework.batch.core.StepExecution;
+import org.springframework.batch.core.StepExecutionListener;
+
+import org.springframework.batch.core.configuration.annotation.JobScope;
+import org.springframework.batch.core.configuration.annotation.StepScope;
+
+import org.springframework.batch.core.job.builder.JobBuilder;
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.step.builder.StepBuilder;
+
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import org.springframework.transaction.PlatformTransactionManager;
+
+@Configuration
+public class ScopeConfiguration {
+
+    // ------------------------------------------
+    // 1. Job
+    // ------------------------------------------
+
+    @Bean
+    public Job scopeJob(
+            JobRepository jobRepository,
+
+            @Qualifier("step1")
+            Step step1,
+
+            @Qualifier("step2")
+            Step step2,
+
+            JobExecutionListener jobContextListener
+    ) {
+
+        return new JobBuilder(
+                "scopeJob",
+                jobRepository
+        )
+                .start(step1)
+                .next(step2)
+                .listener(jobContextListener)
+                .build();
+    }
+
+    // ------------------------------------------
+    // 2. Step1
+    // ------------------------------------------
+
+    @Bean
+    public Step step1(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager,
+            FirstTasklet firstTasklet
+    ) {
+
+        return new StepBuilder(
+                "step1",
+                jobRepository
+        )
+                .tasklet(
+                        firstTasklet,
+                        transactionManager
+                )
+                .build();
+    }
+
+    // ------------------------------------------
+    // 3. Step2
+    // ------------------------------------------
+
+    @Bean
+    public Step step2(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager,
+            SecondTasklet secondTasklet,
+            StepExecutionListener stepContextListener
+    ) {
+
+        return new StepBuilder(
+                "step2",
+                jobRepository
+        )
+                .tasklet(
+                        secondTasklet,
+                        transactionManager
+                )
+                .listener(stepContextListener)
+                .build();
+    }
+
+    // ------------------------------------------
+    // 4. JobScope Bean
+    // ------------------------------------------
+
+    @Bean
+    @JobScope
+    public JobRunOptions jobRunOptions(
+            @Value("#{jobParameters['message']}")
+            String message,
+
+            @Value("#{jobExecutionContext['name']}")
+            String name
+    ) {
+
+        return new JobRunOptions(
+                message,
+                name
+        );
+    }
+
+    // ------------------------------------------
+    // 5. StepScope Tasklet1
+    // ------------------------------------------
+
+    @Bean
+    @StepScope
+    public FirstTasklet firstTasklet(
+            @Value("#{jobParameters['message']}")
+            String message,
+
+            @Value("#{jobExecutionContext['name']}")
+            String name,
+
+            JobRunOptions jobRunOptions
+    ) {
+
+        return new FirstTasklet(
+                message,
+                name,
+                jobRunOptions
+        );
+    }
+
+    // ------------------------------------------
+    // 6. StepScope Tasklet2
+    // ------------------------------------------
+
+    @Bean
+    @StepScope
+    public SecondTasklet secondTasklet(
+            @Value("#{stepExecutionContext['name2']}")
+            String name2
+    ) {
+
+        return new SecondTasklet(name2);
+    }
+
+    // ------------------------------------------
+    // 7. JobExecutionListener
+    // ------------------------------------------
+
+    @Bean
+    public JobExecutionListener jobContextListener() {
+
+        return new JobExecutionListener() {
+
+            @Override
+            public void beforeJob(
+                    JobExecution jobExecution
+            ) {
+
+                jobExecution
+                        .getExecutionContext()
+                        .putString(
+                                "name",
+                                "user1"
+                        );
+            }
+        };
+    }
+
+    // ------------------------------------------
+    // 8. StepExecutionListener
+    // ------------------------------------------
+
+    @Bean
+    public StepExecutionListener stepContextListener() {
+
+        return new StepExecutionListener() {
+
+            @Override
+            public void beforeStep(
+                    StepExecution stepExecution
+            ) {
+
+                stepExecution
+                        .getExecutionContext()
+                        .putString(
+                                "name2",
+                                "user2"
+                        );
+            }
+        };
+    }
+}
+```
+
+이 코드에서 Job과 Step은 Singleton Bean으로 정의한다.
+
+반면 실제 실행 데이터를 참조하는 JobRunOptions와 Tasklet에는 JobScope 또는 StepScope를 적용한다.
+
+따라서 애플리케이션이 시작될 때에는 Scoped Proxy가 준비되고, 실제 대상 객체는 실행 Context가 활성화된 시점에 생성된다.
+
+---
+
+### 정상 실행 결과
+
+먼저 프로젝트를 빌드한다.
+
+```bash
+mvn clean package
+```
+
+정상적으로 빌드되면 다음과 같은 결과가 나타난다.
+
+```text
+BUILD SUCCESS
+```
+
+이제 Job을 실행한다.
+
+```bash
+java -jar target/spring-batch-scope-example-0.0.1-SNAPSHOT.jar \
+  message=2026-11-23 \
+  run.id=1
+```
+
+이번에는 JobParameters에 다음 값이 전달된다.
+
+```text
+message = 2026-11-23
+```
+
+JobExecutionListener에서는 다음 값을 설정한다.
+
+```text
+JobExecutionContext.name = user1
+```
+
+StepExecutionListener에서는 다음 값을 설정한다.
+
+```text
+StepExecutionContext.name2 = user2
+```
+
+따라서 다음과 같은 로그가 출력되는 것을 기대할 수 있다.
+
+```text
+[Step1] JobParameters.message=2026-11-23
+
+[Step1] JobExecutionContext.name=user1
+
+[Step1] JobScope.message=2026-11-23
+
+[Step1] JobScope.name=user1
+
+[Step2] StepExecutionContext.name2=user2
+```
+
+이 결과에서 중요한 점은 세 가지다.
+
+첫 번째는 JobParameters의 message가 Step1에 정상적으로 주입되었다는 사실이다.
+
+두 번째는 JobExecutionListener에서 설정한 name 값이 Step1의 Tasklet과 JobScope Bean에 주입되었다는 사실이다.
+
+세 번째는 StepExecutionListener에서 설정한 name2 값이 Step2의 Tasklet에 주입되었다는 사실이다.
+
+이러한 과정이 Late Binding의 대표적인 활용 방식이다.
+
+---
+
+### 서로 다른 JobExecution에서 값이 달라지는 경우
+
+이번에는 동일한 Job을 다른 파라미터로 실행해보자.
+
+첫 번째 실행에서는 다음 값을 전달한다.
+
+```text
+message = 2026-11-23
+```
+
+두 번째 실행에서는 다음 값을 전달한다.
+
+```text
+message = 2026-11-24
+```
+
+JobScope와 StepScope를 사용한다면 각각의 실행에 맞는 값이 주입된다.
+
+```text
+JobExecution 1
+    │
+    ├── JobParameters
+    │      └── message = 2026-11-23
+    │
+    ├── JobScope Bean
+    │      └── message = 2026-11-23
+    │
+    └── StepScope Bean
+           └── message = 2026-11-23
+
+
+JobExecution 2
+    │
+    ├── JobParameters
+    │      └── message = 2026-11-24
+    │
+    ├── JobScope Bean
+    │      └── message = 2026-11-24
+    │
+    └── StepScope Bean
+           └── message = 2026-11-24
+```
+
+따라서 매번 애플리케이션을 새로 빌드하거나 Bean 설정을 변경할 필요가 없다.
+
+Job 실행 시 전달되는 파라미터에 따라 실제 Bean이 생성된다.
+
+---
+
+### JUnit으로 Late Binding 검증하기
+
+이번에는 실제 JobLauncher를 이용해 JobScope와 StepScope가 정상적으로 동작하는지 검증해보자.
+
+검증할 내용은 다음과 같다.
+
+1. JobParameters가 StepScope Bean에 주입되는지 확인한다.
+2. JobExecutionContext가 StepScope Bean에 주입되는지 확인한다.
+3. StepExecutionContext가 StepScope Bean에 주입되는지 확인한다.
+4. 서로 다른 JobExecution에서 다른 파라미터가 사용되는지 확인한다.
+
+`ScopeTest.java`
+
+```java
+package com.example.batch;
+
+import java.util.UUID;
+
+import org.junit.jupiter.api.Test;
+
+import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobParameters;
+import org.springframework.batch.core.JobParametersBuilder;
+import org.springframework.batch.core.StepExecution;
+
+import org.springframework.batch.core.launch.JobLauncher;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+
+import org.springframework.boot.test.context.SpringBootTest;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+@SpringBootTest(properties = {
+        "spring.batch.job.enabled=false",
+        "spring.datasource.url=jdbc:h2:mem:scope_test;DB_CLOSE_DELAY=-1",
+        "spring.batch.jdbc.initialize-schema=always"
+})
+class ScopeTest {
+
+    @Autowired
+    private JobLauncher jobLauncher;
+
+    @Autowired
+    @Qualifier("scopeJob")
+    private Job scopeJob;
+
+    private JobExecution executeJob(
+            String message
+    ) throws Exception {
+
+        JobParameters parameters =
+                new JobParametersBuilder()
+                        .addString(
+                                "message",
+                                message
+                        )
+                        .addString(
+                                "requestId",
+                                UUID.randomUUID().toString()
+                        )
+                        .toJobParameters();
+
+        return jobLauncher.run(
+                scopeJob,
+                parameters
+        );
+    }
+
+    private StepExecution findStep(
+            JobExecution execution,
+            String stepName
+    ) {
+
+        return execution
+                .getStepExecutions()
+                .stream()
+                .filter(
+                        step -> step.getStepName()
+                                .equals(stepName)
+                )
+                .findFirst()
+                .orElseThrow();
+    }
+
+    @Test
+    void JobParameters가_StepScope에_주입된다()
+            throws Exception {
+
+        JobExecution execution =
+                executeJob("2026-11-23");
+
+        assertEquals(
+                BatchStatus.COMPLETED,
+                execution.getStatus()
+        );
+
+        assertEquals(
+                "2026-11-23",
+                execution
+                        .getExecutionContext()
+                        .getString("observedMessage")
+        );
+    }
+
+    @Test
+    void JobExecutionContext를_참조할_수_있다()
+            throws Exception {
+
+        JobExecution execution =
+                executeJob("2026-11-23");
+
+        assertEquals(
+                "user1",
+                execution
+                        .getExecutionContext()
+                        .getString("name")
+        );
+    }
+
+    @Test
+    void StepExecutionContext가_StepScope에_주입된다()
+            throws Exception {
+
+        JobExecution execution =
+                executeJob("2026-11-23");
+
+        StepExecution step2 =
+                findStep(
+                        execution,
+                        "step2"
+                );
+
+        assertEquals(
+                "user2",
+                step2
+                        .getExecutionContext()
+                        .getString("observedName2")
+        );
+    }
+
+    @Test
+    void 서로_다른_JobExecution은_다른_파라미터를_사용한다()
+            throws Exception {
+
+        JobExecution execution1 =
+                executeJob("2026-11-23");
+
+        JobExecution execution2 =
+                executeJob("2026-11-24");
+
+        assertEquals(
+                "2026-11-23",
+                execution1
+                        .getExecutionContext()
+                        .getString("observedMessage")
+        );
+
+        assertEquals(
+                "2026-11-24",
+                execution2
+                        .getExecutionContext()
+                        .getString("observedMessage")
+        );
+
+        assertNotEquals(
+                execution1.getId(),
+                execution2.getId()
+        );
+    }
+}
+```
+
+이 테스트에서는 각각 다른 JobParameters를 전달한다.
+
+따라서 같은 Job을 실행하더라도 서로 다른 JobExecution이 생성된다.
+
+그리고 각 JobExecution에 해당하는 Scope Bean이 실행 시점의 값을 사용한다는 사실을 검증할 수 있다.
+
+#### 테스트 실행
+
+```bash
+mvn test
+```
+
+테스트가 모두 통과하면 다음과 유사한 결과를 확인할 수 있다.
+
+```text
+Tests run: 4
+
+Failures: 0
+
+Errors: 0
+
+BUILD SUCCESS
+```
+
+위 결과는 정상적으로 구성되었을 때의 예상 출력 형태다.
+
+---
+
+### @JobScope와 @StepScope의 내부 아키텍처
+
+이제 Spring Batch가 어떻게 Late Binding을 구현하는지 살펴보자.
+
+핵심은 다음 네 가지 객체다.
+
+- Scoped Proxy
+- JobScope / StepScope
+- JobContext / StepContext
+- JobSynchronizationManager / StepSynchronizationManager
+
+이 객체들이 함께 동작하여 실행 시점에 Bean을 생성하고 관리한다.
+
+---
+
+### 첫 번째: 애플리케이션 시작 시 Scoped Proxy 생성
+
+일반적인 Singleton Bean은 애플리케이션 초기화 과정에서 실제 인스턴스가 생성된다.
+
+하지만 JobScope와 StepScope가 적용된 Bean은 다르다.
+
+Spring은 Scoped Proxy를 준비한다.
+
+예를 들어 다음과 같은 Bean이 있다고 생각해보자.
+
+```java
+@Bean
+@StepScope
+public FirstTasklet firstTasklet(
+        @Value("#{jobParameters['message']}")
+        String message,
+
+        @Value("#{jobExecutionContext['name']}")
+        String name,
+
+        JobRunOptions jobRunOptions
+) {
+    return new FirstTasklet(
+            message,
+            name,
+            jobRunOptions
+    );
+}
+```
+
+애플리케이션이 초기화되는 시점에는 실제 FirstTasklet의 대상 인스턴스를 생성하지 않는다.
+
+대신 해당 Bean에 접근하기 위한 Proxy를 준비한다.
+
+```text
+ApplicationContext
+    │
+    └── firstTasklet
+            │
+            └── Scoped Proxy
+```
+
+이 Proxy는 실제 실행 대상이 아니다.
+
+실제 FirstTasklet은 Step 실행 Context가 활성화된 상태에서 Proxy가 대상 Bean을 요청할 때 생성된다.
+
+따라서 JobParameters가 아직 존재하지 않더라도 애플리케이션 초기화를 진행할 수 있다.
+
+---
+
+### 두 번째: JobScope와 StepScope가 대상 Bean을 관리한다
+
+Scoped Proxy가 실제 Bean을 요청하면 Scope 구현체가 대상 Bean을 조회한다.
+
+Spring Batch에서는 JobScope와 StepScope가 이러한 역할을 수행한다.
+
+두 클래스는 공통적으로 `BatchScopeSupport`를 상속한다.
+
+```mermaid
+classDiagram
+    class BatchScopeSupport {
+        +postProcessBeanFactory()
+        +getName()
+        +getTargetNamePrefix()
+    }
+
+    class JobScope {
+        +get(String, ObjectFactory)
+        +resolveContextualObject(String)
+    }
+
+    class StepScope {
+        +get(String, ObjectFactory)
+        +resolveContextualObject(String)
+    }
+
+    BatchScopeSupport <|-- JobScope
+    BatchScopeSupport <|-- StepScope
+```
+
+BatchScopeSupport는 Scope 등록과 Scoped Proxy 생성을 지원한다.
+
+JobScope와 StepScope는 각각의 실행 Context를 이용해 실제 Bean을 관리한다.
+
+이때 중요한 메서드가 `get()`이다.
+
+---
+
+### StepScope.get()의 내부 동작
+
+Spring Batch 5.2.4의 StepScope는 다음과 같은 구조를 가진다.
+
+```java
+@Override
+public Object get(
+        String name,
+        ObjectFactory<?> objectFactory
+) {
+
+    StepContext context = getContext();
+
+    Object scopedObject =
+            context.getAttribute(name);
+
+    if (scopedObject == null) {
+
+        synchronized (mutex) {
+
+            scopedObject =
+                    context.getAttribute(name);
+
+            if (scopedObject == null) {
+
+                scopedObject =
+                        objectFactory.getObject();
+
+                context.setAttribute(
+                        name,
+                        scopedObject
+                );
+            }
+        }
+    }
+
+    return scopedObject;
+}
+```
+
+이 코드에서 가장 중요한 부분은 다음 세 가지다.
+
+#### 현재 StepContext 조회
+
+```java
+StepContext context = getContext();
+```
+
+현재 실행 중인 Step의 Context를 조회한다.
+
+#### 기존 Bean 조회
+
+```java
+Object scopedObject =
+        context.getAttribute(name);
+```
+
+현재 StepContext에 이미 Bean이 존재하는지 확인한다.
+
+#### Bean이 없다면 생성
+
+```java
+scopedObject =
+        objectFactory.getObject();
+```
+
+기존 Bean이 없다면 실제 대상 Bean을 생성한다.
+
+그리고 다음 코드를 실행한다.
+
+```java
+context.setAttribute(
+        name,
+        scopedObject
+);
+```
+
+생성한 Bean을 StepContext에 저장한다.
+
+따라서 같은 StepExecution에서 동일한 Bean을 다시 요청하면 기존 대상 인스턴스를 사용할 수 있다.
+
+이러한 구조가 StepScope의 핵심이다.
+
+---
+
+### JobScope.get()의 내부 동작
+
+JobScope 역시 비슷한 구조를 가진다.
+
+차이점은 StepContext가 아니라 JobContext를 사용한다는 것이다.
+
+핵심 구조는 다음과 같다.
+
+```java
+@Override
+public Object get(
+        String name,
+        ObjectFactory<?> objectFactory
+) {
+
+    JobContext context = getContext();
+
+    Object scopedObject =
+            context.getAttribute(name);
+
+    if (scopedObject == null) {
+
+        synchronized (mutex) {
+
+            scopedObject =
+                    context.getAttribute(name);
+
+            if (scopedObject == null) {
+
+                scopedObject =
+                        objectFactory.getObject();
+
+                context.setAttribute(
+                        name,
+                        scopedObject
+                );
+            }
+        }
+    }
+
+    return scopedObject;
+}
+```
+
+StepScope와 비교하면 다음과 같다.
+
+| 구분 | JobScope | StepScope |
+|---|---|---|
+| 조회 Context | JobContext | StepContext |
+| Bean 저장 위치 | JobContext의 Scope 속성 | StepContext의 Scope 속성 |
+| 관리 기준 | JobExecution | StepExecution |
+| 실제 Bean 생성 | 최초 대상 요청 시 | 최초 대상 요청 시 |
+
+이처럼 두 Scope의 내부 구현은 유사하다.
+
+하지만 사용하는 실행 Context가 다르다.
+
+---
+
+### JobContext와 StepContext의 역할
+
+JobContext와 StepContext는 Scope Bean을 관리하기 위한 실행 Context다.
+
+여기서 중요한 점은 이 두 객체가 일반적인 ExecutionContext와 동일한 객체가 아니라는 사실이다.
+
+`JobExecutionContext`와 `StepExecutionContext`는 배치 실행 상태를 저장하기 위한 객체다.
+
+반면 JobContext와 StepContext는 Scope Bean의 대상 인스턴스를 관리하고, 실행 정보에 접근할 수 있도록 도와주는 객체다.
+
+#### 비교
+
+| 구분 | JobContext / StepContext | JobExecutionContext / StepExecutionContext |
+|---|---|---|
+| 역할 | Scope Bean 관리와 실행 정보 접근 | 배치 실행 상태 저장 |
+| 주요 데이터 | Scoped Bean 인스턴스, 실행 정보 접근 기능 | 사용자 상태 데이터 |
+| 생명주기 | 실행 Scope에 연결 | JobExecution / StepExecution에 연결 |
+| 주요 사용처 | JobScope, StepScope | 재시작, 상태 저장, 데이터 공유 |
+| 기본 영속화 | Scoped Bean 자체는 저장되지 않음 | JobRepository를 통해 저장 |
+
+따라서 Scope Bean을 생성했다고 해서 해당 Bean 객체가 데이터베이스에 저장되는 것은 아니다.
+
+실행 Context에 저장되는 것은 Scope Bean의 인스턴스 참조다.
+
+반면 ExecutionContext에 저장한 값은 Spring Batch의 메타데이터 저장 정책에 따라 영속화될 수 있다.
+
+이 차이를 이해해야 Scope와 ExecutionContext를 혼동하지 않는다.
+
+---
+
+### JobSynchronizationManager와 StepSynchronizationManager
+
+JobScope와 StepScope는 현재 실행 중인 Job 또는 Step의 Context를 알아야 한다.
+
+이를 위해 Spring Batch는 다음 클래스를 제공한다.
+
+```java
+JobSynchronizationManager
+```
+
+```java
+StepSynchronizationManager
+```
+
+두 클래스는 현재 실행 스레드와 실행 Context를 연결하는 역할을 한다.
+
+예를 들어 StepScope는 다음 메서드로 현재 Context를 조회한다.
+
+```java
+private StepContext getContext() {
+
+    StepContext context =
+            StepSynchronizationManager.getContext();
+
+    if (context == null) {
+
+        throw new IllegalStateException(
+                "No context holder available for step scope"
+        );
+    }
+
+    return context;
+}
+```
+
+이 코드에서 중요한 점은 다음 메서드다.
+
+```java
+StepSynchronizationManager.getContext();
+```
+
+현재 실행 스레드에 연결된 StepContext를 조회한다.
+
+Context가 존재하지 않는다면 Scope Bean의 실제 대상을 생성할 수 없다.
+
+따라서 다음과 같은 오류가 발생한다.
+
+```text
+No context holder available for step scope
+```
+
+JobScope 역시 비슷하게 동작한다.
+
+```java
+JobSynchronizationManager.getContext();
+```
+
+JobContext가 존재하지 않는다면 다음과 같은 오류가 발생할 수 있다.
+
+```text
+No context holder available for job scope
+```
+
+이러한 오류는 Scope Bean이 올바른 Job 또는 Step 실행 Context 밖에서 접근되었을 때 발생할 수 있다.
+
+---
+
+### 전체 Late Binding 실행 구조
+
+지금까지 살펴본 객체들을 연결하면 다음과 같은 구조가 만들어진다.
+
+```mermaid
+flowchart TD
+    A["Spring ApplicationContext"]
+    B["Scoped Proxy 생성"]
+
+    C["JobLauncher"]
+    D["JobExecution 생성"]
+
+    E["JobSynchronizationManager"]
+    F["JobContext"]
+
+    G["StepExecution 생성"]
+    H["StepSynchronizationManager"]
+    I["StepContext"]
+
+    J["Step 실행"]
+    K["Scoped Proxy 접근"]
+
+    L["StepScope.get()"]
+    M{"실제 Bean 존재?"}
+
+    N["ObjectFactory.getObject()"]
+    O["SpEL @Value 평가"]
+    P["실제 Bean 생성"]
+
+    Q["StepContext에 Bean 저장"]
+    R["실제 Bean 반환"]
+
+    S["Tasklet.execute()"]
+
+    A --> B
+
+    C --> D
+    D --> E
+    E --> F
+
+    D --> G
+    G --> H
+    H --> I
+
+    G --> J
+    J --> K
+
+    K --> L
+    L --> M
+
+    M -->|NO| N
+    N --> O
+    O --> P
+    P --> Q
+    Q --> R
+
+    M -->|YES| R
+
+    R --> S
+```
+
+이 구조를 단계별로 정리하면 다음과 같다.
+
+첫 번째로 애플리케이션이 시작되면 Scoped Proxy가 준비된다.
+
+두 번째로 Job이 실행되면 JobExecution이 생성된다.
+
+세 번째로 JobSynchronizationManager가 현재 JobContext를 관리한다.
+
+네 번째로 Step이 실행되면 StepExecution이 생성된다.
+
+다섯 번째로 StepSynchronizationManager가 현재 StepContext를 관리한다.
+
+여섯 번째로 Scoped Proxy가 실제 Bean을 요청한다.
+
+일곱 번째로 StepScope는 현재 StepContext에서 Bean을 조회한다.
+
+여덟 번째로 기존 Bean이 없다면 ObjectFactory를 이용해 실제 Bean을 생성한다.
+
+아홉 번째로 이 과정에서 `@Value` 표현식이 평가된다.
+
+열 번째로 생성된 Bean을 StepContext에 저장한다.
+
+마지막으로 Proxy가 실제 Bean의 메서드 호출을 위임한다.
+
+따라서 Late Binding은 단순히 `@Value`를 이용해 값을 주입하는 기능이 아니다.
+
+**Scoped Proxy, Scope 구현체, 실행 Context, ObjectFactory, SpEL이 함께 동작하여 실행 시점에 Bean을 생성하고 값을 바인딩하는 구조**다.
+
+---
+
+### @JobScope와 @StepScope를 사용할 때 발생하는 대표적인 오류
+
+실무에서는 다음과 같은 오류를 자주 만날 수 있다.
+
+#### 1. JobParameters를 찾을 수 없는 경우
+
+```text
+Property or field 'jobParameters'
+cannot be found
+```
+
+일반적인 Singleton Bean에서 JobParameters를 참조하려고 할 때 발생할 수 있다.
+
+해결하려면 해당 값의 Late Binding이 필요한 Bean에 적절한 Scope를 적용해야 한다.
+
+예를 들어 다음과 같다.
+
+```java
+@Bean
+@StepScope
+public MyTasklet myTasklet(
+        @Value("#{jobParameters['requestDate']}")
+        String requestDate
+) {
+    return new MyTasklet(requestDate);
+}
+```
+
+#### 2. Step Scope Context가 없는 경우
+
+```text
+No context holder available for step scope
+```
+
+StepScope Bean의 실제 대상을 Step 실행 Context 밖에서 접근하면 발생할 수 있다.
+
+예를 들어 애플리케이션 초기화 중 Scoped Proxy의 실제 메서드를 호출하는 경우다.
+
+```java
+@PostConstruct
+public void init() {
+
+    stepScopedBean.someMethod();
+}
+```
+
+이 시점에는 StepExecution이 존재하지 않을 수 있다.
+
+따라서 실제 대상 Bean을 조회할 수 없다.
+
+#### 3. Job Scope Context가 없는 경우
+
+```text
+No context holder available for job scope
+```
+
+JobScope Bean을 JobExecution Context 밖에서 참조할 때 발생할 수 있다.
+
+특히 별도로 생성한 스레드에서 JobScope Bean을 접근하는 경우 주의해야 한다.
+
+#### 4. StepExecutionContext 값이 null인 경우
+
+```java
+@Value("#{stepExecutionContext['name2']}")
+String name2
+```
+
+이 표현식은 실제 Bean이 생성되는 시점의 StepExecutionContext를 참조한다.
+
+따라서 해당 시점에 name2 값이 없다면 null이 주입될 수 있다.
+
+이 문제를 방지하려면 값이 저장되는 시점과 Bean이 생성되는 시점을 함께 고려해야 한다.
+
+---
+
+### 병렬 처리에서 Scope가 Thread-Safe를 보장할까?
+
+이 부분은 정확하게 이해할 필요가 있다.
+
+JobScope와 StepScope는 Bean의 생명주기를 JobExecution과 StepExecution 단위로 관리한다.
+
+**스레드마다 무조건 새로운 Bean을 생성하는 기능은 아니다.**
+
+예를 들어 하나의 StepExecution 안에서 여러 스레드가 작업한다고 생각해보자.
+
+```text
+StepExecution 1
+    │
+    ├── Thread A
+    │
+    ├── Thread B
+    │
+    └── Thread C
+```
+
+이 경우 StepScope의 관리 단위는 StepExecution 1이다.
+
+따라서 여러 스레드가 동일한 StepExecution에 연결되어 있다면 같은 StepScope 대상 Bean을 참조할 수 있다.
+
+```text
+StepExecution 1
+    │
+    └── StepScopedBean A
+              │
+              ├── Thread A
+              │
+              ├── Thread B
+              │
+              └── Thread C
+```
+
+따라서 StepScope를 적용했다고 해서 해당 Bean의 모든 필드와 메서드가 자동으로 Thread-Safe해지는 것은 아니다.
+
+반면 파티셔닝에서는 각각의 파티션이 별도의 StepExecution을 가질 수 있다.
+
+```text
+Partition 1
+    │
+    └── StepExecution 1
+             └── StepScopedBean A
+
+
+Partition 2
+    │
+    └── StepExecution 2
+             └── StepScopedBean B
+```
+
+이러한 구조에서는 파티션별 StepExecution을 기준으로 별도의 StepScope Bean이 관리될 수 있다.
+
+하지만 JobScope는 JobExecution 단위로 관리되므로 여러 Step이 같은 JobScope Bean을 참조할 수 있다.
+
+또한 Spring Batch의 공식 문서에서는 멀티스레드 및 파티셔닝 환경에서 JobScope Bean 사용을 권장하지 않는다.
+
+그 이유는 Spring Batch가 별도로 생성된 모든 작업 스레드의 JobContext 전파를 자동으로 보장하지 않기 때문이다.
+
+따라서 다음 기준을 고려해야 한다.
+
+| 상황 | 고려사항 |
+|---|---|
+| 일반적인 단일 스레드 Step | JobScope와 StepScope 사용 가능 |
+| 멀티스레드 Step | 동일한 StepScope Bean 공유 가능성 검토 |
+| Partition Step | 파티션별 StepExecution과 StepScope 분리 |
+| 비동기 실행 | 실행 Context 전파 여부 확인 |
+| JobScope Bean 공유 | JobExecution 단위 공유 및 스레드 안전성 검토 |
+| 상태를 가진 Reader/Writer | 별도의 동시성 제어 필요 |
+
+결국 **Scope는 Bean의 관리 범위를 정의하는 기능이지 동시성 문제를 자동으로 해결하는 기능이 아니다.**
+
+---
+
+### 실무에서의 활용
+
+JobScope와 StepScope는 단순한 파라미터 주입을 넘어 여러 배치 시스템에서 활용할 수 있다.
+
+특히 다음과 같은 상황에서 유용하다.
+
+#### 1. 실행 날짜에 따라 정산 대상을 변경한다
+
+결제나 정산 배치에서는 특정 날짜를 기준으로 데이터를 처리하는 경우가 많다.
+
+예를 들어 다음과 같은 파라미터를 전달할 수 있다.
+
+```text
+requestDate = 2026-11-23
+```
+
+그리고 Tasklet에서 다음과 같이 참조할 수 있다.
+
+```java
+@Value("#{jobParameters['requestDate']}")
+String requestDate
+```
+
+이러한 방식은 배치 프로그램을 수정하지 않고 실행 대상 날짜를 변경할 수 있다는 장점이 있다.
+
+#### 2. 국가별로 서로 다른 처리 정책을 적용한다
+
+글로벌 서비스에서는 국가별로 서로 다른 비즈니스 규칙을 적용해야 할 수 있다.
+
+예를 들어 다음과 같다.
+
+```text
+countryCode = KR
+
+countryCode = JP
+
+countryCode = US
+```
+
+StepScope Bean에서 이 값을 주입받아 국가별 처리 정책을 선택할 수 있다.
+
+다만 복잡한 국가별 분기는 Tasklet 내부의 조건문보다 별도의 정책 객체나 JobExecutionDecider로 분리하는 것이 더 적절할 수 있다.
+
+#### 3. 입력 파일 경로를 동적으로 설정한다
+
+파일 기반 배치에서는 실행할 때마다 입력 파일이 달라질 수 있다.
+
+예를 들어 다음과 같다.
+
+```text
+inputFile = /data/orders/2026-11-23.csv
+```
+
+이 값을 JobParameters로 전달하고 StepScope ItemReader에서 참조할 수 있다.
+
+```java
+@Bean
+@StepScope
+public FlatFileItemReader<Order> orderReader(
+        @Value("#{jobParameters['inputFile']}")
+        String inputFile
+) {
+    return new FlatFileItemReaderBuilder<Order>()
+            .name("orderReader")
+            .resource(
+                    new FileSystemResource(inputFile)
+            )
+            .delimited()
+            .names(
+                    "orderId",
+                    "amount"
+            )
+            .fieldSetMapper(
+                    fieldSet -> new Order(
+                            fieldSet.readLong("orderId"),
+                            fieldSet.readBigDecimal("amount")
+                    )
+            )
+            .build();
+}
+```
+
+여기서 Order는 다음과 같이 정의할 수 있다.
+
+```java
+public record Order(
+        Long orderId,
+        BigDecimal amount
+) {
+}
+```
+
+이 방식은 하나의 ItemReader를 여러 파일 처리 작업에서 재사용하는 데 유용하다.
+
+또한 ItemReader를 Bean으로 선언할 때에는 실제 구현체 타입을 반환하는 것이 좋다.
+
+특히 ItemStream 기능을 제공하는 Reader에서는 Scoped Proxy가 open(), update(), close() 호출을 처리할 수 있도록 타입을 올바르게 선언해야 한다.
+
+#### 4. Job 실행별 설정값을 분리한다
+
+동일한 애플리케이션에서 여러 JobExecution이 실행될 수 있다.
+
+각 JobExecution이 서로 다른 설정을 사용한다면 Singleton Bean에 실행별 데이터를 저장하는 것은 적절하지 않다.
+
+이 경우 JobScope를 이용해 실행별 설정 객체를 관리할 수 있다.
+
+단, JobScope Bean이 필요한 실행 Context에서 접근되는지 확인해야 한다.
+
+#### 5. Step별 처리 범위를 구분한다
+
+하나의 Job에 여러 Step이 있다면 각 Step이 서로 다른 데이터를 처리할 수 있다.
+
+예를 들어 데이터 수집 Step과 정산 계산 Step은 서로 다른 상태를 관리한다.
+
+StepScope를 이용하면 각 StepExecution에 필요한 객체를 분리할 수 있다.
+
+이러한 방식은 상태가 있는 Reader나 Writer를 구성할 때 유용하다.
+
+#### 6. 파티션별 입력 데이터를 전달한다
+
+Partition Step에서는 파티션별로 서로 다른 입력값을 전달할 수 있다.
+
+예를 들어 다음과 같다.
+
+```text
+partition0
+    │
+    └── fileName = part-0.csv
+
+partition1
+    │
+    └── fileName = part-1.csv
+
+partition2
+    │
+    └── fileName = part-2.csv
+```
+
+이 값을 각각의 StepExecutionContext에 저장할 수 있다.
+
+그리고 StepScope ItemReader에서 다음과 같이 참조할 수 있다.
+
+```java
+@Value("#{stepExecutionContext['fileName']}")
+String fileName
+```
+
+이러한 방식은 파일별 병렬 처리나 데이터 범위별 파티셔닝에 유용하다.
+
+#### 7. 재시작 위치를 관리한다
+
+Chunk 기반 배치에서는 마지막으로 처리한 데이터의 위치를 저장해야 할 수 있다.
+
+예를 들어 다음과 같다.
+
+```text
+lastProcessedId = 15000
+```
+
+이 값은 StepExecutionContext에 저장할 수 있다.
+
+그리고 재시작 시 이전 실행 상태를 복원하는 데 활용할 수 있다.
+
+다만 단순히 StepScope를 설정했다고 해서 자동으로 재시작 상태가 저장되는 것은 아니다.
+
+ItemStream과 ExecutionContext 업데이트, JobRepository 저장 과정이 함께 구성되어야 한다.
+
+#### 8. JobExecutionContext를 이용해 Step 간 데이터를 공유한다
+
+여러 Step에서 공통으로 사용하는 실행 상태가 있다면 JobExecutionContext를 사용할 수 있다.
+
+예를 들어 첫 번째 Step에서 계산한 처리 대상 개수를 두 번째 Step에서 참조할 수 있다.
+
+다만 StepExecutionContext에 저장한 값이 자동으로 JobExecutionContext에 복사되는 것은 아니다.
+
+필요하다면 ExecutionContextPromotionListener를 이용해 값을 승격할 수 있다.
+
+#### 9. Scoped Proxy를 통해 Bean 생성을 지연한다
+
+JobScope와 StepScope는 실제 실행에 필요한 Bean을 늦게 생성할 수 있다.
+
+예를 들어 특정 파일을 읽는 Reader는 실제 Step이 실행될 때 생성될 수 있다.
+
+따라서 실행할 필요가 없는 Step의 Reader를 미리 생성하지 않을 수 있다.
+
+하지만 Scope가 모든 초기화 비용을 자동으로 줄인다고 가정해서는 안 된다.
+
+실제 Bean 생성 시점과 초기화 로직을 확인해야 한다.
+
+#### 10. 실행별 설정 객체를 불변으로 관리한다
+
+JobScope나 StepScope Bean에 실행별 설정값을 보관할 수 있다.
+
+이때 가능한 경우 생성자에서 값을 전달받고 이후 변경하지 않는 구조가 좋다.
+
+예를 들어 다음과 같다.
+
+```java
+public class SettlementOptions {
+
+    private final String requestDate;
+
+    private final String countryCode;
+
+    public SettlementOptions(
+            String requestDate,
+            String countryCode
+    ) {
+        this.requestDate = requestDate;
+        this.countryCode = countryCode;
+    }
+}
+```
+
+이러한 방식은 실행 중 설정값이 변경되어 발생하는 문제를 줄이는 데 도움이 된다.
+
+다만 객체가 불변이라고 해도 연결된 외부 리소스의 동시성 문제까지 해결되는 것은 아니다.
+
+#### 11. Scope Bean을 Singleton 서비스에서 사용할 때 접근 시점을 구분한다
+
+Singleton Bean에서 JobScope 또는 StepScope Bean을 주입받는 것 자체는 Scoped Proxy 덕분에 가능하다.
+
+하지만 실제 대상 Bean의 메서드를 호출하는 시점에는 적절한 실행 Context가 필요하다.
+
+따라서 애플리케이션 초기화 과정이나 별도 작업 스레드에서 Scoped Bean을 직접 사용하지 않도록 주의해야 한다.
+
+#### 12. Bean 생성 시점의 값을 사용한다는 사실을 이해한다
+
+Late Binding은 실제 대상 Bean이 생성될 때 표현식을 평가한다.
+
+따라서 Bean 생성 후 ExecutionContext의 값이 변경되었다고 해서 이미 생성된 객체의 생성자 필드가 자동으로 다시 바인딩되는 것은 아니다.
+
+예를 들어 다음과 같이 name 값이 주입되었다고 생각해보자.
+
+```text
+Bean 생성 시 name = user1
+```
+
+이후 ExecutionContext가 다음과 같이 변경된다.
+
+```text
+ExecutionContext.name = user2
+```
+
+이미 생성된 Bean의 name 필드가 자동으로 user2가 되는 것은 아니다.
+
+변경된 값을 계속 참조해야 한다면 ExecutionContext를 실행 시점에 직접 조회하는 방식도 고려할 수 있다.
+
+---
+
+### 자주 혼동하는 부분
+
+| 혼동하기 쉬운 내용 | 정확한 이해 |
+|---|---|
+| JobScope는 스레드별 Scope다 | JobExecution 단위 Scope다 |
+| StepScope는 스레드별 Scope다 | StepExecution 단위 Scope다 |
+| JobScope와 StepScope는 Thread-Safe를 자동 보장한다 | Scope만으로 동시성 문제가 해결되지는 않는다 |
+| JobScope는 반드시 Step Bean에 선언해야 한다 | 실행별 설정 객체 등에도 사용할 수 있으며 Step 자체에는 권장되지 않는다 |
+| StepScope는 반드시 Tasklet에만 사용할 수 있다 | ItemReader, ItemWriter, ItemProcessor 등에도 적용 가능하다 |
+| Scoped Proxy가 생성되면 실제 Bean도 생성된다 | 실제 대상 Bean은 이후에 생성될 수 있다 |
+| JobParameters는 애플리케이션 시작 시 항상 존재한다 | Job 실행 시점에 결정된다 |
+| ExecutionContext와 JobContext는 동일한 객체다 | 역할과 관리 목적이 다르다 |
+| StepExecutionContext의 값은 모든 Step에서 자동 공유된다 | 기본적으로 특정 StepExecution의 상태 데이터다 |
+| ExecutionContext 변경 시 Bean 필드도 자동 갱신된다 | 이미 바인딩된 필드는 자동 갱신되지 않는다 |
+| Scoped Bean은 DB에 저장된다 | Bean 인스턴스 자체는 기본적으로 영속화되지 않는다 |
+| @Value만 선언하면 언제나 JobParameters를 사용할 수 있다 | 실행 Context와 Scope가 올바르게 구성되어야 한다 |
+| JobScope는 같은 JobInstance에서 항상 동일한 Bean을 유지한다 | 서로 다른 JobExecution에서는 별도 Bean을 사용할 수 있다 |
+| StepScope Bean은 언제나 다른 스레드에서 안전하게 사용된다 | 실행 Context 전파와 실제 객체의 동시성 안전성을 확인해야 한다 |
+
+---
+
+### 구조: @JobScope와 @StepScope 전체 아키텍처
+
+지금까지의 내용을 하나의 구조로 정리해보자.
+
+```mermaid
+flowchart TD
+    A["Spring Boot 시작"]
+    B["ApplicationContext"]
+    C["Scoped Proxy 생성"]
+
+    D["JobLauncher"]
+    E["JobExecution"]
+
+    F["JobSynchronizationManager"]
+    G["JobContext"]
+
+    H["JobScope"]
+    I["JobScopedBean"]
+
+    J["StepExecution"]
+
+    K["StepSynchronizationManager"]
+    L["StepContext"]
+
+    M["StepScope"]
+    N["StepScopedBean"]
+
+    O["JobParameters"]
+    P["JobExecutionContext"]
+    Q["StepExecutionContext"]
+
+    R["SpEL @Value 평가"]
+
+    S["실제 비즈니스 로직 실행"]
+
+    A --> B
+    B --> C
+
+    D --> E
+
+    E --> F
+    F --> G
+    G --> H
+    H --> I
+
+    E --> J
+
+    J --> K
+    K --> L
+    L --> M
+    M --> N
+
+    O --> R
+    P --> R
+    Q --> R
+
+    R --> I
+    R --> N
+
+    C --> H
+    C --> M
+
+    I --> S
+    N --> S
+```
+
+이 구조를 세 가지 단계로 나누어 이해할 수 있다.
+
+첫 번째는 애플리케이션 초기화 단계다.
+
+Spring 컨테이너가 Bean Definition을 등록한다.
+
+그리고 JobScope와 StepScope가 적용된 Bean에 대해 Scoped Proxy를 준비한다.
+
+이 시점에는 실제 실행 파라미터가 아직 존재하지 않을 수 있다.
+
+두 번째는 Job과 Step 실행 단계다.
+
+JobExecution이 생성되면 JobSynchronizationManager가 현재 JobContext를 관리한다.
+
+StepExecution이 생성되면 StepSynchronizationManager가 현재 StepContext를 관리한다.
+
+이렇게 실행 Context가 준비되면 Scoped Proxy가 실제 대상 Bean을 요청할 수 있다.
+
+세 번째는 Late Binding 단계다.
+
+JobScope나 StepScope는 현재 실행 Context에서 기존 Bean을 조회한다.
+
+Bean이 없다면 ObjectFactory를 이용해 실제 Bean을 생성한다.
+
+이때 `@Value` 표현식이 평가된다.
+
+그리고 JobParameters나 ExecutionContext의 값이 생성자 또는 Bean 생성 메서드의 인자로 전달된다.
+
+이렇게 생성된 Bean은 현재 실행 Scope에 보관된다.
+
+따라서 동일한 실행 단위에서 다시 접근하면 기존 대상 Bean을 재사용할 수 있다.
+
+---
+
+### 정리
+
+Spring Batch의 `@JobScope`와 `@StepScope`는 배치 실행 단위에 맞게 Bean의 생명주기를 관리하기 위한 Scope다.
+
+두 Scope는 다음과 같은 차이가 있다.
+
+```text
+@JobScope
+    │
+    └── JobExecution 단위로 Bean 관리
+```
+
+```text
+@StepScope
+    │
+    └── StepExecution 단위로 Bean 관리
+```
+
+두 Scope 모두 Scoped Proxy를 이용한다.
+
+따라서 애플리케이션 초기화 시점에는 Proxy를 준비하고, 실제 대상 Bean은 실행 Context가 활성화된 시점에 생성할 수 있다.
+
+이러한 구조를 통해 Late Binding이 가능해진다.
+
+대표적인 표현식은 다음과 같다.
+
+```java
+@Value("#{jobParameters['requestDate']}")
+```
+
+```java
+@Value("#{jobExecutionContext['name']}")
+```
+
+```java
+@Value("#{stepExecutionContext['name2']}")
+```
+
+JobScope에서는 JobParameters와 JobExecutionContext를 참조할 수 있다.
+
+StepScope에서는 JobParameters, JobExecutionContext, StepExecutionContext를 참조할 수 있다.
+
+또한 JobScope와 StepScope는 내부적으로 JobContext와 StepContext를 이용해 Bean 인스턴스를 관리한다.
+
+이 과정에서 JobSynchronizationManager와 StepSynchronizationManager가 현재 실행 Context를 연결한다.
+
+실제 Bean 생성 과정은 다음과 같다.
+
+```text
+Scoped Proxy
+    │
+    ▼
+JobScope / StepScope
+    │
+    ▼
+JobContext / StepContext 조회
+    │
+    ▼
+기존 Bean 존재 여부 확인
+    │
+    ├── 존재
+    │      └── 기존 Bean 반환
+    │
+    └── 없음
+           │
+           ▼
+       ObjectFactory
+           │
+           ▼
+       @Value 평가
+           │
+           ▼
+       실제 Bean 생성
+           │
+           ▼
+       Context에 저장
+```
+
+여기서 중요한 점은 JobScope와 StepScope가 단순한 지연 초기화 기능만 제공하는 것이 아니라는 사실이다.
+
+두 Scope는 JobExecution과 StepExecution이라는 배치 실행 단위에 맞춰 Bean을 관리한다.
+
+또한 Scope는 스레드 단위가 아니므로 멀티스레드 환경에서 자동으로 Thread-Safe를 보장하지 않는다.
+
+특히 동일한 StepExecution을 공유하는 여러 스레드에서는 같은 StepScope Bean을 참조할 수 있다.
+
+따라서 병렬 처리 환경에서는 실행 Context 전파와 실제 Bean의 동시성 안전성을 함께 고려해야 한다.
+
+실무에서는 JobScope를 Job 실행별 설정 객체에 사용하고, StepScope를 Tasklet과 ItemReader, ItemProcessor, ItemWriter처럼 실제 Step 실행 시점의 데이터가 필요한 구성요소에 적용할 수 있다.
+
+결국 **JobScope와 StepScope는 Spring Batch가 Job과 Step의 실행 생명주기에 맞춰 Bean을 생성하고 관리하며, 실행 시점의 파라미터와 상태 데이터를 안전하고 명확하게 참조할 수 있도록 지원하는 핵심 기능**이다.
+
+#### 한 줄 요약
+
+> Spring Batch의 `@JobScope`와 `@StepScope`는 각각 `JobExecution`, `StepExecution` 단위로 Bean을 관리하는 Scope다. 애플리케이션 초기화 시점에는 Scoped Proxy를 준비하고, 실제 실행 시점에 `JobParameters`, `JobExecutionContext`, `StepExecutionContext` 등을 `@Value`와 SpEL로 바인딩한다. 내부적으로는 `JobScope`와 `StepScope`가 `JobContext`, `StepContext`를 이용해 대상 Bean을 생성하고 재사용하며, `JobSynchronizationManager`와 `StepSynchronizationManager`가 현재 실행 Context를 연결한다. 따라서 Late Binding의 핵심은 Scoped Proxy를 통한 지연 생성과 실행 단위별 Bean 관리에 있다.
