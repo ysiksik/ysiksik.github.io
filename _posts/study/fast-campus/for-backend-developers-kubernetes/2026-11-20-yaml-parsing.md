@@ -5181,3 +5181,2476 @@ yq '.jobs[] | select(.experience >= 5) | .title' person.yaml
 #### 한 줄 요약
 
 > yq는 YAML의 Mapping과 Sequence를 구조적으로 탐색하는 CLI 도구로, 경로 표현식과 Pipeline을 활용하여 데이터를 조회·필터링·정렬·검증·수정할 수 있으며, Kubernetes 설정 관리와 CI/CD 자동화에 유용하게 활용할 수 있다.
+
+## Kubernetes에서 yq 활용
+
+### Kubernetes에서 yq 활용하기: Service, ConfigMap, Pod 검색과 YAML 데이터 분석
+
+Kubernetes에서는 Pod, Deployment, Service, ConfigMap 등 다양한 리소스를 YAML을 기반으로 정의하고 관리한다.
+
+이러한 리소스는 `kubectl`을 통해 조회할 수 있다.
+
+예를 들어 다음 명령어를 실행하면 현재 Namespace에 존재하는 Pod 목록을 확인할 수 있다.
+
+```bash
+kubectl get pods
+```
+
+Service 목록도 확인할 수 있다.
+
+```bash
+kubectl get services
+```
+
+하지만 Kubernetes에서 제공하는 기본 조회 결과는 대부분 미리 정의된 필드만 표시한다.
+
+예를 들어 Service를 조회하면 다음과 같은 정보가 나타난다.
+
+```text
+NAME             TYPE           CLUSTER-IP      EXTERNAL-IP   PORT(S)
+kube-dns         ClusterIP      10.43.0.10      <none>        53/UDP,53/TCP
+metrics-server   ClusterIP      10.43.100.20    <none>        443/TCP
+traffic          LoadBalancer   10.43.200.30    <pending>     80:30080/TCP
+```
+
+위 결과는 예시이며 실제 클러스터의 Service 구성과 IP 주소는 다를 수 있다.
+
+이러한 출력만으로도 기본적인 정보를 확인할 수 있지만, 운영 환경에서는 조금 더 복잡한 조건으로 리소스를 검색해야 할 때가 있다.
+
+예를 들어 다음과 같은 요구사항이다.
+
+| 요구사항 | 검색 조건 |
+|---|---|
+| 특정 Service 검색 | `type`이 `LoadBalancer`인 Service |
+| 일반 내부 Service 검색 | `type`이 `ClusterIP`인 Service |
+| 설정이 존재하는 ConfigMap 검색 | `data` Key가 있는 ConfigMap |
+| 설정이 없는 ConfigMap 검색 | `data` Key가 없는 ConfigMap |
+| 특정 이미지 검색 | `registry.k8s.io` 이미지를 사용하는 Pod |
+| 오래된 이미지 검색 | `k8s.gcr.io` 이미지를 참조하는 Pod |
+| Pod 설정 구조 분석 | `spec`에 존재하는 Key 목록 |
+| 리소스 설정 점검 | `resources.requests`, `resources.limits` 확인 |
+
+이러한 검색을 수행하기 위해 모든 Kubernetes 리소스를 하나씩 조회하는 것은 비효율적이다.
+
+이때 `kubectl`과 `yq`를 조합하면 Kubernetes 리소스를 구조적으로 조회하고 원하는 조건에 따라 필터링할 수 있다.
+
+이번에는 다음과 같은 처리 구조를 기반으로 Kubernetes 리소스를 분석한다.
+
+```mermaid
+flowchart TD
+    A["Kubernetes Cluster"] --> B["Kubernetes API Server"]
+    B --> C["kubectl get -o yaml"]
+    C --> D["YAML 데이터"]
+
+    D --> E["yq"]
+
+    E --> F["Mapping 접근"]
+    E --> G["Sequence 순회"]
+    E --> H["조건 검색"]
+
+    F --> I["필요한 데이터 추출"]
+    G --> I
+    H --> I
+
+    I --> J["운영 정보 분석"]
+```
+
+핵심은 `kubectl`로 Kubernetes 리소스를 가져오고, yq로 필요한 데이터를 추출하는 것이다.
+
+---
+
+### Kubernetes 리소스를 YAML로 조회하는 방법
+
+먼저 Kubernetes에서 리소스를 조회하는 방법을 살펴보자.
+
+일반적인 Service 조회 명령어는 다음과 같다.
+
+```bash
+kubectl get services
+```
+
+특정 Namespace를 지정하려면 `-n` 옵션을 사용한다.
+
+```bash
+kubectl get services -n kube-system
+```
+
+`kube-system`은 Kubernetes의 시스템 구성 요소들이 주로 배치되는 Namespace이다.
+
+DNS, 네트워크, 클러스터 관리 기능과 관련된 리소스를 확인할 수 있다.
+
+다만 실제로 어떤 리소스가 존재하는지는 Kubernetes 배포 방식에 따라 달라진다.
+
+예를 들어 K3s와 일반 Kubernetes 클러스터는 기본적으로 설치되는 구성 요소가 다를 수 있다.
+
+#### YAML 형식으로 조회하기
+
+다음 명령어를 실행한다.
+
+```bash
+kubectl get services -n kube-system -o yaml
+```
+
+여기서 `-o yaml`은 조회한 Kubernetes API 객체를 YAML 형식으로 출력하겠다는 의미이다.
+
+| 옵션 | 의미 |
+|---|---|
+| `get` | Kubernetes 리소스 조회 |
+| `services` | Service 리소스 조회 |
+| `-n kube-system` | kube-system Namespace 지정 |
+| `-o yaml` | YAML 형식으로 출력 |
+
+이 명령어를 사용하면 기본 출력에서는 보이지 않던 상세 설정도 확인할 수 있다.
+
+예를 들어 Service의 `spec`, `metadata`, `status` 등 다양한 필드를 조회할 수 있다.
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: kube-dns
+  namespace: kube-system
+spec:
+  clusterIP: 10.43.0.10
+  type: ClusterIP
+  ports:
+    - name: dns
+      port: 53
+      protocol: UDP
+      targetPort: 53
+```
+
+위 YAML은 Service 객체의 주요 필드만 나타낸 예시이다.
+
+실제 `kubectl get -o yaml` 결과에는 이보다 많은 정보가 포함될 수 있다.
+
+여기서 한 가지 문제가 발생한다.
+
+**YAML로 조회하면 더 많은 정보를 확인할 수 있지만, 출력되는 데이터의 양이 많아져 원하는 정보를 찾기 어려워진다는 것이다.**
+
+이 문제를 해결하기 위해 yq를 사용한다.
+
+---
+
+### kubectl과 yq를 함께 사용하는 방법
+
+`kubectl`과 `yq`는 Linux Shell의 Pipeline을 통해 연결할 수 있다.
+
+기본적인 사용 방법은 다음과 같다.
+
+```bash
+kubectl get services -n kube-system -o yaml |
+  yq '.'
+```
+
+이 명령어는 다음 두 작업을 수행한다.
+
+첫 번째는 Kubernetes에서 Service 정보를 YAML로 조회하는 것이다.
+
+```bash
+kubectl get services -n kube-system -o yaml
+```
+
+두 번째는 조회한 YAML 데이터를 yq로 파싱하는 것이다.
+
+```bash
+yq '.'
+```
+
+두 명령어를 파이프(`|`)로 연결하면 `kubectl`의 표준 출력이 yq의 표준 입력으로 전달된다.
+
+```mermaid
+flowchart LR
+    A["kubectl get services"] --> B["YAML 출력"]
+    B --> C["Shell Pipeline"]
+    C --> D["yq"]
+    D --> E["YAML 파싱"]
+    E --> F["조건 검색"]
+```
+
+이때 사용하는 파이프는 Linux Shell의 Pipeline이다.
+
+반면 다음 명령어에는 yq 내부의 Pipeline도 포함되어 있다.
+
+```bash
+kubectl get services -n kube-system -o yaml |
+  yq '.items[] | .metadata.name'
+```
+
+여기서는 두 가지 파이프가 함께 사용된다.
+
+| 구분 | 역할 |
+|---|---|
+| Shell Pipeline | `kubectl`의 출력을 yq에 전달 |
+| yq Pipeline | yq에서 선택한 데이터를 다음 표현식으로 전달 |
+
+이 두 개념을 구분하면 이후의 복잡한 검색 명령어도 쉽게 이해할 수 있다.
+
+---
+
+### Kubernetes 리소스 목록의 YAML 구조
+
+Kubernetes에서 여러 리소스를 조회할 때는 먼저 출력되는 YAML의 구조를 이해해야 한다.
+
+예를 들어 다음 명령어를 실행한다고 가정하자.
+
+```bash
+kubectl get services -n kube-system -o yaml
+```
+
+여러 Service를 조회한 결과는 일반적으로 다음과 같은 List 구조를 가진다.
+
+```yaml
+apiVersion: v1
+kind: List
+metadata:
+  resourceVersion: ""
+
+items:
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      name: kube-dns
+      namespace: kube-system
+    spec:
+      type: ClusterIP
+
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      name: metrics-server
+      namespace: kube-system
+    spec:
+      type: ClusterIP
+
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      name: traffic
+      namespace: kube-system
+    spec:
+      type: LoadBalancer
+```
+
+이 YAML은 검색 구조를 설명하기 위한 예시이다.
+
+실제 Service 객체에는 포트, Selector, ClusterIP 등의 추가 정보가 포함되며, 위와 같은 세 Service가 반드시 존재하는 것은 아니다.
+
+여기서 중요한 필드는 다음과 같다.
+
+```yaml
+items:
+```
+
+`items`는 Sequence이다.
+
+이 Sequence에는 조회한 Service 객체들이 포함되어 있다.
+
+각 Service는 하나의 Mapping이다.
+
+```mermaid
+flowchart TD
+    A["Kubernetes List"] --> B["items: Sequence"]
+
+    B --> C["Service 0"]
+    B --> D["Service 1"]
+    B --> E["Service 2"]
+
+    C --> F["spec.type: ClusterIP"]
+    D --> G["spec.type: ClusterIP"]
+    E --> H["spec.type: LoadBalancer"]
+```
+
+따라서 특정 Service의 설정에 접근하려면 `items`를 통해 각 Service 객체에 접근해야 한다.
+
+Kubernetes API는 리소스 목록을 Collection 형태로 반환하며, `kubectl`은 여러 객체 조회 결과를 `kind: List` 구조로 출력할 수 있다.
+
+---
+
+### 실습용 YAML 파일 준비하기
+
+현재 Kubernetes 클러스터에서 직접 조회하면서 진행할 수도 있지만, 검색 결과를 일관되게 확인하려면 예제 파일을 함께 사용하는 것이 좋다.
+
+먼저 다음 파일을 작성한다.
+
+**services.yaml**
+
+```yaml
+apiVersion: v1
+kind: List
+metadata:
+  resourceVersion: ""
+
+items:
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      name: kube-dns
+      namespace: kube-system
+    spec:
+      type: ClusterIP
+
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      name: metrics-server
+      namespace: kube-system
+    spec:
+      type: ClusterIP
+
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      name: traffic
+      namespace: kube-system
+    spec:
+      type: LoadBalancer
+```
+
+이 파일은 Kubernetes의 목록 조회 결과를 단순화한 예제이다.
+
+이후에는 다음 두 방식을 번갈아 사용한다.
+
+**실제 클러스터에서 조회하는 방식**
+
+```bash
+kubectl get services -n kube-system -o yaml |
+  yq '표현식'
+```
+
+**로컬 YAML 파일을 조회하는 방식**
+
+```bash
+yq '표현식' services.yaml
+```
+
+두 방식에서 사용하는 yq 표현식은 동일하다.
+
+---
+
+### items를 이용한 Kubernetes 리소스 조회
+
+먼저 `items` 전체를 조회해보자.
+
+```bash
+yq '.items' services.yaml
+```
+
+이 명령어는 `items` Sequence를 선택한다.
+
+따라서 Service 객체들이 배열 형태로 출력된다.
+
+첫 번째 Service만 조회하려면 다음과 같이 작성한다.
+
+```bash
+yq '.items[0]' services.yaml
+```
+
+출력:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: kube-dns
+  namespace: kube-system
+spec:
+  type: ClusterIP
+```
+
+첫 번째 Service의 이름만 조회할 수도 있다.
+
+```bash
+yq '.items[0].metadata.name' services.yaml
+```
+
+출력:
+
+```text
+kube-dns
+```
+
+첫 번째 Service의 타입을 조회한다.
+
+```bash
+yq '.items[0].spec.type' services.yaml
+```
+
+출력:
+
+```text
+ClusterIP
+```
+
+이 명령어를 단계적으로 해석하면 다음과 같다.
+
+```text
+.items
+    ↓
+Service 목록
+
+[0]
+    ↓
+첫 번째 Service
+
+.spec
+    ↓
+Service 설정
+
+.type
+    ↓
+Service 타입
+```
+
+각 경로의 의미는 다음과 같다.
+
+| 표현식 | 의미 |
+|---|---|
+| `.items` | 리소스 목록 |
+| `[0]` | 첫 번째 리소스 |
+| `.spec` | 리소스의 원하는 상태 |
+| `.type` | Service 타입 |
+
+이처럼 Kubernetes YAML에서도 Mapping과 Sequence의 기본 접근 방식을 그대로 사용할 수 있다.
+
+---
+
+### 모든 Service의 타입 조회하기
+
+지금까지는 첫 번째 Service만 조회했다.
+
+하지만 실제로는 모든 Service의 타입을 확인해야 할 수 있다.
+
+이때는 Sequence 인덱스를 생략하고 빈 대괄호(`[]`)를 사용한다.
+
+```bash
+yq '.items[].spec.type' services.yaml
+```
+
+출력:
+
+```text
+ClusterIP
+ClusterIP
+LoadBalancer
+```
+
+여기서 `[]`는 모든 Service 객체를 순회한다.
+
+따라서 다음과 같이 동작한다.
+
+```mermaid
+flowchart TD
+    A["items Sequence"] --> B["Service 0"]
+    A --> C["Service 1"]
+    A --> D["Service 2"]
+
+    B --> E["ClusterIP"]
+    C --> F["ClusterIP"]
+    D --> G["LoadBalancer"]
+```
+
+실제 Kubernetes에서도 동일하게 조회할 수 있다.
+
+```bash
+kubectl get services -n kube-system -o yaml |
+  yq '.items[].spec.type'
+```
+
+이처럼 배열 전체를 순회하면 리소스 개수가 변경되어도 동일한 표현식을 사용할 수 있다.
+
+---
+
+### 특정 타입의 Service만 검색하기
+
+이번에는 `LoadBalancer` 타입의 Service만 검색해보자.
+
+Kubernetes Service에는 여러 타입이 존재한다.
+
+대표적으로 다음과 같다.
+
+| Service 타입 | 역할 |
+|---|---|
+| ClusterIP | 클러스터 내부에서 접근할 수 있는 가상 IP 제공 |
+| NodePort | 각 Node의 포트를 통해 Service 접근 |
+| LoadBalancer | 지원되는 환경에서 외부 Load Balancer 연동 |
+| ExternalName | 외부 DNS 이름을 참조하도록 구성 |
+
+이 중 `LoadBalancer` 타입만 조회하려면 `select`를 사용할 수 있다.
+
+```bash
+yq '.items[] | select(.spec.type == "LoadBalancer")' services.yaml
+```
+
+이 명령어는 다음과 같이 동작한다.
+
+첫 번째로 모든 Service를 순회한다.
+
+```text
+.items[]
+```
+
+두 번째로 각 Service의 `spec.type`을 확인한다.
+
+```text
+.spec.type
+```
+
+세 번째로 해당 값이 `LoadBalancer`인지 검사한다.
+
+```text
+select(.spec.type == "LoadBalancer")
+```
+
+따라서 전체 표현식은 다음과 같다.
+
+```text
+.items[] | select(.spec.type == "LoadBalancer")
+```
+
+예제 파일에서는 다음 Service가 선택된다.
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: traffic
+  namespace: kube-system
+spec:
+  type: LoadBalancer
+```
+
+실제 클러스터에서 사용하려면 다음과 같이 작성한다.
+
+```bash
+kubectl get services -n kube-system -o yaml |
+  yq '.items[] | select(.spec.type == "LoadBalancer")'
+```
+
+클러스터에 해당 타입의 Service가 없다면 아무 결과도 출력되지 않을 수 있다.
+
+---
+
+### LoadBalancer 타입의 Service 이름만 조회하기
+
+앞의 명령어는 조건에 일치하는 Service 객체 전체를 출력한다.
+
+하지만 실제로 필요한 정보는 Service 이름뿐일 수 있다.
+
+이때 Pipeline을 하나 더 연결하면 된다.
+
+```bash
+yq '
+  .items[]
+  | select(.spec.type == "LoadBalancer")
+  | .metadata.name
+' services.yaml
+```
+
+출력:
+
+```text
+traffic
+```
+
+이 명령어는 세 단계로 나누어 이해할 수 있다.
+
+```mermaid
+flowchart LR
+    A["items[]"] --> B["모든 Service 순회"]
+    B --> C["LoadBalancer만 선택"]
+    C --> D["metadata.name 조회"]
+    D --> E["traffic"]
+```
+
+실제 Kubernetes에서는 다음과 같이 실행한다.
+
+```bash
+kubectl get services -n kube-system -o yaml |
+  yq '.items[] | select(.spec.type == "LoadBalancer") | .metadata.name'
+```
+
+이렇게 하면 불필요한 YAML 필드를 출력하지 않고 원하는 Service의 이름만 확인할 수 있다.
+
+---
+
+### LoadBalancer가 아닌 Service 검색하기
+
+이번에는 반대 조건을 적용해보자.
+
+`LoadBalancer`가 아닌 Service만 조회하려면 `!=` 연산자를 사용한다.
+
+```bash
+yq '
+  .items[]
+  | select(.spec.type != "LoadBalancer")
+  | .metadata.name
+' services.yaml
+```
+
+출력:
+
+```text
+kube-dns
+metrics-server
+```
+
+`!=`는 두 값이 다르다는 의미이다.
+
+따라서 다음 두 조건은 서로 반대이다.
+
+```text
+.spec.type == "LoadBalancer"
+```
+
+```text
+.spec.type != "LoadBalancer"
+```
+
+예제 데이터에서는 두 조건에 해당하는 결과가 겹치지 않는다.
+
+다만 실무에서는 다음과 같은 점을 고려해야 한다.
+
+Kubernetes의 Service는 `spec.type`을 생략하면 기본적으로 `ClusterIP`로 처리될 수 있다.
+
+따라서 Service Manifest를 분석할 때는 해당 필드가 생략된 상황까지 고려해야 한다.
+
+반면 API Server에서 조회한 객체에는 기본값이 반영되어 있는 경우가 많다.
+
+이처럼 선언한 YAML과 Kubernetes API Server에서 반환한 YAML의 내용에는 차이가 있을 수 있다.
+
+---
+
+### Service 타입별 개수 확인하기
+
+검색 결과를 이름으로만 출력하는 것이 아니라 개수를 확인할 수도 있다.
+
+예를 들어 `LoadBalancer` 타입의 Service가 몇 개 존재하는지 확인해보자.
+
+```bash
+yq '
+  [.items[] | select(.spec.type == "LoadBalancer")]
+  | length
+' services.yaml
+```
+
+출력:
+
+```text
+1
+```
+
+여기서 중요한 표현식은 다음 부분이다.
+
+```text
+[.items[] | select(.spec.type == "LoadBalancer")]
+```
+
+이 표현식은 조건에 일치하는 결과들을 하나의 Sequence로 수집한다.
+
+이후 `length`를 사용하면 해당 Sequence의 요소 개수를 확인할 수 있다.
+
+즉 다음과 같은 순서로 동작한다.
+
+```mermaid
+flowchart LR
+    A["전체 Service"] --> B["LoadBalancer 검색"]
+    B --> C["검색 결과를 Sequence로 수집"]
+    C --> D["length"]
+    D --> E["1"]
+```
+
+이 방식은 특정 종류의 리소스 수량을 점검할 때 유용하다.
+
+---
+
+### ConfigMap의 특정 Key 존재 여부 검색하기
+
+이번에는 ConfigMap을 분석해보자.
+
+ConfigMap은 Kubernetes에서 애플리케이션의 일반 설정 데이터를 저장하는 리소스이다.
+
+대표적으로 다음과 같은 구조를 사용한다.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: game-demo
+
+data:
+  player_initial_lives: "3"
+  game.properties: |
+    enemy.types=aliens,monsters
+```
+
+여기서 `data`는 설정값을 저장하는 Mapping이다.
+
+그런데 모든 ConfigMap에 반드시 `data`가 존재해야 하는 것은 아니다.
+
+예를 들어 다음과 같은 ConfigMap도 존재할 수 있다.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: empty-config
+```
+
+이 ConfigMap에는 `data` Key가 없다.
+
+따라서 여러 ConfigMap 중 `data`가 있는 ConfigMap과 없는 ConfigMap을 구분해야 할 수 있다.
+
+이러한 검색에 사용하는 yq 연산자가 `has`이다.
+
+---
+
+### ConfigMap 검색을 위한 예제 파일 작성
+
+다음 YAML을 작성해보자.
+
+**configmaps.yaml**
+
+```yaml
+apiVersion: v1
+kind: List
+metadata:
+  resourceVersion: ""
+
+items:
+  - apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: game-demo
+      namespace: default
+    data:
+      player_initial_lives: "3"
+      game.properties: |
+        enemy.types=aliens,monsters
+
+  - apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: application-config
+      namespace: default
+    data:
+      APP_ENV: production
+      LOG_LEVEL: INFO
+
+  - apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: empty-config
+      namespace: default
+
+  - apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: empty-data
+      namespace: default
+    data: {}
+```
+
+이 파일에는 네 개의 ConfigMap이 포함되어 있다.
+
+각 ConfigMap의 상태는 다음과 같다.
+
+| ConfigMap 이름 | data Key 존재 | data 항목 존재 |
+|---|---|---|
+| game-demo | O | O |
+| application-config | O | O |
+| empty-config | X | X |
+| empty-data | O | X |
+
+여기서 `data` Key가 존재하는 것과 실제 데이터 항목이 존재하는 것은 서로 다른 조건이라는 점을 기억해야 한다.
+
+---
+
+### has 연산자란?
+
+`has`는 Mapping에 특정 Key가 존재하는지 확인하는 연산자이다.
+
+기본적인 사용 방법은 다음과 같다.
+
+```text
+has("Key 이름")
+```
+
+예를 들어 다음 Mapping을 살펴보자.
+
+```yaml
+name: game-demo
+data:
+  APP_ENV: production
+```
+
+`data` Key가 존재하는지 확인하려면 다음과 같이 작성한다.
+
+```bash
+yq 'has("data")' sample.yaml
+```
+
+이 경우 `true`가 반환된다.
+
+반면 `data` Key가 없다면 `false`가 반환된다.
+
+`has`는 Key의 존재 여부를 검사한다.
+
+따라서 값이 Null이거나 빈 Mapping이더라도 Key 자체가 존재한다면 참을 반환할 수 있다.
+
+---
+
+### data Key가 존재하는 ConfigMap 검색하기
+
+앞서 작성한 ConfigMap 목록에서 `data` Key가 존재하는 ConfigMap만 조회해보자.
+
+```bash
+yq '
+  .items[]
+  | select(has("data"))
+  | .metadata.name
+' configmaps.yaml
+```
+
+출력:
+
+```text
+game-demo
+application-config
+empty-data
+```
+
+이 명령어는 다음과 같이 동작한다.
+
+첫 번째로 ConfigMap 목록을 순회한다.
+
+```text
+.items[]
+```
+
+두 번째로 각 ConfigMap에 `data` Key가 존재하는지 검사한다.
+
+```text
+select(has("data"))
+```
+
+세 번째로 조건에 일치하는 ConfigMap의 이름을 출력한다.
+
+```text
+.metadata.name
+```
+
+실제 Kubernetes에서는 다음과 같이 실행한다.
+
+```bash
+kubectl get configmaps -n kube-system -o yaml |
+  yq '.items[] | select(has("data")) | .metadata.name'
+```
+
+이 명령어를 사용하면 `kube-system` Namespace에 존재하는 ConfigMap 중 `data` Key를 가진 ConfigMap의 이름을 확인할 수 있다.
+
+여기서 `has("data") == true`라는 표현을 사용할 수도 있다.
+
+```bash
+kubectl get configmaps -n kube-system -o yaml |
+  yq '.items[] | select(has("data") == true) | .metadata.name'
+```
+
+하지만 `has` 자체가 Boolean 값을 반환하므로 `== true`를 생략하는 것이 더 간결하다.
+
+---
+
+### data Key가 없는 ConfigMap 검색하기
+
+이번에는 반대 조건을 적용해보자.
+
+```bash
+yq '
+  .items[]
+  | select(has("data") == false)
+  | .metadata.name
+' configmaps.yaml
+```
+
+출력:
+
+```text
+empty-config
+```
+
+이 표현식은 `data` Key가 존재하지 않는 ConfigMap만 선택한다.
+
+다음과 같이 `not` 연산자를 사용할 수도 있다.
+
+```bash
+yq '
+  .items[]
+  | select(has("data") | not)
+  | .metadata.name
+' configmaps.yaml
+```
+
+두 방식 모두 `data` Key가 존재하지 않는 ConfigMap을 선택하기 위한 조건이다.
+
+실제 Kubernetes에서는 다음과 같이 실행한다.
+
+```bash
+kubectl get configmaps -n kube-system -o yaml |
+  yq '.items[] | select(has("data") == false) | .metadata.name'
+```
+
+이렇게 하면 설정 데이터가 없는 ConfigMap을 확인하는 데 활용할 수 있다.
+
+다만 여기에는 한 가지 주의사항이 있다.
+
+**`data` Key가 없다고 해서 ConfigMap에 저장된 모든 데이터가 없다는 의미는 아니다.**
+
+ConfigMap은 `binaryData` 필드를 사용할 수도 있기 때문이다.
+
+따라서 일반 문자열 설정만 검사할지, 바이너리 데이터까지 검사할지에 따라 조건을 다르게 작성해야 한다.
+
+---
+
+### data Key가 있어도 실제 값이 없을 수 있다
+
+앞에서 작성한 다음 ConfigMap을 다시 살펴보자.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+
+metadata:
+  name: empty-data
+
+data: {}
+```
+
+이 ConfigMap에는 `data` Key가 존재한다.
+
+따라서 다음 조건을 만족한다.
+
+```text
+has("data") == true
+```
+
+하지만 `data` Mapping에는 실제 항목이 없다.
+
+이러한 ConfigMap을 제외하고 싶다면 `length`를 함께 사용하면 된다.
+
+```bash
+yq '
+  .items[]
+  | select((.data // {} | length) > 0)
+  | .metadata.name
+' configmaps.yaml
+```
+
+출력:
+
+```text
+game-demo
+application-config
+```
+
+여기서 사용한 표현식을 살펴보자.
+
+```text
+.data // {}
+```
+
+`//`는 왼쪽 값이 Null이거나 없을 때 오른쪽의 기본값을 사용하도록 하는 연산자이다.
+
+따라서 `data`가 존재하지 않으면 빈 Mapping인 `{}`를 사용한다.
+
+이후 `length`를 적용한다.
+
+```text
+.data // {} | length
+```
+
+Mapping의 길이는 포함된 Key-Value 항목 개수이다.
+
+따라서 다음과 같은 결과가 나타난다.
+
+| ConfigMap | data 항목 수 | 조건 만족 |
+|---|---:|---|
+| game-demo | 2 | O |
+| application-config | 2 | O |
+| empty-config | 0 | X |
+| empty-data | 0 | X |
+
+이처럼 Key 존재 여부와 실제 데이터 존재 여부를 구분하면 보다 정확한 설정 검사가 가능하다.
+
+---
+
+### 특정 설정 Key를 포함하는 ConfigMap 검색하기
+
+이번에는 단순히 `data`의 존재 여부가 아니라 특정 Key가 있는지 검색해보자.
+
+예를 들어 `LOG_LEVEL`이라는 Key를 가진 ConfigMap을 찾고 싶다고 가정하자.
+
+```bash
+yq '
+  .items[]
+  | select(.data | has("LOG_LEVEL"))
+  | .metadata.name
+' configmaps.yaml
+```
+
+예상 출력:
+
+```text
+application-config
+```
+
+여기서 `has("LOG_LEVEL")`을 적용하는 대상은 ConfigMap 전체가 아니라 `data` Mapping이다.
+
+따라서 다음처럼 작성한다.
+
+```text
+.data | has("LOG_LEVEL")
+```
+
+이 표현식은 다음 의미를 가진다.
+
+> ConfigMap의 data Mapping 안에 LOG_LEVEL이라는 Key가 존재하는가?
+
+이러한 검색은 여러 ConfigMap 중 특정 설정을 사용하는 리소스를 찾을 때 유용하다.
+
+---
+
+### Pod에서 사용하는 컨테이너 이미지 조회하기
+
+이제 Pod를 분석해보자.
+
+Kubernetes에서 Pod는 하나 이상의 컨테이너를 실행할 수 있는 기본 단위이다.
+
+각 컨테이너는 특정 이미지를 사용한다.
+
+예를 들어 다음과 같은 Pod가 있다고 가정하자.
+
+```yaml
+apiVersion: v1
+kind: Pod
+
+metadata:
+  name: web-api
+
+spec:
+  containers:
+    - name: web
+      image: nginx:1.27
+```
+
+여기서 컨테이너 이미지는 다음 경로에 존재한다.
+
+```text
+.spec.containers[0].image
+```
+
+Pod 하나만 조회할 때는 다음과 같이 사용할 수 있다.
+
+```bash
+kubectl get pod web-api -o yaml |
+  yq '.spec.containers[0].image'
+```
+
+하지만 여러 Pod를 조회하면 출력 구조가 달라진다.
+
+여러 Pod를 조회하는 경우에는 `items` Sequence가 추가된다.
+
+```text
+.items[].spec.containers[].image
+```
+
+따라서 모든 Pod의 모든 컨테이너 이미지를 조회하려면 이 경로를 사용하면 된다.
+
+---
+
+### Pod 검색을 위한 예제 파일 작성
+
+다음과 같은 Pod 목록을 작성해보자.
+
+**pods.yaml**
+
+```yaml
+apiVersion: v1
+kind: List
+metadata:
+  resourceVersion: ""
+
+items:
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: coredns
+      namespace: kube-system
+    spec:
+      containers:
+        - name: coredns
+          image: registry.k8s.io/coredns/coredns:v1.11.1
+
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: metrics-server
+      namespace: kube-system
+    spec:
+      containers:
+        - name: metrics-server
+          image: registry.k8s.io/metrics-server/metrics-server:v0.7.2
+
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: web-api
+      namespace: default
+    spec:
+      containers:
+        - name: web
+          image: nginx:1.27
+
+        - name: log-agent
+          image: fluent/fluent-bit:3.2
+
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: legacy-agent
+      namespace: default
+    spec:
+      containers:
+        - name: legacy
+          image: k8s.gcr.io/pause:3.5
+```
+
+위 파일은 검색 결과를 설명하기 위한 예시이며, 실제 클러스터에서 실행 중인 Pod 목록이나 권장 이미지 버전을 나타내는 것은 아니다.
+
+이 파일에는 네 개의 Pod가 존재한다.
+
+| Pod | 컨테이너 | 이미지 |
+|---|---|---|
+| coredns | coredns | registry.k8s.io/coredns/coredns:v1.11.1 |
+| metrics-server | metrics-server | registry.k8s.io/metrics-server/metrics-server:v0.7.2 |
+| web-api | web | nginx:1.27 |
+| web-api | log-agent | fluent/fluent-bit:3.2 |
+| legacy-agent | legacy | k8s.gcr.io/pause:3.5 |
+
+여기서 `web-api` Pod에는 두 개의 컨테이너가 존재한다.
+
+따라서 Pod 검색에서는 하나의 Pod에 여러 컨테이너가 포함될 수 있다는 점도 고려해야 한다.
+
+---
+
+### 모든 Pod의 이미지 조회하기
+
+먼저 Pod 목록을 조회해보자.
+
+```bash
+yq '.items' pods.yaml
+```
+
+이 명령어는 모든 Pod 객체를 포함하는 Sequence를 출력한다.
+
+이제 각 Pod의 `spec`에 접근한다.
+
+```bash
+yq '.items[].spec' pods.yaml
+```
+
+다음으로 `containers`에 접근한다.
+
+```bash
+yq '.items[].spec.containers' pods.yaml
+```
+
+이 경우 각 Pod의 컨테이너 목록이 출력된다.
+
+모든 컨테이너를 개별적으로 선택하려면 `[]`를 추가한다.
+
+```bash
+yq '.items[].spec.containers[]' pods.yaml
+```
+
+마지막으로 이미지 필드만 조회한다.
+
+```bash
+yq '.items[].spec.containers[].image' pods.yaml
+```
+
+출력:
+
+```text
+registry.k8s.io/coredns/coredns:v1.11.1
+registry.k8s.io/metrics-server/metrics-server:v0.7.2
+nginx:1.27
+fluent/fluent-bit:3.2
+k8s.gcr.io/pause:3.5
+```
+
+이 명령어는 다음과 같이 동작한다.
+
+```mermaid
+flowchart TD
+    A["Pod List"] --> B["items[]"]
+    B --> C["각 Pod의 spec"]
+    C --> D["containers[]"]
+    D --> E["각 Container의 image"]
+    E --> F["이미지 목록 출력"]
+```
+
+실제 Kubernetes에서는 다음과 같이 사용할 수 있다.
+
+```bash
+kubectl get pods -A -o yaml |
+  yq '.items[].spec.containers[].image'
+```
+
+여기서 `-A`는 모든 Namespace를 조회한다는 의미이다.
+
+이 명령어는 클러스터에 존재하는 Pod들의 일반 컨테이너 이미지를 조회한다.
+
+다만 `initContainers`와 `ephemeralContainers`는 별도의 필드이므로 이 명령어에 포함되지 않는다.
+
+이 차이는 이후 이미지 점검에서 중요하게 작용한다.
+
+---
+
+### registry.k8s.io 이미지를 사용하는 Pod 검색하기
+
+이번에는 특정 이미지 레지스트리를 사용하는 Pod만 검색해보자.
+
+Kubernetes 프로젝트에서는 컨테이너 이미지를 제공하기 위한 레지스트리로 `registry.k8s.io`를 사용한다.
+
+따라서 다음과 같은 이미지가 존재할 수 있다.
+
+```text
+registry.k8s.io/coredns/coredns:v1.11.1
+registry.k8s.io/metrics-server/metrics-server:v0.7.2
+```
+
+이러한 이미지를 사용하는 Pod만 검색해보자.
+
+가장 먼저 생각할 수 있는 방법은 다음과 같다.
+
+```bash
+yq '
+  .items[].spec.containers[].image
+  | select(test("^registry[.]k8s[.]io/"))
+' pods.yaml
+```
+
+출력:
+
+```text
+registry.k8s.io/coredns/coredns:v1.11.1
+registry.k8s.io/metrics-server/metrics-server:v0.7.2
+```
+
+여기서 `test()`는 정규표현식을 이용하여 문자열이 특정 패턴에 일치하는지 확인한다.
+
+```text
+^registry[.]k8s[.]io/
+```
+
+이 정규표현식은 다음 의미를 가진다.
+
+> registry.k8s.io/로 시작하는 문자열인가?
+
+정규표현식에서 `^`는 문자열의 시작을 의미한다.
+
+`[.]`는 실제 마침표 문자에 일치한다.
+
+이처럼 정규표현식을 사용하면 이미지 레지스트리 주소를 정확하게 검사할 수 있다.
+
+---
+
+### 이미지가 아니라 Pod 이름을 조회하려면?
+
+앞의 명령어는 조건에 일치하는 이미지 문자열을 출력한다.
+
+하지만 실제로 필요한 정보는 해당 이미지를 사용하는 Pod의 이름일 수 있다.
+
+이 경우에는 검색 대상을 다르게 설정해야 한다.
+
+**이미지 문자열을 먼저 선택한 뒤 Pod 이름을 조회하는 방식은 적절하지 않다.**
+
+예를 들어 다음과 같은 표현식을 생각해보자.
+
+```bash
+yq '
+  .items[].spec.containers[].image
+  | select(test("^registry[.]k8s[.]io/"))
+  | .metadata.name
+' pods.yaml
+```
+
+이 표현식은 의도한 결과를 반환하지 못한다.
+
+이미지 문자열을 선택한 시점에서 현재 데이터는 Pod 객체가 아니라 문자열이기 때문이다.
+
+따라서 `.metadata.name`에 접근할 수 있는 구조가 아니다.
+
+Pod 이름을 조회하려면 Pod 객체를 유지한 상태에서 내부 컨테이너의 이미지 조건을 검사해야 한다.
+
+---
+
+### any_c를 사용한 Pod 검색
+
+하나의 Pod에는 여러 컨테이너가 존재할 수 있다.
+
+이러한 상황에서는 `any_c` 연산자를 사용할 수 있다.
+
+`any_c`는 Sequence의 요소 중 하나라도 지정한 조건을 만족하면 `true`를 반환한다.
+
+기본적인 형태는 다음과 같다.
+
+```text
+any_c(조건식)
+```
+
+예를 들어 다음과 같은 Sequence가 있다고 가정하자.
+
+```yaml
+numbers:
+  - 1
+  - 2
+  - 3
+```
+
+다음 표현식은 요소 중 2보다 큰 값이 존재하는지 검사한다.
+
+```bash
+yq '.numbers | any_c(. > 2)' numbers.yaml
+```
+
+출력:
+
+```text
+true
+```
+
+3이 조건을 만족하기 때문이다.
+
+이 원리를 Kubernetes Pod 검색에도 적용할 수 있다.
+
+yq의 `any_c`는 배열의 각 요소에 조건을 적용하여 하나라도 참이면 참을 반환하는 연산자이다.
+
+---
+
+### 특정 이미지를 사용하는 Pod만 선택하기
+
+이제 Pod 이름을 출력하는 명령어를 작성해보자.
+
+```bash
+yq '
+  .items[]
+  | select(
+      .spec.containers
+      | any_c(.image | test("^registry[.]k8s[.]io/"))
+    )
+  | .metadata.name
+' pods.yaml
+```
+
+출력:
+
+```text
+coredns
+metrics-server
+```
+
+이 명령어는 다음 단계를 수행한다.
+
+첫째, 모든 Pod를 순회한다.
+
+```text
+.items[]
+```
+
+둘째, 각 Pod의 컨테이너 목록을 선택한다.
+
+```text
+.spec.containers
+```
+
+셋째, 컨테이너 중 하나라도 `registry.k8s.io/` 이미지를 사용하는지 검사한다.
+
+```text
+any_c(.image | test("^registry[.]k8s[.]io/"))
+```
+
+넷째, 조건을 만족하는 Pod의 이름을 출력한다.
+
+```text
+.metadata.name
+```
+
+전체 흐름은 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["Pod 목록"] --> B["각 Pod 순회"]
+
+    B --> C["containers Sequence"]
+    C --> D["각 Container의 image 확인"]
+
+    D --> E{"registry.k8s.io 이미지 존재?"}
+
+    E -->|"true"| F["Pod 선택"]
+    E -->|"false"| G["Pod 제외"]
+
+    F --> H["metadata.name 출력"]
+```
+
+실제 클러스터에서도 동일하게 사용할 수 있다.
+
+```bash
+kubectl get pods -A -o yaml |
+  yq '
+    .items[]
+    | select(
+        .spec.containers
+        | any_c(.image | test("^registry[.]k8s[.]io/"))
+      )
+    | .metadata.name
+  '
+```
+
+이 방식은 여러 컨테이너를 사용하는 Pod까지 고려할 수 있다는 장점이 있다.
+
+---
+
+### 하나의 Pod에 여러 컨테이너가 있을 때 주의할 점
+
+다음과 같은 Pod가 있다고 가정하자.
+
+```yaml
+apiVersion: v1
+kind: Pod
+
+metadata:
+  name: example-pod
+
+spec:
+  containers:
+    - name: application
+      image: nginx:1.27
+
+    - name: sidecar
+      image: registry.k8s.io/example/sidecar:v1
+```
+
+첫 번째 컨테이너는 `nginx`를 사용한다.
+
+두 번째 컨테이너는 `registry.k8s.io` 이미지를 사용한다.
+
+이때 다음처럼 첫 번째 컨테이너만 검사하면 문제가 발생할 수 있다.
+
+```text
+.spec.containers[0].image
+```
+
+첫 번째 컨테이너가 `nginx`이기 때문에 Pod가 검색되지 않는다.
+
+하지만 실제로는 두 번째 컨테이너에서 `registry.k8s.io` 이미지를 사용하고 있다.
+
+따라서 이미지 사용 여부를 기준으로 Pod를 검색할 때는 특정 인덱스 하나만 검사하기보다 전체 컨테이너를 확인하는 것이 정확하다.
+
+이러한 문제를 해결하는 방법이 `any_c`이다.
+
+```text
+.spec.containers | any_c(조건식)
+```
+
+이는 여러 개의 컨테이너 중 하나라도 조건을 만족하는지 확인한다.
+
+---
+
+### registry.k8s.io를 사용하지 않는 Pod 검색하기
+
+이번에는 반대 조건을 적용해보자.
+
+`registry.k8s.io` 이미지를 사용하는 일반 컨테이너가 없는 Pod를 조회할 수 있다.
+
+```bash
+yq '
+  .items[]
+  | select(
+      .spec.containers
+      | any_c(.image | test("^registry[.]k8s[.]io/"))
+      | not
+    )
+  | .metadata.name
+' pods.yaml
+```
+
+출력:
+
+```text
+web-api
+legacy-agent
+```
+
+여기서 `not`은 Boolean 결과를 반대로 바꾸는 연산자이다.
+
+따라서 다음 조건을 검사한다.
+
+> 일반 컨테이너 중 registry.k8s.io 이미지를 사용하는 컨테이너가 하나도 없는가?
+
+이 방식은 특정 이미지 레지스트리를 사용하지 않는 Pod를 찾을 때 유용하다.
+
+다만 이 명령어는 `spec.containers`만 검사한다.
+
+`initContainers` 또는 `ephemeralContainers`에 해당 레지스트리 이미지가 존재한다면 별도의 검사가 필요하다.
+
+---
+
+### k8s.gcr.io와 registry.k8s.io의 차이
+
+Kubernetes 이미지 검색에서는 이미지 레지스트리 변경 이력도 이해할 필요가 있다.
+
+과거 Kubernetes 프로젝트는 다음 주소를 사용했다.
+
+```text
+k8s.gcr.io
+```
+
+이후 Kubernetes 프로젝트의 이미지 레지스트리는 다음 주소로 이전되었다.
+
+```text
+registry.k8s.io
+```
+
+Kubernetes는 2023년 3월 20일부터 기존 `k8s.gcr.io` 요청을 새로운 레지스트리로 리다이렉트하기 시작했다.
+
+또한 2023년 4월 3일부터 기존 레지스트리에 새로운 이미지 릴리스를 게시하지 않도록 변경했다.
+
+따라서 새로운 Kubernetes 환경에서는 `registry.k8s.io` 사용을 기준으로 구성하는 것이 적절하다.
+
+이를 정리하면 다음과 같다.
+
+| 항목 | 기존 | 변경 후 |
+|---|---|---|
+| 이미지 레지스트리 | `k8s.gcr.io` | `registry.k8s.io` |
+| 새로운 이미지 배포 | 중단 | 사용 |
+| 권장 사용 | 기존 환경 호환 및 마이그레이션 대상 | 신규 설정에 사용 |
+| 운영 시 주의사항 | 리다이렉트 및 네트워크 정책 | 레지스트리 접근 허용 필요 |
+
+이러한 변경 사항을 고려하면 기존 레지스트리를 사용하는 Pod를 검색하는 작업도 중요하다.
+
+---
+
+### 기존 k8s.gcr.io 이미지를 사용하는 Pod 검색하기
+
+앞서 작성한 `pods.yaml`에는 다음 이미지를 사용하는 Pod가 존재한다.
+
+```text
+k8s.gcr.io/pause:3.5
+```
+
+이러한 이미지를 사용하는 Pod를 검색해보자.
+
+```bash
+yq '
+  .items[]
+  | select(
+      .spec.containers
+      | any_c(.image | test("^k8s[.]gcr[.]io/"))
+    )
+  | .metadata.name
+' pods.yaml
+```
+
+출력:
+
+```text
+legacy-agent
+```
+
+실제 Kubernetes에서는 다음과 같이 실행한다.
+
+```bash
+kubectl get pods -A -o yaml |
+  yq '
+    .items[]
+    | select(
+        .spec.containers
+        | any_c(.image | test("^k8s[.]gcr[.]io/"))
+      )
+    | .metadata.name
+  '
+```
+
+이 명령어는 기존 Kubernetes 이미지 레지스트리를 참조하는 Pod를 찾는 데 활용할 수 있다.
+
+다만 검색 결과가 존재한다고 해서 해당 Pod가 반드시 정상적으로 실행되지 않는다는 뜻은 아니다.
+
+기존 주소에 대한 리다이렉트 동작과 네트워크 환경에 따라 이미지를 가져올 수 있기 때문이다.
+
+따라서 검색 결과는 마이그레이션 점검 대상으로 활용하고, 실제 변경 여부는 사용 중인 이미지와 배포 환경을 확인하여 결정해야 한다.
+
+---
+
+### Pod 이름과 Namespace를 함께 출력하기
+
+여러 Namespace에 걸쳐 Pod를 조회하는 경우에는 이름만으로 리소스를 식별하기 어려울 수 있다.
+
+예를 들어 다음과 같은 상황이다.
+
+```text
+default/web-api
+development/web-api
+production/web-api
+```
+
+서로 다른 Namespace에 동일한 이름의 Pod가 존재할 수 있다.
+
+따라서 실제 운영에서는 Namespace와 Pod 이름을 함께 출력하는 것이 좋다.
+
+다음과 같이 작성할 수 있다.
+
+```bash
+yq '
+  .items[]
+  | select(
+      .spec.containers
+      | any_c(.image | test("^registry[.]k8s[.]io/"))
+    )
+  | .metadata.namespace + "/" + .metadata.name
+' pods.yaml
+```
+
+출력:
+
+```text
+kube-system/coredns
+kube-system/metrics-server
+```
+
+이렇게 하면 검색된 Pod가 어느 Namespace에 존재하는지 바로 확인할 수 있다.
+
+특히 클러스터 전체를 검색하는 `-A` 옵션과 함께 사용할 때 유용하다.
+
+---
+
+### initContainers까지 포함하여 이미지 검색하기
+
+Pod에는 일반 컨테이너 외에도 Init Container가 존재할 수 있다.
+
+Init Container는 애플리케이션의 일반 컨테이너가 시작되기 전에 필요한 초기화 작업을 수행하는 컨테이너이다.
+
+예를 들어 다음과 같은 Pod가 있다고 가정하자.
+
+```yaml
+apiVersion: v1
+kind: Pod
+
+metadata:
+  name: payment-service
+
+spec:
+  initContainers:
+    - name: init-config
+      image: registry.k8s.io/example/init-config:v1
+
+  containers:
+    - name: application
+      image: example/payment-service:1.0.0
+```
+
+이 경우 `registry.k8s.io` 이미지는 일반 컨테이너가 아니라 Init Container에서 사용되고 있다.
+
+따라서 다음 경로만 검사하면 검색되지 않는다.
+
+```text
+.spec.containers[].image
+```
+
+Init Container는 다음 경로에 존재한다.
+
+```text
+.spec.initContainers[].image
+```
+
+일반 컨테이너와 Init Container를 모두 검사하려면 두 Sequence를 결합할 수 있다.
+
+```bash
+kubectl get pods -A -o yaml |
+  yq '
+    .items[]
+    | select(
+        (
+          (.spec.containers // [])
+          +
+          (.spec.initContainers // [])
+        )
+        | any_c(.image | test("^registry[.]k8s[.]io/"))
+      )
+    | .metadata.namespace + "/" + .metadata.name
+  '
+```
+
+이 명령어는 다음 과정을 수행한다.
+
+첫 번째로 일반 컨테이너 목록을 가져온다.
+
+```text
+.spec.containers
+```
+
+두 번째로 Init Container 목록을 가져온다.
+
+```text
+.spec.initContainers
+```
+
+세 번째로 두 Sequence를 결합한다.
+
+```text
+(.spec.containers // []) + (.spec.initContainers // [])
+```
+
+여기서 `// []`는 필드가 존재하지 않거나 Null인 경우 빈 Sequence를 사용하기 위한 표현이다.
+
+마지막으로 결합된 컨테이너 목록에서 원하는 이미지를 사용하는 항목이 있는지 검사한다.
+
+이렇게 하면 일반 컨테이너와 Init Container를 모두 고려하여 Pod를 검색할 수 있다.
+
+필요하다면 디버깅용 Ephemeral Container 목록인 `spec.ephemeralContainers`까지 추가할 수도 있다.
+
+다만 검색 대상에 어떤 컨테이너 종류를 포함할지는 점검 목적에 맞게 결정해야 한다.
+
+---
+
+### Pod Spec에서 사용 중인 Key 조회하기
+
+이번에는 이미지 검색이 아니라 Kubernetes 리소스의 구조를 분석해보자.
+
+Kubernetes의 각 리소스는 서로 다른 `spec` 구조를 가진다.
+
+예를 들어 Pod의 `spec`에는 다음과 같은 설정이 존재할 수 있다.
+
+```yaml
+spec:
+  containers:
+    - name: application
+      image: nginx:1.27
+
+  dnsPolicy: ClusterFirst
+  restartPolicy: Always
+  serviceAccountName: default
+```
+
+여기서 `spec`은 Mapping이다.
+
+그 안에는 다음과 같은 Key가 존재한다.
+
+```text
+containers
+dnsPolicy
+restartPolicy
+serviceAccountName
+```
+
+이러한 Key 목록만 확인하고 싶다면 yq의 `keys` 연산자를 사용할 수 있다.
+
+---
+
+### keys 연산자란?
+
+`keys`는 Mapping에 존재하는 Key 목록을 반환하는 연산자이다.
+
+예를 들어 다음 YAML을 살펴보자.
+
+```yaml
+name: application
+age: 30
+enabled: true
+```
+
+다음 명령어를 실행한다.
+
+```bash
+yq 'keys' sample.yaml
+```
+
+출력:
+
+```yaml
+- name
+- age
+- enabled
+```
+
+즉 Mapping의 Key 목록이 Sequence로 반환된다.
+
+`keys`는 Mapping뿐 아니라 Sequence에도 사용할 수 있다.
+
+Sequence에 적용하면 요소의 인덱스 목록을 반환한다.
+
+하지만 Kubernetes 리소스의 `spec` 구조를 확인할 때는 주로 Mapping의 Key 목록을 조회하는 용도로 사용한다.
+
+---
+
+### Kubernetes Pod의 spec Key 조회하기
+
+실제 Kubernetes에서는 다음 명령어를 실행할 수 있다.
+
+```bash
+kubectl get pods -n kube-system -o yaml |
+  yq '.items[0].spec | keys'
+```
+
+이 명령어는 다음과 같은 의미를 가진다.
+
+| 표현식 | 의미 |
+|---|---|
+| `.items[0]` | 첫 번째 Pod |
+| `.spec` | 해당 Pod의 Spec |
+| `keys` | Spec Mapping의 Key 목록 |
+
+출력은 클러스터와 Pod 설정에 따라 달라진다.
+
+예를 들어 다음과 같은 Key가 나타날 수 있다.
+
+```yaml
+- containers
+- dnsPolicy
+- enableServiceLinks
+- nodeName
+- restartPolicy
+- schedulerName
+- serviceAccountName
+- terminationGracePeriodSeconds
+- volumes
+```
+
+이 결과를 통해 해당 Pod의 Spec에 어떤 설정 필드가 존재하는지 확인할 수 있다.
+
+하지만 여기서 중요한 차이를 이해해야 한다.
+
+**`keys`는 현재 객체에 실제로 존재하는 Key를 보여주는 것이지, Kubernetes가 지원하는 모든 설정 필드를 보여주는 것은 아니다.**
+
+이 차이를 구분하지 않으면 `keys` 결과를 Kubernetes API 스키마 전체로 잘못 이해할 수 있다.
+
+---
+
+### keys와 kubectl explain의 차이
+
+Kubernetes에서는 같은 리소스라도 어떤 설정을 사용했는지에 따라 `spec`에 존재하는 Key가 달라질 수 있다.
+
+예를 들어 다음 Pod에는 두 개의 필드만 작성되어 있다고 가정하자.
+
+```yaml
+apiVersion: v1
+kind: Pod
+
+metadata:
+  name: simple-pod
+
+spec:
+  containers:
+    - name: nginx
+      image: nginx:1.27
+
+  restartPolicy: Always
+```
+
+이 Manifest의 `spec`에 `keys`를 적용하면 다음과 같은 결과가 나타난다.
+
+```yaml
+- containers
+- restartPolicy
+```
+
+하지만 Kubernetes Pod에서는 이 외에도 많은 설정 필드를 지원한다.
+
+예를 들어 다음과 같은 필드가 있다.
+
+```text
+nodeSelector
+affinity
+tolerations
+volumes
+securityContext
+imagePullSecrets
+```
+
+이러한 필드를 모두 확인하려면 현재 객체를 조회하는 것보다 Kubernetes API 스키마를 확인해야 한다.
+
+이때 사용하는 명령어가 `kubectl explain`이다.
+
+```bash
+kubectl explain pod.spec
+```
+
+이 명령어는 Pod Spec에서 사용할 수 있는 필드와 설명을 조회한다.
+
+특정 필드의 구조도 확인할 수 있다.
+
+```bash
+kubectl explain pod.spec.containers
+```
+
+더 깊은 구조를 확인하려면 다음과 같이 작성할 수 있다.
+
+```bash
+kubectl explain pod.spec --recursive
+```
+
+`kubectl explain`은 Kubernetes API Server에서 제공하는 OpenAPI 정보를 기반으로 리소스 필드의 구조를 설명한다.
+
+따라서 두 명령어의 목적을 구분해야 한다.
+
+| 명령어 | 목적 |
+|---|---|
+| `yq '.spec \| keys'` | 현재 YAML에 존재하는 Spec Key 조회 |
+| `kubectl explain pod.spec` | Pod Spec에서 지원하는 필드 확인 |
+| `kubectl explain pod.spec --recursive` | 하위 필드까지 구조 확인 |
+| `kubectl explain pod.spec.containers` | 특정 필드의 구조와 설명 확인 |
+
+실무에서는 두 가지 방법을 함께 사용하면 좋다.
+
+현재 실행 중인 Pod가 어떤 설정을 사용하는지 확인할 때는 yq를 활용한다.
+
+반면 새로운 설정을 추가하거나 API 필드의 의미를 확인할 때는 `kubectl explain`을 활용한다.
+
+---
+
+### 모든 Pod의 Spec Key를 조회하려면?
+
+앞에서는 첫 번째 Pod만 선택했다.
+
+이번에는 모든 Pod의 Spec Key를 조회해보자.
+
+```bash
+kubectl get pods -n kube-system -o yaml |
+  yq '.items[].spec | keys'
+```
+
+이 명령어는 모든 Pod를 순회하면서 각 Pod의 Spec Key 목록을 반환한다.
+
+다만 Pod가 많다면 여러 Sequence가 반복적으로 출력되기 때문에 어느 Pod의 Key인지 구분하기 어려울 수 있다.
+
+이러한 경우에는 Pod 이름과 함께 정보를 출력하도록 구성하는 것이 좋다.
+
+예를 들어 다음과 같이 사용할 수 있다.
+
+```bash
+kubectl get pods -n kube-system -o yaml |
+  yq '
+    .items[]
+    | {
+        "name": .metadata.name,
+        "specKeys": (.spec | keys)
+      }
+  '
+```
+
+이 명령어는 각 Pod의 이름과 Spec Key 목록을 하나의 Mapping으로 구성한다.
+
+출력 예시는 다음과 같다.
+
+```yaml
+name: coredns
+specKeys:
+  - containers
+  - dnsPolicy
+  - restartPolicy
+  - serviceAccountName
+```
+
+실제 출력에는 Pod의 개수만큼 이러한 Mapping이 나타날 수 있다.
+
+이처럼 yq는 단순히 기존 YAML을 조회하는 것뿐 아니라 필요한 정보를 새로운 데이터 구조로 재구성하는 데에도 사용할 수 있다.
+
+---
+
+### kubectl 기본 출력과 yq의 차이
+
+Kubernetes에서 리소스를 조회할 때는 다양한 출력 형식을 사용할 수 있다.
+
+예를 들어 다음 명령어는 기본 형식으로 Service를 조회한다.
+
+```bash
+kubectl get services
+```
+
+출력:
+
+```text
+NAME             TYPE           CLUSTER-IP      EXTERNAL-IP   PORT(S)
+kube-dns         ClusterIP      10.43.0.10      <none>        53/UDP,53/TCP
+metrics-server   ClusterIP      10.43.100.20    <none>        443/TCP
+traffic          LoadBalancer   10.43.200.30    <pending>     80:30080/TCP
+```
+
+이 방식은 Service의 기본 상태를 빠르게 확인하기에 적합하다.
+
+하지만 특정 조건을 만족하는 리소스를 검색하려면 다음과 같이 작성할 수 있다.
+
+```bash
+kubectl get services -n kube-system -o yaml |
+  yq '.items[] | select(.spec.type == "LoadBalancer") | .metadata.name'
+```
+
+두 방식의 차이를 정리하면 다음과 같다.
+
+| 구분 | kubectl 기본 출력 | kubectl + yq |
+|---|---|---|
+| 주요 목적 | 리소스 상태 확인 | 구조화된 데이터 분석 |
+| 출력 필드 | 기본적으로 정해진 필드 | 원하는 필드 선택 가능 |
+| 조건 검색 | 지원되는 옵션을 중심으로 가능 | YAML 구조에 따른 복합 조건 가능 |
+| 중첩 필드 조회 | 기본 출력만으로는 제한적 | Mapping과 Sequence 경로 사용 |
+| 문자열 패턴 검색 | 별도 처리 필요 | `test()` 등 사용 |
+| Key 존재 여부 검사 | 기본 출력으로 확인하기 어려움 | `has()` 사용 |
+| 결과 재구성 | 출력 옵션에 따라 가능 | 새로운 Mapping이나 Sequence 생성 가능 |
+
+단, `kubectl` 자체에도 Label Selector, Field Selector, JSONPath, Custom Columns 같은 기능이 존재한다.
+
+따라서 yq가 없으면 Kubernetes 리소스를 세밀하게 조회할 수 없는 것은 아니다.
+
+yq의 장점은 **YAML 데이터를 하나의 구조화된 문서로 다루면서 여러 조건을 자유롭게 조합할 수 있다는 점**이다.
+
+---
+
+### 실무에서 Kubernetes와 yq를 활용하는 방법
+
+지금까지 살펴본 기능은 실제 Kubernetes 운영에서도 다양하게 활용할 수 있다.
+
+#### 1. 모든 Namespace의 LoadBalancer Service 검색
+
+```bash
+kubectl get services -A -o yaml |
+  yq '
+    .items[]
+    | select(.spec.type == "LoadBalancer")
+    | .metadata.namespace + "/" + .metadata.name
+  '
+```
+
+이 명령어를 사용하면 외부 Load Balancer와 연결되도록 선언된 Service를 확인할 수 있다.
+
+외부 접근 경로와 관련된 리소스를 점검할 때 유용하다.
+
+#### 2. NodePort Service 검색
+
+```bash
+kubectl get services -A -o yaml |
+  yq '
+    .items[]
+    | select(.spec.type == "NodePort")
+    | .metadata.namespace + "/" + .metadata.name
+  '
+```
+
+NodePort 타입의 Service를 조회한다.
+
+다만 `LoadBalancer` 타입의 Service에서도 NodePort가 할당될 수 있으므로, 실제 NodePort 사용 여부 전체를 점검하려면 Service 타입뿐 아니라 `spec.ports[].nodePort` 등의 필드도 함께 확인해야 한다.
+
+#### 3. data가 없는 ConfigMap 검색
+
+```bash
+kubectl get configmaps -A -o yaml |
+  yq '
+    .items[]
+    | select(has("data") == false)
+    | .metadata.namespace + "/" + .metadata.name
+  '
+```
+
+`data` Key가 존재하지 않는 ConfigMap을 조회한다.
+
+#### 4. 실제 문자열 설정값이 있는 ConfigMap 검색
+
+```bash
+kubectl get configmaps -A -o yaml |
+  yq '
+    .items[]
+    | select((.data // {} | length) > 0)
+    | .metadata.namespace + "/" + .metadata.name
+  '
+```
+
+`data` Mapping에 실제 항목이 존재하는 ConfigMap을 조회한다.
+
+#### 5. 특정 설정 Key를 가진 ConfigMap 검색
+
+```bash
+kubectl get configmaps -A -o yaml |
+  yq '
+    .items[]
+    | select(.data | has("LOG_LEVEL"))
+    | .metadata.namespace + "/" + .metadata.name
+  '
+```
+
+`LOG_LEVEL`이라는 설정 Key를 포함하는 ConfigMap을 찾을 수 있다.
+
+#### 6. 모든 Pod에서 사용하는 이미지 조회
+
+```bash
+kubectl get pods -A -o yaml |
+  yq '.items[].spec.containers[].image'
+```
+
+일반 컨테이너의 이미지 목록을 조회한다.
+
+#### 7. 특정 레지스트리를 사용하는 Pod 검색
+
+```bash
+kubectl get pods -A -o yaml |
+  yq '
+    .items[]
+    | select(
+        .spec.containers
+        | any_c(.image | test("^registry[.]k8s[.]io/"))
+      )
+    | .metadata.namespace + "/" + .metadata.name
+  '
+```
+
+`registry.k8s.io` 이미지를 사용하는 Pod를 검색한다.
+
+#### 8. 기존 Kubernetes 레지스트리 이미지 검색
+
+```bash
+kubectl get pods -A -o yaml |
+  yq '
+    .items[]
+    | select(
+        .spec.containers
+        | any_c(.image | test("^k8s[.]gcr[.]io/"))
+      )
+    | .metadata.namespace + "/" + .metadata.name
+  '
+```
+
+오래된 레지스트리 주소를 참조하는 일반 컨테이너를 확인한다.
+
+#### 9. 모든 Pod의 컨테이너 개수 확인
+
+```bash
+kubectl get pods -A -o yaml |
+  yq '
+    .items[]
+    | {
+        "namespace": .metadata.namespace,
+        "name": .metadata.name,
+        "containerCount": (.spec.containers | length)
+      }
+  '
+```
+
+Pod별 일반 컨테이너 수량을 확인할 수 있다.
+
+#### 10. 특정 Pod의 Spec Key 확인
+
+```bash
+kubectl get pod <pod-name> -n <namespace> -o yaml |
+  yq '.spec | keys'
+```
+
+해당 Pod에서 사용하고 있는 Spec 필드를 확인한다.
+
+#### 11. requests가 누락된 컨테이너 검색
+
+Kubernetes에서 CPU나 Memory requests를 지정하지 않은 컨테이너를 찾고 싶을 수 있다.
+
+다음과 같은 명령어를 사용할 수 있다.
+
+```bash
+kubectl get pods -A -o yaml |
+  yq '
+    .items[]
+    | select(
+        .spec.containers
+        | any_c(
+            .resources.requests.cpu == null
+            or
+            .resources.requests.memory == null
+          )
+      )
+    | .metadata.namespace + "/" + .metadata.name
+  '
+```
+
+이 명령어는 일반 컨테이너 중 CPU 또는 Memory requests 필드가 없는 컨테이너가 존재하는 Pod를 조회한다.
+
+다만 실제 Kubernetes에서는 LimitRange 등 Namespace 정책을 통해 기본 requests가 적용될 수 있다.
+
+또한 컨테이너가 유효한 requests 값을 갖고 있는지 판단하려면 CPU와 Memory 값의 형식 및 정책까지 검증해야 한다.
+
+따라서 이 명령어는 요청 자원 설정을 점검하기 위한 초기 검색 용도로 활용할 수 있다.
+
+#### 12. 특정 컨테이너의 이미지만 조회
+
+Pod에 여러 컨테이너가 존재한다면 이름을 기준으로 원하는 컨테이너를 검색할 수 있다.
+
+```bash
+kubectl get pod <pod-name> -n <namespace> -o yaml |
+  yq '
+    .spec.containers[]
+    | select(.name == "application")
+    | .image
+  '
+```
+
+이 명령어는 컨테이너 이름이 `application`인 항목의 이미지 값만 출력한다.
+
+---
+
+### Kubernetes 운영에서 yq 사용 시 주의사항
+
+#### 1. 검색 결과가 없다고 오류라고 판단하지 않는다
+
+예를 들어 다음 명령어를 실행했다고 가정하자.
+
+```bash
+kubectl get services -n kube-system -o yaml |
+  yq '.items[] | select(.spec.type == "LoadBalancer") | .metadata.name'
+```
+
+해당 Namespace에 `LoadBalancer` Service가 없다면 아무것도 출력되지 않을 수 있다.
+
+이는 YAML 파싱 오류가 아니라 조건에 일치하는 데이터가 없기 때문일 수 있다.
+
+따라서 명령어 실행 오류와 검색 결과가 비어 있는 상황을 구분해야 한다.
+
+#### 2. 검색 대상이 Sequence인지 Mapping인지 확인한다
+
+다음 표현식은 Pod 목록 전체를 선택한다.
+
+```text
+.items
+```
+
+반면 다음 표현식은 각 Pod를 개별적으로 선택한다.
+
+```text
+.items[]
+```
+
+`select`에서 Pod별 설정을 검사하려면 보통 `items[]`를 사용해야 한다.
+
+이 차이를 이해하지 못하면 잘못된 계층에 조건을 적용할 수 있다.
+
+#### 3. 특정 인덱스에만 의존하지 않는다
+
+다음 표현식은 첫 번째 컨테이너만 검사한다.
+
+```text
+.spec.containers[0].image
+```
+
+하지만 Sidecar Container가 존재하는 Pod에서는 두 번째 이후의 컨테이너에 원하는 이미지가 있을 수 있다.
+
+따라서 모든 컨테이너를 검사해야 한다면 `[]`나 `any_c`를 사용하는 것이 적절하다.
+
+#### 4. Key 존재 여부와 데이터 존재 여부를 구분한다
+
+다음 두 YAML은 의미가 다르다.
+
+```yaml
+data: {}
+```
+
+```yaml
+metadata:
+  name: empty-config
+```
+
+첫 번째는 `data` Key가 존재하지만 Mapping이 비어 있다.
+
+두 번째는 `data` Key가 존재하지 않는다.
+
+따라서 `has("data")`와 `length`를 이용한 검사는 서로 다른 목적을 가진다.
+
+#### 5. 현재 객체의 필드와 API 스키마를 구분한다
+
+`yq '.spec | keys'`는 해당 객체에 실제로 존재하는 Key만 조회한다.
+
+Kubernetes에서 사용할 수 있는 모든 필드를 확인하려면 `kubectl explain`을 이용해야 한다.
+
+#### 6. 이미지 문자열과 실제 실행 이미지를 구분한다
+
+`spec.containers[].image`는 Pod에 선언된 이미지 참조를 의미한다.
+
+하지만 실제 컨테이너 런타임에서 사용한 이미지의 고유 Digest나 이미지 ID와는 다를 수 있다.
+
+실제로 사용된 이미지 ID를 확인하려면 `status.containerStatuses[].imageID`를 조회할 수 있다.
+
+```bash
+kubectl get pods -A -o yaml |
+  yq '.items[].status.containerStatuses[]?.imageID'
+```
+
+컨테이너가 아직 실행되지 않았거나 상태 정보가 없는 경우에는 해당 값이 존재하지 않을 수 있다.
+
+따라서 이미지 설정을 점검하는 것과 실제 실행 이미지의 식별자를 확인하는 것은 구분해야 한다.
+
+---
+
+### Kubernetes 리소스 검색의 전체 구조
+
+지금까지 살펴본 내용을 정리하면 yq를 이용한 Kubernetes 리소스 검색은 다음과 같은 구조로 이루어진다.
+
+```mermaid
+flowchart TD
+    A["kubectl get -o yaml"] --> B["Kubernetes List"]
+
+    B --> C["items[]"]
+
+    C --> D{"리소스 종류"}
+
+    D -->|"Service"| E["spec.type"]
+    D -->|"ConfigMap"| F["data"]
+    D -->|"Pod"| G["spec.containers"]
+
+    E --> H["select"]
+    F --> I["has"]
+    G --> J["any_c / test"]
+
+    H --> K["metadata.name"]
+    I --> K
+    J --> K
+
+    K --> L["필요한 리소스 이름 출력"]
+```
+
+여기서 핵심은 세 단계이다.
+
+**첫 번째는 리소스 목록에서 개별 객체를 선택하는 것이다.**
+
+```text
+.items[]
+```
+
+**두 번째는 각 객체의 원하는 필드에 접근하는 것이다.**
+
+```text
+.spec.type
+```
+
+```text
+.data
+```
+
+```text
+.spec.containers
+```
+
+**세 번째는 조건을 적용한 후 필요한 결과만 출력하는 것이다.**
+
+```text
+select(...)
+```
+
+```text
+.metadata.name
+```
+
+이 세 단계를 이해하면 Kubernetes의 다양한 리소스에 대해 구조적인 검색을 수행할 수 있다.
+
+---
+
+### 정리
+
+Kubernetes에서는 `kubectl`을 사용하여 다양한 리소스를 조회할 수 있다.
+
+기본적인 `kubectl get` 명령어는 리소스의 주요 상태를 확인하는 데 유용하다.
+
+하지만 특정 조건을 만족하는 리소스를 검색하거나 중첩된 설정을 분석하려면 추가적인 처리가 필요할 수 있다.
+
+이때 `kubectl get -o yaml`과 yq를 조합하면 구조적인 검색이 가능하다.
+
+이번에 살펴본 핵심 연산자는 다음과 같다.
+
+| 연산자 | 역할 |
+|---|---|
+| `.items` | Kubernetes 리소스 목록 조회 |
+| `.items[]` | 모든 리소스 순회 |
+| `[0]` | 첫 번째 리소스 선택 |
+| `.spec.type` | Service 타입 조회 |
+| `.metadata.name` | 리소스 이름 조회 |
+| `select()` | 조건에 맞는 리소스 선택 |
+| `==` | 값이 같은지 비교 |
+| `!=` | 값이 다른지 비교 |
+| `has()` | 특정 Key 존재 여부 검사 |
+| `test()` | 문자열 정규표현식 검사 |
+| `any_c()` | Sequence에서 하나라도 조건을 만족하는지 검사 |
+| `not` | Boolean 결과 반전 |
+| `keys` | Mapping의 Key 목록 추출 |
+| `length` | Sequence 또는 Mapping의 길이 확인 |
+| `//` | 값이 없거나 Null인 경우 기본값 사용 |
+
+실제 Kubernetes에서 자주 사용하는 주요 명령어도 정리해보자.
+
+**LoadBalancer Service 검색**
+
+```bash
+kubectl get services -A -o yaml |
+  yq '.items[] | select(.spec.type == "LoadBalancer") | .metadata.name'
+```
+
+**data Key가 있는 ConfigMap 검색**
+
+```bash
+kubectl get configmaps -A -o yaml |
+  yq '.items[] | select(has("data")) | .metadata.name'
+```
+
+**data Key가 없는 ConfigMap 검색**
+
+```bash
+kubectl get configmaps -A -o yaml |
+  yq '.items[] | select(has("data") == false) | .metadata.name'
+```
+
+**모든 Pod의 컨테이너 이미지 조회**
+
+```bash
+kubectl get pods -A -o yaml |
+  yq '.items[].spec.containers[].image'
+```
+
+**특정 이미지 레지스트리를 사용하는 Pod 검색**
+
+```bash
+kubectl get pods -A -o yaml |
+  yq '
+    .items[]
+    | select(
+        .spec.containers
+        | any_c(.image | test("^registry[.]k8s[.]io/"))
+      )
+    | .metadata.namespace + "/" + .metadata.name
+  '
+```
+
+**Pod Spec에 존재하는 Key 확인**
+
+```bash
+kubectl get pod <pod-name> -n <namespace> -o yaml |
+  yq '.spec | keys'
+```
+
+이러한 명령어를 활용하면 Kubernetes 리소스를 하나씩 확인하지 않고도 필요한 정보를 빠르게 검색할 수 있다.
+
+특히 운영 환경에서는 모든 Namespace에 걸쳐 Service, ConfigMap, Pod를 분석해야 하는 상황이 자주 발생한다.
+
+이때 yq를 사용하면 단순한 조회를 넘어 특정 조건에 맞는 리소스를 식별하고, 설정 누락이나 오래된 이미지 참조와 같은 문제를 점검하는 데에도 활용할 수 있다.
+
+다만 yq는 YAML을 처리하는 도구이지 Kubernetes API 스키마 자체를 검증하거나 모든 운영 문제를 자동으로 해결하는 도구는 아니다.
+
+따라서 현재 객체의 상태를 확인할 때는 yq를 사용하고, API 필드의 의미를 확인할 때는 `kubectl explain`을 활용하는 등 각 도구의 역할을 구분하는 것이 좋다.
+
+결국 Kubernetes에서 yq를 활용하는 핵심은 **리소스의 YAML 구조를 이해하고, 원하는 필드에 접근한 후 조건을 적용하여 필요한 정보만 추출하는 것**이다.
+
+이러한 방식을 익히면 복잡한 Kubernetes 클러스터에서도 리소스를 더욱 효율적으로 분석하고 관리할 수 있다.
+
+#### 한 줄 요약
+
+> Kubernetes에서는 `kubectl get -o yaml`과 yq를 조합하여 Service, ConfigMap, Pod 등의 리소스를 구조적으로 검색할 수 있으며, `select`, `has`, `any_c`, `test`, `keys` 등의 연산자를 활용하면 원하는 조건에 맞는 리소스를 정확하게 추출하고 운영 설정을 점검할 수 있다.
+
