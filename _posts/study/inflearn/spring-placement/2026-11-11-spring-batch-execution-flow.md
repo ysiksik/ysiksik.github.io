@@ -35924,3 +35924,3034 @@ JobContext / StepContext 조회
 #### 한 줄 요약
 
 > Spring Batch의 `@JobScope`와 `@StepScope`는 각각 `JobExecution`, `StepExecution` 단위로 Bean을 관리하는 Scope다. 애플리케이션 초기화 시점에는 Scoped Proxy를 준비하고, 실제 실행 시점에 `JobParameters`, `JobExecutionContext`, `StepExecutionContext` 등을 `@Value`와 SpEL로 바인딩한다. 내부적으로는 `JobScope`와 `StepScope`가 `JobContext`, `StepContext`를 이용해 대상 Bean을 생성하고 재사용하며, `JobSynchronizationManager`와 `StepSynchronizationManager`가 현재 실행 Context를 연결한다. 따라서 Late Binding의 핵심은 Scoped Proxy를 통한 지연 생성과 실행 단위별 Bean 관리에 있다.
+
+## @JobScope / @StepScope 아키텍처
+
+### Spring Batch JobScope와 StepScope 내부 아키텍처: Scoped Proxy, BeanFactory, JobContext와 Late Binding 동작 원리
+
+Spring Batch에서는 Job이 실행되는 시점에 전달된 파라미터나 실행 과정에서 생성된 데이터를 Bean에 주입해야 하는 경우가 많다.
+
+예를 들어 특정 날짜의 결제 데이터를 정산하는 배치를 생각해보자.
+
+```text
+SettlementJob
+    │
+    ├── requestDate = 2026-11-23
+    │
+    ▼
+SettlementStep
+    │
+    ▼
+SettlementTasklet
+    │
+    ▼
+해당 날짜의 결제 데이터 처리
+```
+
+이 배치는 실행할 때마다 서로 다른 날짜를 전달받을 수 있다.
+
+```text
+첫 번째 JobExecution
+    └── requestDate = 2026-11-23
+
+두 번째 JobExecution
+    └── requestDate = 2026-11-24
+
+세 번째 JobExecution
+    └── requestDate = 2026-11-25
+```
+
+이러한 요구사항을 처리하기 위해 Spring Batch는 `JobParameters`와 `@Value`를 이용한 파라미터 주입 기능을 제공한다.
+
+```java
+@Bean
+@StepScope
+public SettlementTasklet settlementTasklet(
+        @Value("#{jobParameters['requestDate']}")
+        String requestDate
+) {
+    return new SettlementTasklet(requestDate);
+}
+```
+
+이렇게 선언하면 Job 실행 시점에 전달된 requestDate를 SettlementTasklet에 주입할 수 있다.
+
+그런데 여기서 한 가지 의문이 생긴다.
+
+일반적인 Spring Bean은 애플리케이션이 시작될 때 생성된다.
+
+반면 JobParameters는 Job을 실행하는 시점에 결정된다.
+
+그렇다면 아직 존재하지 않는 JobParameters를 어떻게 Bean 생성 과정에서 참조할 수 있을까?
+
+또한 JobExecution마다 서로 다른 파라미터가 전달되는데, Spring은 어떻게 해당 실행에 맞는 Bean을 구분할 수 있을까?
+
+이러한 문제를 해결하는 핵심 기술이 **Scoped Proxy와 JobScope·StepScope의 실행 Context 관리**다.
+
+이번에는 이 구조가 내부적으로 어떻게 동작하는지 살펴보자.
+
+---
+
+### 개념
+
+#### @JobScope와 @StepScope란?
+
+Spring Batch는 배치 실행 단위에 따라 Bean을 관리하기 위해 두 가지 Scope를 제공한다.
+
+| Scope | 관리 단위 | 특징 |
+|---|---|---|
+| `@JobScope` | JobExecution | 하나의 Job 실행에서 대상 Bean 관리 |
+| `@StepScope` | StepExecution | 하나의 Step 실행에서 대상 Bean 관리 |
+
+여기서 중요한 점은 Bean의 생성 및 관리 범위가 일반적인 Singleton과 다르다는 것이다.
+
+일반적인 Singleton Bean은 하나의 ApplicationContext 안에서 Bean 정의당 하나의 인스턴스를 관리한다.
+
+반면 JobScope는 JobExecution마다 대상 Bean을 관리한다.
+
+StepScope는 StepExecution마다 대상 Bean을 관리한다.
+
+```mermaid
+flowchart TD
+    A["ApplicationContext"]
+
+    B["JobExecution 1"]
+    C["JobExecution 2"]
+
+    D["JobScopedBean A"]
+    E["JobScopedBean B"]
+
+    F["StepExecution 1"]
+    G["StepExecution 2"]
+
+    H["StepScopedBean A"]
+    I["StepScopedBean B"]
+
+    A --> B
+    A --> C
+
+    B --> D
+    C --> E
+
+    B --> F
+    B --> G
+
+    F --> H
+    G --> I
+```
+
+예를 들어 동일한 Job을 두 번 실행하면 JobExecution도 두 개가 생성된다.
+
+JobScope Bean은 각각의 JobExecution에 맞게 별도의 대상 인스턴스를 생성할 수 있다.
+
+또한 하나의 JobExecution에 두 개의 StepExecution이 존재한다면 StepScope Bean도 각 StepExecution에 맞게 관리된다.
+
+이러한 특성을 통해 동일한 배치 애플리케이션에서 여러 실행을 처리하더라도 실행별 데이터를 구분할 수 있다.
+
+---
+
+### 왜 Scoped Proxy를 사용하는가?
+
+JobScope와 StepScope가 반드시 해결해야 하는 문제가 있다.
+
+**Spring Bean이 필요한 시점과 실제 실행 데이터가 준비되는 시점이 다르다는 것이다.**
+
+일반적인 Spring Boot 애플리케이션의 초기화 과정은 다음과 같다.
+
+```text
+Spring Boot 시작
+    │
+    ▼
+ApplicationContext 생성
+    │
+    ▼
+BeanDefinition 등록
+    │
+    ▼
+Singleton Bean 생성
+    │
+    ▼
+애플리케이션 초기화 완료
+    │
+    ▼
+Job 실행
+```
+
+그런데 JobParameters는 Job 실행 시점에 전달된다.
+
+JobExecutionContext와 StepExecutionContext 역시 해당 실행 과정에서 준비된다.
+
+따라서 일반적인 Singleton Bean 생성 시점에는 이러한 데이터가 아직 존재하지 않을 수 있다.
+
+예를 들어 다음과 같은 코드를 살펴보자.
+
+```java
+@Bean
+public SettlementTasklet settlementTasklet(
+        @Value("#{jobParameters['requestDate']}")
+        String requestDate
+) {
+    return new SettlementTasklet(requestDate);
+}
+```
+
+별도의 Scope가 없는 경우 이 Bean은 기본적으로 Singleton이다.
+
+Spring이 애플리케이션 초기화 과정에서 Bean을 생성하려고 하면 `@Value` 표현식을 평가해야 한다.
+
+하지만 Job이 아직 실행되지 않았다면 현재 JobParameters를 참조할 수 없다.
+
+이 때문에 Bean 생성 과정에서 오류가 발생할 수 있다.
+
+그렇다면 실제 Bean의 생성을 Job 실행 시점까지 지연하면 어떨까?
+
+이 문제를 해결하기 위해 Spring Batch는 Scoped Proxy를 사용한다.
+
+---
+
+### Scoped Proxy의 기본 구조
+
+Scoped Proxy는 실제 Bean을 대신하여 외부에 노출되는 대리 객체다.
+
+외부 객체는 실제 Bean이 아니라 Proxy를 참조한다.
+
+이후 Proxy의 메서드가 호출되면 해당 실행 Scope에 맞는 실제 Bean을 찾아 메서드 호출을 위임한다.
+
+```mermaid
+flowchart LR
+    A["Client"]
+    B["Scoped Proxy"]
+    C["Scope"]
+    D["실제 Target Bean"]
+
+    A -->|"method()"| B
+    B -->|"대상 Bean 요청"| C
+    C -->|"Target 반환"| B
+    B -->|"method() 위임"| D
+    D -->|"결과 반환"| B
+    B -->|"결과 전달"| A
+```
+
+예를 들어 다음과 같은 Bean을 선언했다고 생각해보자.
+
+```java
+@Bean
+@StepScope
+public SettlementTasklet settlementTasklet(
+        @Value("#{jobParameters['requestDate']}")
+        String requestDate
+) {
+    return new SettlementTasklet(requestDate);
+}
+```
+
+애플리케이션 초기화 과정에서는 실제 SettlementTasklet을 즉시 생성하는 대신 Scoped Proxy를 준비한다.
+
+```text
+ApplicationContext
+    │
+    └── settlementTasklet
+            │
+            └── Scoped Proxy
+```
+
+그리고 실제 Step이 실행되면 Proxy가 호출된다.
+
+```text
+Step 실행
+    │
+    ▼
+Scoped Proxy
+    │
+    ▼
+StepScope
+    │
+    ▼
+실제 SettlementTasklet 생성
+    │
+    ▼
+requestDate 바인딩
+    │
+    ▼
+SettlementTasklet.execute()
+```
+
+여기서 중요한 점은 두 가지다.
+
+첫째, 애플리케이션 초기화 시점에는 Proxy를 준비한다.
+
+둘째, 실제 Target Bean은 실행 Context가 활성화된 이후 최초로 필요해지는 시점에 생성된다.
+
+이러한 구조가 Late Binding을 가능하게 만든다.
+
+---
+
+### @JobScope와 @StepScope의 Annotation 구조
+
+Spring Batch 5.2.4에서는 다음과 같은 Annotation을 제공한다.
+
+#### @JobScope
+
+```java
+@Scope(
+        value = "job",
+        proxyMode = ScopedProxyMode.TARGET_CLASS
+)
+@Retention(RetentionPolicy.RUNTIME)
+@Documented
+public @interface JobScope {
+}
+```
+
+#### @StepScope
+
+```java
+@Scope(
+        value = "step",
+        proxyMode = ScopedProxyMode.TARGET_CLASS
+)
+@Retention(RetentionPolicy.RUNTIME)
+@Documented
+public @interface StepScope {
+}
+```
+
+두 Annotation은 구조가 거의 동일하다.
+
+차이점은 Scope 이름이다.
+
+| 구분 | @JobScope | @StepScope |
+|---|---|---|
+| Scope 이름 | job | step |
+| Proxy 모드 | TARGET_CLASS | TARGET_CLASS |
+| 대상 관리 기준 | JobExecution | StepExecution |
+| 대상 Context | JobContext | StepContext |
+
+이 코드에서 중요한 부분은 다음과 같다.
+
+```java
+proxyMode = ScopedProxyMode.TARGET_CLASS
+```
+
+이는 클래스 기반 Proxy를 사용하도록 지정하는 설정이다.
+
+---
+
+### TARGET_CLASS와 INTERFACES의 차이
+
+Spring은 Proxy를 생성할 때 대표적으로 두 가지 방식을 사용할 수 있다.
+
+첫 번째는 JDK 동적 Proxy다.
+
+두 번째는 CGLIB 기반 클래스 Proxy다.
+
+#### JDK 동적 Proxy
+
+JDK 동적 Proxy는 인터페이스를 기반으로 Proxy를 생성한다.
+
+예를 들어 다음과 같은 인터페이스가 있다고 생각해보자.
+
+```java
+public interface PaymentService {
+
+    void process();
+}
+```
+
+그리고 구현체가 존재한다.
+
+```java
+public class PaymentServiceImpl
+        implements PaymentService {
+
+    @Override
+    public void process() {
+        System.out.println("Payment Process");
+    }
+}
+```
+
+JDK 동적 Proxy는 PaymentService 인터페이스를 구현하는 Proxy 객체를 생성할 수 있다.
+
+```text
+PaymentService
+    │
+    ├── PaymentServiceImpl
+    │
+    └── JDK Dynamic Proxy
+```
+
+이 방식에서는 인터페이스에 정의된 메서드를 기준으로 호출을 가로챌 수 있다.
+
+#### CGLIB 기반 클래스 Proxy
+
+CGLIB은 클래스를 상속하는 방식으로 Proxy를 생성한다.
+
+예를 들어 다음과 같은 클래스가 있다고 생각해보자.
+
+```java
+public class PaymentService {
+
+    public void process() {
+        System.out.println("Payment Process");
+    }
+}
+```
+
+CGLIB은 개념적으로 다음과 같은 하위 클래스를 생성할 수 있다.
+
+```java
+public class PaymentServiceProxy
+        extends PaymentService {
+
+    @Override
+    public void process() {
+
+        // Proxy 처리
+
+        // 실제 Target 객체의 메서드 호출
+    }
+}
+```
+
+위 코드는 Proxy의 동작 원리를 설명하기 위한 예시다.
+
+실제로 Spring이 생성하는 클래스의 내부 구조와는 차이가 있다.
+
+#### 두 방식 비교
+
+| 구분 | JDK 동적 Proxy | CGLIB 클래스 Proxy |
+|---|---|---|
+| 기반 | 인터페이스 | 클래스 상속 |
+| 인터페이스 필요 | 필요 | 필요하지 않음 |
+| 대상 클래스 상속 | 하지 않음 | 사용 |
+| 주요 호출 대상 | 인터페이스 메서드 | 오버라이딩 가능한 메서드 |
+| final 클래스 | 인터페이스 기반 Proxy 가능 | 클래스 기반 Proxy 생성 불가 |
+| final 메서드 | 인터페이스 호출 경로에 따라 다름 | 오버라이딩을 통한 가로채기 불가 |
+
+`@JobScope`와 `@StepScope`는 기본적으로 `TARGET_CLASS`를 사용한다.
+
+따라서 일반적인 설정에서는 클래스 기반 Scoped Proxy를 사용한다.
+
+다만 실제 런타임에서 어떤 Proxy 방식이 사용되었는지는 다른 Proxy 설정과 Bean의 타입에 영향을 받을 수 있으므로 확인하는 것이 좋다.
+
+특히 Scoped Proxy에 사용되는 클래스는 final 선언이나 final 메서드로 인해 Proxy 적용이 제한될 수 있다.
+
+---
+
+### Scoped Proxy와 AOP의 관계
+
+Scoped Proxy는 Spring AOP 인프라를 활용한다.
+
+일반적인 Spring AOP에서는 다음과 같은 구조를 생각할 수 있다.
+
+```text
+Client
+    │
+    ▼
+Proxy
+    │
+    ├── 부가 기능 수행
+    │
+    ▼
+Target Method
+```
+
+예를 들어 트랜잭션 처리를 위한 Proxy라면 메서드 실행 전후에 트랜잭션 관련 작업을 수행할 수 있다.
+
+반면 Scoped Proxy의 주요 목적은 조금 다르다.
+
+**현재 실행 Scope에 맞는 Target Bean을 찾아 해당 메서드 호출을 위임하는 것**이다.
+
+```text
+Client
+    │
+    ▼
+Scoped Proxy
+    │
+    ▼
+현재 Scope 조회
+    │
+    ▼
+Target Bean 조회
+    │
+    ▼
+실제 메서드 실행
+```
+
+따라서 Scoped Proxy를 일반적인 트랜잭션 AOP와 완전히 동일하게 이해해서는 안 된다.
+
+두 기능 모두 Proxy 기술을 활용하지만 목적이 다르다.
+
+---
+
+### Spring Batch Scope의 주요 구성요소
+
+Spring Batch의 JobScope와 StepScope가 동작하기 위해서는 여러 객체가 함께 사용된다.
+
+대표적인 구성요소는 다음과 같다.
+
+| 구성요소 | 역할 |
+|---|---|
+| `ApplicationContext` | BeanDefinition 및 Bean 관리 |
+| `BeanFactory` | 실제 Bean 생성과 조회 |
+| `Scoped Proxy` | Target Bean 조회 및 메서드 호출 위임 |
+| `BatchScopeSupport` | Batch Scope 등록 및 Proxy 구성 지원 |
+| `JobScope` | JobExecution 단위 Target Bean 관리 |
+| `StepScope` | StepExecution 단위 Target Bean 관리 |
+| `JobContext` | JobScope 대상 Bean 저장 |
+| `StepContext` | StepScope 대상 Bean 저장 |
+| `JobSynchronizationManager` | 현재 JobContext 조회 |
+| `StepSynchronizationManager` | 현재 StepContext 조회 |
+
+이 객체들의 관계를 이해하면 Scoped Proxy가 실제 Target Bean을 어떻게 찾는지 설명할 수 있다.
+
+---
+
+### BatchScopeSupport란?
+
+`BatchScopeSupport`는 Spring Batch의 JobScope와 StepScope가 공통으로 사용하는 기반 클래스다.
+
+Spring Batch 5.2.4에서는 다음과 같은 상속 구조를 가진다.
+
+```java
+public class JobScope extends BatchScopeSupport {
+}
+```
+
+```java
+public class StepScope extends BatchScopeSupport {
+}
+```
+
+BatchScopeSupport는 Spring의 `Scope`, `BeanFactoryPostProcessor`, `Ordered` 인터페이스를 구현한다.
+
+```java
+public abstract class BatchScopeSupport
+        implements Scope,
+                   BeanFactoryPostProcessor,
+                   Ordered {
+}
+```
+
+이 클래스의 주요 역할은 다음과 같다.
+
+- Batch Scope 등록
+- BeanDefinition 처리
+- Scope 기반 Proxy 생성 지원
+- Proxy 대상 BeanDefinition 구성
+
+여기서 중요한 인터페이스가 `BeanFactoryPostProcessor`다.
+
+---
+
+### BeanFactoryPostProcessor의 역할
+
+BeanFactoryPostProcessor는 BeanFactory에 등록된 BeanDefinition을 대상으로 추가적인 설정 작업을 수행할 수 있는 인터페이스다.
+
+일반적인 Spring Bean 생성 과정에서는 먼저 BeanDefinition이 등록된다.
+
+이후 BeanFactoryPostProcessor가 BeanDefinition을 조정할 수 있다.
+
+```text
+ApplicationContext
+    │
+    ▼
+BeanDefinition 등록
+    │
+    ▼
+BeanFactoryPostProcessor 실행
+    │
+    ▼
+BeanDefinition 수정
+    │
+    ▼
+Bean 생성
+```
+
+BatchScopeSupport는 이 과정에서 JobScope 또는 StepScope에 해당하는 BeanDefinition을 처리한다.
+
+대표적으로 다음 메서드를 사용한다.
+
+```java
+postProcessBeanFactory(...)
+```
+
+이 메서드에서는 Scope를 BeanFactory에 등록한다.
+
+핵심 동작은 다음과 같다.
+
+```java
+beanFactory.registerScope(
+        scopeName,
+        scopeInstance
+);
+```
+
+여기서 scopeName은 job 또는 step이 될 수 있다.
+
+따라서 Spring BeanFactory는 해당 이름을 가진 Scope를 인식할 수 있다.
+
+또한 필요한 경우 Scoped Proxy에 대한 BeanDefinition도 구성한다.
+
+---
+
+### Scoped Proxy BeanDefinition은 어떻게 구성될까?
+
+Scoped Proxy를 사용하면 외부에 노출되는 Bean과 실제 대상 Bean을 구분해야 한다.
+
+예를 들어 다음과 같은 Bean을 선언했다고 생각해보자.
+
+```java
+@Bean
+@StepScope
+public SettlementTasklet settlementTasklet(
+        @Value("#{jobParameters['requestDate']}")
+        String requestDate
+) {
+    return new SettlementTasklet(requestDate);
+}
+```
+
+Spring은 Scoped Proxy를 구성할 때 개념적으로 다음 두 가지를 관리한다.
+
+```text
+settlementTasklet
+    │
+    └── Scoped Proxy
+```
+
+```text
+scopedTarget.settlementTasklet
+    │
+    └── 실제 Target Bean 정의
+```
+
+여기서 `scopedTarget.`은 Spring의 Scoped Proxy 처리에서 사용하는 대표적인 내부 이름 형식이다.
+
+실제 내부 이름은 BeanDefinition 구성 방식에 따라 확인해야 한다.
+
+중요한 것은 두 Bean이 같은 역할을 수행하지 않는다는 것이다.
+
+| 구분 | 역할 |
+|---|---|
+| 외부 Bean 이름 | Scoped Proxy에 대한 접근 |
+| 내부 Target Bean 이름 | 실제 대상 Bean의 생성과 조회 |
+
+외부 객체는 일반적으로 Proxy를 주입받는다.
+
+Proxy는 실제 메서드가 호출되면 내부 Target Bean을 조회한다.
+
+이때 Target Bean은 현재 JobScope 또는 StepScope를 기준으로 관리된다.
+
+---
+
+### 왜 Proxy와 Target Bean을 분리할까?
+
+예를 들어 Singleton Bean인 Step이 있다고 생각해보자.
+
+```java
+@Bean
+public Step settlementStep(
+        JobRepository jobRepository,
+        PlatformTransactionManager transactionManager,
+        SettlementTasklet settlementTasklet
+) {
+    return new StepBuilder(
+            "settlementStep",
+            jobRepository
+    )
+            .tasklet(
+                    settlementTasklet,
+                    transactionManager
+            )
+            .build();
+}
+```
+
+여기서 settlementStep은 일반적인 Singleton Bean이다.
+
+반면 SettlementTasklet에는 StepScope가 적용되어 있다.
+
+그렇다면 Singleton Step은 어떤 Tasklet을 참조할까?
+
+실제 대상 Tasklet을 직접 참조하면 문제가 발생할 수 있다.
+
+왜냐하면 Tasklet은 StepExecution마다 달라질 수 있기 때문이다.
+
+따라서 Singleton Step에는 실제 대상 Bean 대신 Scoped Proxy가 주입된다.
+
+```text
+Singleton Step
+    │
+    ▼
+Scoped Proxy
+    │
+    ├── StepExecution 1
+    │      └── SettlementTasklet A
+    │
+    └── StepExecution 2
+           └── SettlementTasklet B
+```
+
+Step 객체는 동일한 Proxy를 계속 참조한다.
+
+하지만 Proxy가 찾아가는 실제 대상 Bean은 현재 StepExecution에 따라 달라질 수 있다.
+
+**이것이 Scope가 다른 Bean 사이에서도 의존성을 안정적으로 연결할 수 있는 이유다.**
+
+---
+
+### JobScope 클래스의 역할
+
+이제 실제 Scope 구현체를 살펴보자.
+
+JobScope는 JobExecution을 기준으로 대상 Bean을 관리한다.
+
+대표적인 메서드는 다음과 같다.
+
+| 메서드 | 역할 |
+|---|---|
+| `get()` | 대상 Bean 조회 또는 생성 |
+| `remove()` | 대상 Bean 참조 제거 |
+| `getConversationId()` | 현재 Scope 식별자 조회 |
+| `registerDestructionCallback()` | 종료 시 수행할 정리 작업 등록 |
+| `resolveContextualObject()` | SpEL에서 사용할 실행 정보 조회 |
+
+이 중 가장 중요한 메서드는 `get()`이다.
+
+Scoped Proxy가 실제 대상 Bean을 찾아야 할 때 JobScope의 get()이 사용된다.
+
+---
+
+### JobScope.get() 내부 동작
+
+JobScope는 현재 JobContext를 가져온다.
+
+그리고 해당 Context에서 대상 Bean을 조회한다.
+
+대상 Bean이 이미 존재하면 기존 인스턴스를 반환한다.
+
+존재하지 않으면 BeanFactory가 제공한 ObjectFactory를 통해 대상 Bean을 생성한다.
+
+그 후 생성된 Bean을 JobContext에 저장한다.
+
+핵심 동작을 단순화하면 다음과 같다.
+
+```java
+public Object get(
+        String beanName,
+        ObjectFactory<?> factory
+) {
+
+    JobContext currentContext =
+            findCurrentJobContext();
+
+    Object target =
+            currentContext.getAttribute(beanName);
+
+    if (target != null) {
+        return target;
+    }
+
+    // 실제 구현에는 동시 접근 제어가 포함된다.
+    target = factory.getObject();
+
+    currentContext.setAttribute(
+            beanName,
+            target
+    );
+
+    return target;
+}
+```
+
+위 코드는 동작 원리를 설명하기 위한 의사 코드다.
+
+실제 구현에서는 동시 접근 시 동일한 Bean이 중복 생성되지 않도록 추가적인 동기화 처리를 수행한다.
+
+이 메서드에서 가장 중요한 부분은 다음 세 가지다.
+
+#### 첫 번째: 현재 JobContext 조회
+
+```java
+JobContext currentContext =
+        findCurrentJobContext();
+```
+
+실제로는 JobSynchronizationManager를 통해 현재 JobContext를 조회한다.
+
+#### 두 번째: 기존 Target Bean 확인
+
+```java
+Object target =
+        currentContext.getAttribute(beanName);
+```
+
+현재 JobExecution에서 이미 생성한 Bean이 있는지 확인한다.
+
+#### 세 번째: 대상 Bean 생성
+
+```java
+target = factory.getObject();
+```
+
+기존 Bean이 없다면 실제 대상 Bean을 생성한다.
+
+그리고 JobContext에 저장한다.
+
+```java
+currentContext.setAttribute(
+        beanName,
+        target
+);
+```
+
+따라서 이후 동일한 JobExecution에서 같은 Bean을 요청하면 기존 대상 인스턴스를 재사용할 수 있다.
+
+---
+
+### JobContext는 ApplicationContext와 같은 객체일까?
+
+JobContext는 Scope Bean을 관리하기 위한 실행 Context다.
+
+하지만 ApplicationContext와 동일한 객체는 아니다.
+
+두 객체의 책임은 다르다.
+
+| 구분 | ApplicationContext | JobContext |
+|---|---|---|
+| 주요 역할 | Spring Bean 구성과 관리 | JobExecution 단위 Scope 관리 |
+| BeanDefinition 관리 | 지원 | 직접 수행하지 않음 |
+| 의존성 주입 | 지원 | 직접 수행하지 않음 |
+| Bean 생성 | BeanFactory를 통해 수행 | ObjectFactory에 생성 요청 |
+| 대상 Bean 저장 | Spring 컨테이너의 관리 구조 | Scope 속성 저장소 |
+| 생명주기 | 애플리케이션 Context | JobExecution |
+
+JobContext를 작은 ApplicationContext라고 이해하면 개념적으로 도움이 될 수 있다.
+
+하지만 정확하게는 **현재 JobExecution의 Scope에 속한 Bean 인스턴스를 저장하고 조회하는 Context**다.
+
+실제 Bean 생성은 여전히 Spring BeanFactory의 기능을 이용한다.
+
+따라서 JobContext가 독립적인 IoC 컨테이너를 생성하는 것은 아니다.
+
+---
+
+### StepScope 클래스의 역할
+
+StepScope도 JobScope와 비슷하게 동작한다.
+
+차이점은 관리 단위다.
+
+JobScope는 JobContext를 사용한다.
+
+StepScope는 StepContext를 사용한다.
+
+StepScope는 StepSynchronizationManager를 통해 현재 StepContext를 조회한다.
+
+그리고 해당 StepContext에서 대상 Bean을 검색한다.
+
+```text
+StepScope.get()
+    │
+    ▼
+현재 StepContext 조회
+    │
+    ▼
+Target Bean 존재 여부 확인
+    │
+    ├── 존재
+    │      └── 기존 Bean 반환
+    │
+    └── 없음
+           │
+           ▼
+       BeanFactory에 생성 요청
+           │
+           ▼
+       Target Bean 생성
+           │
+           ▼
+       StepContext에 저장
+           │
+           ▼
+       Target Bean 반환
+```
+
+따라서 StepScope는 JobScope와 동일한 원리를 사용하지만 StepExecution을 기준으로 Bean을 구분한다.
+
+---
+
+### JobSynchronizationManager와 StepSynchronizationManager
+
+여기서 한 가지 의문이 생긴다.
+
+JobScope는 현재 JobExecution이 무엇인지 어떻게 알 수 있을까?
+
+StepScope는 현재 StepExecution이 무엇인지 어떻게 구분할까?
+
+이를 위해 Spring Batch는 다음 객체를 사용한다.
+
+```java
+JobSynchronizationManager
+```
+
+```java
+StepSynchronizationManager
+```
+
+두 객체는 현재 실행 스레드와 JobExecution 또는 StepExecution을 연결하는 역할을 한다.
+
+내부적으로는 ThreadLocal 기반의 실행 Context 관리 구조를 이용한다.
+
+그러나 ThreadLocal이 곧 Scope의 관리 단위가 되는 것은 아니다.
+
+ThreadLocal은 현재 스레드가 어떤 실행 Context를 사용해야 하는지 찾기 위한 수단이다.
+
+실제 Scoped Bean의 관리 단위는 JobExecution 또는 StepExecution이다.
+
+```mermaid
+flowchart TD
+    A["실행 스레드"]
+    B["ThreadLocal 실행 정보"]
+
+    C["JobExecution"]
+    D["StepExecution"]
+
+    E["JobContext"]
+    F["StepContext"]
+
+    G["JobScopedBean"]
+    H["StepScopedBean"]
+
+    A --> B
+
+    B --> C
+    B --> D
+
+    C --> E
+    D --> F
+
+    E --> G
+    F --> H
+```
+
+이 구조를 통해 Proxy는 현재 실행 단위에 맞는 Target Bean을 찾을 수 있다.
+
+---
+
+### Scoped Proxy가 실제 Bean을 찾는 전체 과정
+
+지금까지 살펴본 내용을 연결해보자.
+
+Scoped Proxy는 Target Bean을 직접 생성하지 않는다.
+
+Proxy는 Spring의 TargetSource를 통해 실제 대상을 조회한다.
+
+TargetSource는 BeanFactory를 이용해 대상 Bean을 요청한다.
+
+BeanFactory는 해당 Bean의 Scope를 확인한다.
+
+그리고 JobScope 또는 StepScope의 get() 메서드를 통해 Target Bean을 가져온다.
+
+전체 흐름은 다음과 같다.
+
+```mermaid
+sequenceDiagram
+    participant Client as Step 또는 다른 Bean
+    participant Proxy as Scoped Proxy
+    participant TargetSource as TargetSource
+    participant Factory as BeanFactory
+    participant Scope as JobScope 또는 StepScope
+    participant Context as JobContext 또는 StepContext
+    participant Target as 실제 Target Bean
+
+    Client->>Proxy: method()
+
+    Proxy->>TargetSource: getTarget()
+
+    TargetSource->>Factory: getBean(targetName)
+
+    Factory->>Scope: get(beanName, objectFactory)
+
+    Scope->>Context: getAttribute(beanName)
+
+    alt 대상 Bean이 존재함
+        Context-->>Scope: 기존 Target
+    else 대상 Bean이 없음
+        Scope->>Factory: objectFactory.getObject()
+        Factory->>Target: 실제 Bean 생성
+        Factory-->>Scope: 생성된 Target
+        Scope->>Context: setAttribute(beanName, Target)
+    end
+
+    Scope-->>Factory: Target
+    Factory-->>TargetSource: Target
+    TargetSource-->>Proxy: Target
+
+    Proxy->>Target: method() 호출
+    Target-->>Proxy: 실행 결과
+    Proxy-->>Client: 결과 반환
+```
+
+여기서 가장 중요한 흐름은 다음과 같다.
+
+**Proxy → TargetSource → BeanFactory → Scope → Context → Target Bean**
+
+이 구조를 정확하게 이해하면 Scoped Proxy가 어떻게 실제 Bean을 찾고 메서드 호출을 위임하는지 알 수 있다.
+
+---
+
+### Bean 생성 시점에 @Value는 어떻게 처리될까?
+
+이번에는 Late Binding이 실제로 적용되는 순간을 살펴보자.
+
+다음과 같은 Bean이 있다고 생각해보자.
+
+```java
+@Bean
+@StepScope
+public SettlementTasklet settlementTasklet(
+        @Value("#{jobParameters['requestDate']}")
+        String requestDate
+) {
+    return new SettlementTasklet(requestDate);
+}
+```
+
+애플리케이션 초기화 시점에는 Proxy가 준비된다.
+
+하지만 실제 SettlementTasklet은 아직 생성되지 않을 수 있다.
+
+이후 Step이 실행된다.
+
+Step이 Proxy를 통해 Tasklet의 execute()를 호출하면 실제 대상 Bean이 필요해진다.
+
+이때 BeanFactory는 SettlementTasklet을 생성한다.
+
+그리고 Bean 생성 메서드의 인자를 준비하면서 `@Value` 표현식을 평가한다.
+
+```java
+@Value("#{jobParameters['requestDate']}")
+```
+
+이 표현식은 Spring Expression Language인 SpEL을 이용한다.
+
+SpEL은 현재 Scope의 실행 정보를 참조해 requestDate 값을 가져온다.
+
+그 값이 Bean 생성 메서드의 인자로 전달된다.
+
+```java
+return new SettlementTasklet(
+        requestDate
+);
+```
+
+따라서 Bean 생성과 파라미터 바인딩이 같은 시점에 이루어질 수 있다.
+
+전체 구조는 다음과 같다.
+
+```text
+Step 실행
+    │
+    ▼
+Scoped Proxy 호출
+    │
+    ▼
+StepScope.get()
+    │
+    ▼
+Target Bean 존재 여부 확인
+    │
+    ▼
+대상 Bean 없음
+    │
+    ▼
+ObjectFactory.getObject()
+    │
+    ▼
+BeanFactory에서 실제 Bean 생성
+    │
+    ▼
+@Value 표현식 평가
+    │
+    ▼
+JobParameters 조회
+    │
+    ▼
+requestDate 바인딩
+    │
+    ▼
+SettlementTasklet 생성
+    │
+    ▼
+StepContext에 Target 저장
+    │
+    ▼
+SettlementTasklet.execute()
+```
+
+여기서 핵심은 **파라미터 바인딩이 애플리케이션 초기화 시점이 아니라 실제 대상 Bean이 생성되는 시점에 이루어진다는 사실**이다.
+
+---
+
+### SpEL은 JobParameters를 어디에서 가져올까?
+
+StepScope의 실제 구현에서는 `resolveContextualObject()`를 통해 실행 정보를 조회한다.
+
+내부적으로는 현재 StepContext를 조회한 후 BeanWrapper를 이용해 해당 속성에 접근한다.
+
+예를 들어 다음 표현식을 생각해보자.
+
+```java
+@Value("#{jobParameters['requestDate']}")
+```
+
+이 표현식은 StepContext에서 JobParameters 정보를 조회한다.
+
+StepContext는 현재 StepExecution을 알고 있다.
+
+그리고 StepExecution을 통해 JobParameters에 접근할 수 있다.
+
+개념적으로 다음과 같은 구조다.
+
+```text
+@Value
+    │
+    ▼
+jobParameters['requestDate']
+    │
+    ▼
+StepScope.resolveContextualObject()
+    │
+    ▼
+StepContext
+    │
+    ▼
+StepExecution
+    │
+    ▼
+JobParameters
+    │
+    ▼
+requestDate
+```
+
+JobScope도 유사하다.
+
+다만 JobContext를 통해 JobExecution의 JobParameters와 JobExecutionContext에 접근한다.
+
+#### 접근 가능한 데이터 비교
+
+| 표현식 | @JobScope | @StepScope |
+|---|---|---|
+| `#{jobParameters['key']}` | 가능 | 가능 |
+| `#{jobExecutionContext['key']}` | 가능 | 가능 |
+| `#{stepExecutionContext['key']}` | 직접 지원하지 않음 | 가능 |
+
+이러한 차이는 각 Scope가 어떤 실행 Context를 가지고 있는지에 따라 결정된다.
+
+---
+
+### Proxy의 첫 번째 메서드 호출이 중요한 이유
+
+Scoped Proxy는 실제 Target Bean을 최초로 필요로 하는 시점에 대상 Bean을 생성한다.
+
+예를 들어 다음과 같은 메서드 호출이 발생했다고 생각해보자.
+
+```java
+tasklet.execute(
+        contribution,
+        chunkContext
+);
+```
+
+이때 tasklet은 실제 Target Bean이 아니라 Proxy일 수 있다.
+
+따라서 execute() 호출은 먼저 Proxy가 처리한다.
+
+Proxy는 Target Bean을 조회한다.
+
+현재 StepContext에 Target Bean이 없다면 실제 Bean을 생성한다.
+
+그리고 생성한 Bean의 execute()를 호출한다.
+
+```text
+첫 번째 execute() 호출
+    │
+    ▼
+Proxy
+    │
+    ▼
+Target 조회
+    │
+    ▼
+Target 없음
+    │
+    ▼
+Target 생성
+    │
+    ▼
+@Value 바인딩
+    │
+    ▼
+Target.execute()
+```
+
+반면 같은 StepExecution에서 두 번째 메서드 호출이 발생하면 어떻게 될까?
+
+```text
+두 번째 메서드 호출
+    │
+    ▼
+Proxy
+    │
+    ▼
+Target 조회
+    │
+    ▼
+기존 Target 발견
+    │
+    ▼
+기존 Target 메서드 실행
+```
+
+이 경우 기존 Target Bean을 재사용할 수 있다.
+
+따라서 매번 새로운 Bean이 생성되는 것은 아니다.
+
+여기서 중요한 것은 Proxy가 계속 사용되더라도 현재 Scope에 저장된 Target Bean을 조회한다는 점이다.
+
+---
+
+### Step Bean에 @JobScope를 선언한 경우
+
+기존 Spring Batch 코드에서는 다음과 같은 방식도 사용했다.
+
+```java
+@Bean
+@JobScope
+public Step settlementStep(
+        JobRepository jobRepository,
+        PlatformTransactionManager transactionManager,
+
+        @Value("#{jobParameters['requestDate']}")
+        String requestDate
+) {
+
+    return new StepBuilder(
+            "settlementStep",
+            jobRepository
+    )
+            .tasklet((contribution, chunkContext) -> {
+
+                System.out.println(requestDate);
+
+                return RepeatStatus.FINISHED;
+
+            }, transactionManager)
+            .build();
+}
+```
+
+이 구조에서는 Step Bean 자체가 JobScope에 속한다.
+
+따라서 Job은 실제 Step을 직접 보관하는 대신 Proxy를 참조할 수 있다.
+
+그리고 실제 Step의 메서드가 처음 호출되는 과정에서 Target Step이 생성될 수 있다.
+
+예를 들어 Step의 getName()이 먼저 호출되는 실행 경로라면 그 시점에 실제 Step이 생성될 수 있다.
+
+```text
+Job
+    │
+    ▼
+Step Proxy
+    │
+    ▼
+getName() 호출
+    │
+    ▼
+Target Step 조회
+    │
+    ▼
+실제 Step Bean 생성
+    │
+    ▼
+requestDate 바인딩
+    │
+    ▼
+실제 Step.getName() 실행
+```
+
+다만 모든 실행 경로에서 반드시 getName()이 최초의 Target 접근 메서드라고 보장할 수는 없다.
+
+어떤 메서드가 먼저 호출되는지는 Spring Batch의 실행 경로와 Proxy 처리 방식에 따라 달라질 수 있다.
+
+또한 Spring Batch 5.2에서는 Step Bean 자체에 JobScope나 StepScope를 적용하는 방식을 권장하지 않는다.
+
+실제 개발에서는 Step은 일반적인 Bean으로 유지하고, 실행 시점 데이터가 필요한 Tasklet이나 ItemReader 등에 Scope를 적용하는 것이 좋다.
+
+---
+
+### 권장하는 Scope 구성 방식
+
+권장하는 구조는 다음과 같다.
+
+```mermaid
+flowchart TD
+    A["ApplicationContext"]
+    B["Singleton Job"]
+    C["Singleton Step"]
+    D["StepScoped Proxy"]
+    E["StepScope"]
+    F["실제 Tasklet"]
+    G["JobParameters"]
+
+    A --> B
+    B --> C
+
+    C --> D
+    D --> E
+
+    E --> F
+    G -->|"Late Binding"| F
+```
+
+Step은 일반적인 Singleton Bean으로 생성한다.
+
+```java
+@Bean
+public Step settlementStep(
+        JobRepository jobRepository,
+        PlatformTransactionManager transactionManager,
+        SettlementTasklet settlementTasklet
+) {
+
+    return new StepBuilder(
+            "settlementStep",
+            jobRepository
+    )
+            .tasklet(
+                    settlementTasklet,
+                    transactionManager
+            )
+            .build();
+}
+```
+
+그리고 실제 실행 파라미터가 필요한 Tasklet에 StepScope를 적용한다.
+
+```java
+@Bean
+@StepScope
+public SettlementTasklet settlementTasklet(
+        @Value("#{jobParameters['requestDate']}")
+        String requestDate
+) {
+    return new SettlementTasklet(requestDate);
+}
+```
+
+이렇게 하면 Job과 Step은 애플리케이션 초기화 과정에서 구성할 수 있다.
+
+반면 실제 Tasklet은 StepExecution에 맞는 실행 시점에 생성된다.
+
+따라서 구조가 명확해지고 실행 시점의 파라미터 처리도 분리할 수 있다.
+
+---
+
+### 예제: Scoped Proxy와 실제 Bean 생성 시점 확인하기
+
+이번에는 실제 코드를 작성해보자.
+
+단순히 파라미터가 정상적으로 주입되는지만 확인하는 것이 아니다.
+
+다음 네 가지를 검증한다.
+
+첫 번째는 JobScope와 StepScope의 Proxy가 생성되는지 확인한다.
+
+두 번째는 실제 대상 Bean이 언제 생성되는지 확인한다.
+
+세 번째는 동일한 JobExecution에서 JobScope Bean이 재사용되는지 확인한다.
+
+네 번째는 서로 다른 StepExecution에서 StepScope Bean이 분리되는지 확인한다.
+
+이를 위해 다음과 같은 구조를 사용한다.
+
+```text
+scopeArchitectureJob
+    │
+    ├── step1
+    │      │
+    │      └── ScopeTraceTasklet
+    │
+    └── step2
+           │
+           └── ScopeTraceTasklet
+```
+
+여기서 두 Step은 동일한 StepScope Bean 정의를 참조한다.
+
+하지만 실제 대상 Tasklet은 각각의 StepExecution에 맞게 생성된다.
+
+반면 두 Tasklet은 동일한 JobExecution에 속하므로 같은 JobScope 대상 Bean을 참조할 수 있다.
+
+---
+
+### 개발 환경
+
+| 항목 | 기술 |
+|---|---|
+| Java | Java 17 |
+| Spring Boot | 3.4.13 |
+| Spring Batch | 5.2.4 |
+| Build Tool | Maven |
+| Database | H2 |
+| Job | SimpleJob |
+| Step | TaskletStep |
+| Scope | JobScope, StepScope |
+| Proxy | Spring Scoped Proxy |
+
+이번 예제는 Spring Batch 5.2.4를 기준으로 작성한다.
+
+---
+
+### Maven 의존성 설정
+
+`pom.xml`
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="
+             http://maven.apache.org/POM/4.0.0
+             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.4.13</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.example</groupId>
+    <artifactId>spring-batch-scope-architecture</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+
+    <properties>
+        <java.version>17</java.version>
+        <spring-batch.version>5.2.4</spring-batch.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-batch</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+```
+
+---
+
+### application.yml 설정
+
+`src/main/resources/application.yml`
+
+```yaml
+spring:
+  application:
+    name: spring-batch-scope-architecture
+
+  main:
+    web-application-type: none
+
+  datasource:
+    url: jdbc:h2:mem:scope_architecture;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+  batch:
+    job:
+      enabled: true
+      name: scopeArchitectureJob
+
+    jdbc:
+      initialize-schema: always
+
+logging:
+  level:
+    org.springframework.batch: INFO
+    com.example.batch: INFO
+```
+
+이번에는 인메모리 H2를 사용한다.
+
+실행할 때마다 데이터베이스가 초기화되므로 각각의 실행 시나리오를 독립적으로 확인하기 쉽다.
+
+재시작 테스트가 필요하다면 파일 기반 H2 또는 별도의 데이터베이스를 사용할 수 있다.
+
+---
+
+### Spring Boot 애플리케이션
+
+`BatchApplication.java`
+
+```java
+package com.example.batch;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class BatchApplication {
+
+    public static void main(String[] args) {
+
+        SpringApplication.run(
+                BatchApplication.class,
+                args
+        );
+    }
+}
+```
+
+---
+
+### JobScope 대상 Bean 생성
+
+먼저 JobExecution 단위로 관리할 설정 객체를 만든다.
+
+`JobRunData.java`
+
+```java
+package com.example.batch;
+
+import java.util.UUID;
+
+public class JobRunData {
+
+    private final String targetId;
+
+    private final String requestDate;
+
+    private final String operator;
+
+    public JobRunData(
+            String requestDate,
+            String operator
+    ) {
+
+        this.targetId = UUID.randomUUID().toString();
+
+        this.requestDate = requestDate;
+
+        this.operator = operator;
+    }
+
+    public String getTargetId() {
+        return targetId;
+    }
+
+    public String getRequestDate() {
+        return requestDate;
+    }
+
+    public String getOperator() {
+        return operator;
+    }
+}
+```
+
+이 클래스에는 세 가지 데이터가 있다.
+
+첫 번째는 Target Bean을 식별하기 위한 UUID다.
+
+두 번째는 JobParameters에서 전달받을 requestDate다.
+
+세 번째는 JobExecutionContext에서 전달받을 operator다.
+
+UUID를 사용하는 이유는 실제 Target Bean이 실행마다 새로 생성되는지 확인하기 위해서다.
+
+---
+
+### StepScope 대상 Tasklet 생성
+
+이제 실제 비즈니스 작업을 수행할 Tasklet을 만든다.
+
+`ScopeTraceTasklet.java`
+
+```java
+package com.example.batch;
+
+import java.util.UUID;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.batch.core.StepContribution;
+import org.springframework.batch.core.scope.context.ChunkContext;
+import org.springframework.batch.core.step.tasklet.Tasklet;
+
+import org.springframework.batch.item.ExecutionContext;
+import org.springframework.batch.repeat.RepeatStatus;
+
+public class ScopeTraceTasklet implements Tasklet {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(
+                    ScopeTraceTasklet.class
+            );
+
+    private final String targetId;
+
+    private final String requestDate;
+
+    private final String partitionKey;
+
+    private final JobRunData jobRunData;
+
+    public ScopeTraceTasklet(
+            String requestDate,
+            String partitionKey,
+            JobRunData jobRunData
+    ) {
+
+        this.targetId = UUID.randomUUID().toString();
+
+        this.requestDate = requestDate;
+
+        this.partitionKey = partitionKey;
+
+        this.jobRunData = jobRunData;
+    }
+
+    @Override
+    public RepeatStatus execute(
+            StepContribution contribution,
+            ChunkContext chunkContext
+    ) {
+
+        String stepName =
+                contribution
+                        .getStepExecution()
+                        .getStepName();
+
+        log.info(
+                "[{}] StepScope Target ID={}",
+                stepName,
+                targetId
+        );
+
+        log.info(
+                "[{}] requestDate={}",
+                stepName,
+                requestDate
+        );
+
+        log.info(
+                "[{}] partitionKey={}",
+                stepName,
+                partitionKey
+        );
+
+        log.info(
+                "[{}] JobScope Target ID={}",
+                stepName,
+                jobRunData.getTargetId()
+        );
+
+        log.info(
+                "[{}] operator={}",
+                stepName,
+                jobRunData.getOperator()
+        );
+
+        ExecutionContext context =
+                contribution
+                        .getStepExecution()
+                        .getJobExecution()
+                        .getExecutionContext();
+
+        context.putString(
+                stepName + ".taskletId",
+                targetId
+        );
+
+        context.putString(
+                stepName + ".jobRunDataId",
+                jobRunData.getTargetId()
+        );
+
+        context.putString(
+                stepName + ".requestDate",
+                requestDate
+        );
+
+        context.putString(
+                stepName + ".partitionKey",
+                partitionKey
+        );
+
+        return RepeatStatus.FINISHED;
+    }
+}
+```
+
+이 Tasklet은 실행할 때 현재 Target Bean의 UUID를 출력한다.
+
+또한 JobScope Bean의 UUID도 출력한다.
+
+이를 통해 다음 두 가지를 검증할 수 있다.
+
+Step1과 Step2에서는 서로 다른 StepScope 대상 Bean이 생성된다.
+
+하지만 동일한 JobExecution에서는 같은 JobScope 대상 Bean이 재사용된다.
+
+---
+
+### ScopeConfiguration 전체 코드
+
+이제 Job과 Step, Listener, Scope Bean을 하나의 Configuration으로 구성해보자.
+
+`ScopeConfiguration.java`
+
+```java
+package com.example.batch;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobExecutionListener;
+
+import org.springframework.batch.core.Step;
+import org.springframework.batch.core.StepExecution;
+import org.springframework.batch.core.StepExecutionListener;
+
+import org.springframework.batch.core.configuration.annotation.JobScope;
+import org.springframework.batch.core.configuration.annotation.StepScope;
+
+import org.springframework.batch.core.job.builder.JobBuilder;
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.step.builder.StepBuilder;
+
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import org.springframework.transaction.PlatformTransactionManager;
+
+@Configuration
+public class ScopeConfiguration {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(
+                    ScopeConfiguration.class
+            );
+
+    // ---------------------------------------
+    // Job
+    // ---------------------------------------
+
+    @Bean
+    public Job scopeArchitectureJob(
+            JobRepository jobRepository,
+            @Qualifier("step1") Step step1,
+            @Qualifier("step2") Step step2,
+            JobExecutionListener jobContextListener
+    ) {
+
+        return new JobBuilder(
+                "scopeArchitectureJob",
+                jobRepository
+        )
+                .start(step1)
+                .next(step2)
+                .listener(jobContextListener)
+                .build();
+    }
+
+    // ---------------------------------------
+    // Step1
+    // ---------------------------------------
+
+    @Bean
+    public Step step1(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager,
+            ScopeTraceTasklet scopeTraceTasklet,
+            StepExecutionListener stepContextListener
+    ) {
+
+        return new StepBuilder(
+                "step1",
+                jobRepository
+        )
+                .tasklet(
+                        scopeTraceTasklet,
+                        transactionManager
+                )
+                .listener(stepContextListener)
+                .build();
+    }
+
+    // ---------------------------------------
+    // Step2
+    // ---------------------------------------
+
+    @Bean
+    public Step step2(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager,
+            ScopeTraceTasklet scopeTraceTasklet,
+            StepExecutionListener stepContextListener
+    ) {
+
+        return new StepBuilder(
+                "step2",
+                jobRepository
+        )
+                .tasklet(
+                        scopeTraceTasklet,
+                        transactionManager
+                )
+                .listener(stepContextListener)
+                .build();
+    }
+
+    // ---------------------------------------
+    // JobScope Bean
+    // ---------------------------------------
+
+    @Bean
+    @JobScope
+    public JobRunData jobRunData(
+            @Value("#{jobParameters['requestDate']}")
+            String requestDate,
+
+            @Value("#{jobExecutionContext['operator']}")
+            String operator
+    ) {
+
+        log.info(
+                "[TARGET CREATE] JobRunData 생성"
+        );
+
+        return new JobRunData(
+                requestDate,
+                operator
+        );
+    }
+
+    // ---------------------------------------
+    // StepScope Bean
+    // ---------------------------------------
+
+    @Bean
+    @StepScope
+    public ScopeTraceTasklet scopeTraceTasklet(
+            @Value("#{jobParameters['requestDate']}")
+            String requestDate,
+
+            @Value("#{stepExecutionContext['partitionKey']}")
+            String partitionKey,
+
+            JobRunData jobRunData
+    ) {
+
+        log.info(
+                "[TARGET CREATE] ScopeTraceTasklet 생성"
+        );
+
+        return new ScopeTraceTasklet(
+                requestDate,
+                partitionKey,
+                jobRunData
+        );
+    }
+
+    // ---------------------------------------
+    // JobExecutionListener
+    // ---------------------------------------
+
+    @Bean
+    public JobExecutionListener jobContextListener() {
+
+        return new JobExecutionListener() {
+
+            @Override
+            public void beforeJob(
+                    JobExecution jobExecution
+            ) {
+
+                jobExecution
+                        .getExecutionContext()
+                        .putString(
+                                "operator",
+                                "batch-operator"
+                        );
+
+                log.info(
+                        "[beforeJob] operator 설정"
+                );
+            }
+        };
+    }
+
+    // ---------------------------------------
+    // StepExecutionListener
+    // ---------------------------------------
+
+    @Bean
+    public StepExecutionListener stepContextListener() {
+
+        return new StepExecutionListener() {
+
+            @Override
+            public void beforeStep(
+                    StepExecution stepExecution
+            ) {
+
+                String stepName =
+                        stepExecution.getStepName();
+
+                stepExecution
+                        .getExecutionContext()
+                        .putString(
+                                "partitionKey",
+                                stepName
+                        );
+
+                log.info(
+                        "[beforeStep] partitionKey={}",
+                        stepName
+                );
+            }
+        };
+    }
+}
+```
+
+이 구성에서 가장 중요한 부분은 다음과 같다.
+
+Step1과 Step2는 동일한 ScopeTraceTasklet Bean 정의를 참조한다.
+
+하지만 ScopeTraceTasklet에는 StepScope가 적용되어 있다.
+
+따라서 각 StepExecution에서 다른 대상 인스턴스가 생성된다.
+
+반면 JobRunData에는 JobScope가 적용되어 있다.
+
+따라서 Step1과 Step2가 동일한 JobExecution에서 실행된다면 같은 JobRunData 대상 인스턴스를 참조할 수 있다.
+
+---
+
+### 애플리케이션 초기화 시점 확인
+
+이제 애플리케이션을 실행해보자.
+
+먼저 프로젝트를 빌드한다.
+
+```bash
+mvn clean package
+```
+
+정상적으로 빌드되면 다음과 같은 결과가 출력된다.
+
+```text
+BUILD SUCCESS
+```
+
+이제 JobParameters를 전달한다.
+
+```bash
+java -jar target/spring-batch-scope-architecture-0.0.1-SNAPSHOT.jar \
+  requestDate=2026-11-24 \
+  run.id=1
+```
+
+이때 실행 파라미터는 다음과 같다.
+
+```text
+requestDate = 2026-11-24
+```
+
+애플리케이션이 초기화될 때에는 JobRunData와 ScopeTraceTasklet의 Proxy가 준비된다.
+
+하지만 이 시점에는 실제 Target Bean이 생성되지 않을 수 있다.
+
+따라서 다음 로그는 애플리케이션 시작 직후가 아니라 실제 Bean이 최초로 필요한 실행 시점에 출력되는 것이 정상적인 동작이다.
+
+```text
+[TARGET CREATE] ScopeTraceTasklet 생성
+
+[TARGET CREATE] JobRunData 생성
+```
+
+이 로그를 확인하면 실제 대상 Bean이 언제 생성되는지 추적할 수 있다.
+
+---
+
+### Step1 실행 과정
+
+먼저 JobExecutionListener의 beforeJob()이 실행된다.
+
+```text
+[beforeJob] operator 설정
+```
+
+이 시점에 JobExecutionContext에는 다음 값이 저장된다.
+
+```text
+operator = batch-operator
+```
+
+이후 Step1이 실행된다.
+
+StepExecutionListener의 beforeStep()이 호출된다.
+
+```text
+[beforeStep] partitionKey=step1
+```
+
+이 시점에 StepExecutionContext에는 다음 값이 저장된다.
+
+```text
+partitionKey = step1
+```
+
+이후 ScopeTraceTasklet의 execute()가 호출된다.
+
+하지만 Step이 참조하는 객체는 Scoped Proxy다.
+
+따라서 Proxy는 실제 대상 Bean을 조회한다.
+
+현재 Step1에 해당하는 StepContext에 대상 Bean이 없다면 새로운 ScopeTraceTasklet 인스턴스를 생성한다.
+
+이때 다음 값이 바인딩된다.
+
+```text
+requestDate = 2026-11-24
+
+partitionKey = step1
+```
+
+Tasklet이 실행되면서 JobRunData의 메서드를 호출하면 JobScope Target도 조회된다.
+
+해당 JobExecution에서 처음 요청한 경우라면 JobRunData 인스턴스가 생성된다.
+
+이때 다음 값이 바인딩된다.
+
+```text
+requestDate = 2026-11-24
+
+operator = batch-operator
+```
+
+따라서 Step1에서는 다음과 같은 로그를 기대할 수 있다.
+
+```text
+[beforeJob] operator 설정
+
+[beforeStep] partitionKey=step1
+
+[TARGET CREATE] ScopeTraceTasklet 생성
+
+[step1] StepScope Target ID=UUID-A
+
+[step1] requestDate=2026-11-24
+
+[step1] partitionKey=step1
+
+[TARGET CREATE] JobRunData 생성
+
+[step1] JobScope Target ID=UUID-X
+
+[step1] operator=batch-operator
+```
+
+UUID는 실행할 때마다 달라진다.
+
+여기서 중요한 것은 실제 Target Bean이 실행 과정에서 생성되었다는 사실이다.
+
+---
+
+### Step2 실행 과정
+
+Step1이 정상적으로 완료되면 Step2가 실행된다.
+
+Step2에서도 동일한 ScopeTraceTasklet Proxy를 사용한다.
+
+하지만 Step2는 새로운 StepExecution이다.
+
+따라서 새로운 StepContext가 사용된다.
+
+이때 StepContext에는 아직 ScopeTraceTasklet 대상 Bean이 존재하지 않는다.
+
+그러므로 새로운 Target Bean이 생성된다.
+
+```text
+[beforeStep] partitionKey=step2
+
+[TARGET CREATE] ScopeTraceTasklet 생성
+```
+
+이후 Tasklet이 실행된다.
+
+Step2에서 생성된 대상 Tasklet의 UUID는 Step1과 다르다.
+
+반면 JobRunData는 동일한 JobExecution에 속한다.
+
+따라서 기존 JobScope Target Bean을 재사용한다.
+
+예상 로그는 다음과 같다.
+
+```text
+[step2] StepScope Target ID=UUID-B
+
+[step2] requestDate=2026-11-24
+
+[step2] partitionKey=step2
+
+[step2] JobScope Target ID=UUID-X
+
+[step2] operator=batch-operator
+```
+
+Step1과 Step2의 실행 결과를 비교해보자.
+
+| 항목 | Step1 | Step2 |
+|---|---|---|
+| JobExecution | 동일 | 동일 |
+| StepExecution | StepExecution 1 | StepExecution 2 |
+| StepScope Target ID | UUID-A | UUID-B |
+| JobScope Target ID | UUID-X | UUID-X |
+| requestDate | 2026-11-24 | 2026-11-24 |
+| partitionKey | step1 | step2 |
+
+여기서 가장 중요한 것은 두 개의 Target ID다.
+
+StepScope Target ID는 서로 다르다.
+
+JobScope Target ID는 동일하다.
+
+따라서 Scope의 관리 범위가 서로 다르다는 사실을 확인할 수 있다.
+
+---
+
+### JobExecution이 달라지면 어떻게 될까?
+
+이번에는 같은 Job을 다시 실행해보자.
+
+단, 새로운 JobInstance를 생성할 수 있도록 식별 파라미터를 변경한다.
+
+```bash
+java -jar target/spring-batch-scope-architecture-0.0.1-SNAPSHOT.jar \
+  requestDate=2026-11-25 \
+  run.id=2
+```
+
+새로운 JobExecution에서는 JobScope Target Bean이 새로 생성된다.
+
+따라서 다음과 같은 결과를 기대할 수 있다.
+
+```text
+JobExecution 1
+    │
+    ├── JobScope Target = UUID-X
+    │
+    ├── Step1 Target = UUID-A
+    │
+    └── Step2 Target = UUID-B
+
+
+JobExecution 2
+    │
+    ├── JobScope Target = UUID-Y
+    │
+    ├── Step1 Target = UUID-C
+    │
+    └── Step2 Target = UUID-D
+```
+
+즉, 같은 JobExecution에서는 JobScope Target Bean을 재사용한다.
+
+반면 JobExecution이 달라지면 새로운 대상 Bean을 생성할 수 있다.
+
+이것이 JobScope의 핵심적인 생명주기 관리 방식이다.
+
+---
+
+### JUnit으로 Scoped Proxy 검증하기
+
+이번에는 실제 테스트를 작성해보자.
+
+검증할 내용은 다음과 같다.
+
+첫 번째는 JobScope와 StepScope Bean이 Proxy인지 확인한다.
+
+두 번째는 두 Step이 서로 다른 StepScope Target을 사용하는지 확인한다.
+
+세 번째는 동일한 JobExecution에서 같은 JobScope Target을 사용하는지 확인한다.
+
+네 번째는 서로 다른 JobExecution에서 JobScope Target이 분리되는지 확인한다.
+
+다섯 번째는 JobParameters가 실제 대상 Bean에 정상적으로 바인딩되는지 확인한다.
+
+`ScopeArchitectureTest.java`
+
+```java
+package com.example.batch;
+
+import java.util.UUID;
+
+import org.junit.jupiter.api.Test;
+
+import org.springframework.aop.support.AopUtils;
+
+import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobParameters;
+import org.springframework.batch.core.JobParametersBuilder;
+import org.springframework.batch.core.launch.JobLauncher;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+
+import org.springframework.boot.test.context.SpringBootTest;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+@SpringBootTest(properties = {
+        "spring.batch.job.enabled=false",
+        "spring.datasource.url=jdbc:h2:mem:scope_arch_test;DB_CLOSE_DELAY=-1",
+        "spring.batch.jdbc.initialize-schema=always"
+})
+class ScopeArchitectureTest {
+
+    @Autowired
+    private JobLauncher jobLauncher;
+
+    @Autowired
+    @Qualifier("scopeArchitectureJob")
+    private Job job;
+
+    @Autowired
+    private JobRunData jobRunData;
+
+    @Autowired
+    private ScopeTraceTasklet scopeTraceTasklet;
+
+    private JobExecution executeJob(
+            String requestDate
+    ) throws Exception {
+
+        JobParameters parameters =
+                new JobParametersBuilder()
+                        .addString(
+                                "requestDate",
+                                requestDate
+                        )
+                        .addString(
+                                "requestId",
+                                UUID.randomUUID().toString()
+                        )
+                        .toJobParameters();
+
+        return jobLauncher.run(
+                job,
+                parameters
+        );
+    }
+
+    @Test
+    void JobScope_Bean은_Proxy다() {
+
+        assertTrue(
+                AopUtils.isAopProxy(jobRunData)
+        );
+
+        assertTrue(
+                AopUtils.isCglibProxy(jobRunData)
+        );
+    }
+
+    @Test
+    void StepScope_Bean은_Proxy다() {
+
+        assertTrue(
+                AopUtils.isAopProxy(scopeTraceTasklet)
+        );
+
+        assertTrue(
+                AopUtils.isCglibProxy(scopeTraceTasklet)
+        );
+    }
+
+    @Test
+    void 서로_다른_StepExecution은_다른_Tasklet을_사용한다()
+            throws Exception {
+
+        JobExecution execution =
+                executeJob("2026-11-24");
+
+        assertEquals(
+                BatchStatus.COMPLETED,
+                execution.getStatus()
+        );
+
+        String step1TargetId =
+                execution
+                        .getExecutionContext()
+                        .getString("step1.taskletId");
+
+        String step2TargetId =
+                execution
+                        .getExecutionContext()
+                        .getString("step2.taskletId");
+
+        assertNotEquals(
+                step1TargetId,
+                step2TargetId
+        );
+    }
+
+    @Test
+    void 동일한_JobExecution은_같은_JobScope_Target을_사용한다()
+            throws Exception {
+
+        JobExecution execution =
+                executeJob("2026-11-24");
+
+        String step1JobTargetId =
+                execution
+                        .getExecutionContext()
+                        .getString("step1.jobRunDataId");
+
+        String step2JobTargetId =
+                execution
+                        .getExecutionContext()
+                        .getString("step2.jobRunDataId");
+
+        assertEquals(
+                step1JobTargetId,
+                step2JobTargetId
+        );
+    }
+
+    @Test
+    void 서로_다른_JobExecution은_다른_JobScope_Target을_사용한다()
+            throws Exception {
+
+        JobExecution first =
+                executeJob("2026-11-24");
+
+        JobExecution second =
+                executeJob("2026-11-25");
+
+        String firstTargetId =
+                first
+                        .getExecutionContext()
+                        .getString("step1.jobRunDataId");
+
+        String secondTargetId =
+                second
+                        .getExecutionContext()
+                        .getString("step1.jobRunDataId");
+
+        assertNotEquals(
+                firstTargetId,
+                secondTargetId
+        );
+    }
+
+    @Test
+    void JobParameters가_실행별로_바인딩된다()
+            throws Exception {
+
+        JobExecution first =
+                executeJob("2026-11-24");
+
+        JobExecution second =
+                executeJob("2026-11-25");
+
+        assertEquals(
+                "2026-11-24",
+                first
+                        .getExecutionContext()
+                        .getString("step1.requestDate")
+        );
+
+        assertEquals(
+                "2026-11-25",
+                second
+                        .getExecutionContext()
+                        .getString("step1.requestDate")
+        );
+    }
+}
+```
+
+이 테스트에서 가장 중요한 부분은 다음과 같다.
+
+```java
+assertNotEquals(
+        step1TargetId,
+        step2TargetId
+);
+```
+
+서로 다른 StepExecution에서 실제 대상 Tasklet이 구분되는지 확인한다.
+
+반면 다음 테스트에서는 동일한 Target ID를 기대한다.
+
+```java
+assertEquals(
+        step1JobTargetId,
+        step2JobTargetId
+);
+```
+
+두 Step이 동일한 JobExecution에 속하므로 같은 JobScope 대상 Bean을 참조하는지 확인한다.
+
+따라서 **Proxy는 동일하더라도 실제 Target Bean은 실행 Scope에 따라 달라질 수 있다**는 사실을 검증할 수 있다.
+
+#### 테스트 실행
+
+```bash
+mvn test
+```
+
+테스트가 모두 정상적으로 통과한다면 다음과 유사한 결과가 출력된다.
+
+```text
+Tests run: 6
+
+Failures: 0
+
+Errors: 0
+
+BUILD SUCCESS
+```
+
+위 출력은 정상적인 실행 환경에서 예상할 수 있는 결과 형태다.
+
+---
+
+### 디버깅으로 Bean 생성 과정 확인하기
+
+이번에는 실제 소스 코드에서 어디에 중단점을 설정하면 좋은지 살펴보자.
+
+가장 중요한 클래스는 다음과 같다.
+
+| 순서 | 클래스 | 메서드 | 확인할 내용 |
+|---|---|---|---|
+| 1 | BatchScopeSupport | postProcessBeanFactory() | Scope 등록 및 Proxy 설정 |
+| 2 | ScopedProxyUtils | createScopedProxy() | Scoped Proxy BeanDefinition 생성 |
+| 3 | ScopedProxyFactoryBean | getObject() | Proxy 생성 |
+| 4 | TargetSource | getTarget() | 실제 Target 조회 |
+| 5 | BeanFactory | getBean() | Target Bean 요청 |
+| 6 | JobScope | get() | JobScope Target 조회 |
+| 7 | StepScope | get() | StepScope Target 조회 |
+| 8 | JobSynchronizationManager | getContext() | 현재 JobContext 조회 |
+| 9 | StepSynchronizationManager | getContext() | 현재 StepContext 조회 |
+| 10 | JobContext | getAttribute() | 기존 JobScope Target 확인 |
+| 11 | StepContext | getAttribute() | 기존 StepScope Target 확인 |
+| 12 | ObjectFactory | getObject() | 실제 Target Bean 생성 |
+| 13 | JobScope / StepScope | resolveContextualObject() | SpEL 실행 정보 조회 |
+
+이 중 가장 먼저 확인할 부분은 Scope의 get() 메서드다.
+
+#### JobScope.get() 확인
+
+다음 시점에 중단점을 설정한다.
+
+```java
+Object scopedObject =
+        context.getAttribute(name);
+```
+
+최초 호출에서는 해당 Context에 대상 Bean이 존재하지 않을 수 있다.
+
+따라서 scopedObject는 null이다.
+
+이후 실제 Target Bean을 생성한다.
+
+```java
+scopedObject =
+        objectFactory.getObject();
+```
+
+그리고 Context에 저장한다.
+
+```java
+context.setAttribute(
+        name,
+        scopedObject
+);
+```
+
+같은 JobExecution에서 두 번째로 호출되면 이미 생성된 대상 Bean을 가져올 수 있다.
+
+#### StepScope.get() 확인
+
+StepScope도 동일한 방식으로 확인한다.
+
+다만 각 StepExecution마다 다른 StepContext가 사용된다는 점이 중요하다.
+
+Step1에서 생성한 대상 Tasklet은 Step1의 StepContext에 저장된다.
+
+Step2에서는 다른 StepContext를 사용한다.
+
+따라서 Step2에서 최초 접근하면 새로운 Tasklet이 생성된다.
+
+이러한 차이를 디버깅하면 JobScope와 StepScope의 관리 단위를 명확하게 이해할 수 있다.
+
+---
+
+### Scoped Proxy를 사용할 때 주의해야 할 부분
+
+Scoped Proxy는 Bean 생성 시점과 관리 범위를 분리하는 데 유용하다.
+
+하지만 몇 가지 주의할 점이 있다.
+
+#### 1. Proxy 객체와 실제 Target 객체를 구분해야 한다
+
+다음과 같은 Bean을 주입받았다고 생각해보자.
+
+```java
+@Autowired
+private JobRunData jobRunData;
+```
+
+이 필드에 저장된 객체는 실제 JobRunData 대상 인스턴스가 아니라 Scoped Proxy일 수 있다.
+
+따라서 다음 두 객체는 구분해야 한다.
+
+```text
+Proxy 객체
+    │
+    └── ApplicationContext에서 참조
+
+
+Target 객체
+    │
+    └── JobContext에서 실행별로 관리
+```
+
+실행별로 Target이 변경되더라도 Proxy 자체는 동일하게 유지될 수 있다.
+
+#### 2. Proxy의 모든 메서드가 동일하게 가로채지는 것은 아니다
+
+클래스 기반 Proxy에서는 오버라이딩할 수 없는 메서드를 정상적으로 가로채지 못할 수 있다.
+
+대표적으로 final 메서드가 있다.
+
+따라서 Scoped Proxy 대상 클래스에 final 클래스나 final 메서드를 사용하는 경우 주의해야 한다.
+
+#### 3. Scope 밖에서 Target을 요청하면 오류가 발생할 수 있다
+
+JobScope나 StepScope는 현재 실행 Context가 필요하다.
+
+따라서 Job 또는 Step 실행 Context가 없는 상황에서 실제 대상 Bean에 접근하면 오류가 발생할 수 있다.
+
+예를 들어 다음과 같은 상황이다.
+
+```java
+@PostConstruct
+public void init() {
+
+    jobRunData.getRequestDate();
+}
+```
+
+애플리케이션 초기화 시점에는 JobExecution이 존재하지 않을 수 있다.
+
+따라서 JobScope Target을 조회할 수 없다.
+
+이 경우 다음과 같은 오류가 발생할 수 있다.
+
+```text
+No context holder available for job scope
+```
+
+또는 Spring BeanFactory의 Scope 관련 예외로 감싸져 전달될 수 있다.
+
+따라서 Scoped Proxy가 주입 가능하다는 사실과 실제 Target에 언제든 접근할 수 있다는 사실은 구분해야 한다.
+
+#### 4. Scope가 Thread-Safe를 자동으로 보장하지 않는다
+
+JobScope와 StepScope는 실행 단위에 따라 Bean을 관리한다.
+
+스레드마다 반드시 서로 다른 Bean을 생성하는 것은 아니다.
+
+예를 들어 동일한 StepExecution에 여러 스레드가 연결되어 있다면 같은 StepScope Target을 참조할 수 있다.
+
+따라서 Reader나 Writer에 변경 가능한 상태가 존재한다면 별도의 동시성 제어가 필요할 수 있다.
+
+---
+
+### 실무에서의 활용
+
+Scope의 내부 동작을 이해하면 단순한 Late Binding을 넘어 배치 아키텍처를 설계할 때 여러 가지 문제를 예방할 수 있다.
+
+#### 1. 실행별 설정 데이터를 Singleton Bean에 저장하지 않는다
+
+예를 들어 다음과 같이 Singleton Service에 실행 날짜를 저장한다고 생각해보자.
+
+```java
+@Service
+public class SettlementService {
+
+    private String requestDate;
+
+    public void setRequestDate(String requestDate) {
+        this.requestDate = requestDate;
+    }
+}
+```
+
+이 구조에서는 여러 JobExecution이 동시에 실행될 경우 requestDate가 덮어써질 수 있다.
+
+따라서 실행별 설정 데이터는 JobParameters 또는 적절한 Scope Bean에서 관리하는 것이 좋다.
+
+#### 2. JobScope와 StepScope의 관리 단위를 기준으로 Bean을 선택한다
+
+Job 전체에서 동일한 설정이 필요하다면 JobScope를 고려할 수 있다.
+
+반면 Step별로 서로 다른 데이터가 필요하다면 StepScope를 고려할 수 있다.
+
+예를 들어 다음과 같은 구조다.
+
+```text
+JobExecution
+    │
+    └── JobScope
+           └── 정산 기준일
+
+
+StepExecution
+    │
+    └── StepScope
+           └── 파티션 데이터 범위
+```
+
+이처럼 데이터가 사용되는 실행 범위에 맞게 Scope를 선택하는 것이 중요하다.
+
+#### 3. State를 가진 ItemReader에는 StepScope가 유용하다
+
+ItemReader는 파일의 현재 읽기 위치나 데이터베이스 커서 같은 상태를 가질 수 있다.
+
+이러한 상태가 있는 객체를 여러 StepExecution에서 공유하면 실행 상태가 섞일 수 있다.
+
+따라서 StepExecution별로 Reader를 분리해야 하는 경우 StepScope를 사용할 수 있다.
+
+다만 ItemReader의 동시성 안전성과 재시작 정책은 별도로 검토해야 한다.
+
+#### 4. Bean 생성 시점에 외부 리소스를 연결하는 경우 주의한다
+
+StepScope를 사용하면 실제 Bean을 Step 실행 시점에 생성할 수 있다.
+
+예를 들어 특정 파일을 읽기 위한 Reader를 생성할 수 있다.
+
+하지만 Bean 생성 과정에서 외부 API를 호출하거나 데이터베이스 연결을 직접 생성하는 구조라면 해당 초기화 작업이 Step 실행 시간에 포함될 수 있다.
+
+따라서 생성 비용이 큰 Bean은 초기화 시점과 실제 처리 시점을 구분해서 설계해야 한다.
+
+#### 5. Scope Bean에는 가능하면 불변 설정값을 사용한다
+
+JobParameters에서 전달받은 날짜나 국가 코드는 실행 도중 변경될 필요가 없는 경우가 많다.
+
+이러한 값은 생성자를 통해 전달받고 변경하지 않는 것이 좋다.
+
+```java
+public class SettlementOptions {
+
+    private final String requestDate;
+
+    private final String countryCode;
+
+    public SettlementOptions(
+            String requestDate,
+            String countryCode
+    ) {
+
+        this.requestDate = requestDate;
+        this.countryCode = countryCode;
+    }
+}
+```
+
+이렇게 구성하면 실행 중 설정값이 변경되어 발생하는 문제를 줄일 수 있다.
+
+단, 클래스 기반 Proxy를 사용하는 경우에는 클래스의 final 선언 여부를 함께 고려해야 한다.
+
+#### 6. Bean이 생성될 때 바인딩된 값은 자동으로 갱신되지 않는다
+
+다음과 같은 StepScope Bean이 있다고 생각해보자.
+
+```java
+@Bean
+@StepScope
+public SettlementTasklet settlementTasklet(
+        @Value("#{stepExecutionContext['requestDate']}")
+        String requestDate
+) {
+    return new SettlementTasklet(requestDate);
+}
+```
+
+실제 Target Bean이 생성되는 시점에 requestDate가 바인딩된다.
+
+이후 StepExecutionContext의 requestDate가 변경되더라도 이미 생성된 Target Bean의 생성자 필드가 자동으로 갱신되는 것은 아니다.
+
+따라서 실행 도중 변경되는 값은 ExecutionContext를 직접 조회하는 방식도 고려해야 한다.
+
+#### 7. 동일한 Proxy가 다른 Target을 참조할 수 있다는 점을 이해한다
+
+Singleton Step에 StepScope Tasklet을 주입했다고 해서 실제 Tasklet이 Singleton이 되는 것은 아니다.
+
+Singleton Step에는 Proxy가 주입된다.
+
+그리고 실제 Target은 StepExecution별로 관리된다.
+
+따라서 Proxy의 객체 식별자만 확인해서 실제 Target의 재사용 여부를 판단해서는 안 된다.
+
+#### 8. 운영 로그에는 JobExecutionId와 StepExecutionId를 함께 기록한다
+
+Scope Bean은 실행 단위에 따라 생성된다.
+
+따라서 장애 분석 시 어떤 JobExecution과 StepExecution에서 대상 Bean이 생성되었는지 확인하는 것이 중요하다.
+
+예를 들어 다음과 같은 로그를 사용할 수 있다.
+
+```text
+jobExecutionId=101
+
+stepExecutionId=205
+
+requestDate=2026-11-24
+
+partitionKey=step1
+```
+
+이러한 정보가 있으면 동일한 배치가 여러 번 실행되는 상황에서도 실행 대상을 구분할 수 있다.
+
+#### 9. Proxy Target의 Bean 이름에 직접 의존하지 않는다
+
+Spring 내부에서는 Scoped Proxy의 Target Bean에 별도의 이름을 사용할 수 있다.
+
+예를 들어 다음과 같은 이름이다.
+
+```text
+scopedTarget.settlementTasklet
+```
+
+하지만 애플리케이션 비즈니스 로직에서 이러한 내부 이름을 직접 조회하는 것은 권장하지 않는다.
+
+일반적인 Bean 이름을 통해 Proxy를 주입받는 것이 좋다.
+
+#### 10. JobScope Bean을 병렬 Step에서 사용할 때 주의한다
+
+JobScope는 JobExecution 단위다.
+
+따라서 같은 JobExecution에서 여러 스레드가 실행되면 Scope Context 접근과 공유 상태를 고려해야 한다.
+
+Spring Batch의 공식 문서에서도 멀티스레드 Step이나 파티셔닝 환경에서 JobScope Bean 사용에 주의를 요구한다.
+
+특히 작업 스레드의 실행 Context 전파가 자동으로 보장된다고 가정해서는 안 된다.
+
+#### 11. StepScope Bean을 테스트할 때 실행 Context를 준비한다
+
+StepScope Bean은 실제 StepContext가 필요하다.
+
+따라서 일반적인 단위 테스트에서 Scope Bean의 실제 메서드를 호출하면 Context가 없어 오류가 발생할 수 있다.
+
+이러한 경우에는 Spring Batch의 테스트 지원 기능을 활용하거나 실제 JobLauncher를 통해 Step을 실행하는 방식으로 검증할 수 있다.
+
+#### 12. Scope Bean의 생명주기 종료도 고려한다
+
+JobScope와 StepScope는 대상 Bean을 생성하는 기능뿐 아니라 종료 시 정리 작업을 수행할 수 있도록 지원한다.
+
+예를 들어 Bean에 등록된 destruction callback은 해당 Scope Context가 종료될 때 호출될 수 있다.
+
+따라서 외부 리소스를 사용하는 Bean이라면 생성뿐 아니라 종료 처리도 함께 고려해야 한다.
+
+#### 13. Scoped Bean과 ExecutionContext를 혼동하지 않는다
+
+JobContext와 StepContext에 보관된 Scoped Bean 인스턴스는 일반적인 배치 실행 메타데이터와 다르다.
+
+반면 JobExecutionContext와 StepExecutionContext는 재시작에 필요한 상태 데이터를 저장하는 용도로 사용된다.
+
+따라서 Scoped Bean의 필드에 데이터를 저장했다고 해서 해당 값이 자동으로 데이터베이스에 영속화되는 것은 아니다.
+
+재시작 시 복원이 필요한 데이터라면 ExecutionContext에 명시적으로 저장해야 한다.
+
+#### 14. Scope Bean의 생성 비용을 관찰한다
+
+JobExecution이나 StepExecution이 빈번하게 생성되는 환경에서는 Scope Bean의 생성 비용도 고려해야 한다.
+
+특히 파티션 수가 많다면 StepScope Target이 여러 개 생성될 수 있다.
+
+따라서 불필요하게 무거운 객체를 Scope Bean으로 생성하지 않도록 설계하는 것이 좋다.
+
+실행별 데이터가 필요한 부분만 Scope Bean으로 분리하고, 상태가 없는 공통 로직은 Singleton Service로 유지하는 방식이 효과적일 수 있다.
+
+---
+
+### 전체 아키텍처 정리
+
+지금까지 살펴본 내용을 하나의 구조로 정리해보자.
+
+```mermaid
+flowchart TD
+    A["Spring Boot 시작"]
+
+    B["ApplicationContext"]
+
+    C["BeanDefinition 등록"]
+
+    D["BatchScopeSupport"]
+
+    E["Scoped Proxy 생성"]
+
+    F["JobLauncher"]
+
+    G["JobExecution"]
+
+    H["StepExecution"]
+
+    I["JobSynchronizationManager"]
+
+    J["StepSynchronizationManager"]
+
+    K["JobContext"]
+
+    L["StepContext"]
+
+    M["Scoped Proxy 호출"]
+
+    N["TargetSource"]
+
+    O["BeanFactory"]
+
+    P["JobScope / StepScope"]
+
+    Q{"Target Bean 존재?"}
+
+    R["ObjectFactory"]
+
+    S["SpEL @Value 바인딩"]
+
+    T["실제 Target Bean 생성"]
+
+    U["Context에 Target 저장"]
+
+    V["Target 메서드 실행"]
+
+    A --> B
+    B --> C
+
+    C --> D
+    D --> E
+
+    F --> G
+    G --> H
+
+    G --> I
+    H --> J
+
+    I --> K
+    J --> L
+
+    E --> M
+    M --> N
+    N --> O
+    O --> P
+
+    P --> Q
+
+    Q -->|NO| R
+    R --> S
+    S --> T
+    T --> U
+    U --> V
+
+    Q -->|YES| V
+```
+
+이 구조는 크게 세 단계로 구분할 수 있다.
+
+첫 번째는 Spring 컨테이너 초기화 단계다.
+
+ApplicationContext가 BeanDefinition을 등록한다.
+
+그리고 BatchScopeSupport와 Spring의 Scoped Proxy 기능을 통해 Proxy를 구성한다.
+
+이 시점에는 실제 실행 파라미터가 아직 존재하지 않을 수 있다.
+
+두 번째는 Job과 Step 실행 단계다.
+
+JobExecution과 StepExecution이 생성된다.
+
+JobSynchronizationManager와 StepSynchronizationManager는 현재 실행 Context를 관리한다.
+
+세 번째는 실제 Target Bean 조회 및 생성 단계다.
+
+Scoped Proxy의 메서드가 호출된다.
+
+Proxy는 TargetSource를 통해 실제 대상 Bean을 요청한다.
+
+BeanFactory는 현재 Scope의 get() 메서드를 호출한다.
+
+Scope는 JobContext 또는 StepContext에서 기존 대상 Bean을 조회한다.
+
+Bean이 존재한다면 기존 인스턴스를 반환한다.
+
+반면 Bean이 없다면 ObjectFactory를 이용해 새로운 인스턴스를 생성한다.
+
+이때 SpEL 표현식이 평가되고 JobParameters 또는 ExecutionContext 값이 바인딩된다.
+
+생성된 Target Bean은 현재 Scope Context에 저장된다.
+
+마지막으로 Proxy는 실제 Target Bean의 메서드를 호출한다.
+
+이러한 구조로 인해 Spring Batch는 애플리케이션 초기화 시점과 배치 실행 시점을 분리할 수 있다.
+
+---
+
+### 정리
+
+Spring Batch의 `@JobScope`와 `@StepScope`는 배치 실행 단위에 맞춰 Bean을 생성하고 관리하기 위한 Scope다.
+
+JobScope는 JobExecution 단위로 Bean을 관리한다.
+
+StepScope는 StepExecution 단위로 Bean을 관리한다.
+
+두 Scope는 기본적으로 Scoped Proxy를 사용한다.
+
+따라서 애플리케이션 초기화 과정에서는 실제 Target Bean 대신 Proxy를 준비할 수 있다.
+
+이후 Job 또는 Step이 실행되면 Proxy의 메서드가 호출된다.
+
+Proxy는 TargetSource를 통해 실제 대상 Bean을 조회한다.
+
+그리고 BeanFactory는 해당 Bean의 Scope를 확인한다.
+
+JobScope 또는 StepScope는 현재 실행 Context에서 대상 Bean을 조회한다.
+
+기존 Target Bean이 존재한다면 해당 인스턴스를 반환한다.
+
+반면 대상 Bean이 없다면 ObjectFactory를 이용해 실제 Bean을 생성한다.
+
+이 과정에서 `@Value` 표현식이 평가된다.
+
+예를 들어 다음과 같다.
+
+```java
+@Value("#{jobParameters['requestDate']}")
+```
+
+Job 실행 시 전달된 requestDate가 실제 Bean 생성 시점에 바인딩된다.
+
+이렇게 생성된 Bean은 해당 JobContext 또는 StepContext에 저장된다.
+
+따라서 동일한 실행 Scope에서 다시 요청하면 기존 대상 인스턴스를 재사용할 수 있다.
+
+전체 과정을 간단하게 정리하면 다음과 같다.
+
+```text
+ApplicationContext 초기화
+    │
+    ▼
+Scoped Proxy 준비
+    │
+    ▼
+Job 또는 Step 실행
+    │
+    ▼
+Proxy 메서드 호출
+    │
+    ▼
+TargetSource.getTarget()
+    │
+    ▼
+BeanFactory.getBean()
+    │
+    ▼
+JobScope.get() / StepScope.get()
+    │
+    ▼
+JobContext / StepContext 조회
+    │
+    ├── Target 존재
+    │      └── 기존 Bean 반환
+    │
+    └── Target 없음
+           │
+           ▼
+       실제 Bean 생성
+           │
+           ▼
+       @Value 바인딩
+           │
+           ▼
+       Context에 Bean 저장
+    │
+    ▼
+실제 Target 메서드 실행
+```
+
+여기서 가장 중요한 것은 Proxy와 Target Bean을 구분하는 것이다.
+
+Proxy는 외부 객체가 참조하는 대리 객체다.
+
+Target Bean은 실제 비즈니스 로직을 수행하는 객체다.
+
+Proxy는 동일하게 유지되더라도 현재 JobExecution이나 StepExecution에 따라 다른 Target Bean을 참조할 수 있다.
+
+또한 JobContext와 StepContext는 Scope Bean을 관리하기 위한 Context이며, 실제 Bean 생성은 Spring BeanFactory를 통해 수행된다.
+
+따라서 Scoped Proxy의 동작은 Spring의 BeanFactory, AOP, Custom Scope, ThreadLocal 기반 실행 Context 관리 기술이 함께 결합된 결과라고 볼 수 있다.
+
+이러한 구조를 이해하면 JobParameters가 애플리케이션 초기화 이후에 결정되더라도 정상적으로 Bean에 주입될 수 있는 이유를 설명할 수 있다.
+
+또한 서로 다른 JobExecution과 StepExecution에서 Bean이 어떻게 생성되고 재사용되는지, Scoped Proxy가 실제 Target Bean을 어떤 방식으로 찾는지, 실행 Context가 없을 때 왜 오류가 발생하는지까지 파악할 수 있다.
+
+결국 **Spring Batch의 JobScope와 StepScope는 Scoped Proxy를 이용해 실제 Bean의 생성을 실행 시점까지 지연하고, JobContext와 StepContext를 통해 실행 단위별 대상 Bean을 관리함으로써 Late Binding을 가능하게 하는 구조**다.
+
+#### 한 줄 요약
+
+> Spring Batch의 `@JobScope`와 `@StepScope`는 각각 JobExecution과 StepExecution 단위로 Bean을 관리하는 Scope다. 애플리케이션 초기화 시점에는 Scoped Proxy를 준비하고, 실제 메서드가 호출되면 `TargetSource → BeanFactory → JobScope/StepScope → JobContext/StepContext`의 과정을 통해 대상 Bean을 조회한다. 대상 Bean이 없다면 `ObjectFactory`를 이용해 새로운 인스턴스를 생성하며, 이때 `@Value`와 SpEL을 통해 JobParameters 및 ExecutionContext의 값이 바인딩된다. 따라서 Scoped Proxy의 핵심은 실행 시점의 Target Bean 조회와 생성, Scope별 인스턴스 재사용, Late Binding의 구현에 있다.

@@ -23,6 +23,7 @@ submenu: true
 * [Resilience4J]{:.heading.flip-title}
 * [스프링 시큐리티 JWT]{:.heading.flip-title}
 * [스프링 OAuth2 클라이언트 세션]{:.heading.flip-title}
+* [스프링 OAuth2 클라이언트 JWT]{:.heading.flip-title}
 
 [레디스: Redis]: /developer-yumi-redis/
 [스프링 부트 CKEditor]: /developer-yumi-spring-boot-ckeditor/
@@ -33,6 +34,7 @@ submenu: true
 [Resilience4J]: /developer-yumi-resilience4j/
 [스프링 시큐리티 JWT]: /spring-security-jwt/
 [스프링 OAuth2 클라이언트 세션]: /spring-oauth2-client-session/
+[스프링 OAuth2 클라이언트 JWT]: /spring-oauth2-client-jwt/
 
 
 

@@ -141,6 +141,8 @@ menu:
                 url: /spring-security-jwt/
               - title: 스프링 OAuth2 클라이언트 세션
                 url: /spring-oauth2-client-session/
+              - title: 스프링 OAuth2 클라이언트 JWT
+                url: /spring-oauth2-client-jwt/
       - title: 스터디 랩
         url: /study-lab/
       - title: 스파르타
