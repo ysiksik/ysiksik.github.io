@@ -4489,3 +4489,3514 @@ ChunkProcessor는 전달받은 Input Chunk를 ItemProcessor로 가공하여 Outp
 - Spring Batch 5.2 API — FaultTolerantChunkProcessor
 - Spring Batch Reference — Chunk-oriented Processing
 - Spring Batch Reference — What's New in Spring Batch 6
+
+## ItemReader / ItemWriter / ItemProcessor 이해
+
+
+### Spring Batch ItemReader, ItemWriter, ItemProcessor의 개념과 내부 구조 및 구현 방법
+
+Spring Batch는 대용량 데이터를 안정적으로 처리하기 위해 Chunk 기반 처리 방식을 제공합니다.
+
+Chunk 기반 처리는 데이터를 일정한 크기로 나누어 읽고, 가공하고, 저장하는 방식입니다.
+
+이러한 처리 과정에서 가장 핵심적인 역할을 하는 구성 요소가 바로 `ItemReader`, `ItemProcessor`, `ItemWriter`입니다.
+
+각 구성 요소는 다음과 같은 역할을 담당합니다.
+
+- **ItemReader**: 데이터베이스, 파일, 메시지 큐 등 다양한 데이터 소스로부터 데이터를 읽습니다.
+- **ItemProcessor**: 읽어온 데이터를 비즈니스 요구사항에 맞게 가공하거나 필터링합니다.
+- **ItemWriter**: 가공된 데이터를 데이터베이스, 파일 또는 외부 시스템에 저장합니다.
+
+세 가지 구성 요소는 서로 독립적인 역할을 가지고 있으며, Spring Batch는 이를 조합하여 하나의 Chunk 기반 처리 흐름을 구성합니다.
+
+예를 들어 결제 시스템에서 하루 동안 발생한 거래 내역을 읽고, 정산 금액을 계산하여 정산 테이블에 저장하는 작업이 있다고 가정하겠습니다.
+
+```text
+결제 거래 데이터베이스
+        │
+        ▼
+    ItemReader
+        │
+        │ 거래 데이터 조회
+        ▼
+   ItemProcessor
+        │
+        │ 정산 금액 계산
+        │ 거래 상태 검증
+        │ 데이터 변환
+        ▼
+    ItemWriter
+        │
+        │ 정산 데이터 저장
+        ▼
+   정산 데이터베이스
+```
+
+이렇게 데이터를 읽는 작업과 비즈니스 로직을 처리하는 작업, 최종적으로 저장하는 작업을 분리하면 각각의 구성 요소를 독립적으로 개발하고 유지보수할 수 있습니다.
+
+또한 Spring Batch는 이러한 구성 요소를 통해 대용량 데이터 처리, 트랜잭션 관리, 오류 처리, 재시작 기능 등을 구현할 수 있도록 지원합니다.
+
+---
+
+### 개념
+
+#### ItemReader란?
+
+`ItemReader`는 다양한 데이터 소스로부터 데이터를 읽어 하나의 Item으로 반환하는 인터페이스입니다.
+
+Spring Batch는 ItemReader를 통해 데이터베이스, 파일, XML, JSON, 메시지 큐 등 다양한 형태의 데이터를 읽을 수 있도록 지원합니다.
+
+ItemReader의 가장 중요한 특징은 **메서드를 호출할 때마다 하나의 Item을 반환한다는 것**입니다.
+
+예를 들어 데이터베이스에 다음과 같은 데이터가 있다고 가정하겠습니다.
+
+| ID | NAME |
+|---|---|
+| 1 | user1 |
+| 2 | user2 |
+| 3 | user3 |
+
+ItemReader는 다음과 같이 데이터를 반환할 수 있습니다.
+
+```text
+첫 번째 read()
+    ↓
+Customer(id=1, name=user1)
+
+두 번째 read()
+    ↓
+Customer(id=2, name=user2)
+
+세 번째 read()
+    ↓
+Customer(id=3, name=user3)
+
+네 번째 read()
+    ↓
+null
+```
+
+여기서 마지막에 반환되는 `null`은 중요한 의미를 가집니다.
+
+Spring Batch에서 ItemReader가 `null`을 반환하면 **더 이상 읽을 데이터가 없다는 의미**로 해석합니다.
+
+따라서 ItemReader를 직접 구현할 때는 모든 데이터를 읽은 이후 반드시 `null`을 반환하도록 구성해야 합니다.
+
+#### ItemReader 인터페이스
+
+Spring Batch 6.x에서는 다음 패키지에 정의되어 있습니다.
+
+```java
+org.springframework.batch.infrastructure.item.ItemReader
+```
+
+인터페이스의 핵심 구조는 다음과 같습니다.
+
+```java
+@FunctionalInterface
+public interface ItemReader<T> {
+
+    @Nullable
+    T read() throws Exception;
+}
+```
+
+`T`는 ItemReader가 반환할 데이터 타입입니다.
+
+예를 들어 다음과 같이 사용할 수 있습니다.
+
+```java
+ItemReader<String>
+```
+
+문자열 데이터를 읽는 Reader입니다.
+
+```java
+ItemReader<Customer>
+```
+
+Customer 객체를 반환하는 Reader입니다.
+
+```java
+ItemReader<Order>
+```
+
+Order 객체를 반환하는 Reader입니다.
+
+ItemReader는 데이터를 읽는 방식과 관계없이 동일한 인터페이스를 사용합니다.
+
+따라서 파일에서 읽든 데이터베이스에서 읽든 Spring Batch는 ItemReader의 `read()` 메서드를 호출하여 데이터를 가져올 수 있습니다.
+
+---
+
+#### ItemWriter란?
+
+`ItemWriter`는 ItemReader와 ItemProcessor를 거쳐 전달된 데이터를 최종 목적지에 저장하거나 출력하는 인터페이스입니다.
+
+ItemReader가 하나의 Item을 반환하는 것과 달리, ItemWriter는 여러 Item이 포함된 Chunk를 전달받습니다.
+
+예를 들어 Chunk Size를 3으로 설정했다면 다음과 같이 처리됩니다.
+
+```text
+ItemReader
+    │
+    ├── read() → item1
+    ├── read() → item2
+    └── read() → item3
+                 │
+                 ▼
+           Input Chunk
+                 │
+                 ▼
+           ItemProcessor
+                 │
+                 ▼
+           Output Chunk
+           [item1, item2, item3]
+                 │
+                 ▼
+           ItemWriter
+                 │
+                 ▼
+              Database
+```
+
+ItemWriter는 개별 Item을 하나씩 전달받는 것이 아니라, Chunk 단위로 데이터를 전달받아 처리합니다.
+
+이러한 구조는 데이터베이스의 Batch Insert나 파일의 일괄 기록과 같은 작업에 활용할 수 있습니다.
+
+다만 ItemWriter가 Chunk를 전달받는다고 해서 자동으로 JDBC Batch Insert가 수행되는 것은 아닙니다.
+
+실제 일괄 저장을 수행하려면 `JdbcBatchItemWriter`와 같은 구현체를 사용해야 합니다.
+
+#### ItemWriter 인터페이스
+
+Spring Batch 6.x에서는 다음 패키지에 정의되어 있습니다.
+
+```java
+org.springframework.batch.infrastructure.item.ItemWriter
+```
+
+인터페이스는 다음과 같습니다.
+
+```java
+@FunctionalInterface
+public interface ItemWriter<T> {
+
+    void write(Chunk<? extends T> chunk) throws Exception;
+}
+```
+
+여기서 `T`는 저장할 Item의 타입입니다.
+
+예를 들어 다음과 같이 사용할 수 있습니다.
+
+```java
+ItemWriter<Customer>
+```
+
+Customer 객체를 저장하는 Writer입니다.
+
+```java
+ItemWriter<Order>
+```
+
+Order 객체를 저장하는 Writer입니다.
+
+ItemWriter는 전달받은 Chunk 내부의 Item을 반복해서 처리할 수 있습니다.
+
+```java
+public void write(Chunk<? extends Customer> chunk) {
+
+    for (Customer customer : chunk) {
+        System.out.println(customer.getName());
+    }
+}
+```
+
+여기서 중요한 점은 ItemWriter가 직접 트랜잭션을 커밋하는 것은 아니라는 사실입니다.
+
+ItemWriter는 데이터 저장 작업을 수행하며, 실제 Commit과 Rollback은 Chunk를 실행하는 Step의 트랜잭션 관리 구조에서 처리됩니다.
+
+따라서 ItemWriter가 정상적으로 반환되었다고 해서 항상 해당 데이터가 이미 커밋되었다고 판단해서는 안 됩니다.
+
+---
+
+#### ItemProcessor란?
+
+`ItemProcessor`는 ItemReader가 읽은 데이터를 가공하거나 변환하고, 필요한 데이터만 필터링하는 역할을 담당합니다.
+
+ItemReader와 ItemWriter 사이에서 비즈니스 로직을 처리하기 위한 구성 요소입니다.
+
+예를 들어 데이터베이스에서 사용자 이름을 읽어 모두 대문자로 변환해야 한다고 가정하겠습니다.
+
+```text
+Input
+  │
+  ├── user1
+  ├── user2
+  └── user3
+  │
+  ▼
+ItemProcessor
+  │
+  ├── USER1
+  ├── USER2
+  └── USER3
+  │
+  ▼
+Output
+```
+
+이처럼 데이터의 값을 변경하거나 새로운 객체로 변환하는 작업을 수행할 수 있습니다.
+
+또한 특정 조건에 해당하는 데이터를 제외할 수도 있습니다.
+
+예를 들어 결제 상태가 `CANCELLED`인 거래는 정산 대상에서 제외해야 한다면 ItemProcessor에서 해당 데이터를 필터링할 수 있습니다.
+
+#### ItemProcessor 인터페이스
+
+Spring Batch 6.x에서는 다음 패키지에 정의되어 있습니다.
+
+```java
+org.springframework.batch.infrastructure.item.ItemProcessor
+```
+
+인터페이스는 다음과 같습니다.
+
+```java
+@FunctionalInterface
+public interface ItemProcessor<I, O> {
+
+    @Nullable
+    O process(I item) throws Exception;
+}
+```
+
+여기서 두 가지 제네릭 타입을 사용합니다.
+
+| 제네릭 타입 | 의미 |
+|---|---|
+| `I` | ItemReader에서 전달받는 Input 타입 |
+| `O` | ItemWriter에 전달할 Output 타입 |
+
+예를 들어 다음과 같이 정의할 수 있습니다.
+
+```java
+ItemProcessor<Customer, Customer>
+```
+
+Customer 객체를 전달받아 다시 Customer 객체로 반환합니다.
+
+```java
+ItemProcessor<Order, Settlement>
+```
+
+Order 객체를 전달받아 Settlement 객체로 변환합니다.
+
+```java
+ItemProcessor<String, Customer>
+```
+
+문자열을 전달받아 Customer 객체로 변환합니다.
+
+이렇게 ItemProcessor는 입력 타입과 출력 타입을 서로 다르게 설정할 수 있습니다.
+
+#### ItemProcessor의 null 반환
+
+ItemProcessor의 중요한 특징 중 하나는 `null`을 반환하여 특정 데이터를 필터링할 수 있다는 것입니다.
+
+```java
+@Override
+public Customer process(Customer customer) {
+
+    if (customer.getName().equals("user2")) {
+        return null;
+    }
+
+    return customer;
+}
+```
+
+이 경우 `user2`는 Output Chunk에 포함되지 않습니다.
+
+```text
+Input Chunk
+
+user1
+user2
+user3
+
+    ↓
+
+ItemProcessor
+
+user1 → 정상 처리
+user2 → null 반환
+user3 → 정상 처리
+
+    ↓
+
+Output Chunk
+
+user1
+user3
+```
+
+따라서 ItemReader가 읽은 데이터가 반드시 모두 ItemWriter에 전달되는 것은 아닙니다.
+
+ItemProcessor에서 필터링된 데이터는 ItemWriter에 전달되지 않습니다.
+
+---
+
+### 왜 사용하는가?
+
+#### 1. 데이터 처리 역할을 명확하게 분리하기 위해
+
+ItemReader, ItemProcessor, ItemWriter가 없다면 개발자가 직접 데이터를 읽고 가공하고 저장하는 전체 흐름을 구현해야 합니다.
+
+예를 들어 다음과 같은 코드가 있다고 가정하겠습니다.
+
+```java
+List<Customer> customers = repository.findAll();
+
+for (Customer customer : customers) {
+
+    customer.setName(
+            customer.getName().toUpperCase()
+    );
+
+    repository.save(customer);
+}
+```
+
+데이터가 적다면 이러한 구조도 사용할 수 있습니다.
+
+그러나 수십만 건 이상의 데이터를 처리해야 한다면 추가적인 요소를 고려해야 합니다.
+
+데이터를 한 번에 조회하면서 발생하는 메모리 사용량, 트랜잭션 유지 시간, 오류 발생 시 복구 방식 등이 대표적입니다.
+
+Spring Batch는 이러한 데이터 처리 과정을 표준화된 구성 요소로 분리합니다.
+
+```text
+데이터 읽기
+    ↓
+ItemReader
+
+데이터 가공
+    ↓
+ItemProcessor
+
+데이터 저장
+    ↓
+ItemWriter
+```
+
+각 구성 요소의 책임이 명확하기 때문에 특정 기능을 변경하더라도 전체 흐름에 미치는 영향을 줄일 수 있습니다.
+
+#### 2. 다양한 데이터 소스를 동일한 구조로 처리하기 위해
+
+Spring Batch는 다양한 데이터 소스를 지원합니다.
+
+예를 들어 CSV 파일을 읽어 데이터베이스에 저장하는 작업과 데이터베이스에서 조회한 데이터를 JSON 파일로 생성하는 작업은 서로 다른 입출력 방식을 사용합니다.
+
+하지만 Spring Batch에서는 동일한 인터페이스를 사용할 수 있습니다.
+
+```text
+CSV 파일
+   ↓
+ItemReader
+   ↓
+ItemProcessor
+   ↓
+ItemWriter
+   ↓
+Database
+```
+
+```text
+Database
+   ↓
+ItemReader
+   ↓
+ItemProcessor
+   ↓
+ItemWriter
+   ↓
+JSON 파일
+```
+
+입출력 대상이 변경되더라도 전체 처리 구조를 유지할 수 있습니다.
+
+#### 3. 비즈니스 로직을 독립적으로 관리하기 위해
+
+ItemProcessor는 비즈니스 로직을 분리하는 데 중요한 역할을 합니다.
+
+예를 들어 결제 정산 시스템에서는 다음과 같은 작업이 필요할 수 있습니다.
+
+- 결제 상태 확인
+- 정산 대상 여부 판단
+- 수수료 계산
+- 정산 금액 계산
+- 데이터 형식 변환
+
+이러한 작업을 ItemReader 또는 ItemWriter 내부에 모두 구현한다면 각각의 역할이 불명확해집니다.
+
+반면 ItemProcessor에 비즈니스 로직을 집중시키면 데이터 조회 및 저장 로직과 독립적으로 관리할 수 있습니다.
+
+#### 4. 재사용성과 테스트 용이성을 높이기 위해
+
+각 구성 요소가 독립적인 인터페이스를 사용하기 때문에 개별적으로 테스트할 수 있습니다.
+
+예를 들어 ItemProcessor는 데이터베이스 연결 없이도 테스트할 수 있습니다.
+
+```java
+Customer customer = new Customer("user1");
+
+Customer result = processor.process(customer);
+
+assertEquals("USER1", result.getName());
+```
+
+이처럼 비즈니스 로직을 독립적으로 검증할 수 있다는 점은 코드의 안정성과 유지보수성 측면에서 중요한 장점입니다.
+
+---
+
+### 주요 특징
+
+#### ItemReader의 주요 특징
+
+ItemReader는 데이터 소스에서 데이터를 읽고 다음 데이터로 이동하는 역할을 담당합니다.
+
+다음과 같은 특징을 가집니다.
+
+| 특징 | 설명 |
+|---|---|
+| 데이터 읽기 | 다양한 데이터 소스로부터 데이터를 조회 |
+| 처리 단위 | 하나의 Item |
+| 반환 타입 | 제네릭 타입 `T` |
+| 종료 조건 | `read()`가 `null` 반환 |
+| 상태 관리 | 구현체에 따라 읽기 위치 관리 |
+| 재시작 기능 | ItemStream을 활용한 상태 복원 가능 |
+| Thread-Safety | 구현체별로 확인 필요 |
+| 필수 여부 | Chunk 기반 Step에서 필수 |
+
+특히 중요한 것은 ItemReader의 종료 조건입니다.
+
+ItemReader가 `null`을 반환하는 것은 오류가 아닙니다.
+
+더 이상 읽을 데이터가 없다는 정상적인 종료 신호입니다.
+
+또한 `null`은 ItemProcessor로 전달되지 않습니다.
+
+마지막 Chunk에 이미 읽은 Item이 남아 있다면 해당 Item은 처리한 뒤 Step이 종료되지만, `null` 자체를 ItemProcessor에서 처리하지는 않습니다.
+
+---
+
+#### ItemReader의 주요 구현체
+
+Spring Batch는 데이터 소스에 따라 다양한 ItemReader 구현체를 제공합니다.
+
+| 구분 | 구현체 | 설명 |
+|---|---|---|
+| 파일 | FlatFileItemReader | CSV, TXT 등의 파일을 읽음 |
+| 파일 | StaxEventItemReader | XML 데이터를 읽음 |
+| 파일 | JsonItemReader | JSON 데이터를 읽음 |
+| 파일 | MultiResourceItemReader | 여러 파일을 순차적으로 읽음 |
+| 데이터베이스 | JdbcCursorItemReader | JDBC Cursor 기반 데이터 조회 |
+| 데이터베이스 | JdbcPagingItemReader | JDBC Paging 기반 데이터 조회 |
+| 데이터베이스 | JpaCursorItemReader | JPA Cursor 기반 데이터 조회 |
+| 데이터베이스 | JpaPagingItemReader | JPA Paging 기반 데이터 조회 |
+| 메시징 | JmsItemReader | JMS 메시지 읽기 |
+| 메시징 | KafkaItemReader | Kafka 데이터 읽기 |
+| 메시징 | AmqpItemReader | AMQP 기반 메시지 읽기 |
+| 재사용 | ItemReaderAdapter | 기존 서비스 메서드를 Reader로 활용 |
+| 메모리 | ListItemReader | List 데이터를 순차적으로 읽음 |
+| 동기화 | SynchronizedItemStreamReader | Reader 호출을 동기화하는 래퍼 |
+| 사용자 정의 | Custom ItemReader | 직접 구현한 Reader |
+
+이 중에서 파일과 데이터베이스를 사용하는 Reader가 일반적인 배치 작업에서 자주 활용됩니다.
+
+##### FlatFileItemReader
+
+`FlatFileItemReader`는 CSV나 TXT와 같은 파일을 읽을 때 사용합니다.
+
+예를 들어 다음과 같은 파일이 있다고 가정하겠습니다.
+
+```csv
+id,name,age
+1,user1,20
+2,user2,30
+3,user3,40
+```
+
+FlatFileItemReader는 파일의 각 행을 읽어 Java 객체로 변환할 수 있습니다.
+
+```text
+CSV 파일
+   │
+   ▼
+FlatFileItemReader
+   │
+   ├── Customer(1, user1, 20)
+   ├── Customer(2, user2, 30)
+   └── Customer(3, user3, 40)
+```
+
+파일의 구분자나 필드 위치를 기준으로 데이터를 분리하고, FieldSetMapper 등을 사용하여 객체로 변환합니다.
+
+##### JdbcCursorItemReader
+
+JdbcCursorItemReader는 JDBC Cursor 방식으로 데이터를 읽습니다.
+
+SQL을 실행하여 ResultSet을 생성한 후, Cursor를 이동하면서 데이터를 순차적으로 반환합니다.
+
+```text
+Database
+   │
+   ▼
+SQL 실행
+   │
+   ▼
+ResultSet
+   │
+   ├── next() → Row1
+   ├── next() → Row2
+   └── next() → Row3
+```
+
+Cursor를 유지하면서 데이터를 읽기 때문에 데이터베이스 연결 유지 시간과 리소스 사용량을 고려해야 합니다.
+
+##### JdbcPagingItemReader
+
+JdbcPagingItemReader는 데이터를 페이지 단위로 조회합니다.
+
+예를 들어 Page Size를 100으로 설정했다면 다음과 같이 데이터를 조회할 수 있습니다.
+
+```text
+Page 1 → 1 ~ 100
+Page 2 → 101 ~ 200
+Page 3 → 201 ~ 300
+```
+
+이때 Chunk Size와 Page Size는 서로 다른 개념입니다.
+
+Chunk Size는 데이터 처리 및 커밋 단위를 결정하고, Page Size는 Reader가 데이터를 조회하는 단위를 결정합니다.
+
+따라서 두 값을 반드시 동일하게 설정할 필요는 없습니다.
+
+또한 Paging 기반 조회에서는 정렬 기준의 안정성과 데이터 변경으로 인한 누락 및 중복 가능성을 고려해야 합니다.
+
+---
+
+#### ItemWriter의 주요 특징
+
+ItemWriter는 가공된 데이터를 최종 목적지에 저장하는 역할을 담당합니다.
+
+| 특징 | 설명 |
+|---|---|
+| 데이터 저장 | DB, 파일, 메시지 큐 등에 데이터 출력 |
+| 처리 단위 | Chunk 단위 |
+| 입력 타입 | `Chunk<? extends T>` |
+| 일괄 처리 | 여러 Item을 한 번에 전달받음 |
+| 트랜잭션 | Step의 트랜잭션 경계에서 실행 |
+| 재시작 기능 | ItemStream을 통한 상태 관리 가능 |
+| 필수 여부 | Chunk 기반 Step에서 필수 |
+
+ItemWriter의 핵심은 데이터를 Chunk 단위로 전달받는다는 점입니다.
+
+다만 Writer에 전달되는 Chunk가 항상 설정된 Chunk Size와 동일한 개수의 Item을 포함하는 것은 아닙니다.
+
+ItemProcessor의 필터링이나 Skip 처리에 따라 실제 전달되는 Item의 개수가 줄어들 수 있습니다.
+
+또한 모든 Item이 필터링된 경우에는 빈 Chunk가 전달될 수도 있으므로, Custom ItemWriter는 빈 Chunk도 안전하게 처리하도록 구현하는 것이 좋습니다.
+
+---
+
+#### ItemWriter의 주요 구현체
+
+| 구분 | 구현체 | 설명 |
+|---|---|---|
+| 파일 | FlatFileItemWriter | CSV, TXT 등 텍스트 파일 생성 |
+| 파일 | StaxEventItemWriter | XML 파일 생성 |
+| 파일 | JsonFileItemWriter | JSON 파일 생성 |
+| 파일 | MultiResourceItemWriter | 데이터를 여러 파일로 나누어 저장 |
+| 데이터베이스 | JdbcBatchItemWriter | JDBC Batch 기반 데이터 저장 |
+| 데이터베이스 | JpaItemWriter | JPA 기반 데이터 저장 |
+| 메시징 | JmsItemWriter | JMS 메시지 전송 |
+| 메시징 | KafkaItemWriter | Kafka 데이터 전송 |
+| 재사용 | ItemWriterAdapter | 기존 서비스 메서드를 Writer로 활용 |
+| 사용자 정의 | Custom ItemWriter | 직접 구현한 Writer |
+
+ItemReader와 ItemWriter는 유사한 데이터 형식을 지원하지만, 반드시 일대일로 대응하는 것은 아닙니다.
+
+예를 들어 CSV 파일을 읽어 데이터베이스에 저장할 수도 있고, 데이터베이스에서 데이터를 조회하여 JSON 파일로 생성할 수도 있습니다.
+
+##### JdbcBatchItemWriter
+
+JdbcBatchItemWriter는 JDBC Batch 기능을 이용하여 여러 건의 데이터를 저장할 수 있습니다.
+
+일반적인 반복 INSERT 방식과 비교하면 다음과 같은 차이가 있습니다.
+
+```text
+개별 INSERT 방식
+
+INSERT item1
+INSERT item2
+INSERT item3
+INSERT item4
+INSERT item5
+```
+
+```text
+JDBC Batch 방식
+
+Batch
+ ├── item1
+ ├── item2
+ ├── item3
+ ├── item4
+ └── item5
+       │
+       ▼
+executeBatch()
+```
+
+JDBC Batch를 활용하면 데이터베이스와의 통신 비용을 줄일 수 있습니다.
+
+다만 실제 성능은 데이터베이스 드라이버, SQL 구조, 네트워크 환경, 데이터베이스 설정 등에 따라 달라집니다.
+
+##### JpaItemWriter
+
+JpaItemWriter는 JPA의 EntityManager를 이용하여 데이터를 저장합니다.
+
+JPA의 영속성 컨텍스트와 Flush 동작을 고려하여 데이터를 저장하므로, 대량의 Entity를 처리할 때는 영속성 컨텍스트 관리와 메모리 사용량을 함께 고려해야 합니다.
+
+---
+
+#### ItemProcessor의 주요 특징
+
+ItemProcessor는 데이터 변환과 필터링을 담당합니다.
+
+| 특징 | 설명 |
+|---|---|
+| 데이터 변환 | 입력 데이터를 다른 형태로 변경 |
+| 데이터 검증 | 비즈니스 조건 검사 |
+| 데이터 필터링 | `null` 반환으로 Item 제외 |
+| 타입 변환 | Input과 Output 타입을 다르게 설정 가능 |
+| 처리 단위 | 개별 Item |
+| 필수 여부 | 선택 |
+| 상태 관리 | 일반적으로 상태 없는 구조 권장 |
+
+ItemProcessor는 반드시 설정해야 하는 구성 요소가 아닙니다.
+
+데이터를 읽은 뒤 별도의 가공 없이 그대로 저장한다면 ItemProcessor를 생략할 수 있습니다.
+
+```java
+return new StepBuilder("step", jobRepository)
+        .<Customer, Customer>chunk(100)
+        .transactionManager(transactionManager)
+        .reader(itemReader)
+        .writer(itemWriter)
+        .build();
+```
+
+반면 데이터 변환이 필요하다면 다음과 같이 추가합니다.
+
+```java
+return new StepBuilder("step", jobRepository)
+        .<Customer, Customer>chunk(100)
+        .transactionManager(transactionManager)
+        .reader(itemReader)
+        .processor(itemProcessor)
+        .writer(itemWriter)
+        .build();
+```
+
+ItemProcessor는 일반적으로 입력 데이터 하나를 처리하고 결과를 반환하는 구조이므로, 가능한 한 상태를 가지지 않도록 설계하는 것이 좋습니다.
+
+다만 ItemProcessor가 ItemStream을 구현할 수 없는 것은 아닙니다.
+
+상태 관리가 필요한 특별한 경우에는 ItemStream을 함께 구현할 수 있지만, 대부분의 단순 데이터 변환 작업에서는 필요하지 않습니다.
+
+---
+
+#### ItemProcessor의 주요 구현체
+
+Spring Batch는 ItemProcessor를 직접 구현할 수 있도록 인터페이스를 제공하며, 여러 개의 Processor를 조합하거나 검증하는 구현체도 제공합니다.
+
+| 구현체 | 설명 |
+|---|---|
+| CompositeItemProcessor | 여러 Processor를 순차적으로 연결 |
+| ClassifierCompositeItemProcessor | 조건에 따라 서로 다른 Processor로 분기 |
+| ValidatingItemProcessor | Validator를 이용한 데이터 검증 |
+| BeanValidatingItemProcessor | Jakarta Bean Validation 기반 검증 |
+| PassThroughItemProcessor | 데이터를 변경하지 않고 그대로 반환 |
+| FunctionItemProcessor | Function을 이용하여 데이터 변환 |
+| Custom ItemProcessor | 직접 구현한 비즈니스 로직 처리 |
+
+##### CompositeItemProcessor
+
+여러 Processor를 순차적으로 연결할 때 사용합니다.
+
+```text
+Input
+  │
+  ▼
+Processor A
+  │
+  │ 데이터 검증
+  ▼
+Processor B
+  │
+  │ 데이터 변환
+  ▼
+Processor C
+  │
+  │ 비즈니스 계산
+  ▼
+Output
+```
+
+예를 들어 정산 배치에서 데이터 검증, 수수료 계산, 정산 데이터 변환 작업을 각각의 Processor로 분리할 수 있습니다.
+
+##### ClassifierCompositeItemProcessor
+
+입력 데이터의 조건에 따라 서로 다른 Processor를 선택할 때 사용합니다.
+
+```text
+Input
+  │
+  ▼
+Classifier
+  │
+  ├── CARD → CardProcessor
+  │
+  ├── BANK → BankProcessor
+  │
+  └── POINT → PointProcessor
+```
+
+결제 수단별로 다른 정산 로직을 적용해야 하는 상황에서 활용할 수 있습니다.
+
+##### ValidatingItemProcessor
+
+Validator를 이용하여 데이터를 검증하는 Processor입니다.
+
+유효하지 않은 데이터가 발견되면 검증 예외를 발생시킬 수 있습니다.
+
+이때 검증 실패와 필터링은 서로 다른 개념입니다.
+
+정상적으로 처리 대상에서 제외할 데이터라면 `null`을 반환할 수 있지만, 데이터 자체에 오류가 있다면 예외를 발생시켜 Skip 또는 실패 처리 정책에 따라 대응하도록 설계할 수 있습니다.
+
+---
+
+### 구조
+
+#### 전체 데이터 처리 구조
+
+ItemReader, ItemProcessor, ItemWriter는 Chunk를 중심으로 연결됩니다.
+
+```mermaid
+flowchart TD
+    A[Data Source] --> B[ItemReader]
+
+    B -->|read one item| C[Input Chunk]
+
+    C --> D{Chunk Size 충족 또는 EOF?}
+
+    D -->|No| B
+
+    D -->|Yes| E[ItemProcessor]
+
+    E --> F{처리 결과}
+
+    F -->|정상 데이터| G[Output Chunk]
+    F -->|null 반환| H[Filter]
+
+    G --> I[ItemWriter]
+    I --> J[Database or File]
+
+    J --> K[Transaction Commit]
+    K --> L{읽을 데이터 존재?}
+
+    L -->|Yes| B
+    L -->|No| M[Step 완료]
+```
+
+위 구조에서 중요한 점은 처리 단위의 차이입니다.
+
+ItemReader와 ItemProcessor는 각각의 Item을 개별적으로 처리합니다.
+
+반면 ItemWriter는 여러 Item이 포함된 Chunk를 전달받아 처리합니다.
+
+실제 Spring Batch 내부에서는 Chunk 처리 엔진이 이 과정을 제어하며, 입력 종료 여부와 트랜잭션 경계를 관리합니다.
+
+#### ItemReader와 ItemStream의 관계
+
+Spring Batch의 많은 ItemReader 구현체는 ItemReader뿐 아니라 ItemStream도 함께 구현합니다.
+
+ItemStream은 데이터 처리 과정에서 필요한 리소스와 상태를 관리하기 위한 인터페이스입니다.
+
+대표적인 메서드는 다음과 같습니다.
+
+```java
+public interface ItemStream {
+
+    void open(ExecutionContext executionContext)
+            throws ItemStreamException;
+
+    void update(ExecutionContext executionContext)
+            throws ItemStreamException;
+
+    void close()
+            throws ItemStreamException;
+}
+```
+
+각 메서드는 다음과 같은 역할을 담당합니다.
+
+| 메서드 | 역할 |
+|---|---|
+| `open()` | 리소스 초기화 및 이전 실행 상태 복원 |
+| `update()` | 현재 처리 상태를 ExecutionContext에 갱신 |
+| `close()` | 사용한 리소스 정리 |
+
+일반적인 처리 흐름은 다음과 같습니다.
+
+```text
+Step 시작
+    │
+    ▼
+ItemStream.open()
+    │
+    │ 리소스 초기화
+    │ 이전 처리 상태 복원
+    ▼
+ItemReader.read()
+    │
+    ▼
+ItemProcessor.process()
+    │
+    ▼
+ItemWriter.write()
+    │
+    ▼
+ItemStream.update()
+    │
+    │ 현재 처리 위치 갱신
+    ▼
+Chunk Commit
+    │
+    ▼
+다음 Chunk 반복
+    │
+    ▼
+Step 종료
+    │
+    ▼
+ItemStream.close()
+```
+
+ItemStream을 통해 상태 정보를 관리하면 중단된 배치를 재시작할 때 이전 실행 위치를 복원하는 데 활용할 수 있습니다.
+
+다만 ItemReader나 ItemWriter가 반드시 ItemStream을 구현해야 하는 것은 아닙니다.
+
+재시작을 위한 상태 관리가 필요하지 않은 단순한 구현체는 ItemReader 또는 ItemWriter만 구현할 수도 있습니다.
+
+---
+
+### 예제
+
+이번에는 ItemReader, ItemProcessor, ItemWriter를 직접 구현하여 Chunk 기반 배치 작업을 구성하겠습니다.
+
+다음과 같은 요구사항이 있다고 가정하겠습니다.
+
+**요구사항**
+
+1. Customer 객체 3개를 생성합니다.
+2. ItemReader에서 Customer 객체를 하나씩 읽습니다.
+3. ItemProcessor에서 Customer의 이름을 대문자로 변환합니다.
+4. ItemWriter에서 변환된 Customer 객체를 출력합니다.
+5. Chunk Size는 3으로 설정합니다.
+
+예제는 Spring Batch 6.1을 기준으로 작성합니다.
+
+#### 1. Customer 클래스
+
+먼저 데이터를 저장할 Customer 객체를 생성하겠습니다.
+
+```java
+public class Customer {
+
+    private String name;
+
+    public Customer(String name) {
+        this.name = name;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public void setName(String name) {
+        this.name = name;
+    }
+
+    @Override
+    public String toString() {
+        return "Customer{name='" + name + "'}";
+    }
+}
+```
+
+Customer는 사용자 이름을 저장하는 간단한 객체입니다.
+
+ItemReader는 해당 객체를 읽고, ItemProcessor는 이름을 대문자로 변경하며, ItemWriter는 최종 결과를 출력합니다.
+
+---
+
+#### 2. CustomItemReader 구현
+
+ItemReader 인터페이스를 직접 구현하겠습니다.
+
+```java
+import java.util.ArrayList;
+import java.util.List;
+
+import org.springframework.batch.infrastructure.item.ItemReader;
+
+public class CustomItemReader implements ItemReader<Customer> {
+
+    private final List<Customer> customers;
+
+    public CustomItemReader(List<Customer> customers) {
+
+        this.customers = new ArrayList<>(customers);
+    }
+
+    @Override
+    public Customer read() throws Exception {
+
+        if (customers.isEmpty()) {
+
+            System.out.println("READ: null");
+
+            return null;
+        }
+
+        Customer customer = customers.remove(0);
+
+        System.out.println("READ: " + customer.getName());
+
+        return customer;
+    }
+}
+```
+
+##### 코드 분석
+
+먼저 ItemReader 인터페이스를 구현합니다.
+
+```java
+implements ItemReader<Customer>
+```
+
+이는 ItemReader가 Customer 객체를 반환한다는 의미입니다.
+
+다음으로 생성자에서 List 형태의 데이터를 전달받습니다.
+
+```java
+public CustomItemReader(List<Customer> customers) {
+
+    this.customers = new ArrayList<>(customers);
+}
+```
+
+전달받은 List를 새로운 ArrayList로 복사하여 내부에서 관리합니다.
+
+데이터를 읽을 때는 다음 코드를 사용합니다.
+
+```java
+Customer customer = customers.remove(0);
+```
+
+List의 첫 번째 데이터를 꺼내 반환합니다.
+
+이 과정에서 첫 번째 데이터가 List에서 제거되므로 다음 호출에서는 두 번째 데이터를 반환합니다.
+
+```text
+최초 데이터
+
+[user1, user2, user3]
+
+첫 번째 read()
+
+반환: user1
+남은 데이터: [user2, user3]
+
+두 번째 read()
+
+반환: user2
+남은 데이터: [user3]
+
+세 번째 read()
+
+반환: user3
+남은 데이터: []
+
+네 번째 read()
+
+반환: null
+```
+
+이처럼 ItemReader는 호출할 때마다 다음 데이터를 반환하도록 구현할 수 있습니다.
+
+##### 데이터가 없는 경우
+
+```java
+if (customers.isEmpty()) {
+    return null;
+}
+```
+
+List에 데이터가 존재하지 않는다면 `null`을 반환합니다.
+
+Spring Batch는 ItemReader가 `null`을 반환하면 더 이상 읽을 데이터가 없다고 판단합니다.
+
+여기서 주의해야 할 점이 있습니다.
+
+ArrayList의 `remove(0)`은 첫 번째 요소를 제거한 뒤 나머지 요소를 앞으로 이동시켜야 하므로 일반적으로 O(n)의 시간 복잡도를 가집니다.
+
+따라서 대량의 데이터를 처리하는 Reader에서는 비효율적일 수 있습니다.
+
+간단한 구현 원리를 확인하는 용도로는 사용할 수 있지만, 실제 데이터 처리에서는 Cursor, Paging 또는 Queue 기반 구조를 고려하는 것이 좋습니다.
+
+---
+
+#### 3. CustomItemProcessor 구현
+
+이번에는 ItemProcessor를 구현하겠습니다.
+
+ItemProcessor에서는 Customer 객체의 이름을 대문자로 변환합니다.
+
+```java
+import java.util.Locale;
+
+import org.springframework.batch.infrastructure.item.ItemProcessor;
+
+public class CustomItemProcessor
+        implements ItemProcessor<Customer, Customer> {
+
+    @Override
+    public Customer process(Customer customer) throws Exception {
+
+        String upperName = customer.getName()
+                .toUpperCase(Locale.ROOT);
+
+        customer.setName(upperName);
+
+        System.out.println(
+                "PROCESS: " + customer.getName()
+        );
+
+        return customer;
+    }
+}
+```
+
+##### 코드 분석
+
+먼저 ItemProcessor 인터페이스를 구현합니다.
+
+```java
+implements ItemProcessor<Customer, Customer>
+```
+
+첫 번째 Customer는 ItemReader에서 전달받을 데이터 타입입니다.
+
+두 번째 Customer는 ItemWriter에 전달할 데이터 타입입니다.
+
+다음으로 `process()` 메서드를 구현합니다.
+
+```java
+public Customer process(Customer customer)
+```
+
+ItemProcessor는 개별 Customer 객체를 전달받습니다.
+
+이후 다음 코드로 이름을 대문자로 변경합니다.
+
+```java
+String upperName = customer.getName()
+        .toUpperCase(Locale.ROOT);
+
+customer.setName(upperName);
+```
+
+예를 들어 다음과 같이 변경됩니다.
+
+```text
+user1 → USER1
+user2 → USER2
+user3 → USER3
+```
+
+마지막으로 변경된 Customer 객체를 반환합니다.
+
+```java
+return customer;
+```
+
+이렇게 반환된 객체는 Output Chunk에 저장됩니다.
+
+##### 주의: 입력 객체를 직접 수정하는 방식
+
+위 예제에서는 Customer 객체의 상태를 직접 변경했습니다.
+
+하지만 실제 운영 환경에서는 이러한 방식이 문제를 일으킬 수 있습니다.
+
+특히 JPA Entity를 ItemReader에서 읽은 경우에는 영속성 컨텍스트에 의해 관리되는 객체일 수 있습니다.
+
+이때 Processor에서 Entity의 값을 변경하면 변경 감지에 의해 의도하지 않은 데이터베이스 업데이트가 발생할 가능성이 있습니다.
+
+또한 Retry나 Rollback으로 동일한 객체를 다시 처리하는 상황에서 이미 변경된 상태가 남아 있을 수 있습니다.
+
+따라서 가능하면 입력 객체를 직접 변경하지 않고 새로운 객체를 생성하는 방식이 더 안전합니다.
+
+```java
+@Override
+public Customer process(Customer customer) {
+
+    String upperName = customer.getName()
+            .toUpperCase(Locale.ROOT);
+
+    return new Customer(upperName);
+}
+```
+
+이 방식은 원본 Customer 객체를 변경하지 않고 새로운 Customer 객체를 반환합니다.
+
+단순한 문자열 변환에서는 차이가 크지 않을 수 있지만, 복잡한 비즈니스 로직에서는 이러한 설계 방식이 안정성을 높이는 데 도움이 됩니다.
+
+---
+
+#### 4. CustomItemWriter 구현
+
+마지막으로 ItemWriter를 구현하겠습니다.
+
+```java
+import org.springframework.batch.infrastructure.item.Chunk;
+import org.springframework.batch.infrastructure.item.ItemWriter;
+
+public class CustomItemWriter implements ItemWriter<Customer> {
+
+    @Override
+    public void write(
+            Chunk<? extends Customer> chunk
+    ) throws Exception {
+
+        System.out.println(
+                "WRITE CHUNK SIZE: " + chunk.size()
+        );
+
+        for (Customer customer : chunk) {
+
+            System.out.println(
+                    "WRITE: " + customer.getName()
+            );
+        }
+    }
+}
+```
+
+##### 코드 분석
+
+ItemWriter 인터페이스를 구현합니다.
+
+```java
+implements ItemWriter<Customer>
+```
+
+ItemWriter는 다음 메서드를 구현해야 합니다.
+
+```java
+void write(Chunk<? extends Customer> chunk)
+```
+
+여기서 ItemReader와 중요한 차이가 있습니다.
+
+ItemReader는 하나의 Customer 객체를 반환합니다.
+
+반면 ItemWriter는 여러 Customer 객체가 포함된 Chunk를 전달받습니다.
+
+```text
+Input Chunk
+
+user1
+user2
+user3
+
+    ↓
+
+ItemProcessor
+
+USER1
+USER2
+USER3
+
+    ↓
+
+Output Chunk
+
+[USER1, USER2, USER3]
+
+    ↓
+
+ItemWriter.write()
+```
+
+따라서 Chunk Size가 3이고 필터링된 데이터가 없다면 ItemWriter는 3개의 Customer 객체를 전달받습니다.
+
+ItemWriter는 전달받은 Chunk를 반복하면서 데이터를 출력합니다.
+
+---
+
+#### 5. Job과 Step 구성
+
+이제 직접 구현한 세 가지 구성 요소를 Spring Batch Step에 등록하겠습니다.
+
+```java
+import java.util.List;
+
+import org.springframework.batch.core.job.Job;
+import org.springframework.batch.core.job.builder.JobBuilder;
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.step.Step;
+import org.springframework.batch.core.step.builder.StepBuilder;
+import org.springframework.batch.core.configuration.annotation.StepScope;
+
+import org.springframework.batch.infrastructure.item.ItemReader;
+import org.springframework.batch.infrastructure.item.ItemProcessor;
+import org.springframework.batch.infrastructure.item.ItemWriter;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import org.springframework.transaction.PlatformTransactionManager;
+
+@Configuration
+public class CustomBatchConfig {
+
+    @Bean
+    public Job customJob(
+            JobRepository jobRepository,
+            Step customStep
+    ) {
+
+        return new JobBuilder("customJob", jobRepository)
+                .start(customStep)
+                .build();
+    }
+
+    @Bean
+    public Step customStep(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager,
+            ItemReader<Customer> customItemReader,
+            ItemProcessor<Customer, Customer> customItemProcessor,
+            ItemWriter<Customer> customItemWriter
+    ) {
+
+        return new StepBuilder("customStep", jobRepository)
+                .<Customer, Customer>chunk(3)
+                .transactionManager(transactionManager)
+                .reader(customItemReader)
+                .processor(customItemProcessor)
+                .writer(customItemWriter)
+                .build();
+    }
+
+    @Bean
+    @StepScope
+    public ItemReader<Customer> customItemReader() {
+
+        return new CustomItemReader(
+                List.of(
+                        new Customer("user1"),
+                        new Customer("user2"),
+                        new Customer("user3")
+                )
+        );
+    }
+
+    @Bean
+    public ItemProcessor<Customer, Customer> customItemProcessor() {
+
+        return new CustomItemProcessor();
+    }
+
+    @Bean
+    public ItemWriter<Customer> customItemWriter() {
+
+        return new CustomItemWriter();
+    }
+}
+```
+
+이 설정은 JobRepository와 PlatformTransactionManager가 이미 구성된 Spring Batch 6.1 환경을 전제로 합니다.
+
+예제에서는 Console 출력을 통해 처리 흐름을 확인하므로 실제 데이터베이스 저장은 수행하지 않습니다.
+
+##### Chunk Size 설정
+
+```java
+.<Customer, Customer>chunk(3)
+```
+
+Chunk Size를 3으로 설정했습니다.
+
+따라서 ItemReader는 최대 3개의 Customer 객체를 읽어 Input Chunk를 구성합니다.
+
+##### ItemReader 등록
+
+```java
+.reader(customItemReader)
+```
+
+직접 구현한 CustomItemReader를 등록했습니다.
+
+##### ItemProcessor 등록
+
+```java
+.processor(customItemProcessor)
+```
+
+CustomItemProcessor를 등록했습니다.
+
+##### ItemWriter 등록
+
+```java
+.writer(customItemWriter)
+```
+
+CustomItemWriter를 등록했습니다.
+
+이렇게 설정하면 Spring Batch는 ItemReader, ItemProcessor, ItemWriter를 호출하여 Chunk 기반 처리 작업을 수행합니다.
+
+---
+
+#### 6. 실행 결과
+
+배치를 실행하면 핵심적인 로그는 다음과 같이 출력됩니다.
+
+```text
+READ: user1
+READ: user2
+READ: user3
+
+PROCESS: USER1
+PROCESS: USER2
+PROCESS: USER3
+
+WRITE CHUNK SIZE: 3
+
+WRITE: USER1
+WRITE: USER2
+WRITE: USER3
+
+READ: null
+```
+
+실행 결과를 보면 ItemReader는 데이터를 한 건씩 읽습니다.
+
+ItemProcessor 역시 개별 Customer 객체를 전달받아 대문자로 변환합니다.
+
+반면 ItemWriter는 세 개의 Customer 객체가 저장된 Chunk를 전달받아 처리합니다.
+
+이후 ItemReader가 `null`을 반환하면서 더 이상 읽을 데이터가 없다는 사실을 확인합니다.
+
+##### 실행 순서 정리
+
+| 순서 | 구성 요소 | 동작 |
+|---|---|---|
+| 1 | ItemReader | user1 읽기 |
+| 2 | ItemReader | user2 읽기 |
+| 3 | ItemReader | user3 읽기 |
+| 4 | ItemProcessor | user1 → USER1 |
+| 5 | ItemProcessor | user2 → USER2 |
+| 6 | ItemProcessor | user3 → USER3 |
+| 7 | ItemWriter | 3개의 Customer 일괄 처리 |
+| 8 | ItemReader | null 반환 |
+| 9 | Step | 입력 종료 확인 후 작업 종료 |
+
+이 예제에서 실제 데이터가 포함된 Chunk는 하나입니다.
+
+데이터가 총 3건이고 Chunk Size도 3이기 때문입니다.
+
+---
+
+### ItemReader, ItemProcessor, ItemWriter의 차이점
+
+세 가지 인터페이스의 가장 큰 차이는 처리 목적과 데이터 단위입니다.
+
+| 구분 | ItemReader | ItemProcessor | ItemWriter |
+|---|---|---|---|
+| 역할 | 데이터 읽기 | 데이터 가공 | 데이터 저장 |
+| 메서드 | `read()` | `process()` | `write()` |
+| 입력 | 데이터 소스 | 개별 Item | Chunk |
+| 출력 | 개별 Item | 가공된 Item 또는 null | 반환값 없음 |
+| 처리 단위 | Item | Item | Chunk |
+| 상태 관리 | 구현체에 따라 필요 | 일반적으로 불필요 | 구현체에 따라 필요 |
+| 필수 여부 | 필수 | 선택 | 필수 |
+| 주요 활용 | DB 및 파일 조회 | 검증, 변환, 필터링 | DB 및 파일 저장 |
+
+여기서 다음 세 가지 사항을 기억해야 합니다.
+
+첫 번째는 ItemReader가 데이터를 한 건씩 반환한다는 것입니다.
+
+두 번째는 ItemProcessor가 데이터를 한 건씩 가공하며, `null`을 반환하면 해당 데이터가 필터링된다는 것입니다.
+
+세 번째는 ItemWriter가 개별 Item이 아닌 Chunk를 전달받는다는 것입니다.
+
+---
+
+### 실무에서의 활용
+
+실제 배치 시스템에서는 단순히 데이터를 읽고 저장하는 것보다 데이터 정합성, 장애 처리, 재시작, 성능 최적화 등을 함께 고려해야 합니다.
+
+#### 1. 대량 데이터 조회 시 적절한 ItemReader 선택
+
+데이터베이스에서 수십만 건 이상의 데이터를 읽는 경우에는 Reader의 조회 방식이 중요합니다.
+
+JdbcCursorItemReader와 JdbcPagingItemReader는 모두 대용량 데이터 조회에 활용할 수 있지만 동작 방식이 다릅니다.
+
+Cursor 방식은 ResultSet을 유지하면서 데이터를 순차적으로 읽습니다.
+
+반면 Paging 방식은 데이터를 일정한 크기로 나누어 조회합니다.
+
+따라서 데이터베이스 연결 유지 시간, 조회 대상 데이터의 변경 가능성, 정렬 기준, 재시작 요구사항 등을 고려하여 Reader를 선택해야 합니다.
+
+#### 2. Chunk Size와 Page Size를 구분하여 설정
+
+Chunk Size와 Page Size는 서로 다른 역할을 합니다.
+
+예를 들어 다음과 같이 설정할 수 있습니다.
+
+```text
+Chunk Size = 500
+Page Size  = 1000
+```
+
+Page Size는 한 번의 데이터베이스 조회에서 가져오는 데이터의 크기를 결정합니다.
+
+Chunk Size는 데이터를 처리하고 커밋하는 단위를 결정합니다.
+
+두 값을 적절하게 조합하면 조회 비용과 트랜잭션 비용을 제어할 수 있습니다.
+
+다만 반드시 같은 값으로 설정해야 하는 것은 아닙니다.
+
+#### 3. ItemProcessor의 상태 변경 최소화
+
+ItemProcessor는 동일한 데이터를 여러 번 처리할 가능성이 있습니다.
+
+Retry 또는 Rollback 이후 같은 Item이 다시 전달될 수 있기 때문입니다.
+
+따라서 ItemProcessor에서 외부 API를 호출하거나 데이터베이스를 직접 수정하는 작업은 신중하게 설계해야 합니다.
+
+가능하다면 입력 데이터를 받아 새로운 결과 객체를 반환하는 방식이 좋습니다.
+
+이러한 구조는 단위 테스트를 작성하기에도 유리합니다.
+
+#### 4. 필터링과 예외 처리를 명확하게 구분
+
+ItemProcessor에서 데이터를 제외하는 방법은 크게 두 가지로 구분할 수 있습니다.
+
+정상적인 비즈니스 조건에 따라 처리 대상에서 제외하는 경우에는 `null`을 반환할 수 있습니다.
+
+반면 데이터 형식 오류나 비즈니스 규칙 위반으로 정상적인 처리가 불가능한 경우에는 예외를 발생시킬 수 있습니다.
+
+예외 발생 시에는 Step의 Skip 및 Retry 정책에 따라 작업이 실패하거나 재처리될 수 있습니다.
+
+따라서 정상적인 필터링과 오류 처리를 구분해야 운영 통계를 정확하게 해석할 수 있습니다.
+
+#### 5. ItemWriter의 일괄 저장 방식 최적화
+
+ItemWriter는 Chunk 단위로 데이터를 전달받습니다.
+
+하지만 이를 개별 INSERT로 처리한다면 데이터베이스 접근 비용이 증가할 수 있습니다.
+
+따라서 대량 데이터 저장 작업에서는 JdbcBatchItemWriter 등을 활용하여 JDBC Batch 기능을 사용할 수 있습니다.
+
+이때 Batch Size와 Chunk Size뿐 아니라 데이터베이스 드라이버의 설정, SQL 실행 방식, 트랜잭션 로그 사용량도 고려해야 합니다.
+
+#### 6. 재시작 가능한 ItemReader 구현
+
+단순한 List 기반 Custom ItemReader는 애플리케이션이 종료되면 이전 처리 위치를 복원하지 못할 수 있습니다.
+
+실제 운영 환경에서 배치가 중단된 지점부터 재시작해야 한다면 ItemStream을 활용한 상태 관리가 필요합니다.
+
+ExecutionContext에 현재 처리 위치를 기록하고, 배치 재시작 시 해당 위치를 복원하도록 구현할 수 있습니다.
+
+다만 상태 정보만 저장한다고 해서 모든 재시작 문제가 해결되는 것은 아닙니다.
+
+데이터의 정렬 기준과 조회 대상의 변경 가능성까지 함께 고려해야 합니다.
+
+#### 7. 멀티스레드 환경에서 Reader의 Thread-Safety 확인
+
+ItemReader 구현체 중에는 내부적으로 현재 읽기 위치를 저장하는 객체가 많습니다.
+
+이러한 Reader를 여러 스레드에서 동시에 사용하면 중복 조회나 데이터 누락이 발생할 가능성이 있습니다.
+
+따라서 멀티스레드 Step을 구성할 때는 해당 Reader가 Thread-Safe한지 확인해야 합니다.
+
+필요하다면 동기화된 Reader를 사용하거나 Partitioning을 이용해 각 스레드가 서로 다른 데이터 범위를 처리하도록 설계할 수 있습니다.
+
+단순히 Reader 호출을 동기화하는 것만으로 재시작 안정성까지 자동으로 확보되는 것은 아닙니다.
+
+#### 8. ItemProcessor를 여러 단계로 분리
+
+복잡한 비즈니스 로직을 하나의 Processor에 모두 구현하면 유지보수가 어려워질 수 있습니다.
+
+예를 들어 정산 처리에서는 데이터 검증, 수수료 계산, 정산 금액 계산, 결과 데이터 변환 등의 작업이 필요할 수 있습니다.
+
+이러한 경우 CompositeItemProcessor를 활용하여 여러 Processor를 순차적으로 연결할 수 있습니다.
+
+각 Processor는 하나의 명확한 책임을 가지도록 설계하는 것이 좋습니다.
+
+#### 9. 결제 수단별 Processor 분리
+
+결제 시스템에서는 신용카드, 계좌이체, 포인트 등 결제 수단에 따라 서로 다른 처리 정책이 필요할 수 있습니다.
+
+ClassifierCompositeItemProcessor를 활용하면 결제 수단에 따라 적절한 Processor로 처리 흐름을 분기할 수 있습니다.
+
+이러한 방식은 조건문이 복잡하게 중첩되는 구조를 줄이고, 새로운 결제 수단이 추가되었을 때 기존 로직에 미치는 영향을 줄이는 데 도움이 됩니다.
+
+#### 10. ItemWriter의 멱등성 확보
+
+배치 작업은 장애나 재시작으로 인해 동일한 데이터를 다시 처리할 가능성이 있습니다.
+
+따라서 ItemWriter는 중복 저장에 대한 방어 전략을 고려해야 합니다.
+
+예를 들어 거래 ID와 정산 일자를 기준으로 Unique Key를 구성하거나 Upsert 방식을 활용할 수 있습니다.
+
+단, 데이터베이스 중복 저장을 방지하는 것과 외부 API 요청의 중복 실행을 방지하는 것은 별도의 문제입니다.
+
+외부 시스템과 연동한다면 요청 식별자와 멱등성 키 등을 함께 고려해야 합니다.
+
+#### 11. 읽기·처리·쓰기 단계의 성능을 분리하여 측정
+
+배치 처리 시간이 길어졌을 때 모든 원인이 데이터베이스 조회에 있는 것은 아닙니다.
+
+ItemProcessor에서 복잡한 계산을 수행하거나 외부 API를 호출하고 있을 수도 있습니다.
+
+또한 ItemWriter에서 데이터베이스 잠금이나 대량 INSERT로 인해 지연이 발생할 수도 있습니다.
+
+따라서 Reader, Processor, Writer 각각의 처리 시간을 구분하여 모니터링하는 것이 좋습니다.
+
+이를 통해 실제 병목 지점을 확인한 후 최적화할 수 있습니다.
+
+#### 12. Read Count, Write Count, Filter Count를 이용한 정합성 검증
+
+Spring Batch는 Item을 처리한 개수를 실행 통계로 관리합니다.
+
+대표적으로 Read Count, Write Count, Filter Count를 확인할 수 있습니다.
+
+예를 들어 다음과 같은 결과가 발생했다고 가정하겠습니다.
+
+```text
+Read Count   = 10,000
+Filter Count = 500
+Write Count  = 9,500
+```
+
+Skip이 없고 각 입력 Item이 최대 하나의 출력 Item을 생성하며 모든 쓰기 작업이 성공한 경우 다음 관계가 성립할 수 있습니다.
+
+```text
+Read Count = Filter Count + Write Count
+```
+
+이러한 통계는 배치 처리 결과를 검증하는 데 활용할 수 있습니다.
+
+다만 실제 데이터베이스에 저장된 건수와 Spring Batch의 Write Count가 항상 일치하는 것은 아닙니다.
+
+Writer 내부에서 중복 데이터를 제외하거나 Upsert를 수행할 수 있기 때문입니다.
+
+따라서 중요한 정산 배치에서는 실행 통계와 실제 데이터베이스의 처리 결과를 함께 검증해야 합니다.
+
+---
+
+### 정리
+
+Spring Batch의 ItemReader, ItemProcessor, ItemWriter는 Chunk 기반 데이터 처리의 핵심 구성 요소입니다.
+
+ItemReader는 데이터베이스, 파일, 메시지 큐 등 다양한 데이터 소스로부터 데이터를 한 건씩 읽어 반환합니다.
+
+ItemProcessor는 ItemReader가 읽은 데이터를 비즈니스 요구사항에 맞게 변환하거나 필터링합니다.
+
+ItemWriter는 최종적으로 가공된 데이터를 Chunk 단위로 전달받아 데이터베이스, 파일 또는 외부 시스템에 저장합니다.
+
+세 가지 구성 요소는 역할과 처리 단위가 서로 다르지만, Spring Batch에서는 하나의 Chunk 처리 흐름으로 연결됩니다.
+
+또한 ItemReader와 ItemWriter는 필요에 따라 ItemStream을 함께 구현하여 리소스 초기화, 상태 저장, 재시작 기능을 지원할 수 있습니다.
+
+실무에서는 각 인터페이스의 사용 방법뿐 아니라 처리 대상 데이터의 특성, 트랜잭션 경계, 메모리 사용량, 재시작 가능성, 중복 처리 방지 등을 함께 고려해야 합니다.
+
+특히 Spring Batch 5.x와 6.x에서는 패키지 구조와 Chunk 처리 엔진이 변경되었으므로, 프로젝트에서 사용하는 버전에 맞는 API를 적용해야 합니다.
+
+#### 한 줄 요약
+
+**ItemReader는 데이터를 한 건씩 읽고, ItemProcessor는 개별 데이터를 가공하거나 필터링하며, ItemWriter는 가공된 데이터를 Chunk 단위로 전달받아 저장하는 Spring Batch의 핵심 구성 요소입니다.**
+
+## ItemStream
+
+### Spring Batch ItemStream의 개념과 ExecutionContext를 활용한 배치 재시작 원리
+
+Spring Batch는 대용량 데이터를 안정적으로 처리하기 위한 다양한 기능을 제공합니다.
+
+대표적으로 Chunk 기반 데이터 처리, 트랜잭션 관리, 오류 처리, 배치 재시작 기능 등이 있습니다.
+
+이 중에서 배치 재시작 기능은 실제 운영 환경에서 매우 중요합니다.
+
+예를 들어 100만 건의 데이터를 처리하는 배치 작업이 있다고 가정하겠습니다.
+
+배치가 50만 건까지 정상적으로 처리했지만, 이후 데이터베이스 연결 오류로 작업이 중단되었습니다.
+
+이때 배치를 다시 실행하면 어떻게 될까요?
+
+처음부터 100만 건을 다시 처리해야 할까요?
+
+이미 정상적으로 처리된 데이터를 다시 읽고 저장한다면 불필요한 작업이 발생할 뿐만 아니라 중복 처리로 인한 데이터 정합성 문제가 발생할 수 있습니다.
+
+따라서 배치 시스템에서는 **어디까지 정상적으로 처리했는지 저장하고, 장애 발생 후 마지막으로 완료된 지점부터 재시작하는 기능**이 필요합니다.
+
+Spring Batch는 이러한 요구사항을 지원하기 위해 `ItemStream`과 `ExecutionContext`를 제공합니다.
+
+`ItemStream`은 데이터 처리 상태를 관리하는 인터페이스이며, `ExecutionContext`는 해당 상태를 저장하고 복원하는 데 사용하는 객체입니다.
+
+두 구성 요소를 함께 사용하면 배치의 현재 처리 위치를 기록하고, 실패한 배치를 다시 실행할 때 이전 처리 상태를 복원할 수 있습니다.
+
+이번에는 ItemStream의 개념부터 내부 동작 원리, 주요 API, ExecutionContext와의 관계, Custom ItemStreamReader 및 ItemStreamWriter 구현 방법까지 자세히 살펴보겠습니다.
+
+---
+
+### 개념
+
+#### ItemStream이란?
+
+`ItemStream`은 Spring Batch에서 데이터의 처리 상태를 관리하고, 리소스의 초기화 및 정리 작업을 지원하기 위한 인터페이스입니다.
+
+주로 ItemReader와 ItemWriter에서 사용됩니다.
+
+ItemReader는 데이터를 읽는 역할을 담당하지만, 다음과 같은 상황까지 모두 처리하는 것은 아닙니다.
+
+- 파일이나 데이터베이스 연결을 초기화해야 하는 경우
+- 이전에 읽었던 데이터의 위치를 복원해야 하는 경우
+- 현재까지 처리한 데이터의 위치를 저장해야 하는 경우
+- 배치가 종료되었을 때 사용한 리소스를 정리해야 하는 경우
+
+이러한 기능은 ItemReader의 `read()` 메서드만으로 처리하기 어렵습니다.
+
+ItemWriter 역시 마찬가지입니다.
+
+파일을 생성하거나 데이터베이스에 데이터를 저장하는 Writer라면 리소스 초기화, 현재 저장 위치 관리, 리소스 해제 등의 작업이 필요할 수 있습니다.
+
+이러한 공통적인 요구사항을 처리하기 위해 ItemStream이 제공됩니다.
+
+#### ItemStream의 핵심 역할
+
+ItemStream은 크게 세 가지 역할을 담당합니다.
+
+| 역할 | 설명 |
+|---|---|
+| 리소스 초기화 | 파일, 연결 등 필요한 리소스를 열거나 초기화 |
+| 상태 저장 | 현재 데이터 처리 위치 등의 정보를 ExecutionContext에 기록 |
+| 리소스 정리 | 작업이 종료되면 사용한 리소스를 안전하게 해제 |
+
+이를 위해 다음 세 가지 메서드를 제공합니다.
+
+```java
+open(ExecutionContext executionContext);
+
+update(ExecutionContext executionContext);
+
+close();
+```
+
+각 메서드는 서로 다른 시점에 호출됩니다.
+
+`open()`은 배치 처리가 시작되기 전에 호출되어 리소스를 초기화하거나 이전 실행 상태를 복원합니다.
+
+`update()`는 현재 처리 상태를 ExecutionContext에 반영합니다.
+
+`close()`는 배치 처리가 종료될 때 사용한 리소스를 정리합니다.
+
+이처럼 ItemStream은 단순한 데이터 입출력 기능을 넘어 **배치의 실행 상태와 리소스 생명주기를 관리하는 역할**을 수행합니다.
+
+---
+
+### 왜 ItemStream을 사용하는가?
+
+#### 1. 실패한 배치를 처음부터 다시 실행하지 않기 위해
+
+다음과 같이 10개의 데이터를 처리하는 배치 작업이 있다고 가정하겠습니다.
+
+```text
+전체 데이터
+
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9
+```
+
+Chunk Size는 5로 설정했습니다.
+
+정상적으로 실행된다면 다음과 같은 흐름으로 처리됩니다.
+
+```text
+Chunk 1
+[0, 1, 2, 3, 4]
+       ↓
+     COMMIT
+
+Chunk 2
+[5, 6, 7, 8, 9]
+       ↓
+     COMMIT
+```
+
+그런데 두 번째 Chunk를 처리하다가 오류가 발생했다고 가정하겠습니다.
+
+```text
+Chunk 1
+[0, 1, 2, 3, 4]
+       ↓
+     COMMIT
+
+Chunk 2
+[5, ...]
+       ↓
+     ERROR
+       ↓
+    ROLLBACK
+```
+
+이때 첫 번째 Chunk는 이미 정상적으로 커밋되었습니다.
+
+반면 두 번째 Chunk는 정상적으로 완료되지 않았습니다.
+
+따라서 배치를 재시작할 때는 다음과 같이 처리하는 것이 적절합니다.
+
+```text
+재시작 시점
+
+이미 완료한 데이터
+[0, 1, 2, 3, 4]
+       ↓
+    처리 제외
+
+다시 처리할 데이터
+[5, 6, 7, 8, 9]
+       ↓
+    처리 및 COMMIT
+```
+
+이러한 동작을 구현하려면 마지막으로 정상 처리한 위치를 저장해야 합니다.
+
+여기서 ItemStream과 ExecutionContext가 사용됩니다.
+
+#### 2. 리소스의 생명주기를 관리하기 위해
+
+데이터베이스 Cursor나 파일 기반 Reader는 데이터를 읽기 전에 리소스 초기화가 필요합니다.
+
+예를 들어 파일을 읽는 Reader라면 다음과 같은 과정이 필요할 수 있습니다.
+
+```text
+파일 열기
+   ↓
+현재 읽기 위치 설정
+   ↓
+데이터 읽기
+   ↓
+읽기 위치 갱신
+   ↓
+파일 닫기
+```
+
+이러한 작업을 `read()` 메서드 내부에서 모두 처리한다면 책임이 복잡해집니다.
+
+반면 ItemStream을 활용하면 다음과 같이 역할을 분리할 수 있습니다.
+
+```text
+open()
+  │
+  └── 파일 열기 및 이전 위치 복원
+
+read()
+  │
+  └── 실제 데이터 읽기
+
+update()
+  │
+  └── 현재 읽기 위치 저장
+
+close()
+  │
+  └── 파일 닫기
+```
+
+각 메서드가 명확한 역할을 담당하므로 구현과 유지보수가 쉬워집니다.
+
+#### 3. 처리 상태를 영속적으로 관리하기 위해
+
+일반적인 Java 객체의 멤버 변수는 애플리케이션이 종료되면 사라집니다.
+
+예를 들어 다음과 같이 현재 읽기 위치를 저장했다고 가정하겠습니다.
+
+```java
+private int currentIndex = 5;
+```
+
+해당 값은 현재 객체가 존재하는 동안에는 유지될 수 있습니다.
+
+하지만 애플리케이션 프로세스가 종료되면 메모리에 저장된 값은 사라집니다.
+
+따라서 재시작 이후에도 처리 위치를 복원하려면 별도의 영속적인 저장소가 필요합니다.
+
+Spring Batch는 ExecutionContext와 JobRepository를 통해 이러한 상태 정보를 저장하고 복원할 수 있도록 지원합니다.
+
+---
+
+### ItemStream 인터페이스의 구조
+
+Spring Batch 6.x에서는 ItemStream이 다음 패키지에 정의되어 있습니다.
+
+```java
+org.springframework.batch.infrastructure.item.ItemStream
+```
+
+핵심 구조는 다음과 같습니다.
+
+```java
+public interface ItemStream {
+
+    default void open(ExecutionContext executionContext)
+            throws ItemStreamException {
+    }
+
+    default void update(ExecutionContext executionContext)
+            throws ItemStreamException {
+    }
+
+    default void close()
+            throws ItemStreamException {
+    }
+}
+```
+
+Spring Batch 6.x에서 각 메서드는 기본 구현을 가진 `default` 메서드입니다.
+
+따라서 모든 메서드를 반드시 재정의해야 하는 것은 아니며, 필요한 메서드만 구현할 수 있습니다.
+
+다만 ItemStream의 동작을 이해하기 위해 세 메서드를 모두 살펴보겠습니다.
+
+---
+
+### open() 메서드
+
+#### 기본 개념
+
+`open()`은 ItemStream을 사용하는 구성 요소가 실제 데이터 처리 작업을 시작하기 전에 호출되는 메서드입니다.
+
+주로 다음 작업을 수행합니다.
+
+- 파일 또는 데이터베이스 연결 초기화
+- 이전 처리 상태 복원
+- 현재 처리 위치 초기화
+- 입력 및 출력 리소스 준비
+
+메서드는 다음과 같은 형태입니다.
+
+```java
+@Override
+public void open(ExecutionContext executionContext) {
+
+    // 리소스 초기화
+    // 이전 실행 상태 복원
+}
+```
+
+여기서 전달되는 ExecutionContext는 이전 실행의 상태 정보를 포함할 수 있습니다.
+
+따라서 해당 객체를 사용하면 실패한 배치의 마지막 처리 위치를 복원할 수 있습니다.
+
+#### 최초 실행 시 동작
+
+처음 실행하는 배치라고 가정하겠습니다.
+
+```java
+private int currentIndex;
+
+@Override
+public void open(ExecutionContext executionContext) {
+
+    if (executionContext.containsKey("current.index")) {
+
+        currentIndex = executionContext.getInt("current.index");
+
+    } else {
+
+        currentIndex = 0;
+    }
+}
+```
+
+최초 실행에서는 `current.index`라는 키가 존재하지 않습니다.
+
+따라서 현재 읽기 위치를 0으로 초기화합니다.
+
+```text
+ExecutionContext
+
+current.index = 없음
+        ↓
+open()
+        ↓
+currentIndex = 0
+```
+
+이후 ItemReader는 첫 번째 데이터부터 읽습니다.
+
+#### 재시작 시 동작
+
+첫 번째 Chunk가 정상적으로 커밋된 뒤 현재 처리 위치가 5로 저장되었다고 가정하겠습니다.
+
+```text
+ExecutionContext
+
+current.index = 5
+```
+
+배치를 재시작하면 ItemStream의 `open()`이 호출됩니다.
+
+```java
+currentIndex = executionContext.getInt("current.index");
+```
+
+이때 현재 읽기 위치는 5로 복원됩니다.
+
+```text
+ExecutionContext
+
+current.index = 5
+        ↓
+open()
+        ↓
+currentIndex = 5
+        ↓
+다섯 번째 인덱스부터 읽기
+```
+
+이처럼 open()은 단순히 리소스를 여는 것뿐 아니라 이전 실행 상태를 복원하는 역할도 담당합니다.
+
+---
+
+### update() 메서드
+
+#### 기본 개념
+
+`update()`는 현재 ItemStream이 관리하는 상태 정보를 ExecutionContext에 반영하기 위한 메서드입니다.
+
+예를 들어 현재 ItemReader가 어디까지 데이터를 읽었는지 기록할 수 있습니다.
+
+```java
+@Override
+public void update(ExecutionContext executionContext) {
+
+    executionContext.putInt(
+            "current.index",
+            currentIndex
+    );
+}
+```
+
+위 코드는 현재 읽기 위치를 ExecutionContext에 저장합니다.
+
+이 정보는 배치가 실패한 뒤 재시작할 때 사용됩니다.
+
+#### update()는 언제 호출될까?
+
+Chunk 기반 처리에서는 일반적으로 Chunk의 트랜잭션이 커밋되기 전에 ItemStream의 `update()`가 호출됩니다.
+
+예를 들어 Chunk Size가 5라면 다음과 같은 흐름으로 처리됩니다.
+
+```text
+BEGIN TRANSACTION
+       │
+       ▼
+ItemReader.read()
+       │
+       ├── 0
+       ├── 1
+       ├── 2
+       ├── 3
+       └── 4
+       │
+       ▼
+ItemWriter.write()
+       │
+       ▼
+ItemStream.update()
+       │
+       │ current.index = 5
+       ▼
+ExecutionContext 저장
+       │
+       ▼
+COMMIT
+```
+
+여기서 중요한 점은 `update()`가 호출되었다고 해서 해당 상태가 즉시 데이터베이스에 커밋되었다는 의미는 아니라는 것입니다.
+
+`update()`는 ExecutionContext 객체에 현재 상태를 기록합니다.
+
+이후 Spring Batch가 JobRepository를 통해 상태 정보를 저장하고, 관련 트랜잭션이 정상적으로 커밋되어야 영속적인 체크포인트로 사용할 수 있습니다.
+
+따라서 다음 두 개념을 구분해야 합니다.
+
+| 구분 | 의미 |
+|---|---|
+| `ItemStream.update()` | 현재 처리 상태를 ExecutionContext에 반영 |
+| JobRepository의 영속화 및 커밋 | ExecutionContext를 재시작 시 사용할 수 있는 상태로 저장 |
+
+#### update() 호출 횟수와 Chunk Size
+
+전체 데이터가 100건이고 Chunk Size가 10이라고 가정하겠습니다.
+
+정상적으로 데이터를 처리한다면 실제 데이터가 포함된 Chunk는 10개입니다.
+
+```text
+Chunk 1  → 10건
+Chunk 2  → 10건
+Chunk 3  → 10건
+...
+Chunk 10 → 10건
+```
+
+각 Chunk의 커밋 과정에서 상태 갱신이 이루어질 수 있습니다.
+
+하지만 `update()` 호출 횟수가 반드시 정확히 10번이라고 단정할 수는 없습니다.
+
+Spring Batch 버전과 Step 구현 방식에 따라 초기 상태 저장, 입력 종료 확인 등의 과정에서 추가 호출이 발생할 수 있기 때문입니다.
+
+따라서 **ItemStream의 update()는 단순히 데이터 10건을 읽을 때마다 호출되는 메서드가 아니라, Step의 체크포인트와 상태 저장 과정에서 호출되는 메서드**로 이해하는 것이 정확합니다.
+
+---
+
+### close() 메서드
+
+#### 기본 개념
+
+`close()`는 ItemStream의 사용이 종료될 때 리소스를 정리하는 메서드입니다.
+
+대표적으로 다음 작업을 수행합니다.
+
+- 파일 스트림 종료
+- 데이터베이스 Cursor 정리
+- 네트워크 연결 해제
+- 메모리 버퍼 정리
+- Reader 또는 Writer 내부 리소스 반환
+
+예를 들어 파일을 읽는 Reader라면 다음과 같이 구현할 수 있습니다.
+
+```java
+@Override
+public void close() {
+
+    if (bufferedReader != null) {
+
+        try {
+            bufferedReader.close();
+        } catch (IOException e) {
+            throw new ItemStreamException(
+                    "파일 스트림 종료 실패",
+                    e
+            );
+        }
+    }
+}
+```
+
+Spring Batch는 Step이 정상적으로 종료되거나 예외가 발생하여 종료되는 과정에서 등록된 ItemStream의 `close()`를 호출합니다.
+
+다만 애플리케이션 프로세스가 강제 종료되거나 서버가 비정상적으로 중단되는 상황에서는 `close()`가 반드시 실행된다고 보장할 수 없습니다.
+
+따라서 중요한 데이터 저장 작업을 `close()`에만 의존하도록 설계해서는 안 됩니다.
+
+`close()`는 리소스 정리 용도로 사용하는 것이 적절합니다.
+
+---
+
+### ItemStream과 ExecutionContext의 관계
+
+ItemStream의 핵심 기능을 이해하려면 ExecutionContext를 함께 살펴봐야 합니다.
+
+#### ExecutionContext란?
+
+ExecutionContext는 배치 실행 과정에서 필요한 상태 정보를 Key-Value 형태로 저장하는 객체입니다.
+
+내부적으로 Map과 유사한 구조를 사용합니다.
+
+```text
+ExecutionContext
+
+{
+    "current.index": 5,
+    "processed.count": 100,
+    "last.customer.id": 12345
+}
+```
+
+이러한 데이터를 저장하거나 조회하기 위해 다음과 같은 API를 사용할 수 있습니다.
+
+```java
+executionContext.putInt("current.index", 5);
+
+int index = executionContext.getInt("current.index");
+```
+
+문자열도 저장할 수 있습니다.
+
+```java
+executionContext.putString(
+        "last.customer.id",
+        "12345"
+);
+```
+
+값이 존재하는지 확인할 수도 있습니다.
+
+```java
+boolean exists =
+        executionContext.containsKey("current.index");
+```
+
+ExecutionContext는 ItemStream이 상태를 기록하고 복원할 수 있도록 데이터를 제공하는 역할을 합니다.
+
+#### ExecutionContext는 어디에 저장될까?
+
+Spring Batch는 JobRepository를 통해 Job과 Step의 실행 메타데이터를 관리합니다.
+
+JDBC 기반 JobRepository를 사용하는 경우 ExecutionContext는 관련 메타데이터 테이블에 영속화됩니다.
+
+대표적으로 다음 두 테이블이 사용됩니다.
+
+| 테이블 | 역할 |
+|---|---|
+| `BATCH_JOB_EXECUTION_CONTEXT` | JobExecution의 ExecutionContext 저장 |
+| `BATCH_STEP_EXECUTION_CONTEXT` | StepExecution의 ExecutionContext 저장 |
+
+ItemStream에서 일반적으로 사용하는 ExecutionContext는 StepExecution에 연결된 ExecutionContext입니다.
+
+따라서 ItemStream이 저장한 읽기 위치 등의 정보는 일반적으로 `BATCH_STEP_EXECUTION_CONTEXT`에 저장됩니다.
+
+예를 들어 다음과 같은 상태가 있다고 가정하겠습니다.
+
+```text
+current.index = 5
+```
+
+이 값은 StepExecution의 ExecutionContext에 기록되고, JobRepository에 의해 영속화될 수 있습니다.
+
+이후 동일한 JobInstance의 실패한 Step을 재시작하면 Spring Batch가 이전 상태 정보를 복원하여 ItemStream에 전달합니다.
+
+단, 실제로 재시작 상태를 영속적으로 유지하려면 JDBC 기반 JobRepository와 같이 실행 메타데이터가 보존되는 저장소가 필요합니다.
+
+메모리 또는 비영속적인 저장소만 사용한다면 애플리케이션 프로세스가 종료된 이후 상태 정보를 복원할 수 없습니다.
+
+---
+
+### JobExecutionContext와 StepExecutionContext의 차이
+
+Spring Batch는 Job과 Step 수준에서 각각 ExecutionContext를 관리할 수 있습니다.
+
+두 객체는 목적과 저장 시점이 다릅니다.
+
+| 구분 | JobExecutionContext | StepExecutionContext |
+|---|---|---|
+| 관리 범위 | Job 실행 | Step 실행 |
+| 주요 목적 | Step 간 데이터 공유 | Step의 처리 상태 관리 |
+| 대표 데이터 | 이전 Step의 결과값 | Reader의 현재 읽기 위치 |
+| 일반적인 저장 시점 | Step 완료 시점 등 | Chunk 커밋 시점 |
+| 재시작 활용 | Job 수준 상태 복원 | 실패한 Step의 처리 위치 복원 |
+| 저장 테이블 | `BATCH_JOB_EXECUTION_CONTEXT` | `BATCH_STEP_EXECUTION_CONTEXT` |
+
+예를 들어 다음과 같은 Job이 있다고 가정하겠습니다.
+
+```text
+Job
+ │
+ ├── Step 1: 정산 대상 거래 조회
+ │
+ └── Step 2: 정산 데이터 생성
+```
+
+Step 1에서 조회한 정산 대상 날짜를 Step 2에서도 사용해야 한다면 JobExecutionContext를 활용할 수 있습니다.
+
+반면 Step 2에서 거래 데이터를 어디까지 처리했는지 저장하려면 StepExecutionContext를 활용하는 것이 적절합니다.
+
+이러한 차이를 이해하면 ExecutionContext를 목적에 맞게 사용할 수 있습니다.
+
+---
+
+### ItemStreamReader와 ItemStreamWriter
+
+ItemReader와 ItemWriter에서 ItemStream 기능을 함께 사용하기 위해 편의 인터페이스가 제공됩니다.
+
+바로 `ItemStreamReader`와 `ItemStreamWriter`입니다.
+
+#### ItemStreamReader
+
+ItemStreamReader는 ItemReader와 ItemStream을 함께 상속하는 인터페이스입니다.
+
+```java
+public interface ItemStreamReader<T>
+        extends ItemStream, ItemReader<T> {
+}
+```
+
+따라서 ItemStreamReader를 구현하면 다음 기능을 사용할 수 있습니다.
+
+```text
+ItemStreamReader
+       │
+       ├── ItemReader
+       │      └── read()
+       │
+       └── ItemStream
+              ├── open()
+              ├── update()
+              └── close()
+```
+
+ItemReader가 데이터를 읽는 역할을 담당한다면, ItemStream은 현재 읽기 위치를 저장하고 복원하는 역할을 담당합니다.
+
+#### ItemStreamWriter
+
+ItemStreamWriter는 ItemWriter와 ItemStream을 함께 상속하는 인터페이스입니다.
+
+```java
+public interface ItemStreamWriter<T>
+        extends ItemStream, ItemWriter<T> {
+}
+```
+
+따라서 다음 기능을 함께 사용할 수 있습니다.
+
+```text
+ItemStreamWriter
+       │
+       ├── ItemWriter
+       │      └── write()
+       │
+       └── ItemStream
+              ├── open()
+              ├── update()
+              └── close()
+```
+
+ItemWriter는 데이터를 저장하고, ItemStream은 필요한 경우 저장 위치나 리소스 상태를 관리합니다.
+
+---
+
+### ItemStream의 내부 실행 구조
+
+Spring Batch는 Step에 등록된 ItemStream들을 관리하고 적절한 시점에 생명주기 메서드를 호출합니다.
+
+기존 Spring Batch의 TaskletStep 기반 구조에서는 `CompositeItemStream`이 여러 ItemStream의 생명주기 호출을 관리하는 데 사용됩니다.
+
+새로운 ChunkOrientedStep에서도 등록된 ItemStream에 대한 생명주기 관리 기능이 제공됩니다.
+
+#### 전체 실행 흐름
+
+```mermaid
+sequenceDiagram
+    participant Step
+    participant Reader as ItemStreamReader
+    participant Writer as ItemStreamWriter
+    participant Context as ExecutionContext
+    participant Repo as JobRepository
+
+    Step->>Reader: open(context)
+    Step->>Writer: open(context)
+
+    loop Chunk 처리
+        loop Chunk Size 기준
+            Step->>Reader: read()
+            Reader-->>Step: Item
+        end
+
+        Step->>Writer: write(chunk)
+
+        Step->>Reader: update(context)
+        Step->>Writer: update(context)
+
+        Step->>Repo: ExecutionContext 저장
+        Step->>Step: Transaction Commit
+    end
+
+    Step->>Reader: close()
+    Step->>Writer: close()
+```
+
+위 구조는 이해를 돕기 위해 핵심적인 호출 흐름만 표현한 것입니다.
+
+실제 내부에서는 Step 실행 상태 갱신, Listener 호출, 초기 상태 저장, 예외 처리 등의 추가 과정이 존재합니다.
+
+중요한 것은 Reader와 Writer가 모두 ItemStream을 구현하고 Step에 등록되어 있다면 각각의 생명주기 메서드가 호출된다는 점입니다.
+
+---
+
+### 예제: ItemStream을 이용한 배치 실패 및 재시작
+
+이번에는 ItemStream을 직접 구현하여 배치가 실패했을 때 처리 위치를 저장하고, 재시작 시 해당 위치부터 데이터를 읽는 예제를 살펴보겠습니다.
+
+예제는 Spring Batch 6.x API를 기준으로 작성합니다.
+
+#### 요구사항
+
+전체 데이터는 0부터 9까지 총 10건입니다.
+
+```text
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9
+```
+
+Chunk Size는 5로 설정합니다.
+
+처리 흐름은 다음과 같습니다.
+
+1. 첫 번째 Chunk에서 0~4까지 정상적으로 처리합니다.
+2. 첫 번째 Chunk의 체크포인트를 저장하고 커밋합니다.
+3. 두 번째 Chunk의 첫 번째 데이터인 5를 읽는 과정에서 의도적으로 예외를 발생시킵니다.
+4. Job이 실패합니다.
+5. 동일한 JobInstance를 재시작합니다.
+6. 이전에 저장된 체크포인트를 복원합니다.
+7. 데이터 5부터 다시 읽어 나머지 데이터를 처리합니다.
+
+여기서 가장 중요한 것은 실패 직전의 메모리 상태가 아니라 **마지막으로 정상 커밋된 체크포인트를 기준으로 재시작한다는 것**입니다.
+
+---
+
+#### 1. CustomItemStreamReader 구현
+
+먼저 ItemStreamReader를 구현하겠습니다.
+
+```java
+import java.util.List;
+
+import org.springframework.batch.infrastructure.item.ExecutionContext;
+import org.springframework.batch.infrastructure.item.ItemStreamReader;
+
+public class CustomItemStreamReader
+        implements ItemStreamReader<String> {
+
+    private static final String POSITION_KEY =
+            "customItemStreamReader.nextIndex";
+
+    private final List<String> items;
+
+    private int nextIndex;
+
+    private boolean restartedFromCheckpoint;
+
+    public CustomItemStreamReader(List<String> items) {
+
+        this.items = List.copyOf(items);
+    }
+
+    @Override
+    public void open(ExecutionContext executionContext) {
+
+        restartedFromCheckpoint =
+                executionContext.containsKey(POSITION_KEY);
+
+        nextIndex = executionContext.getInt(
+                POSITION_KEY,
+                0
+        );
+
+        System.out.println(
+                "READER OPEN - nextIndex: " + nextIndex
+        );
+
+        System.out.println(
+                "READER RESTARTED: " + restartedFromCheckpoint
+        );
+    }
+
+    @Override
+    public String read() {
+
+        if (nextIndex >= items.size()) {
+
+            System.out.println("READ: null");
+
+            return null;
+        }
+
+        if (nextIndex == 5 && !restartedFromCheckpoint) {
+
+            throw new IllegalStateException(
+                    "의도적인 장애 발생: index = 5"
+            );
+        }
+
+        String item = items.get(nextIndex);
+
+        System.out.println("READ: " + item);
+
+        nextIndex++;
+
+        return item;
+    }
+
+    @Override
+    public void update(ExecutionContext executionContext) {
+
+        executionContext.putInt(
+                POSITION_KEY,
+                nextIndex
+        );
+
+        System.out.println(
+                "READER UPDATE - nextIndex: " + nextIndex
+        );
+    }
+
+    @Override
+    public void close() {
+
+        System.out.println("READER CLOSE");
+    }
+}
+```
+
+이 코드는 ItemStream의 체크포인트 저장과 복원을 확인하기 위한 예제입니다.
+
+실제 운영 환경에서 사용하는 Reader라면 실패 여부를 체크포인트 존재 여부로 판단하는 방식은 사용하지 않는 것이 좋습니다.
+
+여기서는 첫 실행에서만 의도적으로 장애를 발생시키기 위해 해당 조건을 사용했습니다.
+
+---
+
+#### 2. CustomItemStreamReader의 open() 분석
+
+```java
+@Override
+public void open(ExecutionContext executionContext) {
+
+    restartedFromCheckpoint =
+            executionContext.containsKey(POSITION_KEY);
+
+    nextIndex = executionContext.getInt(
+            POSITION_KEY,
+            0
+    );
+}
+```
+
+최초 실행에서는 ExecutionContext에 다음 키가 존재하지 않습니다.
+
+```text
+customItemStreamReader.nextIndex
+```
+
+따라서 `nextIndex`는 0으로 초기화됩니다.
+
+```text
+최초 실행
+
+ExecutionContext:
+{}
+
+        ↓
+
+open()
+
+        ↓
+
+nextIndex = 0
+restartedFromCheckpoint = false
+```
+
+반면 재시작 시에는 이전 Chunk에서 저장한 값이 존재할 수 있습니다.
+
+```text
+재시작
+
+ExecutionContext:
+{
+    "customItemStreamReader.nextIndex": 5
+}
+
+        ↓
+
+open()
+
+        ↓
+
+nextIndex = 5
+restartedFromCheckpoint = true
+```
+
+이렇게 이전 실행의 상태를 복원하면 처음부터 데이터를 다시 읽을 필요가 없습니다.
+
+---
+
+#### 3. read() 분석
+
+```java
+@Override
+public String read() {
+
+    if (nextIndex >= items.size()) {
+        return null;
+    }
+
+    if (nextIndex == 5 && !restartedFromCheckpoint) {
+
+        throw new IllegalStateException(
+                "의도적인 장애 발생"
+        );
+    }
+
+    String item = items.get(nextIndex);
+
+    nextIndex++;
+
+    return item;
+}
+```
+
+먼저 다음 조건을 확인합니다.
+
+```java
+if (nextIndex >= items.size())
+```
+
+현재 인덱스가 전체 데이터 개수보다 크거나 같다면 더 이상 읽을 데이터가 없다는 의미입니다.
+
+따라서 `null`을 반환합니다.
+
+그다음에는 의도적인 장애 조건을 확인합니다.
+
+```java
+if (nextIndex == 5 && !restartedFromCheckpoint)
+```
+
+최초 실행에서 5번 인덱스에 도달하면 예외를 발생시킵니다.
+
+첫 번째 Chunk의 처리 결과는 다음과 같습니다.
+
+```text
+READ: 0
+READ: 1
+READ: 2
+READ: 3
+READ: 4
+```
+
+이후 Chunk가 정상적으로 처리되면 ItemStream의 update()가 호출됩니다.
+
+다음 Chunk에서 5번 인덱스를 읽으려고 하면 예외가 발생합니다.
+
+```text
+ERROR:
+의도적인 장애 발생: index = 5
+```
+
+이때 이전에 커밋된 체크포인트는 5입니다.
+
+따라서 재시작 시에는 5번 인덱스부터 읽도록 할 수 있습니다.
+
+---
+
+#### 4. update() 분석
+
+```java
+@Override
+public void update(ExecutionContext executionContext) {
+
+    executionContext.putInt(
+            POSITION_KEY,
+            nextIndex
+    );
+}
+```
+
+이 메서드는 현재 읽기 위치를 ExecutionContext에 기록합니다.
+
+첫 번째 Chunk에서 0~4까지 읽었다면 다음 상태가 됩니다.
+
+```text
+nextIndex = 5
+```
+
+여기서 5는 마지막으로 읽은 데이터의 인덱스가 아니라 **다음에 읽어야 할 데이터의 인덱스**입니다.
+
+이러한 방식은 재시작 위치를 관리할 때 직관적입니다.
+
+```text
+읽기 완료한 데이터
+
+0
+1
+2
+3
+4
+
+다음에 읽을 데이터
+
+5
+```
+
+이후 JobRepository가 ExecutionContext를 저장하고 트랜잭션이 정상적으로 커밋되면 해당 값이 체크포인트로 유지됩니다.
+
+---
+
+#### 5. CustomItemStreamWriter 구현
+
+이번에는 ItemStreamWriter를 구현하겠습니다.
+
+```java
+import org.springframework.batch.infrastructure.item.Chunk;
+import org.springframework.batch.infrastructure.item.ExecutionContext;
+import org.springframework.batch.infrastructure.item.ItemStreamWriter;
+
+public class CustomItemStreamWriter
+        implements ItemStreamWriter<String> {
+
+    @Override
+    public void open(ExecutionContext executionContext) {
+
+        System.out.println("WRITER OPEN");
+    }
+
+    @Override
+    public void write(Chunk<? extends String> chunk) {
+
+        System.out.println(
+                "WRITE: " + chunk.getItems()
+        );
+    }
+
+    @Override
+    public void update(ExecutionContext executionContext) {
+
+        System.out.println("WRITER UPDATE");
+    }
+
+    @Override
+    public void close() {
+
+        System.out.println("WRITER CLOSE");
+    }
+}
+```
+
+Writer에서는 데이터를 실제 데이터베이스에 저장하지 않고 로그만 출력합니다.
+
+이를 통해 ItemStreamWriter의 생명주기 메서드가 호출되는 시점을 확인할 수 있습니다.
+
+다만 콘솔 로그는 트랜잭션 롤백의 대상이 아닙니다.
+
+따라서 실제 재시작 안정성을 검증하려면 데이터베이스 저장이나 파일 출력 등 실제 영속적인 Writer를 사용하여 데이터 정합성까지 확인해야 합니다.
+
+---
+
+#### 6. Job과 Step 구성
+
+이제 CustomItemStreamReader와 CustomItemStreamWriter를 Step에 등록하겠습니다.
+
+```java
+import java.util.List;
+import java.util.stream.IntStream;
+
+import org.springframework.batch.core.job.Job;
+import org.springframework.batch.core.job.builder.JobBuilder;
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.step.Step;
+import org.springframework.batch.core.step.builder.StepBuilder;
+import org.springframework.batch.core.configuration.annotation.StepScope;
+
+import org.springframework.batch.infrastructure.item.ItemStreamReader;
+import org.springframework.batch.infrastructure.item.ItemStreamWriter;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import org.springframework.transaction.PlatformTransactionManager;
+
+@Configuration
+public class ItemStreamBatchConfig {
+
+    @Bean
+    public Job itemStreamJob(
+            JobRepository jobRepository,
+            Step itemStreamStep
+    ) {
+
+        return new JobBuilder("itemStreamJob", jobRepository)
+                .start(itemStreamStep)
+                .build();
+    }
+
+    @Bean
+    public Step itemStreamStep(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager,
+            ItemStreamReader<String> customItemStreamReader,
+            ItemStreamWriter<String> customItemStreamWriter
+    ) {
+
+        return new StepBuilder("itemStreamStep", jobRepository)
+                .<String, String>chunk(5)
+                .transactionManager(transactionManager)
+                .reader(customItemStreamReader)
+                .writer(customItemStreamWriter)
+                .build();
+    }
+
+    @Bean
+    @StepScope
+    public ItemStreamReader<String> customItemStreamReader() {
+
+        List<String> items = IntStream.range(0, 10)
+                .mapToObj(String::valueOf)
+                .toList();
+
+        return new CustomItemStreamReader(items);
+    }
+
+    @Bean
+    @StepScope
+    public ItemStreamWriter<String> customItemStreamWriter() {
+
+        return new CustomItemStreamWriter();
+    }
+}
+```
+
+예제는 Spring Batch 6.x의 ItemStream API와 새로운 ChunkOrientedStep 구조를 사용합니다.
+
+또한 실제 재시작 기능을 사용하려면 실행 메타데이터를 보존할 수 있는 JobRepository가 구성되어 있어야 합니다.
+
+#### Chunk Size 설정
+
+```java
+.<String, String>chunk(5)
+```
+
+전체 데이터는 10건이고 Chunk Size는 5입니다.
+
+따라서 정상적으로 처리된다면 실제 데이터를 포함한 Chunk는 2개입니다.
+
+```text
+Chunk 1 → 0, 1, 2, 3, 4
+
+Chunk 2 → 5, 6, 7, 8, 9
+```
+
+#### ItemStreamReader 등록
+
+```java
+.reader(customItemStreamReader)
+```
+
+직접 구현한 ItemStreamReader를 등록합니다.
+
+Spring Batch는 Reader가 ItemStream을 구현한 경우 해당 Stream을 자동으로 등록할 수 있습니다.
+
+이 예제에서는 `@StepScope`를 사용하고 있으므로 Bean의 반환 타입을 `ItemStreamReader<String>`으로 선언했습니다.
+
+이렇게 하면 Step에서 ItemStream 인터페이스를 사용할 수 있음을 명확하게 표현할 수 있습니다.
+
+#### ItemStreamWriter 등록
+
+```java
+.writer(customItemStreamWriter)
+```
+
+ItemStreamWriter 역시 동일하게 등록합니다.
+
+따라서 Reader와 Writer 모두 필요한 생명주기 콜백을 받을 수 있습니다.
+
+---
+
+### 최초 실행 과정 분석
+
+이제 실제 실행 흐름을 살펴보겠습니다.
+
+#### 1. ItemStream open() 호출
+
+배치가 시작되면 등록된 ItemStream의 open()이 호출됩니다.
+
+```text
+READER OPEN - nextIndex: 0
+READER RESTARTED: false
+
+WRITER OPEN
+```
+
+Reader는 최초 실행이므로 인덱스를 0으로 초기화합니다.
+
+#### 2. 첫 번째 Chunk 처리
+
+ItemReader는 0부터 4까지 데이터를 읽습니다.
+
+```text
+READ: 0
+READ: 1
+READ: 2
+READ: 3
+READ: 4
+```
+
+이후 ItemWriter가 Chunk를 전달받습니다.
+
+```text
+WRITE: [0, 1, 2, 3, 4]
+```
+
+첫 번째 Chunk의 처리 과정에서 Reader의 update()가 호출됩니다.
+
+```text
+READER UPDATE - nextIndex: 5
+```
+
+Writer의 update()도 호출됩니다.
+
+```text
+WRITER UPDATE
+```
+
+이후 관련 체크포인트가 저장되고 트랜잭션이 정상적으로 커밋됩니다.
+
+이때 영속적으로 저장된 처리 위치는 다음과 같습니다.
+
+```text
+customItemStreamReader.nextIndex = 5
+```
+
+#### 3. 두 번째 Chunk 처리 중 오류 발생
+
+첫 번째 Chunk가 완료되면 두 번째 Chunk 처리가 시작됩니다.
+
+```text
+nextIndex = 5
+```
+
+Reader는 다음 조건을 확인합니다.
+
+```java
+if (nextIndex == 5 && !restartedFromCheckpoint)
+```
+
+현재는 최초 실행이므로 `restartedFromCheckpoint`가 false입니다.
+
+따라서 예외가 발생합니다.
+
+```text
+ERROR:
+의도적인 장애 발생: index = 5
+```
+
+Step은 실패 상태로 전환됩니다.
+
+일반적인 종료 정리 과정에서 등록된 ItemStream의 close()가 호출됩니다.
+
+```text
+READER CLOSE
+WRITER CLOSE
+```
+
+이 시점의 중요한 상태는 다음과 같습니다.
+
+```text
+Chunk 1
+[0, 1, 2, 3, 4]
+       ↓
+     COMMIT
+
+ExecutionContext
+nextIndex = 5
+       ↓
+
+Chunk 2
+       ↓
+     ERROR
+       ↓
+     FAILED
+```
+
+즉, 첫 번째 Chunk의 체크포인트는 이미 저장되어 있습니다.
+
+---
+
+### 실패한 Job의 재시작 과정
+
+Spring Batch에서 실패한 Job을 재시작할 때는 기존 JobInstance와 연결된 실행 상태를 활용합니다.
+
+여기서 중요한 점은 **새로운 JobInstance를 생성하는 것과 실패한 JobInstance를 재시작하는 것은 서로 다르다**는 것입니다.
+
+새로운 JobInstance를 실행하면 이전 StepExecution의 ExecutionContext가 자동으로 이어진다고 보장할 수 없습니다.
+
+반면 실패한 JobInstance를 올바르게 재시작하면 Spring Batch가 이전 실행의 상태 정보를 활용할 수 있습니다.
+
+#### 1. ExecutionContext 복원
+
+첫 번째 실행에서 저장한 값은 다음과 같습니다.
+
+```text
+customItemStreamReader.nextIndex = 5
+```
+
+배치를 재시작하면 ItemStreamReader의 open()이 다시 호출됩니다.
+
+```java
+@Override
+public void open(ExecutionContext executionContext) {
+
+    restartedFromCheckpoint =
+            executionContext.containsKey(POSITION_KEY);
+
+    nextIndex = executionContext.getInt(
+            POSITION_KEY,
+            0
+    );
+}
+```
+
+이번에는 이전에 저장된 키가 존재합니다.
+
+따라서 다음과 같이 복원됩니다.
+
+```text
+READER OPEN - nextIndex: 5
+
+READER RESTARTED: true
+```
+
+#### 2. 다섯 번째 인덱스부터 다시 읽기
+
+Reader는 복원된 인덱스를 기준으로 데이터를 읽습니다.
+
+```text
+READ: 5
+READ: 6
+READ: 7
+READ: 8
+READ: 9
+```
+
+이전 실행에서 이미 정상적으로 처리한 0~4는 다시 읽지 않습니다.
+
+#### 3. 두 번째 Chunk 정상 처리
+
+ItemWriter는 다음 데이터를 전달받습니다.
+
+```text
+WRITE: [5, 6, 7, 8, 9]
+```
+
+정상적으로 처리되면 현재 위치는 10이 됩니다.
+
+```text
+READER UPDATE - nextIndex: 10
+```
+
+이후 ItemReader가 더 이상 읽을 데이터가 없다고 판단합니다.
+
+```text
+READ: null
+```
+
+마지막으로 리소스를 정리하고 Step이 완료됩니다.
+
+```text
+READER CLOSE
+WRITER CLOSE
+```
+
+전체 데이터 10건이 정상적으로 처리된 것입니다.
+
+---
+
+### 배치 재시작의 전체 구조
+
+앞에서 살펴본 과정을 하나의 흐름으로 표현하면 다음과 같습니다.
+
+```mermaid
+flowchart TD
+    A[Job 최초 실행] --> B[ItemStream.open]
+    B --> C[ExecutionContext 조회]
+
+    C --> D[저장된 위치 없음]
+    D --> E[nextIndex = 0]
+
+    E --> F[Chunk 1 처리]
+    F --> G[0~4 데이터 처리]
+
+    G --> H[ItemStream.update]
+    H --> I[ExecutionContext에 5 저장]
+    I --> J[Transaction Commit]
+
+    J --> K[Chunk 2 시작]
+    K --> L[인덱스 5에서 예외 발생]
+
+    L --> M[Step FAILED]
+
+    M --> N[Job 재시작]
+    N --> O[이전 ExecutionContext 복원]
+
+    O --> P[nextIndex = 5]
+    P --> Q[5~9 데이터 처리]
+
+    Q --> R[ItemStream.update]
+    R --> S[ExecutionContext에 10 저장]
+
+    S --> T[Transaction Commit]
+    T --> U[Step COMPLETED]
+```
+
+핵심은 ExecutionContext가 이전 실행의 체크포인트를 저장하고, ItemStream이 해당 정보를 이용하여 현재 상태를 복원한다는 것입니다.
+
+---
+
+### ItemStream과 Chunk 트랜잭션의 관계
+
+ItemStream을 이해할 때 반드시 구분해야 하는 개념이 있습니다.
+
+바로 **현재 읽기 위치와 마지막으로 커밋된 읽기 위치는 다를 수 있다**는 점입니다.
+
+예를 들어 Chunk Size가 5이고, 첫 번째 Chunk를 정상적으로 처리했다고 가정하겠습니다.
+
+```text
+마지막 커밋 위치 = 5
+```
+
+이후 두 번째 Chunk에서 데이터를 일부 읽었습니다.
+
+```text
+READ: 5
+READ: 6
+READ: 7
+```
+
+현재 Reader가 메모리에 가지고 있는 위치는 다음과 같습니다.
+
+```text
+nextIndex = 8
+```
+
+그런데 ItemWriter에서 오류가 발생하여 해당 Chunk가 롤백되었습니다.
+
+이 경우 메모리에 존재하던 `nextIndex = 8`이 그대로 영속적인 체크포인트가 되는 것은 아닙니다.
+
+실제로 저장된 마지막 체크포인트는 다음과 같을 수 있습니다.
+
+```text
+nextIndex = 5
+```
+
+따라서 재시작 시에는 5부터 다시 읽어야 합니다.
+
+| 구분 | 값 |
+|---|---|
+| 마지막으로 커밋된 처리 위치 | 5 |
+| 실패 직전 메모리의 현재 위치 | 8 |
+| 재시작 시 복원할 위치 | 5 |
+
+이것이 Chunk 기반 재시작에서 매우 중요한 개념입니다.
+
+#### 왜 실패 직전의 위치로 재시작하면 안 될까?
+
+실패 직전의 메모리 위치가 8이라고 해서 다음 실행을 8부터 시작하면 문제가 발생할 수 있습니다.
+
+데이터 5, 6, 7은 읽었지만 트랜잭션이 정상적으로 커밋되지 않았기 때문입니다.
+
+이 상태에서 8부터 처리하면 5, 6, 7의 데이터가 누락될 수 있습니다.
+
+따라서 일반적인 트랜잭션 기반 Chunk 처리에서는 **마지막으로 성공적으로 커밋된 위치를 재시작 기준으로 삼아야 합니다.**
+
+다만 실제로 이러한 일관성이 보장되려면 Reader 상태 저장, JobRepository, Writer의 트랜잭션 구성이 적절하게 연결되어 있어야 합니다.
+
+---
+
+### ItemStream 등록과 CompositeItemStream
+
+Spring Batch는 Step에 등록된 ItemStream들을 관리합니다.
+
+#### 자동 등록
+
+ItemReader, ItemProcessor 또는 ItemWriter 자체가 ItemStream을 구현하고 있다면 Spring Batch가 해당 Stream을 자동 등록할 수 있습니다.
+
+```java
+.reader(customItemStreamReader)
+.writer(customItemStreamWriter)
+```
+
+위 예제에서는 Reader와 Writer가 ItemStream을 구현하고 있으므로 추가적인 등록 없이 생명주기 메서드를 호출받을 수 있습니다.
+
+#### 명시적 등록
+
+반면 내부적으로 다른 ItemStream을 위임하여 사용하는 경우에는 명시적인 등록이 필요할 수 있습니다.
+
+예를 들어 다음과 같은 구조입니다.
+
+```text
+CustomItemReader
+       │
+       └── DelegateReader
+               │
+               └── ItemStream 구현
+```
+
+Step이 DelegateReader를 직접 알지 못한다면 해당 객체의 open(), update(), close()가 호출되지 않을 수 있습니다.
+
+이러한 경우 다음과 같이 명시적으로 등록할 수 있습니다.
+
+```java
+return new StepBuilder("step", jobRepository)
+        .<String, String>chunk(100)
+        .transactionManager(transactionManager)
+        .reader(customReader)
+        .writer(itemWriter)
+        .stream(delegateReader)
+        .build();
+```
+
+다만 Composite 구현체 자체가 내부 Delegate의 ItemStream 생명주기를 위임하여 관리하는 경우에는 별도로 등록하지 않아도 될 수 있습니다.
+
+따라서 실제 사용하는 Composite 구현체의 동작을 확인해야 합니다.
+
+---
+
+### 실무에서의 활용
+
+ItemStream과 ExecutionContext는 단순한 읽기 위치 저장을 넘어 배치 시스템의 안정성을 높이는 데 다양하게 활용할 수 있습니다.
+
+#### 1. 데이터베이스 기반 대량 정산 배치 재시작
+
+결제 정산 배치에서 수백만 건의 거래를 처리한다고 가정하겠습니다.
+
+이때 단순히 현재 처리 건수를 저장하는 것보다 마지막으로 처리한 거래 ID를 저장하는 방식이 유용할 수 있습니다.
+
+예를 들어 다음과 같은 체크포인트를 사용할 수 있습니다.
+
+```text
+last.transaction.id = 150000
+```
+
+재시작 시에는 해당 거래 ID보다 큰 데이터부터 처리하도록 구성할 수 있습니다.
+
+```sql
+SELECT
+    transaction_id,
+    amount,
+    payment_status
+FROM payment_transaction
+WHERE transaction_id > :lastTransactionId
+ORDER BY transaction_id;
+```
+
+이러한 방식은 Offset 기반 Paging과 비교했을 때 데이터 추가나 삭제에 따른 위치 변경 문제를 줄이는 데 도움이 됩니다.
+
+단, 거래 ID의 정렬 기준과 처리 대상 데이터의 변경 가능성을 함께 고려해야 합니다.
+
+#### 2. Chunk Size에 따른 재처리 범위 최적화
+
+Chunk Size가 클수록 커밋 횟수는 줄어들 수 있지만, 장애 발생 시 다시 처리해야 하는 데이터 범위가 커질 수 있습니다.
+
+예를 들어 다음과 같습니다.
+
+```text
+Chunk Size = 100
+
+마지막 커밋 이후 최대 100건 수준의
+데이터가 다시 처리될 수 있음
+```
+
+```text
+Chunk Size = 1000
+
+마지막 커밋 이후 최대 1000건 수준의
+데이터가 다시 처리될 수 있음
+```
+
+실제 재처리 범위는 오류 위치와 트랜잭션 처리 방식에 따라 달라집니다.
+
+따라서 Chunk Size를 설정할 때는 단순히 처리 속도뿐 아니라 장애 발생 시 재처리 비용도 고려해야 합니다.
+
+#### 3. ExecutionContext의 키 충돌 방지
+
+여러 ItemStream이 동일한 ExecutionContext를 사용하는 경우 키 이름이 충돌할 수 있습니다.
+
+예를 들어 두 Reader가 모두 다음 키를 사용한다고 가정하겠습니다.
+
+```text
+current.index
+```
+
+서로 다른 Reader가 같은 키에 값을 저장하면 이전 상태를 덮어쓸 수 있습니다.
+
+따라서 다음과 같이 고유한 키를 사용하는 것이 좋습니다.
+
+```text
+customerReader.current.index
+orderReader.current.index
+settlementReader.current.index
+```
+
+이처럼 각 ItemStream의 상태를 구분할 수 있는 네임스페이스를 사용하면 키 충돌 문제를 방지하는 데 도움이 됩니다.
+
+#### 4. ExecutionContext에 대용량 데이터 저장 방지
+
+ExecutionContext는 상태 정보를 관리하기 위한 객체입니다.
+
+따라서 대량의 데이터를 직접 저장하는 용도로 사용하지 않는 것이 좋습니다.
+
+예를 들어 다음과 같은 구조는 피하는 것이 좋습니다.
+
+```text
+ExecutionContext
+
+processedItems = List<100000 Customer>
+```
+
+이러한 데이터를 저장하면 직렬화 비용과 데이터베이스 저장 비용이 증가할 수 있습니다.
+
+대신 필요한 최소한의 상태만 저장하는 것이 적절합니다.
+
+```text
+ExecutionContext
+
+lastProcessedId = 150000
+```
+
+ExecutionContext에는 데이터 자체보다는 처리 위치나 진행 상태를 저장하는 것이 좋습니다.
+
+#### 5. JobRepository와 비즈니스 데이터의 트랜잭션 일관성 확보
+
+ExecutionContext에 체크포인트가 저장되었다고 해서 모든 비즈니스 데이터가 정상적으로 저장되었다고 보장할 수는 없습니다.
+
+예를 들어 Writer는 비즈니스 데이터베이스에 저장하고 JobRepository는 별도의 데이터베이스에 저장한다고 가정하겠습니다.
+
+이때 서로 다른 트랜잭션으로 관리된다면 체크포인트와 실제 저장 데이터 사이에 불일치가 발생할 수 있습니다.
+
+따라서 중요한 정산 배치에서는 다음 항목을 확인해야 합니다.
+
+- 비즈니스 데이터 저장에 사용하는 TransactionManager
+- JobRepository의 트랜잭션 처리 방식
+- Checkpoint 저장과 데이터 저장의 원자성
+- 장애 발생 시 중복 처리 및 누락 가능성
+
+특히 서로 다른 데이터베이스나 외부 시스템을 사용하는 경우에는 멱등성 있는 처리 구조가 필요합니다.
+
+#### 6. ItemWriter의 멱등성 확보
+
+배치 재시작 과정에서는 같은 데이터를 다시 처리할 수 있습니다.
+
+따라서 Writer는 중복 실행에 대응할 수 있도록 설계하는 것이 좋습니다.
+
+예를 들어 다음과 같은 고유 제약 조건을 사용할 수 있습니다.
+
+```sql
+ALTER TABLE settlement
+ADD CONSTRAINT uk_settlement_transaction
+UNIQUE (transaction_id, settlement_date);
+```
+
+이렇게 하면 동일한 거래에 대한 중복 정산 데이터가 저장되는 것을 방지하는 데 도움이 됩니다.
+
+다만 외부 API나 메시지 큐에 데이터를 전달하는 작업은 데이터베이스 트랜잭션으로 자동 롤백되지 않을 수 있으므로 별도의 멱등성 전략이 필요합니다.
+
+#### 7. 파일 기반 Reader의 읽기 위치 복원
+
+CSV나 TXT 파일을 처리하는 경우에도 ItemStream을 활용할 수 있습니다.
+
+예를 들어 마지막으로 처리한 행 번호를 저장할 수 있습니다.
+
+```text
+file.current.line = 10000
+```
+
+재시작 시 해당 위치를 복원하여 이후 데이터를 처리하도록 구성할 수 있습니다.
+
+다만 파일 내용이 변경되었다면 동일한 행 번호가 다른 데이터를 가리킬 수 있습니다.
+
+따라서 파일의 변경 가능성이 있는 환경에서는 파일명, 크기, 수정 시각, 체크섬 등의 정보도 함께 관리하는 것이 좋습니다.
+
+#### 8. 파일 Writer의 재시작 안정성 확보
+
+파일을 생성하는 Writer는 데이터베이스 Writer와 다른 특성을 가집니다.
+
+데이터베이스는 트랜잭션을 통해 Rollback을 수행할 수 있지만, 파일 시스템에서 이미 기록된 데이터를 자동으로 원래 상태로 복구하는 것은 일반적으로 어렵습니다.
+
+따라서 파일 Writer를 구현할 때는 다음을 고려해야 합니다.
+
+- 마지막으로 정상 기록한 위치
+- 기존 파일에 이어서 기록할지 여부
+- 실패한 Chunk에서 기록한 데이터의 처리 방식
+- 재시작 시 중복 출력 방지
+- 임시 파일과 최종 파일의 교체 방식
+
+이러한 요구사항에 따라 ItemStream을 활용하여 파일의 처리 위치와 상태를 관리할 수 있습니다.
+
+#### 9. Multi-threaded Step의 상태 관리
+
+여러 스레드가 하나의 Reader를 공유하는 경우 현재 읽기 위치를 안전하게 관리해야 합니다.
+
+단순히 `currentIndex`를 멤버 변수로 선언했다고 해서 여러 스레드에서 안전하게 동작하는 것은 아닙니다.
+
+또한 Reader 호출을 동기화하더라도 ExecutionContext의 체크포인트 저장 순서까지 항상 일관되게 유지된다고 보장할 수는 없습니다.
+
+따라서 병렬 처리가 필요한 경우에는 다음과 같은 방식을 고려해야 합니다.
+
+- Partitioning으로 처리 범위 분리
+- 스레드별 Reader 인스턴스 사용
+- Partition별 ExecutionContext 관리
+- 중복 처리에 대응하는 Writer 설계
+
+특히 Partitioning을 사용하면 각 Partition이 자신의 StepExecutionContext를 관리할 수 있으므로 처리 범위와 상태를 분리하는 데 유리합니다.
+
+#### 10. JobInstance와 JobExecution 구분
+
+배치 재시작에서는 JobInstance와 JobExecution을 구분하는 것이 중요합니다.
+
+JobInstance는 Job과 식별용 JobParameters를 기준으로 구분됩니다.
+
+JobExecution은 해당 JobInstance가 실제로 실행된 이력을 의미합니다.
+
+예를 들어 다음과 같은 관계가 있을 수 있습니다.
+
+```text
+JobInstance A
+    │
+    ├── JobExecution 1 → FAILED
+    │
+    └── JobExecution 2 → COMPLETED
+```
+
+두 JobExecution은 동일한 JobInstance에 속할 수 있습니다.
+
+이러한 관계에서 실패한 Job을 재시작하면 이전 실행의 Step 상태를 활용할 수 있습니다.
+
+반면 식별용 JobParameters를 변경하여 새로운 JobInstance를 생성하면 이전 체크포인트가 자동으로 이어지는 것은 아닙니다.
+
+따라서 재시작을 구현할 때는 단순히 Job을 다시 실행하는 것과 기존 JobInstance를 재시작하는 것을 명확하게 구분해야 합니다.
+
+#### 11. ExecutionContext의 직렬화 가능성 확인
+
+ExecutionContext에 저장된 데이터는 JobRepository를 통해 영속화될 수 있습니다.
+
+따라서 저장하는 값은 직렬화 방식과 호환되어야 합니다.
+
+예를 들어 복잡한 도메인 객체를 그대로 저장한다면 직렬화 오류가 발생하거나 클래스 구조 변경으로 재시작에 문제가 생길 수 있습니다.
+
+가능하면 다음과 같은 단순한 데이터를 저장하는 것이 좋습니다.
+
+```text
+lastProcessedId = 10000
+
+currentIndex = 500
+
+lastProcessedDate = 2026-11-26
+```
+
+복잡한 객체를 저장해야 한다면 사용하는 ExecutionContextSerializer와 해당 객체의 직렬화 가능성을 확인해야 합니다.
+
+#### 12. 상태 저장 시점과 장애 발생 시점 구분
+
+ItemStream의 update()는 현재 상태를 ExecutionContext에 반영합니다.
+
+하지만 실제 재시작 기준은 영속적으로 저장된 체크포인트입니다.
+
+따라서 장애 분석 시에는 다음 세 가지를 구분해야 합니다.
+
+```text
+Reader가 마지막으로 읽은 위치
+
+ExecutionContext에 마지막으로 반영한 위치
+
+JobRepository에 정상적으로 커밋된 위치
+```
+
+이 값들은 항상 동일하지 않을 수 있습니다.
+
+특히 트랜잭션이 롤백되거나 애플리케이션이 비정상적으로 종료된 상황에서는 차이가 발생할 수 있습니다.
+
+따라서 배치 재시작 문제를 분석할 때는 단순히 Reader의 멤버 변수만 확인하지 말고 실제 JobRepository에 저장된 체크포인트를 함께 확인해야 합니다.
+
+---
+
+### ItemStream 사용 시 주의사항
+
+ItemStream을 사용할 때는 몇 가지 중요한 사항을 기억해야 합니다.
+
+| 주의사항 | 설명 |
+|---|---|
+| `open()` 호출 | 데이터 처리 전에 리소스 초기화 및 상태 복원 |
+| `update()` 호출 | 현재 상태를 ExecutionContext에 반영 |
+| `close()` 호출 | 리소스 정리, 강제 종료 시 호출 보장 안 됨 |
+| 상태 영속화 | JobRepository와 체크포인트 저장이 필요 |
+| 재시작 위치 | 마지막으로 커밋된 체크포인트 기준 |
+| ItemStream 등록 | Step에 Stream이 등록되어 있어야 함 |
+| 데이터 직렬화 | ExecutionContext에 저장하는 값의 직렬화 가능성 확인 |
+| 멱등성 | 재처리 과정에서 중복 저장 방지 |
+| 멀티스레드 | Reader 상태 및 체크포인트의 동시성 고려 |
+| JobInstance | 새 실행과 실패한 실행의 재시작을 구분 |
+
+이 중에서도 가장 중요한 것은 ItemStream이 단독으로 재시작 기능을 완성하는 것이 아니라는 점입니다.
+
+ItemStream은 상태를 기록하고 복원하는 기능을 제공하지만, 실제 재시작 안정성은 JobRepository, 트랜잭션 처리, Reader의 데이터 조회 방식, Writer의 멱등성 등이 함께 보장되어야 확보할 수 있습니다.
+
+---
+
+### 정리
+
+Spring Batch의 ItemStream은 데이터 입출력 과정에서 필요한 상태 관리와 리소스 생명주기 처리를 지원하는 인터페이스입니다.
+
+`open()`, `update()`, `close()` 세 가지 메서드를 통해 리소스를 초기화하고 현재 처리 상태를 저장하며, 작업이 종료되었을 때 리소스를 정리할 수 있습니다.
+
+ItemStream은 ExecutionContext와 함께 사용되어 배치의 현재 처리 위치를 기록하고 이전 실행 상태를 복원하는 데 활용됩니다.
+
+특히 Chunk 기반 배치에서는 마지막으로 정상 커밋된 체크포인트를 기준으로 재시작하는 것이 중요합니다.
+
+실패 직전에 Reader가 메모리에서 관리하던 위치와 실제로 커밋된 위치는 서로 다를 수 있기 때문입니다.
+
+또한 ItemStream을 구현했다고 해서 모든 상황에서 자동으로 안전한 재시작이 보장되는 것은 아닙니다.
+
+실제 운영 환경에서는 JobRepository의 영속성, 비즈니스 데이터와 체크포인트의 트랜잭션 일관성, Reader의 조회 안정성, Writer의 멱등성까지 함께 고려해야 합니다.
+
+이러한 구조를 이해하면 단순히 실패한 배치를 다시 실행하는 것을 넘어, **중복 처리와 데이터 누락을 최소화하는 재시작 가능한 배치 시스템**을 설계할 수 있습니다.
+
+#### 한 줄 요약
+
+**ItemStream은 open(), update(), close()를 통해 데이터 처리 상태와 리소스 생명주기를 관리하며, ExecutionContext와 JobRepository를 이용하여 마지막으로 정상 커밋된 위치부터 배치를 재시작할 수 있도록 지원하는 핵심 인터페이스입니다.**
