@@ -8000,3 +8000,2023 @@ ItemStream은 ExecutionContext와 함께 사용되어 배치의 현재 처리 �
 #### 한 줄 요약
 
 **ItemStream은 open(), update(), close()를 통해 데이터 처리 상태와 리소스 생명주기를 관리하며, ExecutionContext와 JobRepository를 이용하여 마지막으로 정상 커밋된 위치부터 배치를 재시작할 수 있도록 지원하는 핵심 인터페이스입니다.**
+
+## Chunnk Process 아키텍처
+
+### Spring Batch Chunk Processing 아키텍처와 내부 실행 흐름 완벽 이해
+
+Spring Batch는 대용량 데이터를 안정적이고 효율적으로 처리하기 위해 Chunk 기반 처리 방식을 제공합니다.
+
+Chunk 기반 처리란 전체 데이터를 한 번에 처리하지 않고, 일정한 크기로 나누어 읽고 가공한 뒤 저장하는 방식입니다.
+
+예를 들어 100만 건의 데이터를 처리해야 한다고 가정하겠습니다.
+
+이 데이터를 하나의 트랜잭션에서 모두 처리한다면 트랜잭션이 장시간 유지되고, 장애가 발생했을 때 전체 작업을 다시 처리해야 하는 문제가 발생할 수 있습니다.
+
+반면 Chunk Size를 1,000으로 설정하면 데이터를 1,000건씩 나누어 처리할 수 있습니다.
+
+```text
+전체 데이터: 1,000,000건
+
+Chunk Size: 1,000
+
+Chunk 1
+1 ~ 1,000
+    ↓
+COMMIT
+
+Chunk 2
+1,001 ~ 2,000
+    ↓
+COMMIT
+
+Chunk 3
+2,001 ~ 3,000
+    ↓
+COMMIT
+
+...
+
+Chunk 1000
+999,001 ~ 1,000,000
+    ↓
+COMMIT
+```
+
+이렇게 Chunk 단위로 작업을 처리하면 한 번의 트랜잭션에서 관리하는 데이터 범위를 제한할 수 있습니다.
+
+또한 장애가 발생하더라도 이전에 정상적으로 커밋된 Chunk의 처리 결과는 유지할 수 있습니다.
+
+하지만 이러한 구조를 정확하게 이해하려면 단순히 `chunk(1000)`을 설정하는 방법만 알아서는 부족합니다.
+
+다음과 같은 내부 동작까지 이해해야 합니다.
+
+- Spring Batch는 어떤 객체를 통해 Chunk 처리를 시작하는가?
+- ItemReader는 데이터를 어떤 순서로 읽는가?
+- ItemReader가 반환한 데이터는 어디에 저장되는가?
+- Chunk Size에 도달하면 어떤 일이 발생하는가?
+- ItemProcessor는 언제 호출되는가?
+- Input Chunk와 Output Chunk는 어떻게 구분되는가?
+- ItemWriter는 어떤 데이터를 전달받는가?
+- 트랜잭션은 언제 시작되고 커밋되는가?
+- 오류가 발생하면 어느 범위까지 롤백되는가?
+- ItemReader가 `null`을 반환하면 어떤 과정으로 Step이 종료되는가?
+
+이러한 내용을 이해하면 Spring Batch가 내부적으로 어떤 과정을 거쳐 데이터를 처리하는지 파악할 수 있습니다.
+
+또한 배치 작업의 성능 문제와 장애 원인을 분석하거나 기존 처리 구조를 확장해야 하는 상황에서도 도움이 됩니다.
+
+이번에는 Spring Batch 5.x의 `ChunkOrientedTasklet` 기반 아키텍처를 중심으로 전체 실행 흐름을 분석하고, Spring Batch 6.x에서 변경된 부분까지 살펴보겠습니다.
+
+---
+
+### Chunk Processing의 개념
+
+#### Chunk란?
+
+Chunk는 여러 개의 Item을 하나의 처리 단위로 묶은 객체입니다.
+
+Spring Batch는 ItemReader를 통해 데이터를 한 건씩 읽고, 읽은 데이터를 Chunk에 저장합니다.
+
+이후 Chunk에 포함된 데이터를 ItemProcessor로 가공하고, ItemWriter를 통해 저장합니다.
+
+예를 들어 다음과 같은 데이터가 있다고 가정하겠습니다.
+
+```text
+item1
+item2
+item3
+item4
+item5
+item6
+```
+
+Chunk Size를 2로 설정했다면 다음과 같이 데이터를 처리할 수 있습니다.
+
+```text
+Chunk 1
+[item1, item2]
+
+Chunk 2
+[item3, item4]
+
+Chunk 3
+[item5, item6]
+```
+
+각 Chunk는 하나의 처리 단위가 됩니다.
+
+일반적인 Chunk 기반 처리에서는 Chunk마다 트랜잭션을 시작하고, 해당 Chunk의 처리가 완료되면 커밋합니다.
+
+#### Chunk Processing의 기본 흐름
+
+Chunk 기반 처리의 핵심적인 구성 요소는 다음과 같습니다.
+
+| 구성 요소 | 역할 |
+|---|---|
+| ItemReader | 데이터를 한 건씩 읽음 |
+| Input Chunk | 읽은 데이터를 일정한 크기로 저장 |
+| ItemProcessor | 개별 데이터를 가공하거나 필터링 |
+| Output Chunk | 가공된 데이터를 저장 |
+| ItemWriter | Output Chunk를 전달받아 데이터 저장 |
+| TransactionManager | 트랜잭션 시작, 커밋, 롤백 관리 |
+
+전체적인 데이터 처리 구조는 다음과 같습니다.
+
+```mermaid
+flowchart TD
+    A["Data Source"] --> B["ItemReader"]
+    B -->|"read(): Item 1건"| C["Input Chunk"]
+    C -->|"Chunk Size 충족 또는 EOF"| D["ItemProcessor"]
+    D -->|"process(): Item 1건씩"| E["Output Chunk"]
+    E -->|"Chunk 단위 전달"| F["ItemWriter"]
+    F --> G["Database / File"]
+    G --> H["Transaction Commit"]
+```
+
+여기서 가장 중요한 특징은 **ItemReader와 ItemProcessor는 개별 Item을 처리하지만, ItemWriter는 Chunk 단위로 데이터를 전달받는다는 것**입니다.
+
+이 차이를 이해해야 전체 아키텍처가 명확해집니다.
+
+---
+
+### 왜 Chunk 기반 아키텍처를 사용하는가?
+
+#### 1. 대용량 데이터를 작은 단위로 처리하기 위해
+
+모든 데이터를 한꺼번에 읽고 처리하는 방식은 메모리 사용량과 트랜잭션 유지 시간이 증가할 수 있습니다.
+
+반면 Chunk 기반 처리는 한 번에 처리하는 데이터의 범위를 제한할 수 있습니다.
+
+다만 Chunk Size가 메모리 사용량의 절대적인 상한을 의미하는 것은 아닙니다.
+
+예를 들어 ItemReader가 내부적으로 전체 데이터를 메모리에 적재한다면 Chunk Size가 작더라도 메모리 사용량이 커질 수 있습니다.
+
+따라서 실제 메모리 사용량은 Chunk Size와 ItemReader의 데이터 조회 방식을 함께 고려해야 합니다.
+
+#### 2. 트랜잭션을 작은 단위로 관리하기 위해
+
+일반적인 Chunk 처리에서는 Chunk 단위로 트랜잭션을 관리합니다.
+
+예를 들어 Chunk Size가 3이라면 다음과 같이 처리할 수 있습니다.
+
+```text
+BEGIN TRANSACTION
+
+READ item1
+READ item2
+READ item3
+
+PROCESS item1
+PROCESS item2
+PROCESS item3
+
+WRITE [item1, item2, item3]
+
+COMMIT
+```
+
+이후 새로운 Chunk를 처리할 때 다시 트랜잭션이 시작됩니다.
+
+이러한 방식은 트랜잭션 유지 시간을 제한하고 장애 발생 시 롤백 범위를 줄이는 데 도움이 됩니다.
+
+#### 3. 읽기·가공·저장 작업을 분리하기 위해
+
+데이터를 읽는 작업과 데이터를 가공하는 작업, 데이터를 저장하는 작업은 서로 다른 책임을 가집니다.
+
+Spring Batch는 이를 각각의 인터페이스로 분리합니다.
+
+```text
+ItemReader
+    ↓
+데이터 조회
+
+ItemProcessor
+    ↓
+비즈니스 로직 처리
+
+ItemWriter
+    ↓
+데이터 저장
+```
+
+따라서 데이터 조회 방식을 변경하더라도 비즈니스 로직을 그대로 유지할 수 있습니다.
+
+또한 데이터 저장 방식을 변경하더라도 ItemReader를 재사용할 수 있습니다.
+
+이러한 구조는 코드의 유지보수성과 확장성을 높이는 데 도움이 됩니다.
+
+---
+
+### Spring Batch Chunk Processing의 전체 아키텍처
+
+Spring Batch 5.x의 Chunk 기반 처리 구조는 다음과 같습니다.
+
+```mermaid
+flowchart TD
+    JOB["Job"] --> STEP["TaskletStep"]
+
+    STEP --> RT1["RepeatTemplate<br/>Chunk 처리 반복"]
+
+    RT1 --> CT["ChunkOrientedTasklet"]
+
+    CT --> PROVIDER["SimpleChunkProvider"]
+    CT --> PROCESSOR["SimpleChunkProcessor"]
+
+    PROVIDER --> RT2["RepeatTemplate<br/>ItemReader 반복"]
+
+    RT2 --> READER["ItemReader.read()"]
+
+    READER --> INPUT["Input Chunk"]
+
+    INPUT --> PROCESSOR
+
+    PROCESSOR --> ITEM_PROCESSOR["ItemProcessor.process()"]
+
+    ITEM_PROCESSOR --> OUTPUT["Output Chunk"]
+
+    OUTPUT --> WRITER["ItemWriter.write()"]
+
+    WRITER --> DB["Database / File"]
+```
+
+이 구조에서 가장 중요한 클래스는 다음과 같습니다.
+
+| 클래스 | 주요 역할 |
+|---|---|
+| `Job` | 전체 배치 작업 구성 |
+| `TaskletStep` | Step 실행과 트랜잭션 관리 |
+| `RepeatTemplate` | 반복 실행 제어 |
+| `ChunkOrientedTasklet` | Chunk 처리 흐름 조정 |
+| `SimpleChunkProvider` | ItemReader를 통해 Input Chunk 생성 |
+| `SimpleChunkProcessor` | Input Chunk를 가공하고 Output Chunk 저장 |
+| `ItemReader` | 데이터 소스에서 개별 Item 조회 |
+| `ItemProcessor` | 개별 Item 가공 및 필터링 |
+| `ItemWriter` | Chunk 단위 데이터 저장 |
+
+이 구성 요소들이 어떤 순서로 실행되는지 단계별로 살펴보겠습니다.
+
+---
+
+### TaskletStep의 역할
+
+#### TaskletStep이란?
+
+Spring Batch 5.x의 기존 Chunk 처리 엔진에서는 `TaskletStep`이 Step 실행을 담당합니다.
+
+TaskletStep은 내부적으로 Tasklet을 반복 실행하는 구조를 사용합니다.
+
+일반적인 Tasklet Step에서는 사용자가 직접 구현한 Tasklet을 실행합니다.
+
+반면 Chunk 기반 Step에서는 Spring Batch가 제공하는 `ChunkOrientedTasklet`을 실행합니다.
+
+```text
+TaskletStep
+    │
+    ▼
+ChunkOrientedTasklet
+```
+
+즉, ChunkOrientedTasklet은 TaskletStep에서 실행되는 Tasklet 구현체입니다.
+
+#### RepeatTemplate을 이용한 반복 실행
+
+TaskletStep은 RepeatTemplate을 이용하여 Tasklet 실행을 반복합니다.
+
+전체적인 구조를 단순화하면 다음과 같습니다.
+
+```java
+while (shouldContinue()) {
+
+    executeTasklet();
+}
+```
+
+실제 구현에서는 단순한 while 문 대신 RepeatOperations와 RepeatTemplate 등의 반복 제어 구조를 사용합니다.
+
+Chunk 기반 Step에서는 이 반복 구조를 통해 ChunkOrientedTasklet을 반복 실행합니다.
+
+```text
+TaskletStep
+    │
+    └── RepeatTemplate
+            │
+            ├── ChunkOrientedTasklet 실행
+            │
+            ├── ChunkOrientedTasklet 실행
+            │
+            ├── ChunkOrientedTasklet 실행
+            │
+            └── 종료 조건 충족
+```
+
+하나의 Chunk 처리가 완료되면 다시 ChunkOrientedTasklet이 실행되어 다음 Chunk를 처리합니다.
+
+이러한 반복은 더 이상 읽을 데이터가 없을 때까지 진행됩니다.
+
+---
+
+### ChunkOrientedTasklet의 역할
+
+`ChunkOrientedTasklet`은 Chunk 기반 처리를 담당하는 Tasklet 구현체입니다.
+
+내부적으로 두 가지 핵심 객체를 가지고 있습니다.
+
+```java
+ChunkProvider<I> chunkProvider;
+
+ChunkProcessor<I> chunkProcessor;
+```
+
+각각의 역할은 다음과 같습니다.
+
+`ChunkProvider`는 데이터를 읽고 Input Chunk를 생성합니다.
+
+`ChunkProcessor`는 Input Chunk를 전달받아 데이터를 가공하고 저장합니다.
+
+따라서 ChunkOrientedTasklet 자체가 데이터를 직접 조회하거나 저장하는 것은 아닙니다.
+
+대신 각 구성 요소에 작업을 위임합니다.
+
+```mermaid
+flowchart TD
+    A["ChunkOrientedTasklet.execute()"]
+
+    A --> B["ChunkProvider.provide()"]
+    B --> C["Input Chunk 생성"]
+    C --> D["ChunkProcessor.process()"]
+
+    D --> E["ItemProcessor.process()"]
+    E --> F["Output Chunk 생성"]
+    F --> G["ItemWriter.write()"]
+
+    G --> H["Chunk 처리 완료"]
+```
+
+Spring Batch 5.x의 실제 구현에서는 `execute()` 메서드가 이러한 흐름을 제어합니다.
+
+핵심 로직을 단순화하면 다음과 같습니다.
+
+```java
+public RepeatStatus execute(
+        StepContribution contribution,
+        ChunkContext chunkContext
+) throws Exception {
+
+    Chunk<I> inputs = getBufferedInputs(chunkContext);
+
+    if (inputs == null) {
+
+        inputs = chunkProvider.provide(contribution);
+
+        if (buffering) {
+            saveBufferedInputs(chunkContext, inputs);
+        }
+    }
+
+    chunkProcessor.process(contribution, inputs);
+
+    chunkProvider.postProcess(contribution, inputs);
+
+    if (inputs.isBusy()) {
+        return RepeatStatus.CONTINUABLE;
+    }
+
+    removeBufferedInputs(chunkContext);
+
+    chunkContext.setComplete();
+
+    return RepeatStatus.continueIf(!inputs.isEnd());
+}
+```
+
+위 코드는 실제 처리 순서를 이해하기 위해 단순화한 의사 코드입니다.
+
+`getBufferedInputs()`, `saveBufferedInputs()`, `removeBufferedInputs()`는 설명을 위해 사용한 메서드 이름입니다.
+
+실제 구현에서는 ChunkContext의 속성 API를 사용합니다.
+
+이 메서드를 보면 ChunkOrientedTasklet의 주요 역할이 명확해집니다.
+
+먼저 ChunkProvider를 통해 Input Chunk를 가져옵니다.
+
+이후 ChunkProcessor에 Input Chunk를 전달합니다.
+
+처리가 완료되면 후처리를 수행하고, 읽을 데이터가 남아 있는지 확인하여 반복 여부를 반환합니다.
+
+여기서 중요한 점은 **ChunkOrientedTasklet이 직접 트랜잭션을 커밋하는 것이 아니라는 사실**입니다.
+
+기존 구조에서 ChunkOrientedTasklet의 실행을 감싸는 트랜잭션 경계는 TaskletStep이 관리합니다.
+
+---
+
+### RepeatTemplate의 이중 반복 구조
+
+Spring Batch 5.x의 Chunk 처리 아키텍처에서 중요한 특징은 두 단계의 반복 구조가 존재한다는 것입니다.
+
+첫 번째는 Chunk 처리 전체를 반복하는 구조입니다.
+
+두 번째는 하나의 Chunk를 구성하기 위해 ItemReader를 반복 호출하는 구조입니다.
+
+#### 첫 번째 반복: TaskletStep
+
+TaskletStep은 ChunkOrientedTasklet을 반복 실행합니다.
+
+```text
+TaskletStep
+
+RepeatTemplate
+    │
+    ├── Chunk 1 처리
+    │
+    ├── Chunk 2 처리
+    │
+    ├── Chunk 3 처리
+    │
+    └── 모든 데이터 처리 후 종료
+```
+
+이 반복의 기준은 Chunk 단위입니다.
+
+#### 두 번째 반복: SimpleChunkProvider
+
+SimpleChunkProvider는 ItemReader를 반복 호출합니다.
+
+```text
+SimpleChunkProvider
+
+RepeatTemplate
+    │
+    ├── ItemReader.read()
+    │
+    ├── ItemReader.read()
+    │
+    ├── ItemReader.read()
+    │
+    └── Chunk Size 충족
+```
+
+이 반복의 기준은 개별 Item입니다.
+
+따라서 전체 구조는 다음과 같습니다.
+
+```text
+TaskletStep
+│
+└── RepeatTemplate
+    │
+    │ Chunk 단위 반복
+    │
+    └── ChunkOrientedTasklet
+        │
+        ├── SimpleChunkProvider
+        │   │
+        │   └── RepeatTemplate
+        │       │
+        │       │ Item 단위 반복
+        │       │
+        │       ├── ItemReader.read()
+        │       ├── ItemReader.read()
+        │       └── ItemReader.read()
+        │
+        └── SimpleChunkProcessor
+            │
+            ├── ItemProcessor.process()
+            └── ItemWriter.write()
+```
+
+이렇게 두 개의 RepeatTemplate이 서로 다른 범위의 반복을 담당합니다.
+
+| 반복 구조 | 담당 객체 | 반복 대상 | 종료 조건 |
+|---|---|---|---|
+| 바깥쪽 반복 | TaskletStep | ChunkOrientedTasklet | Chunk 처리 전체 종료 |
+| 안쪽 반복 | SimpleChunkProvider | ItemReader | Chunk Size 충족 또는 EOF |
+
+이 구조를 이해하면 ItemReader가 여러 번 호출된 후 ItemProcessor와 ItemWriter로 제어가 이동하는 이유를 알 수 있습니다.
+
+---
+
+### SimpleChunkProvider의 내부 동작
+
+#### SimpleChunkProvider란?
+
+`SimpleChunkProvider`는 ItemReader를 통해 데이터를 읽고 Input Chunk를 생성하는 클래스입니다.
+
+이 클래스는 Spring Batch 5.x의 기존 Chunk 처리 엔진에서 사용됩니다.
+
+주요 역할은 다음과 같습니다.
+
+1. 새로운 Input Chunk를 생성합니다.
+2. ItemReader를 호출합니다.
+3. ItemReader가 반환한 Item을 Input Chunk에 저장합니다.
+4. Chunk Size에 도달하면 읽기를 중단합니다.
+5. 생성한 Input Chunk를 반환합니다.
+
+#### Input Chunk 생성
+
+ChunkProvider는 먼저 새로운 Chunk를 생성합니다.
+
+```java
+Chunk<I> inputs = new Chunk<>();
+```
+
+처음 생성한 Chunk는 비어 있습니다.
+
+```text
+Input Chunk
+
+items = []
+```
+
+이후 ItemReader를 호출하여 데이터를 읽습니다.
+
+#### ItemReader 호출
+
+ItemReader는 데이터를 한 건씩 읽습니다.
+
+```java
+I item = itemReader.read();
+```
+
+예를 들어 다음과 같은 데이터가 있다면 첫 번째 호출에서 `item1`을 반환할 수 있습니다.
+
+```text
+ItemReader.read()
+        ↓
+      item1
+```
+
+이후 SimpleChunkProvider는 읽은 데이터를 Input Chunk에 추가합니다.
+
+```java
+inputs.add(item);
+```
+
+여기서 역할을 정확하게 구분해야 합니다.
+
+**ItemReader는 Chunk를 전달받아 내부에 데이터를 추가하는 객체가 아닙니다.**
+
+ItemReader의 `read()` 메서드는 하나의 Item을 반환합니다.
+
+그 Item을 Input Chunk에 추가하는 역할은 SimpleChunkProvider가 담당합니다.
+
+```mermaid
+sequenceDiagram
+    participant CP as SimpleChunkProvider
+    participant IR as ItemReader
+    participant C as Input Chunk
+
+    CP->>C: new Chunk()
+    CP->>IR: read()
+    IR-->>CP: item1
+    CP->>C: add(item1)
+
+    CP->>IR: read()
+    IR-->>CP: item2
+    CP->>C: add(item2)
+
+    CP-->>CP: Chunk Size 충족
+```
+
+#### Chunk Size에 따른 반복 종료
+
+Chunk Size가 2인 경우 다음과 같이 처리됩니다.
+
+```text
+Input Chunk 생성
+
+items = []
+
+첫 번째 read()
+
+items = [item1]
+
+두 번째 read()
+
+items = [item1, item2]
+
+Chunk Size = 2
+        ↓
+반복 종료
+```
+
+고정 Chunk Size를 사용하는 기존 구현에서는 SimpleCompletionPolicy가 반복 완료 조건을 판단합니다.
+
+개념적으로 다음과 같은 조건입니다.
+
+```java
+repeatContext.getStartedCount() >= chunkSize
+```
+
+따라서 Chunk Size가 2라면 두 번째 읽기 반복이 완료된 시점에 내부 반복이 종료됩니다.
+
+여기서 기준은 설정된 크기에 **도달했는지**입니다.
+
+반드시 Chunk Size를 초과해야 종료되는 것은 아닙니다.
+
+#### Input Chunk 반환
+
+ChunkProvider는 생성한 Input Chunk를 반환합니다.
+
+```java
+return inputs;
+```
+
+```text
+SimpleChunkProvider
+        │
+        ▼
+Input Chunk
+[item1, item2]
+        │
+        ▼
+ChunkOrientedTasklet
+```
+
+ChunkOrientedTasklet은 이 Input Chunk를 SimpleChunkProcessor에 전달합니다.
+
+---
+
+### SimpleChunkProcessor의 내부 동작
+
+#### SimpleChunkProcessor란?
+
+`SimpleChunkProcessor`는 Input Chunk를 전달받아 데이터를 가공하고 저장하는 클래스입니다.
+
+내부적으로 ItemProcessor와 ItemWriter를 사용합니다.
+
+```java
+ItemProcessor<I, O> itemProcessor;
+
+ItemWriter<O> itemWriter;
+```
+
+실제 필드 선언에는 제네릭 타입의 상·하한을 고려한 와일드카드가 사용됩니다.
+
+이 클래스의 주요 역할은 다음과 같습니다.
+
+1. Input Chunk를 전달받습니다.
+2. 새로운 Output Chunk를 생성합니다.
+3. Input Chunk의 Item을 하나씩 꺼냅니다.
+4. ItemProcessor를 호출하여 데이터를 가공합니다.
+5. 가공된 Item을 Output Chunk에 추가합니다.
+6. Output Chunk를 ItemWriter에 전달합니다.
+
+#### Input Chunk 전달
+
+ChunkOrientedTasklet은 다음과 같이 Input Chunk를 전달합니다.
+
+```java
+chunkProcessor.process(contribution, inputs);
+```
+
+Input Chunk에는 ItemReader가 읽은 데이터가 포함되어 있습니다.
+
+```text
+Input Chunk
+
+[
+    "item1",
+    "item2"
+]
+```
+
+#### Output Chunk 생성
+
+SimpleChunkProcessor는 가공된 데이터를 저장할 새로운 Chunk를 생성합니다.
+
+```java
+Chunk<O> outputs = new Chunk<>();
+```
+
+처음에는 비어 있는 상태입니다.
+
+```text
+Output Chunk
+
+items = []
+```
+
+#### ItemProcessor 호출
+
+SimpleChunkProcessor는 Input Chunk를 순회합니다.
+
+```java
+for (I item : inputs) {
+
+    O output = itemProcessor.process(item);
+
+    if (output != null) {
+        outputs.add(output);
+    }
+}
+```
+
+위 코드는 핵심 흐름을 설명하기 위한 단순화된 코드입니다.
+
+실제 구현에서는 ChunkIterator를 사용하고, 필터링된 Item을 관리하는 처리도 수행합니다.
+
+예를 들어 ItemProcessor가 다음과 같이 구현되어 있다고 가정하겠습니다.
+
+```java
+public String process(String item) {
+
+    return "my" + item;
+}
+```
+
+그러면 다음과 같이 데이터가 변경됩니다.
+
+```text
+item1 → myitem1
+
+item2 → myitem2
+```
+
+가공된 데이터는 Output Chunk에 저장됩니다.
+
+```text
+Output Chunk
+
+[
+    "myitem1",
+    "myitem2"
+]
+```
+
+여기서도 중요한 역할 구분이 있습니다.
+
+**ItemProcessor가 Input Chunk 전체를 매개변수로 전달받아 처리하는 것은 아닙니다.**
+
+ItemProcessor의 `process()` 메서드는 하나의 Item을 전달받습니다.
+
+Input Chunk를 순회하면서 개별 Item을 ItemProcessor에 전달하고, 반환된 결과를 Output Chunk에 추가하는 역할은 SimpleChunkProcessor가 담당합니다.
+
+---
+
+### Input Chunk와 Output Chunk의 차이
+
+Chunk 기반 처리에서는 Input Chunk와 Output Chunk를 구분해야 합니다.
+
+Input Chunk는 ItemReader가 읽은 원본 데이터를 저장합니다.
+
+Output Chunk는 ItemProcessor가 가공한 결과 데이터를 저장합니다.
+
+```mermaid
+flowchart LR
+    A["ItemReader"] --> B["Input Chunk"]
+    B --> C["ItemProcessor"]
+    C --> D["Output Chunk"]
+    D --> E["ItemWriter"]
+```
+
+예를 들어 다음과 같은 변환 작업을 생각해 보겠습니다.
+
+```text
+Input Chunk
+
+[
+    "user1",
+    "user2",
+    "user3"
+]
+```
+
+ItemProcessor는 이름을 대문자로 변환합니다.
+
+```text
+user1 → USER1
+user2 → USER2
+user3 → USER3
+```
+
+Output Chunk에는 다음과 같은 데이터가 저장됩니다.
+
+```text
+Output Chunk
+
+[
+    "USER1",
+    "USER2",
+    "USER3"
+]
+```
+
+두 Chunk는 각각 다른 역할을 담당합니다.
+
+| 구분 | Input Chunk | Output Chunk |
+|---|---|---|
+| 생성 주체 | SimpleChunkProvider | SimpleChunkProcessor |
+| 데이터 출처 | ItemReader | ItemProcessor |
+| 데이터 상태 | 읽은 데이터 | 가공된 데이터 |
+| 주요 목적 | 입력 데이터 보관 | 저장 대상 데이터 보관 |
+| 다음 단계 | ItemProcessor 처리 | ItemWriter 처리 |
+
+ItemProcessor에서 데이터를 필터링하는 경우 두 Chunk에 포함되는 데이터 개수는 서로 다를 수 있습니다.
+
+예를 들어 Input Chunk가 10건이지만 ItemProcessor에서 2건을 필터링했다면 Output Chunk는 8건이 됩니다.
+
+따라서 **Chunk Size가 10이라고 해서 ItemWriter가 반드시 10건의 데이터를 전달받는 것은 아닙니다.**
+
+---
+
+### ItemReader와 ItemProcessor의 실행 순서
+
+Chunk 기반 처리에서 자주 혼동하는 부분은 ItemReader와 ItemProcessor의 실행 순서입니다.
+
+ItemReader는 데이터를 한 건씩 읽습니다.
+
+ItemProcessor도 데이터를 한 건씩 처리합니다.
+
+하지만 ItemReader가 한 건을 읽었다고 해서 즉시 ItemProcessor가 실행되는 것은 아닙니다.
+
+일반적인 Chunk 기반 처리에서는 먼저 설정된 Chunk Size만큼 데이터를 읽어 Input Chunk를 구성합니다.
+
+이후 ChunkProcessor가 Input Chunk를 순회하면서 ItemProcessor를 호출합니다.
+
+#### 잘못 이해하기 쉬운 흐름
+
+```text
+read(item1)
+    ↓
+process(item1)
+    ↓
+read(item2)
+    ↓
+process(item2)
+```
+
+위 구조는 일반적인 동기식 Chunk 처리의 실행 순서를 정확하게 표현한 것이 아닙니다.
+
+#### 실제 처리 흐름
+
+Chunk Size가 3이라면 다음과 같이 처리됩니다.
+
+```text
+read(item1)
+read(item2)
+read(item3)
+    │
+    ▼
+Input Chunk 생성
+
+[item1, item2, item3]
+    │
+    ▼
+process(item1)
+process(item2)
+process(item3)
+    │
+    ▼
+Output Chunk 생성
+
+[result1, result2, result3]
+    │
+    ▼
+write(Output Chunk)
+```
+
+즉, **ItemReader는 Chunk를 구성하는 단계에서 반복 호출되고, ItemProcessor는 Chunk가 구성된 이후 입력 Item 개수만큼 호출됩니다.**
+
+이 차이는 실제 배치 실행 로그를 분석할 때 중요합니다.
+
+---
+
+### ItemWriter의 실행 과정
+
+ItemProcessor가 모든 입력 Item을 처리하면 Output Chunk가 완성됩니다.
+
+SimpleChunkProcessor는 해당 Output Chunk를 ItemWriter에 전달합니다.
+
+Spring Batch 5.x 이상의 ItemWriter 인터페이스는 다음과 같은 형태입니다.
+
+```java
+void write(Chunk<? extends T> chunk) throws Exception;
+```
+
+예를 들어 다음과 같은 Output Chunk가 있다고 가정하겠습니다.
+
+```text
+Output Chunk
+
+[
+    "myitem1",
+    "myitem2",
+    "myitem3"
+]
+```
+
+ItemWriter는 해당 Chunk를 전달받습니다.
+
+```java
+@Override
+public void write(Chunk<? extends String> chunk) {
+
+    for (String item : chunk) {
+        System.out.println(item);
+    }
+}
+```
+
+ItemWriter는 Chunk에 포함된 데이터를 데이터베이스에 저장하거나 파일에 기록할 수 있습니다.
+
+#### 버전별 ItemWriter의 차이
+
+기존 Spring Batch 4.x에서는 ItemWriter가 List를 전달받았습니다.
+
+```java
+void write(List<? extends T> items) throws Exception;
+```
+
+반면 Spring Batch 5.x부터는 Chunk를 전달받습니다.
+
+```java
+void write(Chunk<? extends T> chunk) throws Exception;
+```
+
+따라서 최신 API를 사용할 때는 ItemWriter가 List를 직접 전달받는다고 이해해서는 안 됩니다.
+
+Chunk 내부에는 Item 목록이 존재하며, 다음 메서드로 조회할 수 있습니다.
+
+```java
+chunk.getItems();
+```
+
+하지만 ItemWriter가 전달받는 매개변수 자체는 Chunk입니다.
+
+---
+
+### Chunk 경계와 트랜잭션 경계
+
+Chunk 기반 처리의 핵심적인 개념 중 하나는 Chunk 경계와 트랜잭션 경계입니다.
+
+#### Chunk 경계란?
+
+Chunk 경계는 하나의 Chunk를 구성하고 처리하는 범위를 의미합니다.
+
+예를 들어 Chunk Size가 3이라면 다음과 같은 데이터 처리 단위가 만들어집니다.
+
+```text
+Chunk 1
+
+read(item1)
+read(item2)
+read(item3)
+
+process(item1)
+process(item2)
+process(item3)
+
+write([item1, item2, item3])
+```
+
+이 전체 과정이 하나의 Chunk 처리 단위입니다.
+
+#### 트랜잭션 경계란?
+
+트랜잭션 경계는 데이터 변경 작업을 하나의 논리적인 작업 단위로 관리하는 범위입니다.
+
+일반적인 Chunk 기반 Step에서는 Chunk 단위로 트랜잭션을 관리합니다.
+
+```text
+BEGIN TRANSACTION
+        │
+        ▼
+SimpleChunkProvider
+        │
+        ├── ItemReader.read()
+        ├── ItemReader.read()
+        └── ItemReader.read()
+        │
+        ▼
+SimpleChunkProcessor
+        │
+        ├── ItemProcessor.process()
+        ├── ItemProcessor.process()
+        └── ItemProcessor.process()
+        │
+        ▼
+ItemWriter.write()
+        │
+        ▼
+COMMIT TRANSACTION
+```
+
+여기서 트랜잭션은 ItemReader가 처음 호출되는 순간 시작되는 것이 아닙니다.
+
+기존 TaskletStep 기반 처리에서는 ChunkOrientedTasklet을 호출하기 전에 트랜잭션 경계를 설정합니다.
+
+따라서 ItemReader, ItemProcessor, ItemWriter의 실행은 해당 트랜잭션 경계 안에서 이루어집니다.
+
+#### Chunk Size와 Commit Interval
+
+일반적인 Chunk 처리에서 Chunk Size는 Commit Interval과 연결됩니다.
+
+예를 들어 Chunk Size가 3이라면 정상적인 처리 흐름에서 입력 데이터 3건을 하나의 트랜잭션 단위로 처리합니다.
+
+```text
+Chunk Size = 3
+
+Transaction 1
+[item1, item2, item3]
+        ↓
+      COMMIT
+
+Transaction 2
+[item4, item5, item6]
+        ↓
+      COMMIT
+
+Transaction 3
+[item7, item8, item9]
+        ↓
+      COMMIT
+```
+
+다만 다음과 같은 상황에서는 실제 Writer에 전달되는 건수가 Chunk Size와 달라질 수 있습니다.
+
+- 마지막 Chunk에 남은 데이터가 Chunk Size보다 적은 경우
+- ItemProcessor가 일부 데이터를 필터링한 경우
+- Fault-Tolerant 설정에 따라 일부 Item이 Skip된 경우
+
+따라서 Chunk Size는 일반적으로 입력 데이터의 처리 단위와 커밋 간격을 결정하지만, Writer의 실제 저장 건수가 항상 동일하다는 의미는 아닙니다.
+
+---
+
+### Chunk 처리 중 Commit과 Rollback
+
+#### 정상 처리 시 Commit
+
+다음과 같이 Chunk Size가 3이고 전체 데이터가 9건이라고 가정하겠습니다.
+
+```text
+Chunk 1
+[item1, item2, item3]
+
+Chunk 2
+[item4, item5, item6]
+
+Chunk 3
+[item7, item8, item9]
+```
+
+모든 작업이 정상적으로 완료되면 다음과 같이 커밋됩니다.
+
+```text
+BEGIN TRANSACTION 1
+
+READ item1, item2, item3
+
+PROCESS item1, item2, item3
+
+WRITE [item1, item2, item3]
+
+COMMIT
+
+
+BEGIN TRANSACTION 2
+
+READ item4, item5, item6
+
+PROCESS item4, item5, item6
+
+WRITE [item4, item5, item6]
+
+COMMIT
+
+
+BEGIN TRANSACTION 3
+
+READ item7, item8, item9
+
+PROCESS item7, item8, item9
+
+WRITE [item7, item8, item9]
+
+COMMIT
+```
+
+각 Chunk의 처리 결과는 독립적인 트랜잭션 경계에서 관리됩니다.
+
+#### 오류 발생 시 Rollback
+
+이번에는 두 번째 Chunk에서 오류가 발생했다고 가정하겠습니다.
+
+```text
+Transaction 1
+
+Chunk 1
+[item1, item2, item3]
+
+COMMIT 완료
+```
+
+첫 번째 Chunk는 정상적으로 커밋되었습니다.
+
+이후 두 번째 Chunk에서 ItemWriter가 예외를 발생시켰습니다.
+
+```text
+Transaction 2
+
+Chunk 2
+[item4, item5, item6]
+
+ItemWriter 실행
+        ↓
+ERROR
+        ↓
+ROLLBACK
+```
+
+일반적인 롤백 대상 예외가 전파되면 두 번째 Chunk의 트랜잭션이 롤백됩니다.
+
+하지만 첫 번째 Chunk는 이미 커밋되었으므로 해당 처리 결과가 유지됩니다.
+
+```text
+Chunk 1 → COMMIT
+
+Chunk 2 → ROLLBACK
+
+Chunk 3 → 실행되지 않음
+```
+
+기본적인 오류 처리에서는 Step이 실패할 수 있습니다.
+
+다만 Retry, Skip 또는 별도의 Rollback 정책을 설정한 경우에는 처리 흐름이 달라질 수 있습니다.
+
+따라서 모든 예외가 반드시 즉시 Step 실패로 이어지는 것은 아닙니다.
+
+#### 트랜잭션에서 주의해야 할 점
+
+트랜잭션이 롤백된다고 해서 모든 외부 작업이 자동으로 취소되는 것은 아닙니다.
+
+예를 들어 ItemWriter가 데이터베이스에 저장하는 대신 외부 API를 호출했다고 가정하겠습니다.
+
+```text
+ItemWriter
+    │
+    ▼
+외부 결제 API 호출
+    │
+    ▼
+요청 성공
+    │
+    ▼
+이후 예외 발생
+```
+
+Spring Batch의 데이터베이스 트랜잭션이 롤백되더라도 이미 성공한 외부 API 요청이 자동으로 취소되는 것은 아닙니다.
+
+따라서 외부 시스템과 연동하는 배치에서는 멱등성, 중복 요청 방지, 보상 처리 등을 별도로 설계해야 합니다.
+
+---
+
+### ItemReader가 null을 반환하면 어떻게 될까?
+
+ItemReader는 더 이상 읽을 데이터가 없으면 `null`을 반환합니다.
+
+이 값은 Spring Batch에서 입력 데이터의 종료를 나타내는 신호입니다.
+
+```java
+T item = itemReader.read();
+
+if (item == null) {
+    // 입력 데이터 종료
+}
+```
+
+기존 SimpleChunkProvider에서는 ItemReader가 `null`을 반환하면 Input Chunk에 종료 상태를 설정합니다.
+
+```java
+inputs.setEnd();
+```
+
+그리고 현재 읽기 반복을 종료합니다.
+
+```java
+return RepeatStatus.FINISHED;
+```
+
+이후 ChunkOrientedTasklet이 Input Chunk의 종료 상태를 확인하여 상위 반복을 종료할 수 있습니다.
+
+하지만 여기서 중요한 예외 상황이 있습니다.
+
+**ItemReader가 `null`을 반환했다고 해서 이미 읽어 둔 데이터를 버리고 모든 처리를 즉시 종료하는 것은 아닙니다.**
+
+#### 마지막 Chunk에 데이터가 남아 있는 경우
+
+예를 들어 전체 데이터가 7건이고 Chunk Size가 3이라고 가정하겠습니다.
+
+```text
+전체 데이터
+
+item1
+item2
+item3
+item4
+item5
+item6
+item7
+```
+
+첫 번째 Chunk는 3건입니다.
+
+```text
+Chunk 1
+
+[item1, item2, item3]
+```
+
+두 번째 Chunk도 3건입니다.
+
+```text
+Chunk 2
+
+[item4, item5, item6]
+```
+
+세 번째 Chunk에서는 1건만 읽습니다.
+
+```text
+Chunk 3
+
+[item7]
+```
+
+이후 ItemReader가 추가로 호출되면 `null`을 반환합니다.
+
+```text
+read() → item7
+
+read() → null
+```
+
+이 경우 Spring Batch는 이미 읽은 `item7`을 버리지 않습니다.
+
+남은 데이터를 포함한 마지막 Chunk를 처리합니다.
+
+```text
+Chunk 3
+
+[item7]
+   │
+   ▼
+ItemProcessor
+   │
+   ▼
+ItemWriter
+   │
+   ▼
+COMMIT
+```
+
+이후 전체 Chunk 반복을 종료합니다.
+
+즉, 입력 종료 신호가 발생하더라도 마지막 Chunk에 남은 데이터가 있다면 정상적으로 처리해야 합니다.
+
+#### 전체 데이터가 Chunk Size의 배수인 경우
+
+반대로 전체 데이터가 6건이고 Chunk Size가 3이라면 다음과 같습니다.
+
+```text
+Chunk 1 → 3건
+
+Chunk 2 → 3건
+```
+
+두 번째 Chunk를 처리한 뒤에는 아직 ItemReader가 `null`을 반환하지 않았을 수 있습니다.
+
+따라서 다음 반복에서 ItemReader를 호출하여 더 이상 읽을 데이터가 없다는 사실을 확인합니다.
+
+```text
+Chunk 1 처리 완료
+       ↓
+Chunk 2 처리 완료
+       ↓
+ItemReader.read()
+       ↓
+null 반환
+       ↓
+입력 종료 확인
+       ↓
+Step 종료
+```
+
+이러한 종료 확인 과정에서는 실제 데이터를 포함하지 않는 빈 Chunk가 생성될 수도 있습니다.
+
+따라서 Writer 호출 횟수와 Chunk 처리 반복 횟수는 항상 동일하지 않을 수 있습니다.
+
+---
+
+### Chunk Processing의 전체 실행 순서
+
+지금까지 살펴본 내용을 하나의 순서도로 정리하면 다음과 같습니다.
+
+```mermaid
+sequenceDiagram
+    participant J as Job
+    participant TS as TaskletStep
+    participant CT as ChunkOrientedTasklet
+    participant CP as SimpleChunkProvider
+    participant IR as ItemReader
+    participant PC as SimpleChunkProcessor
+    participant IP as ItemProcessor
+    participant IW as ItemWriter
+
+    J->>TS: Step 실행
+
+    loop Chunk 처리 반복
+        TS->>TS: Begin Transaction
+        TS->>CT: execute()
+
+        CT->>CP: provide()
+        CP->>CP: Input Chunk 생성
+
+        loop Chunk Size 기준 반복
+            CP->>IR: read()
+            IR-->>CP: Item 또는 null
+            CP->>CP: Item 추가 또는 EOF 설정
+        end
+
+        CP-->>CT: Input Chunk
+
+        CT->>PC: process(inputs)
+
+        PC->>PC: Output Chunk 생성
+
+        loop Input Chunk의 Item 순회
+            PC->>IP: process(item)
+            IP-->>PC: 가공된 Item
+            PC->>PC: Output Chunk에 추가
+        end
+
+        PC->>IW: write(Output Chunk)
+        IW-->>PC: 쓰기 완료
+
+        PC-->>CT: 처리 완료
+        CT-->>TS: 반복 여부 반환
+
+        TS->>TS: Commit Transaction
+    end
+
+    TS-->>J: Step 완료
+```
+
+위 흐름은 정상적인 처리 경로를 나타냅니다.
+
+실제 구현에서는 ItemStream의 상태 갱신, StepContribution의 통계 반영, Listener 호출, Retry 및 Skip 처리 등이 추가될 수 있습니다.
+
+#### 단계별 핵심 정리
+
+| 순서 | 실행 주체 | 처리 내용 |
+|---|---|---|
+| 1 | Job | Step 실행 |
+| 2 | TaskletStep | 트랜잭션 시작 |
+| 3 | ChunkOrientedTasklet | Chunk 처리 시작 |
+| 4 | SimpleChunkProvider | Input Chunk 생성 |
+| 5 | ItemReader | 데이터 한 건씩 읽기 |
+| 6 | SimpleChunkProvider | 읽은 Item을 Input Chunk에 저장 |
+| 7 | SimpleChunkProcessor | Input Chunk 전달받기 |
+| 8 | ItemProcessor | Item별 데이터 가공 |
+| 9 | SimpleChunkProcessor | Output Chunk 생성 |
+| 10 | ItemWriter | Output Chunk 저장 |
+| 11 | TaskletStep | 트랜잭션 커밋 |
+| 12 | TaskletStep | 다음 Chunk 처리 또는 Step 종료 |
+
+이 순서를 이해하면 Spring Batch 내부에서 각 구성 요소가 어떤 역할을 하는지 명확하게 구분할 수 있습니다.
+
+---
+
+### 예제: Chunk Processing 전체 흐름 확인
+
+이번에는 Chunk Size를 2로 설정하고 총 6개의 데이터를 처리하는 예제를 살펴보겠습니다.
+
+기존 아키텍처를 분석하는 것이 목적이므로 Spring Batch 5.2 기준으로 작성합니다.
+
+#### Job 및 Step 설정
+
+```java
+import java.util.List;
+
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.Step;
+
+import org.springframework.batch.core.job.builder.JobBuilder;
+import org.springframework.batch.core.step.builder.StepBuilder;
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.configuration.annotation.StepScope;
+
+import org.springframework.batch.item.ItemReader;
+import org.springframework.batch.item.ItemProcessor;
+import org.springframework.batch.item.ItemWriter;
+import org.springframework.batch.item.support.ListItemReader;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import org.springframework.transaction.PlatformTransactionManager;
+
+@Configuration
+public class ChunkArchitectureConfig {
+
+    @Bean
+    public Job chunkJob(
+            JobRepository jobRepository,
+            Step chunkStep
+    ) {
+
+        return new JobBuilder("chunkJob", jobRepository)
+                .start(chunkStep)
+                .build();
+    }
+
+    @Bean
+    public Step chunkStep(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager,
+            ItemReader<String> itemReader,
+            ItemProcessor<String, String> itemProcessor,
+            ItemWriter<String> itemWriter
+    ) {
+
+        return new StepBuilder("chunkStep", jobRepository)
+                .<String, String>chunk(2, transactionManager)
+                .reader(itemReader)
+                .processor(itemProcessor)
+                .writer(itemWriter)
+                .build();
+    }
+
+    @Bean
+    @StepScope
+    public ItemReader<String> itemReader() {
+
+        ListItemReader<String> delegate =
+                new ListItemReader<>(
+                        List.of(
+                                "item1",
+                                "item2",
+                                "item3",
+                                "item4",
+                                "item5",
+                                "item6"
+                        )
+                );
+
+        return () -> {
+
+            String item = delegate.read();
+
+            System.out.println("READ: " + item);
+
+            return item;
+        };
+    }
+
+    @Bean
+    public ItemProcessor<String, String> itemProcessor() {
+
+        return item -> {
+
+            String result = "my" + item;
+
+            System.out.println("PROCESS: " + result);
+
+            return result;
+        };
+    }
+
+    @Bean
+    public ItemWriter<String> itemWriter() {
+
+        return chunk -> {
+
+            System.out.println(
+                    "WRITE: " + chunk.getItems()
+            );
+        };
+    }
+}
+```
+
+위 코드는 Spring Batch 5.2의 ChunkOrientedTasklet 기반 아키텍처를 확인하기 위한 예제입니다.
+
+JobRepository와 TransactionManager가 정상적으로 구성되어 있다고 가정합니다.
+
+#### 실행 결과
+
+정상적으로 실행하면 다음과 같은 로그 흐름을 확인할 수 있습니다.
+
+```text
+READ: item1
+READ: item2
+
+PROCESS: myitem1
+PROCESS: myitem2
+
+WRITE: [myitem1, myitem2]
+
+
+READ: item3
+READ: item4
+
+PROCESS: myitem3
+PROCESS: myitem4
+
+WRITE: [myitem3, myitem4]
+
+
+READ: item5
+READ: item6
+
+PROCESS: myitem5
+PROCESS: myitem6
+
+WRITE: [myitem5, myitem6]
+
+
+READ: null
+```
+
+이 로그를 통해 세 가지 사실을 확인할 수 있습니다.
+
+첫 번째로 ItemReader는 데이터를 하나씩 읽습니다.
+
+두 번째로 ItemProcessor는 Chunk Size만큼 데이터 읽기가 완료된 이후 개별 Item을 가공합니다.
+
+세 번째로 ItemWriter는 가공된 데이터를 Chunk 단위로 전달받습니다.
+
+#### Chunk별 처리 결과
+
+| Chunk | 읽은 데이터 | 가공된 데이터 | Writer 처리 |
+|---|---|---|---|
+| 1 | item1, item2 | myitem1, myitem2 | 2건 |
+| 2 | item3, item4 | myitem3, myitem4 | 2건 |
+| 3 | item5, item6 | myitem5, myitem6 | 2건 |
+| 종료 확인 | null | 없음 | 없음 |
+
+이러한 방식으로 Spring Batch는 데이터가 소진될 때까지 Chunk 기반 처리를 반복합니다.
+
+---
+
+### Spring Batch 5.x와 6.x의 아키텍처 차이
+
+지금까지 살펴본 ChunkOrientedTasklet, SimpleChunkProvider, SimpleChunkProcessor 구조는 Spring Batch 5.x의 기존 Chunk 처리 엔진을 기준으로 합니다.
+
+Spring Batch 6.0부터는 새로운 Chunk 처리 엔진이 정식으로 도입되었습니다.
+
+기존의 ChunkOrientedTasklet과 TaskletStep 조합을 대체하는 `ChunkOrientedStep`이 제공됩니다.
+
+#### Spring Batch 5.x
+
+```text
+TaskletStep
+    │
+    ▼
+ChunkOrientedTasklet
+    │
+    ├── SimpleChunkProvider
+    │       │
+    │       └── ItemReader
+    │
+    └── SimpleChunkProcessor
+            │
+            ├── ItemProcessor
+            └── ItemWriter
+```
+
+이 구조에서는 TaskletStep과 ChunkOrientedTasklet이 Chunk 처리를 제어합니다.
+
+#### Spring Batch 6.x
+
+```text
+ChunkOrientedStep
+    │
+    ├── ItemReader
+    │
+    ├── ItemProcessor
+    │
+    └── ItemWriter
+```
+
+Spring Batch 6.x에서는 새로운 ChunkOrientedStep이 Chunk 기반 처리의 중심 역할을 담당합니다.
+
+따라서 기존 ChunkOrientedTasklet과 두 개의 RepeatTemplate을 사용하는 구조를 새로운 ChunkOrientedStep의 내부 구현과 동일하다고 이해해서는 안 됩니다.
+
+#### 버전별 주요 차이
+
+| 구분 | Spring Batch 5.x | Spring Batch 6.x |
+|---|---|---|
+| Chunk 처리 중심 | ChunkOrientedTasklet | ChunkOrientedStep |
+| Step 구현 | TaskletStep | ChunkOrientedStep |
+| Step Builder | SimpleStepBuilder | ChunkOrientedStepBuilder |
+| 데이터 읽기 | SimpleChunkProvider | 새로운 Chunk 처리 엔진 |
+| 데이터 가공 | SimpleChunkProcessor | 새로운 Chunk 처리 엔진 |
+| 반복 제어 | RepeatTemplate 기반 | 변경된 내부 처리 구조 |
+| ItemReader | Item 단위 | Item 단위 |
+| ItemProcessor | Item 단위 | Item 단위 |
+| ItemWriter | Chunk 단위 | Chunk 단위 |
+| 트랜잭션 | Chunk 단위 처리 | Chunk 단위 처리 |
+
+Spring Batch 6.0에서는 기존 ChunkOrientedTasklet, SimpleChunkProvider, SimpleChunkProcessor 등의 레거시 API가 Deprecated로 지정되었습니다.
+
+따라서 새로운 프로젝트에서는 ChunkOrientedStep 기반 구조를 사용하는 것이 적절합니다.
+
+#### Spring Batch 6.x Step 설정
+
+Spring Batch 6.x에서는 다음과 같이 Step을 구성할 수 있습니다.
+
+```java
+@Bean
+public Step chunkStep(
+        JobRepository jobRepository,
+        PlatformTransactionManager transactionManager,
+        ItemReader<String> itemReader,
+        ItemProcessor<String, String> itemProcessor,
+        ItemWriter<String> itemWriter
+) {
+
+    return new StepBuilder("chunkStep", jobRepository)
+            .<String, String>chunk(2)
+            .transactionManager(transactionManager)
+            .reader(itemReader)
+            .processor(itemProcessor)
+            .writer(itemWriter)
+            .build();
+}
+```
+
+Spring Batch 5.x에서는 다음 API를 사용했습니다.
+
+```java
+.<String, String>chunk(2, transactionManager)
+```
+
+반면 Spring Batch 6.x의 새로운 ChunkOrientedStepBuilder에서는 다음과 같이 구성합니다.
+
+```java
+.<String, String>chunk(2)
+.transactionManager(transactionManager)
+```
+
+또한 Spring Batch 6.x에서는 Item 관련 패키지가 변경되었습니다.
+
+```java
+import org.springframework.batch.infrastructure.item.ItemReader;
+import org.springframework.batch.infrastructure.item.ItemProcessor;
+import org.springframework.batch.infrastructure.item.ItemWriter;
+```
+
+이러한 차이는 기존 프로젝트를 업그레이드하거나 새로운 배치 시스템을 개발할 때 반드시 고려해야 합니다.
+
+---
+
+### 실무에서의 활용
+
+Chunk Processing 아키텍처를 이해하면 단순히 배치 기능을 구현하는 것을 넘어 성능 개선과 장애 대응, 데이터 정합성 확보 등 다양한 문제를 해결하는 데 활용할 수 있습니다.
+
+#### 1. Chunk Size에 따른 처리 성능 최적화
+
+Chunk Size는 한 번의 트랜잭션에서 처리하는 데이터의 크기를 결정합니다.
+
+Chunk Size가 너무 작으면 트랜잭션을 자주 시작하고 커밋하게 됩니다.
+
+예를 들어 100만 건의 데이터를 Chunk Size 10으로 처리하면 실제 데이터가 포함된 Chunk는 10만 개입니다.
+
+반면 Chunk Size를 1,000으로 설정하면 1,000개의 Chunk로 처리할 수 있습니다.
+
+따라서 Chunk Size를 크게 설정하면 트랜잭션 관리 오버헤드를 줄이는 데 도움이 될 수 있습니다.
+
+하지만 Chunk Size가 지나치게 크면 트랜잭션 유지 시간이 길어지고, 데이터베이스 잠금과 메모리 사용량이 증가할 수 있습니다.
+
+또한 장애가 발생했을 때 다시 처리해야 하는 데이터의 범위도 커질 수 있습니다.
+
+따라서 Chunk Size는 단순히 큰 값으로 설정하는 것이 아니라 실제 처리 성능과 장애 복구 비용을 함께 고려해야 합니다.
+
+#### 2. ItemReader의 조회 방식 최적화
+
+Chunk Size가 작다고 해서 ItemReader가 항상 작은 단위로 데이터베이스를 조회하는 것은 아닙니다.
+
+예를 들어 JdbcPagingItemReader를 사용한다면 Page Size라는 별도의 설정이 존재합니다.
+
+Chunk Size는 배치 처리와 커밋의 단위입니다.
+
+반면 Page Size는 데이터베이스에서 한 번에 조회하는 데이터의 단위입니다.
+
+따라서 두 값을 구분하여 설계해야 합니다.
+
+예를 들어 Page Size 1,000으로 데이터를 조회하고 Chunk Size 100으로 처리하는 구조도 가능합니다.
+
+이러한 경우 데이터베이스 조회 횟수와 메모리 사용량, 트랜잭션 비용을 함께 측정하여 적절한 값을 선택해야 합니다.
+
+#### 3. ItemProcessor의 불필요한 외부 API 호출 방지
+
+ItemProcessor는 입력 데이터 한 건마다 호출됩니다.
+
+따라서 Processor 내부에서 외부 API를 호출하면 입력 데이터 개수에 비례하여 요청이 발생합니다.
+
+예를 들어 100만 건을 처리하면서 각 Item마다 외부 API를 한 번 호출한다면 최대 100만 번의 요청이 발생할 수 있습니다.
+
+이러한 구조는 처리 시간이 길어지고 외부 서비스의 Rate Limit에 영향을 받을 가능성이 있습니다.
+
+따라서 Processor 내부에서 반드시 개별 API 호출이 필요한지 검토해야 합니다.
+
+가능하다면 외부 데이터의 사전 조회, 캐싱, 일괄 처리 등의 방식으로 호출 비용을 줄이는 것이 좋습니다.
+
+#### 4. ItemWriter의 Batch Insert 활용
+
+ItemWriter는 Chunk 단위로 데이터를 전달받습니다.
+
+하지만 전달받은 Item을 하나씩 INSERT한다면 데이터베이스에 대한 요청 횟수가 증가할 수 있습니다.
+
+예를 들어 다음과 같은 방식입니다.
+
+```java
+for (Customer customer : chunk) {
+
+    repository.save(customer);
+}
+```
+
+이 방식이 반드시 비효율적인 것은 아니지만, 실제 SQL 실행 방식과 JDBC Batch 설정에 따라 성능 차이가 발생할 수 있습니다.
+
+대량 데이터를 저장하는 경우에는 JdbcBatchItemWriter와 같은 구현체를 고려할 수 있습니다.
+
+이를 통해 여러 Item의 INSERT 또는 UPDATE 작업을 JDBC Batch 방식으로 실행할 수 있습니다.
+
+#### 5. 트랜잭션 롤백 범위 확인
+
+Chunk 처리 도중 예외가 발생했을 때는 실제로 어떤 작업이 롤백되는지 확인해야 합니다.
+
+예를 들어 ItemWriter가 데이터베이스 A와 데이터베이스 B에 각각 데이터를 저장한다고 가정하겠습니다.
+
+이때 두 데이터베이스가 서로 다른 트랜잭션 매니저를 사용한다면 하나의 트랜잭션으로 모든 작업이 롤백된다고 보장할 수 없습니다.
+
+따라서 트랜잭션 경계를 확인할 때는 단순히 Chunk Size만 보는 것이 아니라 실제 사용하는 TransactionManager와 데이터 소스의 관계를 확인해야 합니다.
+
+특히 정산이나 대사 시스템처럼 데이터 정합성이 중요한 작업에서는 여러 저장소에 대한 트랜잭션 일관성을 신중하게 설계해야 합니다.
+
+#### 6. Retry와 Rollback의 차이 이해
+
+Rollback은 트랜잭션에 참여한 작업을 취소하는 동작입니다.
+
+반면 Retry는 실패한 작업을 다시 시도하는 정책입니다.
+
+따라서 Rollback이 발생했다고 해서 반드시 Retry가 실행되는 것은 아닙니다.
+
+기본적인 Chunk 처리에서는 예외가 전파되면 Step이 실패할 수 있습니다.
+
+반면 Fault-Tolerant 설정을 적용하면 특정 예외에 대해 재시도를 수행할 수 있습니다.
+
+따라서 어떤 예외를 재시도할 것인지, 재시도 횟수는 얼마로 설정할 것인지, 재시도 후에도 실패하면 어떻게 처리할 것인지 명확하게 정의해야 합니다.
+
+#### 7. ItemProcessor의 필터링과 Skip 구분
+
+ItemProcessor가 `null`을 반환하면 해당 Item은 정상적으로 필터링됩니다.
+
+반면 Skip은 특정 예외가 발생했을 때 해당 Item을 건너뛰도록 하는 장애 처리 정책입니다.
+
+예를 들어 정산 대상이 아닌 거래를 제외하는 것은 정상적인 필터링입니다.
+
+반면 데이터 형식이 잘못되어 처리할 수 없는 거래를 건너뛰는 것은 Skip 정책의 대상이 될 수 있습니다.
+
+두 동작은 최종 저장 대상에서 데이터를 제외한다는 점에서는 비슷해 보이지만, 처리 통계와 오류 관리 측면에서는 서로 다른 의미를 가집니다.
+
+따라서 비즈니스 조건에 따른 제외와 오류로 인한 제외를 명확하게 구분하는 것이 좋습니다.
+
+#### 8. StepExecution 통계를 이용한 데이터 정합성 검증
+
+Spring Batch는 Read Count, Write Count, Filter Count, Skip Count 등의 실행 통계를 관리합니다.
+
+예를 들어 다음과 같은 결과가 있다고 가정하겠습니다.
+
+```text
+Read Count   = 10000
+
+Filter Count = 500
+
+Write Count  = 9500
+```
+
+Skip이 없고 각 입력 Item이 최대 하나의 출력 Item으로 변환되는 정상적인 처리라면 다음 관계가 성립할 수 있습니다.
+
+```text
+Read Count = Filter Count + Write Count
+```
+
+이러한 통계는 배치 처리 결과를 검증하는 데 활용할 수 있습니다.
+
+다만 Writer에서 중복 데이터를 제외하거나 Upsert를 수행하는 경우에는 Write Count와 실제 신규 저장 건수가 다를 수 있습니다.
+
+따라서 중요한 정산 배치에서는 Spring Batch의 실행 통계와 실제 데이터베이스의 처리 결과를 함께 검증해야 합니다.
+
+#### 9. 배치 재시작 시 중복 처리 방지
+
+Chunk 기반 배치는 장애가 발생했을 때 이전에 정상적으로 커밋된 위치를 기준으로 재시작할 수 있습니다.
+
+하지만 이러한 기능을 안전하게 사용하려면 ItemReader가 현재 처리 위치를 저장하고 복원할 수 있어야 합니다.
+
+또한 ItemWriter는 동일한 데이터가 다시 전달되는 상황에 대응할 수 있어야 합니다.
+
+예를 들어 거래 ID와 정산 일자를 기준으로 Unique Key를 설정하거나 멱등성 있는 Upsert 로직을 사용할 수 있습니다.
+
+특히 외부 API 호출이나 메시지 전송이 포함된 경우에는 데이터베이스 트랜잭션만으로 중복 처리를 방지할 수 없으므로 별도의 멱등성 전략을 고려해야 합니다.
+
+#### 10. 대용량 데이터 처리 시 메모리 사용량 관리
+
+Chunk 기반 처리는 데이터를 일정한 크기로 나누어 처리하지만, 메모리 사용량을 완전히 자동으로 제한하는 것은 아닙니다.
+
+ItemReader가 내부적으로 많은 데이터를 캐싱할 수도 있고, ItemProcessor가 대용량 객체를 생성할 수도 있습니다.
+
+또한 ItemWriter에서 데이터를 별도로 누적하는 구조라면 Chunk 처리가 반복될수록 메모리 사용량이 증가할 수 있습니다.
+
+따라서 메모리 문제를 분석할 때는 Chunk Size뿐 아니라 Reader의 조회 방식, Processor의 객체 생성 패턴, Writer의 버퍼링 전략도 함께 확인해야 합니다.
+
+#### 11. ItemStream을 통한 체크포인트 관리
+
+Chunk 처리에서는 정상적으로 커밋된 위치를 기준으로 재시작하는 것이 중요합니다.
+
+이를 위해 ItemStream과 ExecutionContext를 활용할 수 있습니다.
+
+예를 들어 마지막으로 정상 처리한 거래 ID를 ExecutionContext에 저장할 수 있습니다.
+
+```text
+lastProcessedTransactionId = 150000
+```
+
+배치를 재시작하면 해당 값을 읽어 이후 데이터부터 처리하도록 구성할 수 있습니다.
+
+다만 ExecutionContext에 현재 값을 저장했다고 해서 즉시 영속적인 체크포인트가 되는 것은 아닙니다.
+
+실제 JobRepository에 상태 정보가 저장되고 관련 트랜잭션이 정상적으로 커밋되어야 재시작 기준으로 사용할 수 있습니다.
+
+#### 12. 멀티스레드 환경에서 Reader의 안전성 확인
+
+멀티스레드 Step에서는 여러 스레드가 동시에 Chunk를 처리할 수 있습니다.
+
+이 경우 ItemReader가 내부적으로 현재 읽기 위치를 관리한다면 동시성 문제가 발생할 수 있습니다.
+
+예를 들어 여러 스레드가 하나의 Reader를 공유하면서 동일한 데이터를 읽거나 일부 데이터를 누락할 가능성이 있습니다.
+
+따라서 멀티스레드 환경에서는 Reader의 Thread-Safety를 확인해야 합니다.
+
+필요하다면 동기화된 Reader를 사용하거나 Partitioning을 통해 각 스레드가 서로 다른 데이터 범위를 처리하도록 구성할 수 있습니다.
+
+또한 멀티스레드 처리를 적용하면 Chunk의 실행 순서와 커밋 순서가 단일 스레드 환경과 달라질 수 있으므로 재시작 안정성까지 함께 고려해야 합니다.
+
+#### 13. Chunk 처리 시간 기반 모니터링
+
+배치 작업이 느려졌을 때 단순히 전체 Job 실행 시간만 확인하면 병목 지점을 찾기 어렵습니다.
+
+Chunk 처리 과정에서 어떤 단계가 오래 걸리는지 구분해야 합니다.
+
+예를 들어 다음과 같은 항목을 측정할 수 있습니다.
+
+```text
+Chunk 처리 시간
+
+Reader 처리 시간
+
+Processor 처리 시간
+
+Writer 처리 시간
+
+Transaction Commit 시간
+```
+
+Reader가 느리다면 데이터베이스 조회 성능이나 네트워크 지연을 확인할 수 있습니다.
+
+Processor가 느리다면 비즈니스 로직의 계산 비용이나 외부 API 호출을 확인해야 합니다.
+
+Writer가 느리다면 SQL 실행 계획, 데이터베이스 잠금, Batch Insert 설정 등을 점검할 수 있습니다.
+
+이처럼 단계별 처리 시간을 측정하면 실제 병목 지점을 중심으로 최적화할 수 있습니다.
+
+#### 14. 장애 발생 위치에 따른 원인 분석
+
+Chunk 처리에서 발생하는 오류는 위치에 따라 원인이 달라집니다.
+
+| 오류 발생 위치 | 주요 원인 | 확인 사항 |
+|---|---|---|
+| ItemReader | 데이터 조회 실패 | SQL, 파일, 네트워크 |
+| ChunkProvider | 읽기 및 Chunk 구성 오류 | Reader 예외, 반복 조건 |
+| ItemProcessor | 데이터 변환 실패 | 비즈니스 로직, Null 처리 |
+| ChunkProcessor | 가공 및 저장 오류 | Processor, Writer |
+| ItemWriter | 데이터 저장 실패 | DB 제약 조건, 연결 |
+| TransactionManager | Commit 또는 Rollback 실패 | 트랜잭션 설정, 잠금 |
+| JobRepository | 실행 상태 저장 실패 | 메타데이터 DB, 연결 |
+
+실제 장애를 분석할 때는 먼저 오류가 발생한 위치를 확인하는 것이 좋습니다.
+
+그다음 해당 단계의 책임과 트랜잭션 경계를 기준으로 원인을 좁혀 나가면 문제를 더 효율적으로 해결할 수 있습니다.
+
+#### 15. Spring Batch 버전에 맞는 아키텍처 분석
+
+Spring Batch 5.x의 ChunkOrientedTasklet 기반 구조와 Spring Batch 6.x의 ChunkOrientedStep 기반 구조는 내부 구현이 다릅니다.
+
+따라서 같은 Chunk 기반 처리라고 하더라도 내부적으로 사용하는 클래스와 반복 제어 방식이 달라질 수 있습니다.
+
+특히 Spring Batch 6.x에서 신규 기능을 개발하거나 기존 프로젝트를 업그레이드하는 경우에는 새로운 ChunkOrientedStep을 기준으로 내부 구조를 파악하는 것이 중요합니다.
+
+반면 Spring Batch 5.x 프로젝트를 유지보수한다면 ChunkOrientedTasklet, SimpleChunkProvider, SimpleChunkProcessor의 내부 동작을 정확하게 이해하는 것이 도움이 됩니다.
+
+---
+
+### Chunk Processing 아키텍처 핵심 정리
+
+지금까지 살펴본 전체 흐름을 다시 정리하면 다음과 같습니다.
+
+```text
+Job
+ │
+ ▼
+TaskletStep
+ │
+ │ Chunk 단위 반복
+ │
+ ▼
+ChunkOrientedTasklet
+ │
+ ├── SimpleChunkProvider
+ │       │
+ │       │ ItemReader 반복
+ │       │
+ │       ▼
+ │   ItemReader.read()
+ │       │
+ │       ▼
+ │   Input Chunk 생성
+ │       │
+ │       └── Chunk Size만큼 저장
+ │
+ ▼
+SimpleChunkProcessor
+ │
+ ├── ItemProcessor.process()
+ │       │
+ │       │ Input Chunk의 Item을
+ │       │ 한 건씩 가공
+ │       │
+ │       ▼
+ │   Output Chunk 생성
+ │
+ └── ItemWriter.write()
+         │
+         │ Output Chunk 저장
+         ▼
+    Transaction Commit
+         │
+         ▼
+    다음 Chunk 처리
+         │
+         ▼
+    ItemReader가 null 반환
+         │
+         ▼
+    남은 데이터 처리 및 종료
+         │
+         ▼
+    Step COMPLETED
+```
+
+이 구조를 이해할 때는 다음 네 가지를 기억해야 합니다.
+
+첫 번째로 **TaskletStep은 Chunk 처리의 반복 실행과 트랜잭션 경계를 관리합니다.**
+
+두 번째로 **SimpleChunkProvider는 ItemReader를 반복 호출하여 Input Chunk를 생성합니다.**
+
+세 번째로 **SimpleChunkProcessor는 Input Chunk를 순회하며 ItemProcessor로 데이터를 가공하고, Output Chunk를 ItemWriter에 전달합니다.**
+
+네 번째로 **ItemReader가 더 이상 읽을 데이터가 없음을 알리면 남은 데이터를 처리한 후 전체 Chunk 반복이 종료됩니다.**
+
+---
+
+### 정리
+
+Spring Batch의 Chunk Processing 아키텍처는 대용량 데이터를 안정적으로 읽고, 가공하고, 저장하기 위한 구조입니다.
+
+기존 Spring Batch 5.x에서는 TaskletStep이 ChunkOrientedTasklet을 반복 실행하고, ChunkOrientedTasklet이 SimpleChunkProvider와 SimpleChunkProcessor를 이용하여 데이터 처리를 수행합니다.
+
+SimpleChunkProvider는 ItemReader를 반복 호출하여 Input Chunk를 생성합니다.
+
+SimpleChunkProcessor는 Input Chunk에 포함된 데이터를 개별적으로 가공하고, Output Chunk를 ItemWriter에 전달하여 저장합니다.
+
+이 과정에서 ItemReader와 ItemProcessor는 개별 Item을 처리하며, ItemWriter는 Chunk 단위로 데이터를 전달받습니다.
+
+또한 일반적인 Chunk 처리에서는 Chunk 단위로 트랜잭션을 관리하므로, 장애가 발생했을 때 이전에 정상적으로 커밋된 Chunk의 처리 결과를 유지할 수 있습니다.
+
+ItemReader가 `null`을 반환하면 입력 데이터의 종료를 나타내며, 마지막 Chunk에 처리할 데이터가 남아 있다면 해당 데이터를 정상적으로 처리한 뒤 Step이 종료됩니다.
+
+Spring Batch 6.x에서는 이러한 기존 구조를 대체하는 새로운 ChunkOrientedStep이 도입되었습니다.
+
+따라서 기존 시스템을 유지보수할 때는 ChunkOrientedTasklet 기반 아키텍처를 이해하고, 새로운 시스템을 개발할 때는 ChunkOrientedStep 기반 구조를 중심으로 접근하는 것이 적절합니다.
+
+결국 Chunk Processing 아키텍처를 이해한다는 것은 단순히 데이터를 일정한 크기로 나누는 방법을 아는 것이 아닙니다.
+
+**데이터가 어떤 객체를 거쳐 이동하고, 어느 시점에 가공되며, 어떤 트랜잭션 경계에서 저장되고, 장애 발생 시 어떻게 복구되는지 전체 흐름을 이해하는 것**입니다.
+
+이러한 이해를 바탕으로 배치 시스템의 성능과 안정성, 유지보수성을 개선할 수 있습니다.
+
+#### 한 줄 요약
+
+**Spring Batch Chunk Processing은 ItemReader로 데이터를 한 건씩 읽어 Input Chunk를 구성하고, ItemProcessor로 개별 데이터를 가공한 뒤, ItemWriter가 Output Chunk를 처리하도록 하며, 전체 과정을 Chunk 단위 트랜잭션으로 관리하는 아키텍처입니다.**
